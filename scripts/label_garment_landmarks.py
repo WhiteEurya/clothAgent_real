@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +46,16 @@ DEFAULT_LANDMARKS = (
     LandmarkSpec("right_sleeve_tip", "the outer tip of the right sleeve or right upper edge", (255, 80, 190)),
     LandmarkSpec("left_bottom_hem", "the leftmost point on the bottom hem", (80, 220, 220)),
     LandmarkSpec("right_bottom_hem", "the rightmost point on the bottom hem", (220, 220, 60)),
+    LandmarkSpec(
+        "lower_left_half_center",
+        "the center of the lower half of the garment on the image-left side",
+        (120, 255, 120),
+    ),
+    LandmarkSpec(
+        "lower_right_half_center",
+        "the center of the lower half of the garment on the image-right side",
+        (120, 180, 255),
+    ),
 )
 
 
@@ -158,8 +168,11 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.project_root).resolve()
     config = PerceptionConfig.load(root, (root / args.perception_config).resolve())
-    if len(config.active_camera_labels) != 2:
-        raise RuntimeError("landmark baseline requires active_cameras to contain A and B")
+    if "A" not in {label.upper() for label in config.active_camera_labels}:
+        raise RuntimeError("landmark baseline requires camera A to be configured")
+    # This baseline intentionally uses only CamA. B is left untouched for the
+    # existing perception pipeline and is not queried by Molmo here.
+    config = replace(config, active_camera_labels=("A",))
 
     if args.landmarks_json:
         raw_specs = json.loads(Path(args.landmarks_json).expanduser().resolve().read_text(encoding="utf-8"))
@@ -188,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     capture_dir = output_dir / "capture"
     capture_dir.mkdir(parents=True, exist_ok=False)
 
-    print("Capturing A/B RGB-D baseline; keep the garment fully spread out.")
+    print("Capturing CamA RGB-D baseline; keep the garment fully spread out.")
     frames = capture_two_view_rgbd(config)
     image_paths: list[Path] = []
     for index, frame in enumerate(frames):
@@ -200,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     molmo_output = output_dir / "molmo_landmarks.json"
     prompt_list = _prompts(specs)
     print(
-        f"Asking Molmo {len(specs)} independent one-point queries per camera "
+        f"Asking Molmo {len(specs)} independent one-point queries on CamA "
         "(one model load, separate prompts)..."
     )
     worker = root / "cloth_agent" / "molmo_landmark_worker.py"
