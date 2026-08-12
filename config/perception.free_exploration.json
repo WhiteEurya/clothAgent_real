@@ -1,0 +1,35 @@
+{
+  "cameras": [
+    {
+      "label": "A",
+      "serial": "243722070226",
+      "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_A.yaml"
+    },
+    {
+      "label": "B",
+      "serial": "261822074715",
+      "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_B.yaml"
+    }
+  ],
+  "active_cameras": ["A", "B"],
+  "width": 640,
+  "height": 480,
+  "fps": 30,
+  "warmup_frames": 10,
+  "depth_window_radius_px": 4,
+  "min_depth_m": 0.15,
+  "max_depth_m": 2.0,
+  "max_view_disagreement_mm": 50.0,
+  "grasp_contact_clearance_mm": 0.0,
+  "approach_clearance_mm": 80.0,
+  "lift_clearance_mm": 160.0,
+  "molmo": {
+    "python": "/home/CNS2026330003/miniconda3/envs/molmo/bin/python",
+    "model": "allenai/MolmoPoint-8B",
+    "dtype": "bf16",
+    "max_crops": 1,
+    "max_new_tokens": 96,
+    "timeout_s": 600,
+    "local_files_only": true
+  }
+}

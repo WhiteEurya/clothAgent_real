@@ -1,0 +1,10 @@
+{
+  "cloth": {
+    "center_x": null,
+    "center_y": null,
+    "grasp_z": null,
+    "approach_z": null,
+    "lift_z": null,
+    "yaw": null
+  }
+}

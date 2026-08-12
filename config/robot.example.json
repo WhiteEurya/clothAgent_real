@@ -1,0 +1,20 @@
+{
+  "robot_ip": "192.168.1.200",
+  "boundaries_file": "xarm_boundaries.json",
+  "init_pose_file": "data/robot/xarm_init_pose.json",
+  "workspace_margin_mm": 10.0,
+  "lower_z_margin_mm": 0.0,
+  "expected_tcp_offset_mm_deg": [0, 0, 172, 0, 0, 0],
+  "tcp_offset_tolerance": 1.0,
+  "motion": {
+    "speed_mm_s": 15.0,
+    "acceleration_mm_s2": 30.0,
+    "home_speed_deg_s": 5.0,
+    "home_acceleration_deg_s2": 10.0
+  },
+  "gripper": {
+    "speed": 500,
+    "open": 850,
+    "close": 0
+  }
+}
