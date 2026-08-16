@@ -110,7 +110,7 @@ class RobotConfig:
     orientation_pitch_deg: float
     expected_tcp_offset_mm_deg: tuple[float, ...] = (0.0, 0.0, 172.0, 0.0, 0.0, 0.0)
     tcp_offset_tolerance: float = 1.0
-    workspace_margin_mm: float = 10.0
+    workspace_margin_mm: float = 0.0
     lower_z_margin_mm: float = 0.0
     speed_mm_s: float = 15.0
     acceleration_mm_s2: float = 30.0
@@ -165,7 +165,7 @@ class RobotConfig:
             tcp_offset_tolerance=_number(
                 raw.get("tcp_offset_tolerance", 1.0), "TCP offset tolerance"
             ),
-            workspace_margin_mm=_number(raw.get("workspace_margin_mm", 10.0), "workspace margin"),
+            workspace_margin_mm=_number(raw.get("workspace_margin_mm", 0.0), "workspace margin"),
             lower_z_margin_mm=_number(
                 raw.get("lower_z_margin_mm", 0.0), "lower-z workspace margin"
             ),
@@ -238,8 +238,11 @@ class RobotConfig:
 class ExperimentConfig:
     """Per-run scene values.
 
-    All fields may be deferred until perception.  A no-perception/manual run
-    must call :meth:`require_ready` before code generation.
+    Perception fills ``cloth_center_x``, ``cloth_center_y``, and the observed
+    surface height stored in the legacy ``grasp_z`` slot.  The motion fields
+    (``approach_z``, ``lift_z``, and ``yaw_deg``) may remain deferred until
+    Claude writes an action program.  A no-perception/manual run must call
+    :meth:`require_ready` before code generation.
     """
 
     cloth_center_x: float | None = None
@@ -263,6 +266,7 @@ class ExperimentConfig:
         yaw = cloth.get("yaw_deg", cloth.get("yaw"))
         center_x = cloth.get("center_x", cloth.get("cloth_center_x"))
         center_y = cloth.get("center_y", cloth.get("cloth_center_y"))
+        surface_z = cloth.get("grasp_z", cloth.get("surface_z", cloth.get("surface_z_mm")))
 
         def optional_number(value: Any, name: str) -> float | None:
             if value is None and allow_deferred:
@@ -272,7 +276,9 @@ class ExperimentConfig:
         result = cls(
             cloth_center_x=optional_number(center_x, "cloth center x"),
             cloth_center_y=optional_number(center_y, "cloth center y"),
-            grasp_z=optional_number(cloth.get("grasp_z"), "grasp_z"),
+            # ``grasp_z`` remains the compatibility key written by older
+            # runs; new observation documents may call it ``surface_z``.
+            grasp_z=optional_number(surface_z, "surface_z"),
             approach_z=optional_number(cloth.get("approach_z"), "approach_z"),
             lift_z=optional_number(cloth.get("lift_z"), "lift_z"),
             yaw_deg=optional_number(yaw, "yaw"),
@@ -294,8 +300,17 @@ class ExperimentConfig:
 
     def require_center(self) -> tuple[float, float]:
         if self.cloth_center_x is None or self.cloth_center_y is None:
-            raise ConfigError("cloth center is unset; run perception or provide center_x/center_y")
+            raise ConfigError(
+                "experiment plan is incomplete; cloth center is unset; "
+                "run perception or provide center_x/center_y"
+            )
         return self.cloth_center_x, self.cloth_center_y
+
+    @property
+    def surface_z_mm(self) -> float | None:
+        """Observed fused garment surface height, not a commanded grasp pose."""
+
+        return self.grasp_z
 
     def require_ready(self) -> tuple[float, float, float, float, float, float]:
         values = (

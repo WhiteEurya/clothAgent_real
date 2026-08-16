@@ -31,7 +31,11 @@ from .session import AgentSession
 
 
 def canonical_grasp_source(config: ExperimentConfig) -> str:
-    """Return the fixed, reviewable center-grasp program used by the dashboard."""
+    """Return an explicitly manual center-grasp program for complete configs.
+
+    Dense perception does not call this helper.  It remains available for a
+    user-supplied/manual `ExperimentConfig` and is not a Claude waypoint plan.
+    """
 
     x, y, grasp_z, approach_z, lift_z, yaw = config.require_ready()
     return (
@@ -268,9 +272,9 @@ def run_viewer(
         "### Workflow\n\n"
         "0. Optionally use Init to return the physical arm to its configured Home\n"
         "1. Capture RealSense RGB-D\n"
-        "2. Run Molmo on camera A and fuse camera B auxiliary depth\n"
-        "3. Static preflight + controller IK + build URDF animation\n"
-        "4. Play/review arm and gripper motion\n"
+        "2. Fuse calibrated A/B RGB-D into one base-frame cloud\n"
+        "3. Review the A/B garment height-above-table heatmaps and fused garment boundary; ask Claude free/automatic exploration to choose every motion waypoint\n"
+        "4. Review the Claude path, then run static preflight + controller IK + URDF animation\n"
         "5. Click the red confirmation button to execute one physical rollout"
     )
     init_contract = server.gui.add_markdown(
@@ -286,34 +290,22 @@ def run_viewer(
     )
     camera_mode = server.gui.add_dropdown(
         "Camera mode",
-        options=(
-            "Camera A only (temporary)",
-            "Camera A primary + B auxiliary depth",
-        ),
-        initial_value=(
-            "Camera A primary + B auxiliary depth"
-            if latest_perception
-            and latest_perception.get("perception_mode")
-            in {
-                "primary_rgb_auxiliary_depth",
-                "primary_rgbd_auxiliary_unavailable",
-            }
-            else "Camera A only (temporary)"
-        ),
+        options=("Camera A + B dense RGB-D fusion",),
+        initial_value="Camera A + B dense RGB-D fusion",
     )
     capture_button = server.gui.add_button("1. Capture RealSense RGB-D", color="blue")
-    molmo_button = server.gui.add_button(
-        "2. Run Molmo + calculate center", disabled=True, color="blue"
+    fusion_button = server.gui.add_button(
+        "2. Fuse A + B depth + calculate center", disabled=True, color="blue"
     )
     plan_summary = server.gui.add_markdown("### Plan\n\nNo validated garment center yet.")
     randomization_summary = server.gui.add_markdown(
-        "### Garment randomization\n\nGenerate a separate gather, twist, and low-air release path after perception."
+        "### Alternative/manual paths\n\nDense perception supplies only an observation. Use Claude free/automatic exploration to choose motion waypoints; the buttons below are available only for a complete manually supplied plan."
     )
     randomize_button = server.gui.add_button(
-        "Generate garment randomization path", disabled=True, color="blue"
+        "Generate manual randomization path", disabled=True, color="blue"
     )
     standard_grasp_button = server.gui.add_button(
-        "Use standard center-grasp path", disabled=True
+        "Use manual center-grasp path", disabled=True
     )
     validate_button = server.gui.add_button(
         "3. Validate plan + build robot animation", disabled=True, color="blue"
@@ -402,12 +394,8 @@ def run_viewer(
             image_path = annotated if annotated.is_file() else result_path.parent / view["image"]
             role = view.get("role")
             image_label = (
-                f"Camera {view['label']} primary Molmo point"
-                if role == "primary_semantic"
-                else f"Camera {view['label']} auxiliary depth support"
-                if role == "auxiliary_depth"
-                else f"Camera {view['label']} auxiliary view unavailable/occluded"
-                if role == "auxiliary_depth_unavailable"
+                f"Camera {view['label']} dense RGB-D fusion source"
+                if role == "rgbd_fusion_source"
                 else f"Camera {view['label']} perception"
             )
             image_handles.append(
@@ -416,17 +404,84 @@ def run_viewer(
                     label=image_label,
                 )
             )
+            heatmap_path = result_path.parent / str(
+                view.get(
+                    "height_map_boundary",
+                    view.get(
+                        "height_map",
+                        view.get("depth_heatmap_boundary", view.get("depth_heatmap", "")),
+                    ),
+                )
+            )
+            if heatmap_path.is_file():
+                image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(heatmap_path).convert("RGB")),
+                        label=f"Camera {view['label']} garment height-above-table heatmap + boundary",
+                    )
+                )
+            fold_edge_path = result_path.parent / str(
+                view.get(
+                    "height_gradient_overlay",
+                    view.get("fold_edge_overlay", ""),
+                )
+            )
+            if fold_edge_path.is_file():
+                image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(fold_edge_path).convert("RGB")),
+                        label=f"Camera {view['label']} internal height-gradient/occlusion edges",
+                    )
+                )
+            coordinate_overlay = result_path.parent / str(
+                view.get("coordinate_overlay", "")
+            )
+            if coordinate_overlay.is_file():
+                image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(coordinate_overlay).convert("RGB")),
+                        label=(
+                            f"Camera {view['label']} unranked robot-base coordinate references"
+                        ),
+                    )
+                )
+        artifacts = result.get("depth_fusion", {}).get("artifacts", {})
+        fused_points_path = result_path.parent / str(artifacts.get("fused_points_base_mm", ""))
+        fused_colors_path = result_path.parent / str(artifacts.get("fused_colors_rgb", ""))
+        if fused_points_path.is_file() and fused_colors_path.is_file():
+            fused_points = np.load(fused_points_path).astype(np.float32) / 1000.0
+            fused_colors = np.load(fused_colors_path).astype(np.uint8)
+            server.scene.add_point_cloud(
+                "/perception/fused_AB",
+                points=fused_points,
+                colors=fused_colors,
+                point_size=0.004,
+                point_shape="circle",
+            )
+        for key, label in (
+            ("heatmap", "Fused garment height-above-table heatmap"),
+            ("boundary_overlay", "Fused height map + garment boundary"),
+            ("fold_edge_overlay", "Fused height-gradient/occlusion edges"),
+        ):
+            heatmap_path = result_path.parent / str(artifacts.get(key, ""))
+            if heatmap_path.is_file():
+                image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(heatmap_path).convert("RGB")),
+                        label=label,
+                    )
+                )
 
     def render_targets() -> None:
         server.scene.remove_by_name("/targets")
         try:
-            x, y, grasp_z, approach_z, lift_z, _ = session.experiment_config.require_ready()
+            x, y = session.experiment_config.require_center()
         except BaseException:
             return
         surface_z = (
             float(state.perception_result["center_base_mm"][2])
             if state.perception_result is not None
-            else grasp_z
+            else (session.experiment_config.surface_z_mm or 0.0)
         )
         server.scene.add_icosphere(
             "/targets/detected_surface_center",
@@ -436,20 +491,14 @@ def run_viewer(
         )
         server.scene.add_label(
             "/targets/detected_surface_center_label",
-            "A semantic point + selected depth",
+            "Dense A/B fused garment center",
             position=(x / 1000.0, y / 1000.0, surface_z / 1000.0 + 0.03),
         )
-        for name, z, color in (
-            ("grasp", grasp_z, (230, 55, 55)),
-            ("approach", approach_z, (245, 166, 35)),
-            ("lift", lift_z, (50, 190, 90)),
-        ):
-            server.scene.add_icosphere(
-                f"/targets/{name}",
-                radius=0.012,
-                color=color,
-                position=(x / 1000.0, y / 1000.0, z / 1000.0),
-            )
+        server.scene.add_label(
+            "/targets/detected_surface_center_height",
+            f"Observed surface z={surface_z:.1f} mm; Claude chooses waypoints",
+            position=(x / 1000.0, y / 1000.0, surface_z / 1000.0 - 0.03),
+        )
         update_plan_summary()
 
     def render_path(preflight: Preflight) -> None:
@@ -488,29 +537,21 @@ def run_viewer(
 
     def update_plan_summary() -> None:
         try:
-            x, y, grasp_z, approach_z, lift_z, yaw = session.experiment_config.require_ready()
+            x, y = session.experiment_config.require_center()
         except BaseException:
             plan_summary.content = "### Plan\n\nNo validated garment center yet."
             return
         info = metadata()
-        disagreement = (
-            state.perception_result.get("view_disagreement_mm")
-            if state.perception_result
-            else None
-        )
         fusion = (
             state.perception_result.get("depth_fusion", {})
             if state.perception_result
             else {}
         )
+        surface_z = state.perception_result.get("center_base_mm", [None, None, None])[2] if state.perception_result else session.experiment_config.surface_z_mm
         motion_line = (
-            f"- grasp / approach / gather lift / release: "
-            f"`{state.randomization_plan.grasp_z_mm:.2f} / "
-            f"{state.randomization_plan.approach_z_mm:.2f} / "
-            f"{state.randomization_plan.gather_lift_z_mm:.2f} / "
-            f"{state.randomization_plan.release_z_mm:.2f} mm`\n"
+            f"- Claude randomization waypoints: `{len(state.randomization_plan.waypoint_rows())}`\n"
             if state.randomization_plan is not None
-            else f"- grasp / approach / lift: `{grasp_z:.2f} / {approach_z:.2f} / {lift_z:.2f} mm`\n"
+            else "- motion waypoints: `Claude chooses approach / grasp / lift / transfer / release / yaw`\n"
         )
         plan_summary.content = (
             "### Plan\n\n"
@@ -518,12 +559,13 @@ def run_viewer(
             f"- perception: `{info.get('last_perception_mode', 'manual')}`\n"
             f"- cameras: `{info.get('last_active_cameras', [])}`\n"
             f"- center x/y: `({x:.2f}, {y:.2f}) mm`\n"
+            f"- observed surface z: `{float(surface_z or 0.0):.2f} mm`\n"
             f"{motion_line}"
-            f"- yaw: `{yaw:.2f} deg`\n"
-            f"- selected depth camera: `{fusion.get('selected_depth_camera')}`\n"
-            f"- A/B same-point depth disagreement: `{disagreement}`\n"
-            f"- B projected candidates / cluster: "
-            f"`{fusion.get('candidate_count')} / {fusion.get('clustered_count')}`"
+            f"- fusion mode: `{fusion.get('mode')}`\n"
+            f"- fused points / input points: `"
+            f"{fusion.get('fused_point_count')} / {fusion.get('input_point_count')}`\n"
+            f"- shared A/B voxels: `"
+            f"{fusion.get('source_voxel_counts', {}).get('AB_overlap')}`"
         )
 
     def invalidate_plan(reason: str, *, discard_experiment: bool = False) -> None:
@@ -548,7 +590,7 @@ def run_viewer(
         state.busy = value
         init_button.disabled = value or not enable_real
         capture_button.disabled = value
-        molmo_button.disabled = value or state.captured_frames is None
+        fusion_button.disabled = value or state.captured_frames is None
         validate_button.disabled = value or not _plan_ready()
         randomize_button.disabled = value or not _plan_ready()
         standard_grasp_button.disabled = value or not _plan_ready()
@@ -715,7 +757,7 @@ def run_viewer(
         status.content = "### Capturing RealSense\n\nReading aligned RGB and depth."
         try:
             config = PerceptionConfig.load(root, perception_path)
-            labels = ("A",) if camera_mode.value.startswith("Camera A only") else ("A", "B")
+            labels = ("A", "B")
             config = replace(config, active_camera_labels=labels)
             config.validate()
             frames = capture_two_view_rgbd(config)
@@ -725,13 +767,13 @@ def run_viewer(
             state.planned_source = None
             state.randomization_plan = None
             randomization_summary.content = (
-                "### Garment randomization\n\nRun Molmo before generating a randomization path."
+                "### Garment randomization\n\nRun dense A/B fusion before generating a randomization path."
             )
             render_captured_frames(frames)
             invalidate_plan("new RGB-D capture has not been analyzed", discard_experiment=True)
             status.content = (
                 "### RGB-D captured\n\n"
-                f"Captured cameras `{list(labels)}`. Review the photos and point cloud, then run Molmo."
+                f"Captured cameras `{list(labels)}`. Review the photos and point cloud, then run A/B fusion."
             )
             if notification is not None:
                 notification.title = "RealSense capture complete"
@@ -753,7 +795,7 @@ def run_viewer(
             set_busy(False)
             operation_lock.release()
 
-    @molmo_button.on_click
+    @fusion_button.on_click
     def _(event: Any) -> None:
         if state.captured_frames is None or state.perception_config is None:
             return
@@ -761,8 +803,8 @@ def run_viewer(
             return
         notification = (
             event.client.add_notification(
-                "Molmo running",
-                "Loading the model and locating the garment center...",
+                "A/B depth fusion running",
+                "Building the calibrated fused point cloud and garment center...",
                 loading=True,
                 with_close_button=False,
                 color="blue",
@@ -773,7 +815,7 @@ def run_viewer(
         set_busy(True)
         status.content = (
             "### Perception running\n\n"
-            "Locating the garment point in camera A and selecting auxiliary depth from camera B."
+            "Fusing A/B RGB-D in the robot base frame and estimating the garment center."
         )
         try:
             result = session.locate_cloth_center(
@@ -789,60 +831,37 @@ def run_viewer(
             state.planned_source = None
             state.randomization_plan = None
             randomization_summary.content = (
-                "### Garment randomization\n\n"
-                "Perception is ready. Generate a separate randomization path when desired."
+                "### Alternative/manual paths\n\n"
+                "Perception is observation-only. Use Claude free/automatic exploration for motion waypoints; manual paths require a complete config."
             )
             render_perception_result(saved, saved_path)
             render_targets()
             invalidate_plan("new perception plan has not passed controller IK")
             validate_button.disabled = False
             fusion = result.get("depth_fusion", {})
-            auxiliary_unavailable = (
-                fusion.get("auxiliary_status") == "occluded_or_outside_view"
+            status.content = (
+                "### Dense A/B depth fusion validated\n\n"
+                f"Base-frame garment center: `{result['center_base_mm']}`. "
+                f"Fused points: `{fusion.get('fused_point_count')}`. "
+                f"Shared A/B voxels: `{fusion.get('source_voxel_counts', {}).get('AB_overlap')}`. "
+                "Perception supplied no waypoints; ask Claude to choose the complete action sequence."
             )
-            if auxiliary_unavailable:
-                quality = fusion.get("primary_depth_quality", {})
-                status.content = (
-                    "### Validated with camera A depth fallback\n\n"
-                    f"Camera B cannot observe the A-selected surface. "
-                    f"A local depth spread: `{quality.get('spread_mm')} mm`; "
-                    f"valid fraction: `{quality.get('valid_fraction')}`. "
-                    f"Base-frame center: `{result['center_base_mm']}`. "
-                    "Review the warning and path before controller validation."
-                )
-            else:
-                status.content = (
-                    f"### Semantic point and depth validated\n\n"
-                    f"Base-frame center: `{result['center_base_mm']}`. "
-                    f"Selected depth camera: `{fusion.get('selected_depth_camera')}`. "
-                    "Next run static validation and controller IK."
-                )
             if notification is not None:
-                notification.title = (
-                    "Validated with A depth fallback"
-                    if auxiliary_unavailable
-                    else "Semantic point and depth validated"
-                )
+                notification.title = "Dense A/B depth fusion validated"
                 notification.body = (
                     f"Center: {result['center_base_mm']}; "
-                    f"depth camera: {fusion.get('selected_depth_camera')}; "
-                    f"B status: {fusion.get('auxiliary_status', 'available')}"
+                    f"fused points: {fusion.get('fused_point_count')}"
                 )
                 notification.loading = False
                 notification.color = "green"
                 notification.with_close_button = True
                 notification.auto_close_seconds = 10.0
         except BaseException as exc:
-            invalidate_plan("Molmo/perception failed", discard_experiment=True)
+            invalidate_plan("A/B depth fusion failed", discard_experiment=True)
             message = f"{type(exc).__name__}: {exc}"
-            if "for the same Molmo point disagree" in str(exc):
-                message += (
-                    " Inspect the A red point and B cyan depth support, then recapture. "
-                    "A-only mode remains available for diagnostics but does not validate B depth."
-                )
-            status.content = f"### Molmo/perception blocked\n\n`{message}`"
+            status.content = f"### A/B depth fusion blocked\n\n`{message}`"
             if notification is not None:
-                notification.title = "Molmo/perception blocked"
+                notification.title = "A/B depth fusion blocked"
                 notification.body = message
                 notification.loading = False
                 notification.color = "red"
@@ -1078,7 +1097,7 @@ def run_viewer(
                 ),
                 notes=(
                     f"Confirmed Viser {state.plan_kind} physical execution after "
-                    "RealSense/Molmo/path/URDF preview."
+                    "RealSense/A+B fusion/path/URDF preview."
                 ),
             )
             status.content = (

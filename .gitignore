@@ -3,3 +3,13 @@ __pycache__/
 .pytest_cache/
 runs/
 config/*.local.json
+
+# Local experiment outputs and runtime logs.
+results/
+result/
+outputs/
+output/
+logs/
+*.log
+*.trace.json
+*.stdout.txt

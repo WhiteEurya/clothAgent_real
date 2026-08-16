@@ -40,11 +40,14 @@ from .free_exploration import (
     perception_image_paths,
     validate_exploration_payload,
 )
+from .kinematics import AnimationFrame, XArm7Kinematics
 from .perception import (
     CameraSpec,
     PerceptionConfig,
     RGBDFrame,
     RealSenseRGBD,
+    _scalar_heatmap_rgb,
+    camera_height_map_mm,
     capture_two_view_rgbd,
     load_extrinsics,
 )
@@ -62,6 +65,43 @@ AUTO_EVALUATION_FIELDS = AUTO_EVALUATION_REQUIRED_FIELDS | AUTO_EVALUATION_OPTIO
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _depth_heatmap_preview(
+    depth_m: np.ndarray,
+    *,
+    min_depth_m: float,
+    max_depth_m: float,
+) -> np.ndarray:
+    """Fallback preview while a live frame has no fitted table plane yet."""
+
+    depth = np.asarray(depth_m, dtype=np.float64)
+    valid = np.isfinite(depth) & (depth > min_depth_m) & (depth < max_depth_m)
+    return _scalar_heatmap_rgb(depth, valid)
+
+
+def _height_map_heatmap_preview(
+    frame: RGBDFrame,
+    config: PerceptionConfig,
+) -> np.ndarray:
+    """Return a camera preview colored by surface height above the table."""
+
+    try:
+        height_map, valid, _ = camera_height_map_mm(frame, config)
+        return _scalar_heatmap_rgb(
+            height_map,
+            valid,
+            higher_is_bright=True,
+        )
+    except Exception:
+        # A live frame can temporarily lack enough table points while the
+        # sensor is starting or the arm occludes the scene.  Keep the preview
+        # usable until the next frame; saved dense-fusion maps remain strict.
+        return _depth_heatmap_preview(
+            frame.depth_m,
+            min_depth_m=config.min_depth_m,
+            max_depth_m=config.max_depth_m,
+        )
 
 
 class AutoExplorationError(RuntimeError):
@@ -217,6 +257,7 @@ class ClaudeAutoClient:
         session: AgentSession,
         objective: str,
         feedback: str | None = None,
+        history: list[dict[str, Any]] | None = None,
     ) -> ExplorationProposal:
         self.last_plan_result = None
         prompt_objective = objective
@@ -234,6 +275,7 @@ class ClaudeAutoClient:
                 session.experiment_config,
                 session.robot_config,
                 objective=prompt_objective,
+                history=history,
             ),
             session.run_dir,
         )
@@ -255,15 +297,24 @@ class ClaudeAutoClient:
         image_lines.append("After images:")
         image_lines.extend(f"- {path.resolve()}" for path in after_images)
         prompt = (
-            "Compare the before and after garment images after one robot reveal action. "
-            "Decide whether the action usefully exposed more garment surface, what visibly "
-            "changed, and what the next objective should be. Stop if the garment is already "
-            "sufficiently revealed, the action was unsafe/unclear, or another action is not "
-            "justified. Do not invent pixel measurements. Return exactly one JSON object with "
+            "Compare the before and after garment images after one robot anchor-discovery "
+            "action. Decide whether the action produced evidence about a usable lifting "
+            "anchor or a more useful hanging/laydown configuration, what visibly changed, "
+            "and what the next objective should be. The action may be a deliberate test and "
+            "does not need to immediately expose a large garment area. Do not stop merely "
+            "because a promising anchor was found; the next objective may be to use Laydown. "
+            "Do not set stop=true because the garment looks sufficiently revealed, flat, "
+            "recognizable, or easy to manipulate; sufficiency is not an automatic stopping "
+            "condition. Set stop=true only when continuing would be unsafe, the observation "
+            "is too unreliable to justify a grounded action, or a hard physical/infrastructure "
+            "condition prevents safe continuation. Otherwise provide a concrete next anchor-search "
+            "objective, including after a successful laydown. Do not invent pixel measurements. "
+            "Return exactly one JSON object with "
             "useful (boolean), confidence (number 0..1), observed_change (string), "
             "next_objective (string), stop (boolean), reason (string), and optional "
             "caveats (list of strings; use an empty list when there are none).\n\n"
             f"Previous proposal strategy: {proposal.reveal_strategy}\n"
+            f"Previous invoked skills: {json.dumps(list(proposal.skill_invocations), ensure_ascii=False)}\n"
             f"Previous expected observation: {proposal.expected_observation}\n\n"
             + "\n".join(image_lines)
         )
@@ -523,7 +574,7 @@ class _AutoState:
     stop_requested: bool = False
     iteration: int = 0
     objective: str = (
-        "Reveal more previously occluded garment surface with one cautious action."
+        "Take one cautious exploratory action toward discovering a usable garment lifting anchor."
     )
     proposal: ExplorationProposal | None = None
     evaluation: ExplorationEvaluation | None = None
@@ -566,12 +617,18 @@ def run_auto_exploration_viewer(
         raise ValueError("max_replans must be between 0 and 5")
     try:
         import viser
+        from viser.extras import ViserUrdf
     except ImportError as exc:
         raise RuntimeError(
-            "Viser is required; install it with: python -m pip install 'viser[urdf]>=1.0,<2'"
+            "Viser with URDF support is required; install it with: "
+            "python -m pip install 'viser[urdf]>=1.0,<2'"
         ) from exc
 
     root = session.project_root
+    robot = session.robot_config
+    robot_urdf_path = (
+        root / "assets" / "robots" / "xarm7" / "xarm7.urdf"
+    ).resolve()
     perception_path = (
         perception_config_path
         or root / "config" / "perception.free_exploration.json"
@@ -591,6 +648,36 @@ def run_auto_exploration_viewer(
     auto_run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     auto_results_dir = session.results / "auto_exploration" / auto_run_stamp
 
+    server.scene.set_up_direction("+z")
+    bounds = robot.boundaries
+    grid_x = ((bounds.x_min or 0.0) + (bounds.x_max or 900.0)) / 2000.0
+    grid_y = ((bounds.y_min or -400.0) + (bounds.y_max or 400.0)) / 2000.0
+    server.scene.add_grid(
+        "/workspace/table",
+        width=1.2,
+        height=0.8,
+        cell_size=0.05,
+        section_size=0.25,
+        position=(grid_x, grid_y, 0.0),
+    )
+    server.scene.add_frame("/robot_base", axes_length=0.15, axes_radius=0.006)
+    server.scene.add_frame("/xarm", show_axes=False)
+    robot_model = ViserUrdf(
+        server,
+        robot_urdf_path,
+        root_node_name="/xarm",
+        load_meshes=True,
+        load_collision_meshes=False,
+    )
+    kinematics = XArm7Kinematics(robot_urdf_path)
+    home_cfg = np.concatenate(
+        [np.radians(np.asarray(robot.init_joints_deg, dtype=np.float64)), [0.0]]
+    )
+    robot_model.update_cfg(home_cfg)
+    robot_animation_lock = threading.Lock()
+    robot_animation_stop = threading.Event()
+    robot_animation_thread: threading.Thread | None = None
+
     status = server.gui.add_markdown(
         "### Automatic exploration ready\n\n"
         "The web page owns the CamA RGB-D preview. The preview pauses during "
@@ -601,6 +688,7 @@ def run_auto_exploration_viewer(
         f"- settle time after motion: `{settle_s:.1f}s`\n"
         "- default: continuous iterations until Claude/user stop or hard failure\n"
         f"- pre-execution Claude replans on validation failure: `{max_replans}`\n"
+        "- perception diagnostics: A/B garment height-above-table heatmaps and fused garment boundary are shown and sent to Claude\n"
         "- stop takes effect between phases; it cannot interrupt a command already sent"
     )
     run_log_panel = server.gui.add_markdown(
@@ -625,7 +713,7 @@ def run_auto_exploration_viewer(
         np.zeros((240, 320, 3), dtype=np.uint8), label="CamA live RGB"
     )
     preview_depth_handle = server.gui.add_image(
-        np.zeros((240, 320, 3), dtype=np.uint8), label="CamA depth (near = bright)"
+        np.zeros((240, 320, 3), dtype=np.uint8), label="CamA height-above-table heatmap"
     )
     capture_rgb_handles: dict[str, Any] = {
         "A": server.gui.add_image(
@@ -637,12 +725,97 @@ def run_auto_exploration_viewer(
     }
     capture_depth_handles: dict[str, Any] = {
         "A": server.gui.add_image(
-            np.zeros((240, 320, 3), dtype=np.uint8), label="Latest capture depth A"
+            np.zeros((240, 320, 3), dtype=np.uint8), label="Latest capture height-above-table heatmap A"
         ),
         "B": server.gui.add_image(
-            np.zeros((240, 320, 3), dtype=np.uint8), label="Latest capture depth B"
+            np.zeros((240, 320, 3), dtype=np.uint8), label="Latest capture height-above-table heatmap B"
         ),
     }
+    diagnostic_image_handles: list[Any] = []
+
+    def clear_diagnostic_images() -> None:
+        while diagnostic_image_handles:
+            diagnostic_image_handles.pop().remove()
+
+    def render_perception_diagnostics(
+        result: dict[str, Any],
+        result_path: Path,
+    ) -> None:
+        """Show the same heatmaps/boundaries that are supplied to Claude."""
+
+        from PIL import Image
+
+        clear_diagnostic_images()
+        for view in result.get("views", []):
+            if not isinstance(view, dict):
+                continue
+            image_path = result_path.parent / str(
+                view.get(
+                    "height_map_boundary",
+                    view.get(
+                        "height_map",
+                        view.get("depth_heatmap_boundary", view.get("depth_heatmap", "")),
+                    ),
+                )
+            )
+            if not image_path.is_file():
+                continue
+            label = str(view.get("label", "")).upper()
+            focused_heatmap = result_path.parent / str(
+                view.get("height_map", view.get("depth_heatmap", ""))
+            )
+            if label in capture_depth_handles and focused_heatmap.is_file():
+                from PIL import Image
+                capture_depth_handles[label].image = np.asarray(
+                    Image.open(focused_heatmap).convert("RGB")
+                )
+            diagnostic_image_handles.append(
+                server.gui.add_image(
+                    np.asarray(Image.open(image_path).convert("RGB")),
+                    label=f"Camera {view.get('label', '?')} garment height-above-table heatmap + boundary",
+                )
+            )
+            fold_edges = result_path.parent / str(
+                view.get(
+                    "height_gradient_overlay",
+                    view.get("fold_edge_overlay", ""),
+                )
+            )
+            if fold_edges.is_file():
+                diagnostic_image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(fold_edges).convert("RGB")),
+                        label=f"Camera {view.get('label', '?')} internal height-gradient/occlusion edges",
+                    )
+                )
+            coordinate_overlay = result_path.parent / str(
+                view.get("coordinate_overlay", "")
+            )
+            if coordinate_overlay.is_file():
+                diagnostic_image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(coordinate_overlay).convert("RGB")),
+                        label=(
+                            f"Camera {view.get('label', '?')} unranked robot-base "
+                            "coordinate references"
+                        ),
+                    )
+                )
+        artifacts = result.get("depth_fusion", {}).get("artifacts", {})
+        for key, label in (
+            ("heatmap", "Fused garment height-above-table heatmap"),
+            ("boundary_overlay", "Fused height map + garment boundary"),
+            ("fold_edge_overlay", "Fused height-gradient/occlusion edges"),
+        ):
+            image_path = result_path.parent / str(artifacts.get(key, ""))
+            if not image_path.is_file():
+                continue
+            diagnostic_image_handles.append(
+                server.gui.add_image(
+                    np.asarray(Image.open(image_path).convert("RGB")),
+                    label=label,
+                )
+            )
     live_cloud_handle = server.scene.add_point_cloud(
         "/live_preview/CamA",
         points=np.zeros((1, 3), dtype=np.float32),
@@ -661,20 +834,85 @@ def run_auto_exploration_viewer(
         )
         for label in ("A", "B")
     }
+    fused_cloud_handle = server.scene.add_point_cloud(
+        "/live_preview/fused_AB",
+        points=np.zeros((1, 3), dtype=np.float32),
+        colors=np.zeros((1, 3), dtype=np.uint8),
+        point_size=0.004,
+        point_shape="circle",
+        visible=False,
+    )
+
+    robot_panel = server.gui.add_markdown(
+        "### xArm7 mesh\n\n"
+        "The xArm7 + gripper URDF is loaded at Home. It follows the validated "
+        "automatic action sequence during each physical rollout."
+    )
 
     def set_status(message: str) -> None:
         status.content = message
+
+    def apply_robot_frame(frame: AnimationFrame) -> None:
+        """Apply one URDF configuration from the automatic rollout preview."""
+
+        with robot_animation_lock:
+            robot_model.update_cfg(frame.configuration_rad)
+        robot_panel.content = (
+            "### xArm7 mesh\n\n"
+            f"- phase: `{frame.label}`\n"
+            f"- action: `{frame.action_index + 1}`\n"
+            f"- gripper drive: `{frame.configuration_rad[-1]:.3f} rad`"
+        )
+
+    def stop_robot_animation(*, reset_to_home: bool = False) -> None:
+        """Stop the preview animation without sending any robot command."""
+
+        nonlocal robot_animation_thread
+        robot_animation_stop.set()
+        thread = robot_animation_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        robot_animation_thread = None
+        if reset_to_home:
+            apply_robot_frame(AnimationFrame(home_cfg.copy(), -1, "home"))
+
+    def animate_robot_frames(frames: list[AnimationFrame]) -> None:
+        """Replay the validated arm/gripper trajectory in the Viser scene."""
+
+        nonlocal robot_animation_thread
+        robot_animation_stop.clear()
+
+        def run() -> None:
+            nonlocal robot_animation_thread
+            try:
+                for frame in frames:
+                    if robot_animation_stop.is_set():
+                        return
+                    apply_robot_frame(frame)
+                    robot_animation_stop.wait(1.0 / 12.0)
+            finally:
+                with robot_animation_lock:
+                    robot_animation_thread = None
+
+        robot_animation_thread = threading.Thread(
+            target=run,
+            daemon=True,
+            name="xarm-auto-exploration-animation",
+        )
+        robot_animation_thread.start()
+
+    @server.on_client_connect
+    def _(client: Any) -> None:
+        client.camera.position = (1.3, -0.9, 0.9)
+        client.camera.look_at = (0.62, -0.07, 0.1)
+        client.camera.up_direction = (0.0, 0.0, 1.0)
 
     def render_live_frame(frame: RGBDFrame) -> None:
         """Update the browser preview from the CamA reader thread."""
 
         try:
             preview_rgb_handle.image = np.asarray(frame.rgb, dtype=np.uint8)
-            preview_depth_handle.image = _depth_preview(
-                frame.depth_m,
-                min_depth_m=config.min_depth_m,
-                max_depth_m=config.max_depth_m,
-            )
+            preview_depth_handle.image = _height_map_heatmap_preview(frame, config)
             points, colors = _frame_point_cloud(frame, stride=4)
             points, colors = _voxel_balance_cloud(
                 points, colors, voxel_size_mm=5.0, max_points=25000
@@ -700,11 +938,7 @@ def run_auto_exploration_viewer(
             if label not in capture_rgb_handles:
                 continue
             capture_rgb_handles[label].image = np.asarray(frame.rgb, dtype=np.uint8)
-            capture_depth_handles[label].image = _depth_preview(
-                frame.depth_m,
-                min_depth_m=config.min_depth_m,
-                max_depth_m=config.max_depth_m,
-            )
+            capture_depth_handles[label].image = _height_map_heatmap_preview(frame, config)
             points, colors = _frame_point_cloud(frame, stride=4)
             points, colors = _voxel_balance_cloud(
                 points, colors, voxel_size_mm=5.0, max_points=25000
@@ -853,6 +1087,20 @@ def run_auto_exploration_viewer(
                     saved, saved_path = _load_latest_perception(session)
                     if saved is None or saved_path is None:
                         raise AutoExplorationError("perception completed without saved result")
+                    render_perception_diagnostics(saved, saved_path)
+                    fusion_artifacts = saved.get("depth_fusion", {}).get("artifacts", {})
+                    fused_points_path = saved_path.parent / str(
+                        fusion_artifacts.get("fused_points_base_mm", "")
+                    )
+                    fused_colors_path = saved_path.parent / str(
+                        fusion_artifacts.get("fused_colors_rgb", "")
+                    )
+                    if fused_points_path.is_file() and fused_colors_path.is_file():
+                        fused_cloud_handle.points = (
+                            np.load(fused_points_path).astype(np.float32) / 1000.0
+                        )
+                        fused_cloud_handle.colors = np.load(fused_colors_path).astype(np.uint8)
+                        fused_cloud_handle.visible = True
                     before_images = perception_image_paths(saved, saved_path)
                     record["perception"] = perception
                     record["before_images"] = [
@@ -874,7 +1122,7 @@ def run_auto_exploration_viewer(
 
                     set_status(
                         f"### Iteration {iteration}/{iterations}: Claude thinking\n\n"
-                        "Planning one restricted reveal action from the current garment view."
+                        "Planning one restricted anchor-discovery action from the current garment view."
                     )
                     proposal_feedback: str | None = None
                     proposal: ExplorationProposal | None = None
@@ -887,6 +1135,7 @@ def run_auto_exploration_viewer(
                                 session,
                                 objective,
                                 feedback=proposal_feedback,
+                                history=state.history,
                             )
                             break
                         except Exception as exc:
@@ -973,6 +1222,7 @@ def run_auto_exploration_viewer(
                                     session,
                                     objective,
                                     feedback=validation_feedback,
+                                    history=state.history,
                                 )
                                 replanned_result = client.last_plan_result
                                 source = exploration_source(proposal)
@@ -1006,8 +1256,21 @@ def run_auto_exploration_viewer(
                                 )
                         if controller is None:
                             raise AutoExplorationError("controller validation returned no result")
+                        animation_frames = kinematics.build_animation(
+                            preflight.actions,
+                            robot.init_joints_deg,
+                            robot.orientation_roll_deg,
+                            robot.orientation_pitch_deg,
+                            joint_targets_rad=controller.joint_targets_rad,
+                        )
+                        if not animation_frames:
+                            raise AutoExplorationError(
+                                "xArm URDF animation returned no frames"
+                            )
+                        apply_robot_frame(animation_frames[0])
                         record["requested_actions"] = preflight.actions
                         record["controller_warning_code"] = controller.controller_warning_code
+                        record["robot_animation_frames"] = len(animation_frames)
                         save_agent_artifact(
                             iteration,
                             record,
@@ -1030,22 +1293,44 @@ def run_auto_exploration_viewer(
 
                         set_status(
                             f"### Iteration {iteration}/{limit_label}: executing\n\n"
-                            "Executing exactly one validated physical rollout."
+                            "Executing exactly one validated physical rollout; "
+                            "the Viser xArm mesh is following the gripper trajectory."
                         )
-                        result = session.run_experiment(
-                            source_path.name,
-                            real=True,
-                            confirmed=True,
-                            single_view_confirmed=(
-                                json.loads(
-                                    (session.run_dir / "run_metadata.json").read_text(
-                                        encoding="utf-8"
-                                    )
-                                ).get("last_perception_mode")
-                                == "single_camera_rgbd"
-                            ),
-                            notes=f"Automatic Claude exploration iteration {iteration}.",
-                        )
+                        result: dict[str, Any] | None = None
+                        animate_robot_frames(animation_frames)
+                        try:
+                            result = session.run_experiment(
+                                source_path.name,
+                                real=True,
+                                confirmed=True,
+                                single_view_confirmed=(
+                                    json.loads(
+                                        (session.run_dir / "run_metadata.json").read_text(
+                                            encoding="utf-8"
+                                        )
+                                    ).get("last_perception_mode")
+                                    == "single_camera_rgbd"
+                                ),
+                                notes=f"Automatic Claude exploration iteration {iteration}.",
+                            )
+                        finally:
+                            home_outcome = session.last_return_home_outcome
+                            home_completed = bool(
+                                home_outcome and home_outcome.get("completed")
+                            )
+                            stop_robot_animation(reset_to_home=home_completed)
+                            if home_outcome is not None:
+                                record["mandatory_return_home"] = home_outcome
+                                save_agent_artifact(
+                                    iteration,
+                                    record,
+                                    phase="mandatory_return_home",
+                                    payload=home_outcome,
+                                )
+                        if result is None:
+                            raise AutoExplorationError(
+                                "physical rollout returned no result"
+                            )
                         record["execution"] = result
                         save_agent_artifact(iteration, record, phase="execution", payload=result)
                         if not result.get("execution_completed"):
@@ -1114,6 +1399,12 @@ def run_auto_exploration_viewer(
                             {
                                 "iteration": iteration,
                                 "plan_status": "executed",
+                                "proposal": proposal.as_dict(),
+                                "execution_completed": bool(
+                                    record.get("execution", {}).get("execution_completed")
+                                ),
+                                "before_images": list(record.get("before_images", [])),
+                                "after_images": list(record.get("after_images", [])),
                                 "evaluation": evaluation.as_dict(),
                             }
                         )
@@ -1146,7 +1437,8 @@ def run_auto_exploration_viewer(
                     if evaluation.stop:
                         set_status(
                             f"### Automatic exploration stopped after iteration {iteration}\n\n"
-                            f"Claude judged the current state sufficient or unsafe: {evaluation.reason}"
+                            "Claude judged that safe grounded continuation is not currently "
+                            f"possible: {evaluation.reason}"
                         )
                         break
                     objective = evaluation.next_objective
@@ -1193,6 +1485,7 @@ def run_auto_exploration_viewer(
                     "Review the CamA stream and saved before/after records."
                 )
         finally:
+            stop_robot_animation()
             set_running(False)
 
     @start_button.on_click
@@ -1204,7 +1497,7 @@ def run_auto_exploration_viewer(
             state.stop_requested = False
             state.history = []
             state.objective = (
-                "Reveal more previously occluded garment surface with one cautious action."
+                "Take one cautious exploratory action toward discovering a usable garment lifting anchor."
             )
         selected_iterations = int(iteration_slider.value)
         iterations = None if selected_iterations == 0 else selected_iterations
@@ -1225,7 +1518,7 @@ def run_auto_exploration_viewer(
             state.stop_requested = False
             state.history = []
             state.objective = (
-                "Reveal more previously occluded garment surface with one cautious action."
+                "Take one cautious exploratory action toward discovering a usable garment lifting anchor."
             )
         selected_iterations = int(iteration_slider.value)
         initial_iterations = None if selected_iterations == 0 else selected_iterations

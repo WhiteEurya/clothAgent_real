@@ -95,7 +95,7 @@ def test_free_exploration_rejects_hard_schema_failures(payload):
         validate_exploration_payload(payload)
 
 
-def test_free_exploration_requires_explicit_post_grasp_release_geometry():
+def test_free_exploration_allows_minimal_anchor_test_before_release():
     payload = {
         "garment_observation": "fold",
         "reveal_strategy": "lift",
@@ -111,8 +111,55 @@ def test_free_exploration_requires_explicit_post_grasp_release_geometry():
         "expected_observation": "more fabric",
         "safety_notes": ["review"],
     }
-    with pytest.raises(ExplorationPlanningError, match="two post-grasp move"):
+    proposal = validate_exploration_payload(payload)
+    assert proposal.actions[-1]["name"] == "open_gripper"
+    assert len([action for action in proposal.actions if action["name"] == "move"]) == 2
+
+
+def test_free_exploration_requires_test_motion_before_release():
+    payload = {
+        "garment_observation": "uncertain region",
+        "reveal_strategy": "touch and immediately release",
+        "confidence": 0.3,
+        "actions": [
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 180, "yaw": 0}},
+        ],
+        "expected_observation": "none",
+        "safety_notes": ["review"],
+    }
+    with pytest.raises(ExplorationPlanningError, match="before release"):
         validate_exploration_payload(payload)
+
+
+def test_free_exploration_accepts_laydown_skill_without_hidden_trajectory():
+    proposal = validate_exploration_payload(
+        {
+            "garment_observation": "A broad section appears suspended from an uncertain boundary.",
+            "reveal_strategy": "Use a quasi-static laydown from the current useful anchor.",
+            "confidence": 0.7,
+            "skill_invocations": [
+                {"name": "laydown", "reason": "The grasp supports a useful hanging sheet."}
+            ],
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 540, "y": 0, "z": 150, "yaw": 0}},
+                {"name": "move", "args": {"x": 580, "y": 0, "z": 80, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The hanging surface should settle progressively onto the table.",
+            "safety_notes": ["Use controller IK and avoid a high drop."],
+        }
+    )
+    assert proposal.skill_invocations == (
+        {"name": "laydown", "reason": "The grasp supports a useful hanging sheet."},
+    )
+    source = exploration_source(proposal)
+    assert "laydown" not in source
+    assert "move(580.0, 0.0, 80.0, 0.0)" in source
 
 
 def test_claude_json_extractor_accepts_cli_envelope_and_fence():
@@ -170,12 +217,19 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"result": json.dumps(payload)}), stderr="")
 
     monkeypatch.setattr("cloth_agent.free_exploration.subprocess.run", fake_run)
-    result = ClaudeExplorationClient().invoke([image], "inspect", run_dir)
+    result = ClaudeExplorationClient().invoke(
+        [image],
+        exploration_prompt(ExperimentConfig(500, 0, 40, None, None, None), _robot_config()),
+        run_dir,
+    )
     assert result.proposal.garment_observation == "fold"
     assert seen["cwd"] == run_dir.resolve()
     assert seen["shell"] is False
     assert "Bash" not in seen["command"]
     assert "Write" not in seen["command"]
+    assert any("usable lifting anchor" in str(part) for part in seen["command"])
+    assert any("camera_*_coordinate_guide.json" in str(part) for part in seen["command"])
+    assert any("Skill: laydown" in str(part) for part in seen["command"])
     assert list((run_dir / "results" / "claude_exploration").glob("*.json"))
 
 
@@ -185,15 +239,35 @@ def test_exploration_prompt_surfaces_capabilities():
     )
     assert "move(x,y,z,yaw)" in prompt
     assert "workspace bounds" in prompt
-    assert "occlusions" in prompt
+    assert "usable garment lifting anchor" in prompt
+    assert "semantic garment part" in prompt
+    assert "center_is_reference_only" in prompt
+    assert "Skill: laydown" in prompt
 
 
 def test_exploration_prompt_makes_all_motion_heights_agent_decisions():
     prompt = exploration_prompt(
         ExperimentConfig(500, -20, 40, 100, 200, 0), _robot_config()
     )
-    assert "There is no fixed approach/lift/release clearance" in prompt
-    assert "decide the approach height, grasp height, lift height" in prompt
+    assert "choose the approach height, grasp height" in prompt
+    assert "need not immediately reveal a large area" in prompt
+    assert "not a required grasp target" in prompt
+
+
+def test_exploration_prompt_includes_previous_physical_outcomes():
+    prompt = exploration_prompt(
+        ExperimentConfig(500, -20, 40, 100, 200, 0),
+        _robot_config(),
+        history=[
+            {
+                "iteration": 1,
+                "proposal": {"reveal_strategy": "test central fold"},
+                "evaluation": {"observed_change": "whole pile translated"},
+            }
+        ],
+    )
+    assert "whole pile translated" in prompt
+    assert "rather than restarting" in prompt
 
 
 def test_voxel_balance_cloud_normalizes_world_space_density():

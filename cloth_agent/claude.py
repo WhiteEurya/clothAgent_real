@@ -51,7 +51,14 @@ class ClaudeCodeClient:
             "Generate or modify a minimal experiment script with exactly one def run(): "
             "function. It must contain only calls to move(x, y, z, yaw), open_gripper(), "
             "close_gripper(), and home(), with no imports, no xarm SDK, no shell, no retry, "
-            "no exception handling, and no dynamic code."
+            "no exception handling, and no dynamic code. Perception may provide only a "
+            "fused garment center reference, calibrated coordinate guides, and observed "
+            "surface geometry; choose the interaction region and every emitted waypoint "
+            "yourself. The objective may be a minimal cautious experiment to test a possible "
+            "lifting anchor rather than a complete reveal trajectory. Do not require semantic "
+            "garment-part labels, fixed grasp candidates, or a probe/verify state machine. "
+            "If Laydown guidance is supplied, use it only as procedural knowledge and still "
+            "emit explicit Claude-chosen move/gripper calls with no hidden fixed trajectory."
         )
         command = [
             binary,

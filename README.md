@@ -15,12 +15,13 @@ Agent intent
 
 It does not implement folding, learned policies, automatic success
 classification, or automatic retry. Perception is deliberately limited to one
-MolmoPoint cloth-center query over two already calibrated cameras.
+calibrated two-camera RGB-D fusion pass.
 
-The perception extension uses the existing MolmoPoint model and calibrated A/B
-RealSense pair to derive the complete per-run grasp plan: cloth `x/y`, surface
-`z`, grasp/approach/lift heights, and yaw. It still does not add folding or
-policy learning.
+The perception extension transforms both calibrated A/B RealSense clouds into
+the robot base frame, voxel-fuses them, fits the table plane, and extracts the
+largest garment-height component. It reports only cloth `x/y` and observed
+surface `z`; Claude then chooses grasp/approach/lift/transfer/release heights
+and yaw from the saved views.
 
 ## Existing robot interfaces and the new wrapper
 
@@ -53,9 +54,10 @@ close_gripper()
 home()
 ```
 
-Every move is checked against the measured bounds plus a safety margin, the
-local z lower bound, hard low-speed/acceleration caps, and read-only controller
-IK before the robot is enabled. The first failure aborts the script immediately.
+Every move is checked against the measured bounds, the local z lower bound,
+hard low-speed/acceleration caps, and read-only controller IK before the robot
+is enabled. The configured workspace margin is currently `0 mm`; the first
+failure aborts the script immediately.
 
 ## Agent code tools
 
@@ -63,16 +65,17 @@ IK before the robot is enabled. The first failure aborts the script immediately.
 
 - `inspect_file(path)` reads project/current-run files only.
 - `invoke_claude_code(prompt)` asks Claude Code to create or modify an
-  experiment in the current workspace.
+  experiment in the current workspace. The complete prompt, raw stdout/stderr,
+  command metadata, and return code are saved under `results/claude/`.
 - `run_experiment(path)` performs validation, prints the full plan, and runs
   either the simulator or one explicitly confirmed physical rollout.
 - `inspect_result(experiment)` reads the saved result, stdout, requested
   actions, actual EE poses (when available), gripper results, and errors.
-- `invoke_molmo(image_paths, prompt)` invokes MolmoPoint on two images from the
-  current run.
-- `locate_cloth_center()` captures both calibrated RGB-D cameras, invokes
-  MolmoPoint, and returns a validated base-frame cloth center plus the complete
-  automatic grasp plan.
+- `locate_cloth_center()` captures both calibrated RGB-D cameras, performs dense
+  A/B fusion in the robot base frame, and returns a validated fused garment
+  center plus the observed surface height. It does not generate motion
+  waypoints; Claude chooses the approach, grasp, lift, transfer, release, and
+  yaw actions from the saved views.
 
 `record_manual_result` accepts only `SUCCESS`, `FAILED_GRASP`, `FAILED_LIFT`,
 or `OTHER_FAILURE`. `update_memory` records the hypothesis and why the next
@@ -100,57 +103,83 @@ and anything other than one `run()` function containing the four allowed robot
 calls and simple numeric variables/arithmetic. The script is then executed
 with empty builtins and only the four bound RobotAPI functions.
 
-## Two-camera Molmo cloth center
+## Dense two-camera RGB-D fusion
 
-MolmoPoint accepts RGB images rather than raw RealSense point clouds. The
-runtime therefore uses this data flow:
+The runtime uses this data flow:
 
 ```text
-camera A RGB --------------------> Molmo semantic pixel A
-camera A aligned depth ----------> diagnostic depth at pixel A
-camera B aligned RGB-D ----------> B point cloud in base frame
-                                      -> reproject B cloud into camera A
-                                      -> select points near Molmo pixel A
-                                      -> choose a stable local depth cluster
-                                      -> place final 3D point on camera A's semantic ray
+camera A aligned RGB-D -----------> A point cloud in robot base frame
+camera B aligned RGB-D -----------> B point cloud in robot base frame
+                                      -> voxel-fuse A+B points
+                                      -> fit the table plane
+                                      -> select garment points above the table
+                                      -> choose the fused garment grasp point
+                                      -> save fused points and a top-down height map
 ```
 
-The model integration follows the existing
-`molmo2/manual_tests/test_cloth_points.py` interface. The model is loaded once,
-and only the primary camera A image is queried for the garment point. Camera B
-is intentionally not asked to find its own garment center because its view may
-contain only a partial garment. Instead, B supplies calibrated depth for the
-same physical region selected in A. `extract_image_points` returns
-`(object_id, image_num, pixel_x, pixel_y)` records.
+The perception result is rejected before code generation if the two-camera
+cloud cannot produce enough valid points, the fitted table is unstable, or no
+connected garment-height component can be found.
 
-The perception result is rejected before code generation if:
+Each dense-fusion result also saves visual height-map diagnostics:
 
-- Molmo does not return exactly one point for primary camera A;
-- the A point is outside its image or has no valid diagnostic depth;
-- B is unavailable and A's wider local depth patch has too few valid samples;
-- B is unavailable and A's local depth crosses an unstable fold/edge;
-- A and B depths for the same A-selected point differ by more than the
-  configured threshold;
-- the resulting grasp/approach/lift targets fail robot workspace validation.
+- `camera_A/B_height_above_table_mm.npy`: per-pixel surface height above the
+  fitted table plane, in millimeters;
+- `camera_A/B_height_map_heatmap.png`: garment-focused heatmap of that height
+  difference; brighter colors mean a larger garment/table height difference;
+- `camera_A/B_height_map_heatmap_global.png`: the same height map normalized over
+  the whole valid camera image;
+- `camera_A/B_height_map_boundary.png`: the focused heatmap with the fused
+  garment boundary overlaid in white;
+- `camera_A/B_height_gradient_edges.png`: internal height-gradient/occlusion
+  evidence overlaid in cyan;
+- `fused_height_map_heatmap.png` and `fused_height_map_boundary.png`: the
+  top-down A+B fused height-above-table map and its boundary;
+  `fused_fold_edges.png` remains as a compatibility filename for the fused
+  height-gradient diagnostic.
 
-No scene coordinate needs to be entered manually. After depth selection:
+For every valid camera pixel and fused point, the runtime transforms the RGB-D
+measurement into the robot base frame, evaluates the fitted table plane at that
+same `x/y`, and stores `surface_z_mm - table_z_mm`. The heatmaps colorize this
+height-above-table map directly; there is no longer a second conversion to fold
+depth below the garment upper surface. These images are diagnostic overlays only;
+the segmented fused point cloud remains the source used for perception validation.
 
-- `grasp_z = detected_surface_z`, with no fixed above-surface clearance, and
-  clamped to the measured TCP lower limit;
-- `approach_z = grasp_z + 80 mm`;
-- `lift_z = grasp_z + 160 mm`, capped by the safe upper-Z limit;
-- `yaw` comes from the recorded home/observation pose.
+No scene coordinate needs to be entered manually. Perception writes a fused
+center/reference surface height (the legacy `grasp_z` field is used as
+`surface_z_mm` for compatibility) plus per-camera calibrated coordinate guides.
+The center is not a mandatory grasp target. Uniform cyan `Rxxx` references in
+`camera_A/B_coordinate_overlay.png` map through
+`camera_A/B_coordinate_guide.json` to measured robot-base XYZ; they are not
+ranked grasp candidates. The full per-pixel mapping is saved in
+`camera_A/B_base_xyz_mm.npy`. Claude chooses the visual/geometric region and all
+motion waypoints. The generated action program is then checked against robot
+bounds, static preflight, controller IK, and animation before execution.
 
-These clearances are fixed safety policy, not scene measurements. The xArm
-controller already defines its TCP at the installed gripper tool point. A
-read-only hardware check on 2026-08-11 reported
+## Anchor-discovery free exploration
+
+Claude free/automatic exploration searches for a usable garment lifting
+anchor rather than optimizing every action for immediate visible coverage. A
+small lift, drag, repositioning, or test grasp may be used to gather evidence;
+there is no hard-coded grasp-candidate selector or probe/verify state machine.
+Previous automatic-loop proposals and before/after evaluations are passed into
+the next planning prompt.
+
+The reusable `laydown` skill is procedural prompt guidance, not a hidden robot
+trajectory. When Claude believes a grasp supports a useful hanging
+configuration it may invoke `laydown`, then it must still emit every concrete
+`move`/gripper action itself. The intended maneuver is a quasi-static retreat
+and descent followed by controlled release, not a fling or high drop.
+
+The xArm controller already defines its TCP at the installed gripper tool
+point. A read-only hardware check on 2026-08-11 reported
 `tcp_offset=[0, 0, 172, 0, 0, 0]`. Real execution verifies this value before
 enabling motion and aborts if the controller tool frame changed.
 
 The xArm gripper URDF uses `drive_joint=0.0` for open and `0.85` for closed.
-The measured lower TCP boundary may be used for the grasp descent without the
-general 10 mm workspace margin; X/Y and upper-Z targets retain that margin, and
-no command is allowed below the recorded `z_min`.
+The measured lower TCP boundary may be used for the grasp descent with the
+configured `0 mm` workspace margin, and no command is allowed below the
+recorded `z_min`.
 
 ## What must be configured
 
@@ -171,7 +200,9 @@ the xArm controller/SDK instead.
 
 For the current machine, no per-run experiment configuration is required.
 `config/experiment.example.json` deliberately contains six `null` values;
-perception replaces all six before Claude is allowed to write motion code.
+perception fills the center reference and observed surface height while saving
+the coordinate guides above. Claude selects the interaction region and supplies
+the motion values in the generated action program.
 
 Only one-time hardware facts remain:
 
@@ -184,9 +215,9 @@ Only one-time hardware facts remain:
   `config/perception.example.json`).
 
 Re-measure these only when hardware is physically moved, a camera is remounted,
-or the gripper/tool frame is changed. The runtime enforces
-`grasp_z <= approach_z <= lift_z` and checks every move against the robot
-bounds.
+or the gripper/tool frame is changed. Every explicit Claude move is checked
+against the robot bounds; `require_ready()` is used only for manually supplied
+complete plans.
 
 ### Very-slow motion profile
 
@@ -202,20 +233,22 @@ acceleration above `60 mm/s^2`, home speed above `10 deg/s`, or home
 acceleration above `20 deg/s^2`. Generated experiment code cannot change any
 of these values.
 
+After every explicitly confirmed real experiment launched through
+`AgentSession.run_experiment`, the runtime makes a separate best-effort
+`home()` call in a `finally` path, regardless of whether the Claude rollout
+succeeded or failed. The Home attempt has its own result JSON and is also
+summarized under `results/mandatory_return_home/`; a hardware/controller fault
+can still prevent physical return, but the attempt and error are never hidden.
+
 `config/perception.example.json` is pre-populated with the serials and A/B
 extrinsic paths found in the current calibration project. Verify that camera A
 is still serial `243722070226`, camera B is `261822074715`, and that the two
 YAML files match the physical camera mounts before use.
 
-Camera A must see enough of the garment for Molmo to select the intended point.
-Camera B may see only a partial garment, but the physical region selected by A
-must appear in B's point cloud if B is to supply depth. If a fold self-occludes
-that region or it falls outside B's image, the runtime validates a wider A depth
-patch. Stable A depth is accepted with status
-`VALIDATED_PRIMARY_DEPTH_FALLBACK`; an unstable A patch still blocks execution.
-The runtime never substitutes B's visible-region center for the hidden point.
-Single-camera A remains an explicit diagnostic mode and is marked
-`VALIDATED_SINGLE_VIEW` in the saved result.
+Both cameras must provide enough calibrated depth for the fused cloud. The
+runtime fits a robust table plane, selects points above that plane, keeps the
+largest connected garment component, and blocks execution if that component is
+too small or the table fit is unstable. Single-camera perception is disabled.
 
 Reachability note: the current saved camera-A plan around
 `x=784.6 mm, y=-85.4 mm` passes simple Cartesian bounds, but the controller
@@ -226,7 +259,7 @@ calibration before trying to execute that same target.
 
 ## Start one Agent session
 
-### 1. View only the camera/Molmo result
+### 1. View only the fused RGB-D result
 
 This creates a run and performs perception only. It never connects to xArm:
 
@@ -237,29 +270,27 @@ This creates a run and performs perception only. It never connects to xArm:
 
 /home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent perceive \
   --run-dir runs/preview_center \
-  --single-camera A
+  --perception-config config/perception.example.json
 ```
 
-Look in `runs/preview_center/results/perception/` for the original images,
-annotated Molmo points, aligned depth arrays, model output, and fused result.
+Look in `runs/preview_center/results/perception/` for the original A/B images,
+aligned depth arrays, fused base-frame points, source masks, and height map.
 
 ### 2. View the complete Agent loop without robot motion
 
-This captures both cameras, calculates all six scene values, asks Claude to
-write the experiment, prints the source and full action sequence, then executes
+This captures both cameras, calculates the fused center/surface observation,
+asks Claude to choose all motion waypoints and write the experiment, prints the source and full action sequence, then executes
 only in the simulator:
 
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent session \
   --goal "grasp cloth center, lift, release, return to observation pose" \
-  --intent "Call home, open_gripper, move to center at approach_z, move to grasp_z, close_gripper, move to lift_z, open_gripper, move back to approach_z, then home. Copy the numeric values from experiment_config.json." \
-  --detect-center \
-  --single-camera A
+  --intent "Inspect the fused A/B garment views and choose a cautious approach, grasp, lift, transfer, release, yaw, and return-home sequence. Emit explicit move coordinates; use experiment_config.json only for the fused center and surface observation." \
+  --detect-center
 ```
 
-The outer process uses the existing `cali` environment for RealSense and xArm.
-It automatically launches MolmoPoint with the separate existing `molmo`
-environment configured in `config/perception.example.json`.
+The outer process uses the existing `cali` environment for RealSense and xArm;
+no Molmo process or GPU model is launched.
 
 Without `--detect-center`, all six experiment values must be supplied manually;
 that mode is retained only for diagnostics.
@@ -269,17 +300,15 @@ Full real-session command:
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent session \
   --goal "grasp cloth center, lift, release, return to observation pose" \
-  --intent "Call home, open_gripper, move to center at approach_z, move to grasp_z, close_gripper, move to lift_z, open_gripper, move back to approach_z, then home. Copy the numeric values from experiment_config.json." \
+  --intent "Inspect the fused A/B garment views and choose a cautious approach, grasp, lift, transfer, release, yaw, and return-home sequence. Emit explicit move coordinates; use experiment_config.json only for the fused center and surface observation." \
   --detect-center \
-  --single-camera A \
   --real
 ```
 
 The command first creates and prints the run workspace, calls Claude Code,
 prints the complete experiment source, and prints the exact action sequence.
 No real robot command has happened at that point. Physical movement can begin
-only after the operator types exactly `EXECUTE_SINGLE_VIEW` for a single-camera
-plan (`EXECUTE` remains the dual-camera token). The first physical command in
+only after the operator types exactly `EXECUTE`. The first physical command in
 the requested sequence is normally `home()`; this is where
 `XArmBackend.set_servo_angle` actually starts robot motion.
 
@@ -302,11 +331,9 @@ Open `http://127.0.0.1:8080`. All subsequent steps are buttons inside Viser:
 
 0. when the server was started with `--enable-real`, optionally click
    `Init: Return arm to Home` to send exactly one low-speed `home()` action;
-1. choose `Camera A only` or `Camera A primary + B auxiliary depth`;
-2. capture aligned RealSense RGB-D and inspect the photographs/3D point cloud;
-3. run Molmo, display the marked image center, and mark the same base-frame
-   point in the point cloud;
-4. choose the standard center-grasp path or generate a separate garment
+1. capture aligned A/B RealSense RGB-D and inspect the photographs/3D point cloud;
+2. run dense A/B fusion and inspect the fused base-frame cloud/height map;
+3. choose the standard center-grasp path or generate a separate garment
    randomization path, then inspect every named path point and restricted source;
 5. ask the xArm controller for read-only IK for every Cartesian target;
 6. load the copied xArm7 + xArm gripper URDF and play the complete arm/gripper
@@ -381,11 +408,24 @@ runs/<run_id>/
     perception/center_<timestamp>/
       camera_0_A.png
       camera_0_A_depth_m.npy
-      camera_0_A_annotated.png
+      camera_A_height_above_table_mm.npy
+      camera_A_height_map_heatmap.png
+      camera_A_base_xyz_mm.npy
+      camera_A_coordinate_guide.json
+      camera_A_coordinate_overlay.png
       camera_1_B.png
       camera_1_B_depth_m.npy
-      camera_1_B_annotated.png
-      molmo_output.json
+      camera_B_height_above_table_mm.npy
+      camera_B_height_map_heatmap.png
+      camera_B_base_xyz_mm.npy
+      camera_B_coordinate_guide.json
+      camera_B_coordinate_overlay.png
+      fused_points_base_mm.npy
+      fused_colors_rgb.npy
+      fused_source_mask.npy
+      fused_height_above_table_mm.npy
+      fused_height_map_mm.npy
+      fused_height_map_preview.png
       result.json
     experiment_001_grasp_lift_drop.json
     experiment_001_grasp_lift_drop.source.py

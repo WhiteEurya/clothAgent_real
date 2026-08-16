@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from .config import ExperimentConfig, RobotConfig
@@ -47,7 +46,8 @@ def _add_config_args(parser: argparse.ArgumentParser, *, required: bool = True) 
         help="optional manual JSON; with --detect-center all scene values are derived automatically",
     )
     for name, flag in (("center_x", "--center-x"), ("center_y", "--center-y"), ("grasp_z", "--grasp-z"), ("approach_z", "--approach-z"), ("lift_z", "--lift-z"), ("yaw", "--yaw")):
-        parser.add_argument(flag, dest=name, type=float, required=False, help=f"cloth/target {name.replace('_', ' ')}")
+        aliases = ("--surface-z",) if name == "grasp_z" else ()
+        parser.add_argument(flag, *aliases, dest=name, type=float, required=False, help=f"cloth/target {name.replace('_', ' ')}")
     parser.set_defaults(yaw=None)
 
 
@@ -75,8 +75,9 @@ def _perception_config(
         path = project_root / path
     config = PerceptionConfig.load(project_root, path)
     if single_camera:
-        config = replace(config, active_camera_labels=(single_camera.strip().upper(),))
-        config.validate()
+        raise ValueError(
+            "single-camera mode is disabled; perception now requires dense A/B RGB-D fusion"
+        )
     return config
 
 
@@ -205,8 +206,8 @@ def _cmd_viewer(args: argparse.Namespace) -> int:
 def _cmd_session(args: argparse.Namespace) -> int:
     """Interactive end-to-end loop; physical motion remains opt-in per rollout."""
     root = Path(args.project_root).resolve()
-    if args.single_camera and not args.detect_center:
-        raise ValueError("--single-camera requires --detect-center")
+    if args.single_camera:
+        raise ValueError("--single-camera is disabled; dense A/B RGB-D fusion is required")
     robot = _robot_config(root, args.robot_config)
     experiment = _experiment_config(args, allow_deferred=args.detect_center)
     session = AgentSession.create(root, args.goal, robot, experiment, run_id=args.run_id)
@@ -217,7 +218,7 @@ def _cmd_session(args: argparse.Namespace) -> int:
             root, args.perception_config, args.single_camera
         )
         perception_result = session.locate_cloth_center(perception_config)
-        print("\n--- validated Molmo cloth center ---")
+        print("\n--- validated dense A/B RGB-D garment center ---")
         print(json.dumps(perception_result, ensure_ascii=False, indent=2))
     print("The Agent will ask Claude Code to write the experiment in that workspace.")
     target = session._next_experiment_name()
@@ -239,8 +240,7 @@ def _cmd_session(args: argparse.Namespace) -> int:
         if args.real:
             robot.validate_for_real()
             print("No robot command has run yet. Review every xyz/yaw above.")
-            single_view = perception_result.get("perception_mode") == "single_camera_rgbd"
-            confirmation = "EXECUTE_SINGLE_VIEW" if single_view else "EXECUTE"
+            confirmation = "EXECUTE"
             if input(f"Type {confirmation} to allow this one physical rollout: ").strip() != confirmation:
                 print("Physical execution cancelled; no robot command was sent.")
                 return 0
@@ -248,7 +248,6 @@ def _cmd_session(args: argparse.Namespace) -> int:
                 current,
                 real=True,
                 confirmed=True,
-                single_view_confirmed=single_view,
             )
         else:
             result = session.run_experiment(current, real=False, confirmed=True)
@@ -361,13 +360,13 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument(
         "--detect-center",
         action="store_true",
-        help="capture configured camera view(s) and run Molmo before code generation",
+        help="capture both configured cameras and run dense A/B RGB-D fusion before code generation",
     )
     session.add_argument("--perception-config")
     session.add_argument(
         "--single-camera",
         choices=("A", "B"),
-        help="temporary one-camera RGB-D mode; real execution requires EXECUTE_SINGLE_VIEW",
+        help="deprecated; dense perception requires both cameras",
     )
     _add_config_args(session)
     session.set_defaults(func=_cmd_session)
