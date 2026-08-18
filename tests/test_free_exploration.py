@@ -12,6 +12,7 @@ from cloth_agent.experiment import validate_experiment_source
 from cloth_agent.free_exploration import (
     ClaudeExplorationClient,
     ExplorationPlanningError,
+    ExplorationTimeoutError,
     _json_from_claude_text,
     exploration_prompt,
     exploration_source,
@@ -185,12 +186,21 @@ def test_claude_json_extractor_accepts_cli_envelope_and_fence():
     assert _json_from_claude_text(wrapped) == payload
 
 
+def test_claude_json_extractor_prefers_structured_output():
+    payload = {"status": "ok"}
+    wrapped = json.dumps(
+        {"result": "natural-language summary", "structured_output": payload}
+    )
+    assert _json_from_claude_text(wrapped) == payload
+
+
 def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     run_dir = tmp_path / "run"
     images = run_dir / "results" / "perception"
     images.mkdir(parents=True)
     image = images / "camera_A.png"
     image.write_bytes(b"image")
+    (run_dir / "workspace" / "perception_views").mkdir(parents=True)
     payload = {
         "garment_observation": "fold",
         "reveal_strategy": "lift",
@@ -227,10 +237,57 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
     assert seen["shell"] is False
     assert "Bash" not in seen["command"]
     assert "Write" not in seen["command"]
-    assert any("usable lifting anchor" in str(part) for part in seen["command"])
+    assert "--strict-mcp-config" in seen["command"]
+    assert "--safe-mode" not in seen["command"]
+    permission_index = seen["command"].index("--permission-mode")
+    assert seen["command"][permission_index + 1] == "dontAsk"
+    tools_index = seen["command"].index("--tools")
+    assert seen["command"][tools_index + 1] == "Read"
+    assert any("mcp__garment_grounding__lookup_reference" in str(part) for part in seen["command"])
+    assert not any("mcp__garment_grounding__sample_pixel_xyz" in str(part) for part in seen["command"])
+    assert any("call `lookup_reference` exactly once" in str(part) for part in seen["command"])
+    assert any("as open and spread" in str(part) for part in seen["command"])
     assert any("camera_*_coordinate_guide.json" in str(part) for part in seen["command"])
     assert any("Skill: laydown" in str(part) for part in seen["command"])
     assert list((run_dir / "results" / "claude_exploration").glob("*.json"))
+
+
+def test_exploration_timeout_is_concise_and_not_wrapped_as_generic_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run_dir = tmp_path / "run"
+    image_dir = run_dir / "results" / "perception"
+    image_dir.mkdir(parents=True)
+    image = image_dir / "camera_A.png"
+    image.write_bytes(b"image")
+    (run_dir / "workspace" / "perception_views").mkdir(parents=True)
+    monkeypatch.setattr(
+        "cloth_agent.free_exploration.shutil.which", lambda _: "/usr/bin/claude"
+    )
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("cloth_agent.free_exploration.subprocess.run", fake_run)
+    with pytest.raises(
+        ExplorationTimeoutError,
+        match="timed out after 400 seconds",
+    ) as caught:
+        ClaudeExplorationClient(timeout_s=400).invoke(
+            [image],
+            exploration_prompt(
+                ExperimentConfig(500, 0, 40, None, None, None), _robot_config()
+            ),
+            run_dir,
+        )
+    assert "--print" not in str(caught.value)
+    failed_log = next(
+        (run_dir / "results" / "claude_exploration").glob("*_failed.json")
+    )
+    payload = json.loads(failed_log.read_text(encoding="utf-8"))
+    assert payload["error"] == (
+        "ExplorationTimeoutError: Claude exploration timed out after 400 seconds"
+    )
 
 
 def test_exploration_prompt_surfaces_capabilities():
@@ -240,6 +297,7 @@ def test_exploration_prompt_surfaces_capabilities():
     assert "move(x,y,z,yaw)" in prompt
     assert "workspace bounds" in prompt
     assert "usable garment lifting anchor" in prompt
+    assert "as open and spread" in prompt
     assert "semantic garment part" in prompt
     assert "center_is_reference_only" in prompt
     assert "Skill: laydown" in prompt
@@ -250,7 +308,7 @@ def test_exploration_prompt_makes_all_motion_heights_agent_decisions():
         ExperimentConfig(500, -20, 40, 100, 200, 0), _robot_config()
     )
     assert "choose the approach height, grasp height" in prompt
-    assert "need not immediately reveal a large area" in prompt
+    assert "direct opening maneuver" in prompt
     assert "not a required grasp target" in prompt
 
 

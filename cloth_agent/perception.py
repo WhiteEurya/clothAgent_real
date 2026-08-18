@@ -53,6 +53,7 @@ class CameraSpec:
     serial: str
     extrinsics_file: Path
     color_exposure: float | None = None
+    color_white_balance: float | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class PerceptionConfig:
             serials.add(serial)
             labels.add(label)
             color_exposure_raw = item.get("color_exposure")
+            color_white_balance_raw = item.get("color_white_balance")
             cameras.append(
                 CameraSpec(
                     label,
@@ -123,6 +125,9 @@ class PerceptionConfig:
                     extrinsics.resolve(),
                     float(color_exposure_raw)
                     if color_exposure_raw is not None
+                    else None,
+                    float(color_white_balance_raw)
+                    if color_white_balance_raw is not None
                     else None,
                 )
             )
@@ -286,30 +291,48 @@ class RealSenseRGBD:
         self.started = True
         device = profile.get_device()
         self.depth_scale = float(device.first_depth_sensor().get_depth_scale())
-        if self.spec.color_exposure is not None:
+        if (
+            self.spec.color_exposure is not None
+            or self.spec.color_white_balance is not None
+        ):
             color_sensor = next(
                 (
                     sensor
                     for sensor in device.query_sensors()
                     if sensor.get_info(rs.camera_info.name) == "RGB Camera"
-                    and sensor.supports(rs.option.enable_auto_exposure)
-                    and sensor.supports(rs.option.exposure)
                 ),
                 None,
             )
             if color_sensor is None:
-                raise PerceptionError(
-                    f"camera {self.spec.label} has no configurable RGB exposure sensor"
-                )
-            exposure_range = color_sensor.get_option_range(rs.option.exposure)
-            exposure = float(self.spec.color_exposure)
-            if exposure < exposure_range.min or exposure > exposure_range.max:
-                raise PerceptionError(
-                    f"camera {self.spec.label} color exposure {exposure} is outside "
-                    f"[{exposure_range.min}, {exposure_range.max}]"
-                )
-            color_sensor.set_option(rs.option.enable_auto_exposure, 0.0)
-            color_sensor.set_option(rs.option.exposure, exposure)
+                raise PerceptionError(f"camera {self.spec.label} has no RGB sensor")
+            if self.spec.color_exposure is not None:
+                if not color_sensor.supports(rs.option.enable_auto_exposure) or not color_sensor.supports(rs.option.exposure):
+                    raise PerceptionError(
+                        f"camera {self.spec.label} has no configurable RGB exposure sensor"
+                    )
+                exposure_range = color_sensor.get_option_range(rs.option.exposure)
+                exposure = float(self.spec.color_exposure)
+                if exposure < exposure_range.min or exposure > exposure_range.max:
+                    raise PerceptionError(
+                        f"camera {self.spec.label} color exposure {exposure} is outside "
+                        f"[{exposure_range.min}, {exposure_range.max}]"
+                    )
+                color_sensor.set_option(rs.option.enable_auto_exposure, 0.0)
+                color_sensor.set_option(rs.option.exposure, exposure)
+            if self.spec.color_white_balance is not None:
+                if not color_sensor.supports(rs.option.enable_auto_white_balance) or not color_sensor.supports(rs.option.white_balance):
+                    raise PerceptionError(
+                        f"camera {self.spec.label} has no configurable RGB white-balance sensor"
+                    )
+                white_balance_range = color_sensor.get_option_range(rs.option.white_balance)
+                white_balance = float(self.spec.color_white_balance)
+                if white_balance < white_balance_range.min or white_balance > white_balance_range.max:
+                    raise PerceptionError(
+                        f"camera {self.spec.label} color white balance {white_balance} is outside "
+                        f"[{white_balance_range.min}, {white_balance_range.max}]"
+                    )
+                color_sensor.set_option(rs.option.enable_auto_white_balance, 0.0)
+                color_sensor.set_option(rs.option.white_balance, white_balance)
         color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         intr = color_profile.get_intrinsics()
         self.intrinsics = numpy.asarray(

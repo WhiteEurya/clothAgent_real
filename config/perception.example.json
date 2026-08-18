@@ -4,12 +4,15 @@
       "label": "A",
       "serial": "243722070226",
       "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_A.yaml",
-      "color_exposure": 800
+      "color_exposure": 400,
+      "color_white_balance": 3800
     },
     {
       "label": "B",
       "serial": "261822074715",
-      "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_B.yaml"
+      "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_B.yaml",
+      "color_exposure": 800,
+      "color_white_balance": 3800
     }
   ],
   "active_cameras": ["A", "B"],

@@ -156,14 +156,15 @@ ranked grasp candidates. The full per-pixel mapping is saved in
 motion waypoints. The generated action program is then checked against robot
 bounds, static preflight, controller IK, and animation before execution.
 
-## Anchor-discovery free exploration
+## Garment-opening free exploration
 
-Claude free/automatic exploration searches for a usable garment lifting
-anchor rather than optimizing every action for immediate visible coverage. A
-small lift, drag, repositioning, or test grasp may be used to gather evidence;
-there is no hard-coded grasp-candidate selector or probe/verify state machine.
-Previous automatic-loop proposals and before/after evaluations are passed into
-the next planning prompt.
+Claude free/automatic exploration now optimizes for making the garment as open
+and spread on the table as safely possible. It favors actions that increase
+visible coverage, separate overlapping layers, reduce bundled/high-relief
+regions, and finish with a controlled low laydown. A usable lifting anchor is
+an intermediate tool rather than the terminal goal. A small test grasp is used
+only when uncertainty prevents a grounded opening action. Previous proposals
+and before/after evaluations are passed into the next planning prompt.
 
 The reusable `laydown` skill is procedural prompt guidance, not a hidden robot
 trajectory. When Claude believes a grasp supports a useful hanging
@@ -291,6 +292,144 @@ only in the simulator:
 
 The outer process uses the existing `cali` environment for RealSense and xArm;
 no Molmo process or GPU model is launched.
+
+The active perception config keeps RGB auto-white-balance disabled and uses a
+manual `color_white_balance` of 3800 K for both Camera A and B (Camera A also
+uses the configured manual exposure). The value was selected from a no-motion
+white-balance sweep saved under `results/white_balance_sweep/`.
+
+### Claude plan preview with a hard stop before execution
+
+To run the live A/B perception and the same Claude planning contract used by
+automatic exploration, validate the generated restricted program, build the
+URDF animation, save Camera A/B and fused top-down plan overlays, and then exit
+without exposing physical execution authority:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  scripts/claude_plan_preview.py \
+  --project-root . \
+  --run-id claude_plan_preview_01 \
+  --perception-config config/perception.free_exploration.json
+```
+
+This entry point has no `run_experiment()` call. Controller validation is
+read-only IK; the saved summary always records
+`physical_execution_authority=false`, `physical_commands_sent=false`, and
+`execution_status=terminated_before_execution`. Outputs are written under
+`runs/<run-id>/results/claude_plan_preview/`.
+
+To sample Claude three independent times from exactly the same saved A/B and
+depth evidence, validate each plan, and compose Camera A/B plus fused top-down
+comparison sheets:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  scripts/claude_plan_preview_batch.py \
+  --project-root . \
+  --run-dir runs/claude_plan_preview_01 \
+  --samples 3 \
+  --claude-timeout-s 600
+```
+
+The batch command copies each proposal and visualization before invoking the
+next sample, and does not add physical execution authority.
+
+## Standalone Camera A/B rollout video recorder
+
+`scripts/record_rollout_video.py` is an external camera-only module. It imports
+no xArm API and cannot execute robot actions. Use it after perception/planning
+has finished and the main UI is waiting for explicit execution confirmation:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  scripts/record_rollout_video.py \
+  --project-root . \
+  --perception-config config/perception.free_exploration.json
+```
+
+Wait until the terminal prints `RECORDING READY`, start the phone recording,
+then confirm the robot rollout in the other terminal/UI. After the robot has
+returned Home, press `Ctrl+C` in the recorder terminal. Do not start this
+module while another process owns Camera A or B.
+
+Each recording directory contains:
+
+```text
+camera_A_rgb.mp4             camera_B_rgb.mp4
+camera_A_depth.mp4           camera_B_depth.mp4
+camera_A.db3                 camera_B.db3
+composite_AB_depth.mp4       frame_timestamps.csv
+recording_manifest.json
+```
+
+The installed RealSense SDK uses `.db3` for native RGB-D recordings. MP4 frames
+are wall-clock resampled so playback duration matches the physical rollout,
+then finalized as broadly compatible H.264/AVC (`yuv420p`, fast-start) files;
+the CSV and native recordings retain the actual device frames and timestamps.
+Use `--duration-s N` for a fixed-duration recording, or the default `0` to
+record until `Ctrl+C`. Pass `--no-native-recording` when disk space is limited.
+
+For automatic exploration, do not launch the standalone recorder in parallel.
+Enable the same module as an execution-stage plugin with one command:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.auto_exploration \
+  --project-root . \
+  --run-id auto_recorded_01 \
+  --perception-config config/perception.free_exploration.json \
+  --max-iterations 0 \
+  --settle-s 2 \
+  --record-rollouts \
+  --enable-real
+```
+
+Recording begins only after perception/planning/preflight/IK and ends after
+the mandatory return-home. A recorder startup failure blocks physical
+execution. `--max-iterations 0` keeps opening the garment until the evaluator
+judges it reasonably maximally spread or safe continuation is no longer
+possible. Use `--recording-no-native` to omit the large `.db3` files.
+
+Visual planning defaults to a `400` second timeout; the final exact-Rxxx
+grounding/run-generation stage defaults to `120` seconds. A timeout stops
+the automatic loop immediately without Claude replanning or additional robot
+execution; it is not treated as candidate-validation feedback. If evaluation
+times out after a completed rollout, that rollout is preserved and no further
+robot action is started.
+
+For every proposal, the Viser console marks the `move()` immediately before
+`close_gripper()` as the grasp target: Base-frame XYZ/yaw in the GUI, a red 3-D
+sphere with yaw axis, and calibrated crosshairs on Camera A/B. The validated
+A/B overlays and target JSON are saved in that iteration's artifact directory;
+plans without a grounded target show `unknown`.
+
+Every automatic iteration also writes `camera_A_perception_report.png` in its
+`iteration_XXX/` directory. The exact-pixel report sheet contains Camera A RGB,
+height above table, garment boundary, height-gradient/fold edges, Rxx references,
+and the selected grasp overlay. The automatic exploration loop does not call
+Molmo. The sheet is created immediately after perception with an `unknown`
+target, then refreshed after preflight/IK with the validated target;
+therefore timeout and rejected-plan iterations still retain a report figure.
+The centralized `results/report_figures/<auto-run>/` directory contains the
+`iteration_XXX_camera_A.png` report sheets.
+
+Claude can ground that target through a strictly read-only local MCP server.
+Planning uses two separate Claude processes. The first restores the original
+safe/read-only visual flow with no MCP server and selects one Camera A/B Rxxx.
+Before the second process starts, deterministic workspace validation checks the
+selected reference. An unavailable or out-of-bounds Rxxx is recorded and sent
+back to Stage 1 as an excluded reference; Stage 1 re-inspects the same images
+and must select a different point. This reselection is bounded by
+`--max-replans`, so an invalid reference never consumes the Stage-2 timeout.
+The second receives the validated decision, exposes only one exact-Rxxx lookup,
+calls it once, and immediately writes the numeric run. A second successful
+lookup is rejected.
+The returned Rxxx grounds the selected point; Claude independently chooses all
+remaining waypoint heights, lift/laydown/release geometry, and yaw. The tool
+has no file-write, shell, candidate-selection, or robot-control authority.
+Viser displays a live timer for both stages and saves their durations in each
+iteration record.
 
 Without `--detect-center`, all six experiment values must be supplied manually;
 that mode is retained only for diagnostics.

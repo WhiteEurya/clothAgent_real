@@ -9,6 +9,7 @@ Press ``q``/Esc or close the window to exit cleanly.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -33,6 +34,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--fps", type=int, default=None)
+    parser.add_argument(
+        "--white-balance",
+        type=float,
+        default=None,
+        help="manual RGB white balance in Kelvin; overrides the configured value",
+    )
+    parser.add_argument(
+        "--exposure",
+        type=float,
+        default=None,
+        help="manual RGB exposure; overrides the configured value",
+    )
     args = parser.parse_args(argv)
 
     import cv2
@@ -41,12 +54,24 @@ def main(argv: list[str] | None = None) -> int:
     from .perception import CameraSpec, PerceptionConfig, RealSenseRGBD
 
     root = Path(args.project_root).resolve()
+    config = None
     if args.serial:
         label = args.label.strip() or "Overview"
         serial = args.serial.strip()
         if not serial:
             raise ValueError("--serial must be non-empty")
-        spec = CameraSpec(label, serial, Path("."))
+        config_path = (root / args.perception_config).resolve()
+        if config_path.is_file():
+            config = PerceptionConfig.load(root, config_path)
+        configured = (
+            next((camera for camera in config.cameras if camera.serial == serial), None)
+            if config is not None
+            else None
+        )
+        if configured is not None:
+            spec = replace(configured, label=label)
+        else:
+            spec = CameraSpec(label, serial, Path("."))
         width = args.width or 640
         height = args.height or 480
         fps = args.fps or 30
@@ -59,9 +84,34 @@ def main(argv: list[str] | None = None) -> int:
         width = args.width or config.width
         height = args.height or config.height
         fps = args.fps or config.fps
+    if args.white_balance is not None or args.exposure is not None:
+        spec = replace(
+            spec,
+            color_white_balance=(
+                args.white_balance
+                if args.white_balance is not None
+                else spec.color_white_balance
+            ),
+            color_exposure=(
+                args.exposure if args.exposure is not None else spec.color_exposure
+            ),
+        )
 
     camera = RealSenseRGBD(spec, width, height, fps)
-    window_name = f"Cam{label} live monitor ({spec.serial})"
+    white_balance_label = (
+        f"{spec.color_white_balance:.0f}K"
+        if spec.color_white_balance is not None
+        else "auto-WB"
+    )
+    exposure_label = (
+        f"{spec.color_exposure:.0f}"
+        if spec.color_exposure is not None
+        else "auto-exp"
+    )
+    window_name = (
+        f"Cam{label} live monitor ({spec.serial}) "
+        f"WB={white_balance_label} EXP={exposure_label}"
+    )
     camera.start()
     try:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)

@@ -21,8 +21,9 @@ The workflow is:
 
 1. Capture and validate the garment views with the existing RGB-D/Molmo
    perception pipeline.
-2. Ask Claude to describe the visible folds and occlusions, explain how it
-   would expose more garment area, and return one short action proposal.
+2. Ask Claude to describe the visible folds and occlusions and return one
+   short action proposal that advances the goal of opening and spreading the
+   garment as much as safely possible.
 3. Inspect Claude's observation, confidence, expected observation, safety
    notes, and restricted `RobotAPI` action table in Viser.
 4. Run static preflight, workspace checks, read-only controller IK, and URDF
@@ -35,6 +36,28 @@ Claude is invoked in read-only mode. Its response must be a strict JSON object
 with garment reasoning plus actions using only `move`, `open_gripper`,
 `close_gripper`, and `home`. Invalid schema, unknown actions, non-finite values,
 or a path with no Cartesian move are rejected before source generation.
+
+Automatic planning is split into two independent Claude processes:
+
+1. **Visual planning:** the original `safe-mode + plan + Read` flow, with no
+   MCP configuration. Claude inspects the images/overlays and returns one final
+   Camera A/B Rxxx plus its opening and motion intent.
+2. **Final grounding/run generation:** a short context containing only the
+   stage-one decision and robot constraints. This process exposes only
+   `lookup_reference(camera, reference_id)`, calls the already selected Rxxx
+   exactly once, and emits final numeric actions.
+
+Between these stages, the runtime validates the selected Rxxx against the saved
+calibration and robot XY workspace. If it is missing or outside the safe bounds,
+Stage 2 is not started: the rejected Camera/Rxxx is logged, excluded, and the
+same current images return to Stage 1 for a different visual selection. The
+number of reference reselections is bounded by `--max-replans`.
+
+The MCP server rejects a second successful lookup. The returned measurement
+grounds the selected grasp XY; Claude still decides approach, grasp TCP height,
+lift, retreat, laydown, release, and yaw. A saved-coordinate verification checks
+that the final grasp uses the selected Rxxx before preflight. The server cannot
+write files, run commands, select candidates, or control the robot.
 
 The standalone console defaults to
 `config/perception.free_exploration.json`. Its grasp TCP target is the validated
@@ -51,10 +74,30 @@ live CamA preview inside Viser, start the separate module:
 ```bash
 python -m cloth_agent.auto_exploration \
   --run-id claude_auto_01 \
-  --max-iterations 3 \
+  --max-iterations 0 \
   --settle-s 2 \
+  --record-rollouts \
   --enable-real
 ```
+
+With `--record-rollouts`, the loop starts the standalone Camera A/B recorder
+only after perception, Claude planning, static preflight, and read-only
+controller IK have passed. It records the physical rollout plus mandatory
+return-home, closes both cameras, and only then starts the after-observation.
+Each iteration saves RGB/depth MP4, a four-panel composite, timestamps, and
+native `.db3` recordings under
+`results/auto_exploration/<stamp>/iteration_NNN/rollout_recording_<stamp>/`. A recorder
+startup failure is a hard pre-execution failure and sends no robot command.
+The MP4 files are finalized as H.264/AVC with `yuv420p` and fast-start for
+compatibility with browsers, phones, and common desktop players.
+
+After Claude proposes a plan, the dashboard defines each grasp target as the
+last finite `move(x,y,z,yaw)` immediately preceding `close_gripper()`. It shows
+the Base-frame XYZ/yaw in a dedicated panel, a red 3-D sphere plus yaw axis in
+Viser, and projected crosshairs on the Camera A/B RGB captures. Validated
+overlays are saved as `grasp_target_camera_A.png`,
+`grasp_target_camera_B.png`, and `grasp_target_visualization.json` in the
+iteration directory. A plan without a grounded grasp displays `unknown`.
 
 Open `http://127.0.0.1:8082`. The Viser page contains the live CamA RGB image,
 normalized depth image, and a calibrated CamA point cloud in the robot base
@@ -66,7 +109,19 @@ that it should stop, the operator clicks `Stop after current phase`, or a hard
 failure occurs. The `Restart automatic exploration` button starts a fresh loop.
 
 Use `--max-iterations N` to cap the run; the default `--max-iterations 0` means
-continuous mode.
+continuous opening until Claude judges the garment reasonably maximally spread
+or safe grounded continuation is no longer possible.
+
+The visual-planning timeout is `400` seconds and the final-grounding timeout is
+`120` seconds. A planning or evaluation timeout is terminal for that run: it is saved as
+`ExplorationTimeoutError`, the loop stops immediately, and no Claude replan or
+additional robot execution is attempted. Timeout exception text is kept concise so a
+previous command or prompt is never recursively inserted into another prompt.
+
+Viser shows a live `Claude stage timer` panel with the active stage, Stage-1
+reference-attempt count, elapsed time/timeout, and completed duration for each stage. The same values are saved
+under `planning_timing` in the iteration record, while the stage-one result is
+saved separately as `claude_visual_plan.json`.
 
 If Claude proposes a path that fails static validation or read-only controller
 IK, the exact error and rejected actions are sent back to Claude for a new

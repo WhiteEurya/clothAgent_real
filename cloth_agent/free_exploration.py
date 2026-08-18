@@ -3,7 +3,8 @@
 This module is intentionally separate from :mod:`cloth_agent.viewer`.  It adds
 an experimental loop in which Claude observes the saved garment photographs,
 describes what it sees, and proposes one restricted RobotAPI program intended
-to search for a useful garment lifting anchor.  The proposal is only a plan until the normal
+to make the garment as open and spread as safely possible.  A useful lifting
+anchor is a means to that end, not the terminal goal.  The proposal is only a plan until the normal
 static preflight, workspace checks, controller IK, and animation review pass.
 
 No existing viewer or runtime file is patched by this feature.  Start it with
@@ -19,6 +20,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -42,6 +44,41 @@ from .viewer import (
     _view_point_cloud,
     path_waypoints_mm,
 )
+
+
+GROUNDING_MCP_SERVER = "garment_grounding"
+GROUNDING_MCP_TOOLS = (
+    f"mcp__{GROUNDING_MCP_SERVER}__lookup_reference",
+)
+
+
+def grounding_mcp_config(run_dir: Path) -> dict[str, Any]:
+    """Return the single strictly scoped read-only MCP server configuration."""
+
+    root = Path(run_dir).resolve()
+    perception_dir = root / "workspace" / "perception_views"
+    if not perception_dir.is_dir():
+        raise ExplorationPlanningError(
+            f"grounding MCP requires saved perception views: {perception_dir}"
+        )
+    server_script = Path(__file__).resolve().with_name("garment_grounding_mcp.py")
+    if not server_script.is_file():
+        raise ExplorationPlanningError(
+            f"grounding MCP server is missing: {server_script}"
+        )
+    return {
+        "mcpServers": {
+            GROUNDING_MCP_SERVER: {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": [
+                    str(server_script),
+                    "--perception-dir",
+                    str(perception_dir),
+                ],
+            }
+        }
+    }
 
 
 EXPLORATION_FIELDS = frozenset(
@@ -120,6 +157,10 @@ def _normalized_view_point_cloud(
 
 class ExplorationPlanningError(ValueError):
     """Raised when Claude's free-exploration response violates its contract."""
+
+
+class ExplorationTimeoutError(ExplorationPlanningError):
+    """Raised when Claude planning reaches its wall-clock timeout."""
 
 
 def _controller_ik_failure_message(exc: BaseException) -> str:
@@ -335,6 +376,10 @@ def _json_from_claude_text(text: str) -> dict[str, Any]:
     candidates = [text.strip()]
     try:
         outer = json.loads(text)
+        if isinstance(outer, dict) and isinstance(outer.get("structured_output"), dict):
+            return outer["structured_output"]
+        if isinstance(outer, dict) and isinstance(outer.get("structuredOutput"), dict):
+            return outer["structuredOutput"]
         if isinstance(outer, dict) and isinstance(outer.get("result"), str):
             candidates.insert(0, outer["result"])
         elif isinstance(outer, dict) and isinstance(outer.get("result"), dict):
@@ -366,7 +411,7 @@ def _json_from_claude_text(text: str) -> dict[str, Any]:
 class ClaudeExplorationClient:
     """Read-only Claude CLI adapter for visual garment reasoning."""
 
-    def __init__(self, binary: str = "claude", timeout_s: int = 300):
+    def __init__(self, binary: str = "claude", timeout_s: int = 400):
         self.binary = binary
         self.timeout_s = timeout_s
 
@@ -407,10 +452,13 @@ class ClaudeExplorationClient:
             raise ExplorationPlanningError(f"Claude CLI not found: {self.binary}")
         image_text = "\n".join(f"- {path}" for path in safe_images)
         system_prompt = (
-            "You are a cautious robotics garment analyst searching for a usable lifting "
-            "anchor. Read the supplied garment photographs and return only one JSON "
-            "object. You may inspect files but may not edit anything, execute commands, "
-            "or control a robot. The action contract uses only move(x,y,z,yaw), "
+            "You are a cautious robotics garment analyst maximizing how open and spread "
+            "the garment becomes. A lifting anchor is useful only when it advances that "
+            "goal. Read the supplied garment photographs and return only one JSON "
+            "object. You may inspect files and, only after selecting the final Rxxx, "
+            "call the explicitly supplied read-only lookup measurement tool exactly "
+            "once, but may not edit anything, execute "
+            "commands, or control a robot. The action contract uses only move(x,y,z,yaw), "
             "open_gripper(), close_gripper(), and home(). Do not return Python, SDK "
             "calls, joint angles, invented measurements, fixed candidate lists, or "
             "mandatory semantic garment-part labels. Treat uncertain structures as "
@@ -425,24 +473,40 @@ class ClaudeExplorationClient:
             "overlay images are uniform calibrated references, not ranked grasp "
             "candidates. Choose the visual region yourself, then ground it with the "
             "nearest measured reference and state any remaining spatial uncertainty.\n\n"
+            "A strictly read-only MCP server named `garment_grounding` exposes exactly "
+            "one tool: `lookup_reference(camera, reference_id)`. Preserve the original "
+            "visual-planning flow: first inspect all supplied images/overlays, reason "
+            "without coordinate-tool calls, and independently choose exactly one final "
+            "Camera A/B Rxxx grasp reference. Only after that choice is settled, and "
+            "immediately before composing the final JSON/run actions, call "
+            "`lookup_reference` exactly once for that chosen Rxxx. Do not use the tool "
+            "to compare, rank, scan, or search multiple references. Ground the grasp "
+            "location with the returned measurement. You remain responsible for all "
+            "other action coordinates and geometry, including approach, grasp TCP "
+            "height, lift, retreat, laydown, release, and yaw. Cite the single returned "
+            "measurement in `reveal_strategy` or `safety_notes`, then return the final "
+            "proposal without another tool call. The measurement is not a grasp "
+            "recommendation or motion authorization.\n\n"
             "The workspace also contains the calibrated full-resolution base-XYZ maps "
             "and fused point cloud when produced by perception; use them only as measured "
             "geometry, never as a perception-selected grasp recommendation.\n\n"
             "Return exactly these fields and no others: "
             "garment_observation (string), reveal_strategy (string; compatibility name, "
-            "describe the anchor-search/test/laydown strategy here), confidence (number "
+            "describe the opening/regrasp/laydown strategy here), confidence (number "
             "0..1), actions (non-empty list of {name,args}), expected_observation (string), "
             "safety_notes (non-empty list of strings), and optional skill_invocations "
             "(list of {name,reason}; use name=laydown only when you choose that skill). "
             "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees. "
-            "You choose the grasp region, all waypoint geometry, and whether this is a "
-            "small anchor test or a larger maneuver. A cautious exploratory proposal may "
-            "use one post-grasp move and then release; it does not have to immediately "
-            "reveal large coverage. If you invoke laydown, use its procedural guidance "
+            "You choose the grasp region and all waypoint geometry. Prefer an action that "
+            "directly increases spread, exposes overlapped fabric, or creates a useful "
+            "hanging configuration for controlled laydown. Use a small anchor test only "
+            "when uncertainty prevents a grounded opening action. If you invoke laydown, use its procedural guidance "
             "but still emit explicit Claude-chosen move waypoints; the skill never supplies "
             "fixed coordinates. Always release before the action list ends. Keep the action "
             "list at or below 12."
         )
+        mcp_config = grounding_mcp_config(root)
+        enabled_tools = ("Read", *GROUNDING_MCP_TOOLS)
         command = [
             binary,
             "--print",
@@ -450,14 +514,18 @@ class ClaudeExplorationClient:
             "--output-format",
             "json",
             "--permission-mode",
-            "plan",
+            "dontAsk",
             "--allowedTools",
-            "Read",
+            ",".join(enabled_tools),
             "--tools",
             "Read",
+            "--mcp-config",
+            json.dumps(mcp_config, ensure_ascii=False, separators=(",", ":")),
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
             "--add-dir",
             str(root),
-            "--safe-mode",
             "--system-prompt",
             system_prompt,
         ]
@@ -472,7 +540,7 @@ class ClaudeExplorationClient:
                 check=False,
                 shell=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
             self._save_invocation_log(
                 root,
                 {
@@ -481,12 +549,34 @@ class ClaudeExplorationClient:
                     "returncode": None,
                     "stdout": getattr(exc, "stdout", "") or "",
                     "stderr": getattr(exc, "stderr", "") or "",
+                    "error": (
+                        f"ExplorationTimeoutError: Claude exploration timed out "
+                        f"after {self.timeout_s} seconds"
+                    ),
+                    "created_at": _now(),
+                },
+                failed=True,
+            )
+            raise ExplorationTimeoutError(
+                f"Claude exploration timed out after {self.timeout_s} seconds"
+            ) from exc
+        except OSError as exc:
+            self._save_invocation_log(
+                root,
+                {
+                    "prompt": full_prompt,
+                    "command": list(command),
+                    "returncode": None,
+                    "stdout": "",
+                    "stderr": "",
                     "error": f"{type(exc).__name__}: {exc}",
                     "created_at": _now(),
                 },
                 failed=True,
             )
-            raise ExplorationPlanningError(f"Claude exploration invocation failed: {exc}") from exc
+            raise ExplorationPlanningError(
+                f"Claude exploration invocation failed: {exc}"
+            ) from exc
         if completed.returncode != 0:
             self._save_invocation_log(
                 root,
@@ -566,12 +656,12 @@ def exploration_prompt(
     robot: RobotConfig,
     *,
     objective: str = (
-        "Take one cautious agent-chosen exploratory action toward autonomously "
-        "discovering a usable garment lifting anchor."
+        "Take one planning-mode-appropriate agent-chosen action that makes the current garment as open "
+        "and spread as safely possible."
     ),
     history: Iterable[dict[str, Any]] | None = None,
 ) -> str:
-    """Build a bounded anchor-discovery prompt with explicit robot capabilities."""
+    """Build a bounded garment-opening prompt with explicit robot capabilities."""
 
     center = {
         "x_mm": experiment.cloth_center_x,
@@ -592,20 +682,52 @@ def exploration_prompt(
         if history_items
         else "No previous exploration outcomes are available."
     )
+    last_evaluation = next(
+        (
+            item.get("evaluation")
+            for item in reversed(history_items)
+            if isinstance(item, dict) and isinstance(item.get("evaluation"), dict)
+        ),
+        None,
+    )
+    previous_validated = bool(
+        isinstance(last_evaluation, dict)
+        and (last_evaluation.get("target_selection") or {}).get("status") == "SUPPORTED"
+        and (last_evaluation.get("grasp_acquisition") or {}).get("status") == "SUCCESS"
+        and (last_evaluation.get("target_structure_acquired") or {}).get("status")
+        == "SUPPORTED"
+    )
+    mode_text = (
+        "Planning mode: VALIDATED EXPANSION. The previous target selection, grasp acquisition, "
+        "and target-layer motion were supported. Preserve the grasp anchor/depth and carry out "
+        "a meaningful outward transport, normally using most of the visible safe distance; do "
+        "not repeat a few-millimetre probe."
+        if previous_validated
+        else (
+            "Planning mode: EXPLORATION. No target-layer hypothesis is fully validated yet. "
+            "Use a small reversible probe, roughly 10–30 mm or at most one third of the visibly "
+            "safe distance, to identify the layer response before committing to a long pull."
+        )
+    )
     return (
         f"Objective: {objective}\n"
-        "Your primary objective is to discover a usable garment lifting anchor. A usable "
-        "anchor is a grasp location from which lifting creates a useful hanging configuration "
-        "that can subsequently be laid down to make the garment substantially easier to "
-        "perceive or manipulate. You do not need to identify a sleeve, collar, hem, or any "
+        "Your primary objective is to make the garment as open and spread on the table as "
+        "safely possible. Prefer actions that increase visible garment coverage, separate "
+        "overlapping layers, reduce bundled/high-relief regions, and finish with a controlled "
+        "low laydown. A usable garment lifting anchor is an intermediate tool: it is a grasp "
+        "location from which lifting creates a useful hanging configuration that can be laid "
+        "down into a more open state. Finding an anchor alone is not success if the garment "
+        "can still be opened further. You do not need to identify a sleeve, collar, hem, or any "
         "other semantic garment part before grasping. Do not assume the garment center, the "
         "highest point, a fold-convergence point, or the most occluded region is a good anchor. "
         "Use RGB images, garment masks, height-map heatmaps, height-gradient/occlusion edges, "
         "depth/3-D geometry, coordinate guides, and previous outcomes to decide where to "
         "interact. Claude chooses the region; perception only provides coordinate grounding. "
-        "You may make a cautious lift, drag, repositioning, test grasp, release-and-retry, "
-        "or another exploratory action. An action may be an experiment whose immediate purpose "
-        "is only to test or improve understanding; it need not immediately reveal a large area. "
+        f"{mode_text}\n"
+        "You may lift, hang, lay down, drag cautiously, reposition, regrasp, or release-and-retry. "
+        "Choose a direct opening maneuver whenever the observation supports one. In exploration "
+        "mode, use a probe only when it resolves a concrete uncertainty; in validated mode, "
+        "complete the larger transport and laydown in this iteration. "
         "Do not redesign this into a candidate list or SELECT/PROBE/VERIFY state machine.\n\n"
         "The only available low-level calls are move(x,y,z,yaw), open_gripper(), "
         "close_gripper(), and home(). Every Cartesian waypoint must be emitted explicitly as "
@@ -753,13 +875,13 @@ def run_exploration_viewer(
 
     status = server.gui.add_markdown("### Claude free exploration\n\nNo garment analysis loaded yet.")
     capture_button = server.gui.add_button("1. Capture + validate garment views", color="blue")
-    analyze_button = server.gui.add_button("2. Ask Claude: search for a usable lifting anchor", disabled=state.result is None, color="blue")
+    analyze_button = server.gui.add_button("2. Ask Claude: open and spread the garment", disabled=state.result is None, color="blue")
     proposal_panel = server.gui.add_markdown("### Claude's garment view\n\nNo proposal yet.")
     validate_button = server.gui.add_button("3. Validate Claude action + build animation", disabled=True, color="blue")
     validation_panel = server.gui.add_markdown("No action validation has run yet.")
     slider = server.gui.add_slider("Animation frame", min=0, max=1, step=1, initial_value=0, disabled=True)
     animation_panel = server.gui.add_markdown("Animation is not available yet.")
-    play_button = server.gui.add_button("4. Play proposed anchor exploration", disabled=True, color="green")
+    play_button = server.gui.add_button("4. Play proposed opening action", disabled=True, color="green")
     pause_button = server.gui.add_button("Pause", disabled=True)
     reset_button = server.gui.add_button("Reset", disabled=True)
     loop_checkbox = server.gui.add_checkbox("Loop animation", initial_value=False)
@@ -915,7 +1037,7 @@ def run_exploration_viewer(
             state.animation_frames = []
             state.approved_hash = None
             render_result()
-            status.content = f"### Views ready\n\nValidated garment center reference: `{result['center_base_mm']}`. Ask Claude to search for a lifting anchor."
+            status.content = f"### Views ready\n\nValidated garment center reference: `{result['center_base_mm']}`. Ask Claude to plan an opening action."
         except Exception as exc:
             status.content = f"### Capture blocked\n\n`{type(exc).__name__}: {exc}`"
         finally:
@@ -927,7 +1049,7 @@ def run_exploration_viewer(
         if state.result is None or state.result_path is None or not operation_lock.acquire(blocking=False):
             return
         set_busy(True)
-        status.content = "### Claude is thinking\n\nInspecting geometry and previous outcomes for a cautious anchor-discovery action."
+        status.content = "### Claude is thinking\n\nInspecting geometry and previous outcomes for a cautious garment-opening action."
         try:
             images = perception_image_paths(state.result, state.result_path)
             prompt = exploration_prompt(
@@ -943,7 +1065,7 @@ def run_exploration_viewer(
             state.approved_hash = None
             proposal_panel.content = _proposal_markdown(response.proposal, state.proposal_source)
             validate_button.disabled = False
-            status.content = "### Claude proposal ready\n\nReview the anchor hypothesis and exploratory path, then validate it."
+            status.content = "### Claude proposal ready\n\nReview the opening strategy and action path, then validate it."
         except Exception as exc:
             state.proposal = None
             state.proposal_source = None
@@ -1122,7 +1244,7 @@ def run_exploration_viewer(
 
     render_result()
     if state.result is not None:
-        status.content = "### Garment views loaded\n\nAsk Claude to inspect the garment and search for a usable lifting anchor."
+        status.content = "### Garment views loaded\n\nAsk Claude to inspect and open the garment as much as safely possible."
     update_buttons()
     print(f"Viser Claude free-exploration console: http://{host}:{port}")
     print(f"Run workspace: {session.workspace}")
@@ -1153,7 +1275,7 @@ def _proposal_markdown(proposal: ExplorationProposal, source: str) -> str:
     return (
         "### Claude's garment view\n\n"
         f"**Observation:** {proposal.garment_observation}\n\n"
-        f"**Anchor-search strategy:** {proposal.reveal_strategy}\n\n"
+        f"**Opening strategy:** {proposal.reveal_strategy}\n\n"
         f"**Confidence:** `{proposal.confidence:.2f}`\n\n"
         f"**Expected observation:** {proposal.expected_observation}\n\n"
         "**Invoked procedural skills:**\n\n"

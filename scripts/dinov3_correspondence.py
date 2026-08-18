@@ -110,6 +110,8 @@ class FrozenDINOv3:
         model_id: str,
         *,
         input_size: int,
+        input_width: int | None = None,
+        input_height: int | None = None,
         device: str,
         local_files_only: bool,
     ) -> None:
@@ -122,6 +124,10 @@ class FrozenDINOv3:
             raise ValueError("input_size must be positive")
         self.torch = torch
         self.input_size = int(input_size)
+        self.input_width = int(input_width or input_size)
+        self.input_height = int(input_height or input_size)
+        if self.input_width <= 0 or self.input_height <= 0:
+            raise ValueError("input width and height must be positive")
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
@@ -137,18 +143,24 @@ class FrozenDINOv3:
         if patch_size is None:
             patch_size = 16
         self.patch_size = int(patch_size)
-        if self.input_size % self.patch_size:
-            raise ValueError(f"input_size {self.input_size} must be divisible by patch_size {self.patch_size}")
+        if self.input_width % self.patch_size or self.input_height % self.patch_size:
+            raise ValueError(
+                f"input shape {(self.input_height, self.input_width)} must be divisible "
+                f"by patch_size {self.patch_size}"
+            )
         mean = getattr(self.processor, "image_mean", None) or [0.485, 0.456, 0.406]
         std = getattr(self.processor, "image_std", None) or [0.229, 0.224, 0.225]
         self.mean = torch.tensor(mean, dtype=torch.float32, device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor(std, dtype=torch.float32, device=self.device).view(1, 3, 1, 1)
-        self.grid_h = self.input_size // self.patch_size
-        self.grid_w = self.input_size // self.patch_size
+        self.grid_h = self.input_height // self.patch_size
+        self.grid_w = self.input_width // self.patch_size
 
     def _tensor(self, image: Image.Image):
         torch = self.torch
-        resized = image.convert("RGB").resize((self.input_size, self.input_size), Image.Resampling.BICUBIC)
+        resized = image.convert("RGB").resize(
+            (self.input_width, self.input_height),
+            Image.Resampling.BICUBIC,
+        )
         array = np.asarray(resized, dtype=np.float32) / 255.0
         tensor = torch.from_numpy(array).permute(2, 0, 1).unsqueeze(0).to(self.device)
         return (tensor - self.mean) / self.std
@@ -192,8 +204,8 @@ class FrozenDINOv3:
 
     def point_to_patch(self, x: float, y: float, image_size: tuple[int, int]) -> tuple[int, int]:
         width, height = image_size
-        x_input = 0.0 if width <= 1 else x * (self.input_size - 1) / (width - 1)
-        y_input = 0.0 if height <= 1 else y * (self.input_size - 1) / (height - 1)
+        x_input = 0.0 if width <= 1 else x * (self.input_width - 1) / (width - 1)
+        y_input = 0.0 if height <= 1 else y * (self.input_height - 1) / (height - 1)
         px = int(round((x_input - self.patch_size / 2.0) / self.patch_size))
         py = int(round((y_input - self.patch_size / 2.0) / self.patch_size))
         return (
@@ -205,8 +217,8 @@ class FrozenDINOv3:
         width, height = image_size
         x_input = (px + 0.5) * self.patch_size
         y_input = (py + 0.5) * self.patch_size
-        x = 0.0 if self.input_size <= 1 else x_input * (width - 1) / (self.input_size - 1)
-        y = 0.0 if self.input_size <= 1 else y_input * (height - 1) / (self.input_size - 1)
+        x = 0.0 if self.input_width <= 1 else x_input * (width - 1) / (self.input_width - 1)
+        y = 0.0 if self.input_height <= 1 else y_input * (height - 1) / (self.input_height - 1)
         return float(min(width - 1, max(0.0, x))), float(min(height - 1, max(0.0, y)))
 
 
@@ -297,6 +309,8 @@ def run(
     *,
     model_id: str,
     input_size: int,
+    input_width: int | None,
+    input_height: int | None,
     device: str,
     local_files_only: bool,
     save_individual_heatmaps: bool,
@@ -306,6 +320,8 @@ def run(
     extractor = FrozenDINOv3(
         model_id,
         input_size=input_size,
+        input_width=input_width,
+        input_height=input_height,
         device=device,
         local_files_only=local_files_only,
     )
@@ -332,6 +348,7 @@ def run(
         "points": str(points_path),
         "model": model_id,
         "input_size": input_size,
+        "input_shape_yx": [extractor.input_height, extractor.input_width],
         "patch_size": extractor.patch_size,
         "feature_grid": [extractor.grid_h, extractor.grid_w],
         "device": str(extractor.device),
@@ -435,7 +452,9 @@ def main() -> int:
     parser.add_argument("--current", required=True, action="append", metavar="NAME=IMAGE")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--model", default="facebook/dinov3-vitb16-pretrain-lvd1689m")
-    parser.add_argument("--input-size", type=int, default=448, help="square model input; must be divisible by patch size")
+    parser.add_argument("--input-size", type=int, default=448, help="fallback square size when width/height are omitted")
+    parser.add_argument("--input-width", type=int, default=448)
+    parser.add_argument("--input-height", type=int, default=336)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--no-individual-heatmaps", action="store_true")
@@ -453,6 +472,8 @@ def main() -> int:
         args.output.expanduser().resolve(),
         model_id=args.model,
         input_size=args.input_size,
+        input_width=args.input_width,
+        input_height=args.input_height,
         device=args.device,
         local_files_only=args.local_files_only,
         save_individual_heatmaps=not args.no_individual_heatmaps,
