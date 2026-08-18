@@ -47,6 +47,12 @@ from .free_exploration import (
 )
 from .kinematics import AnimationFrame, XArm7Kinematics
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
+from .molmo_keypoint_pipeline import (
+    DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_MOLMO_KEYPOINT_CONFIDENCE_THRESHOLD,
+    load_keypoint_specs,
+    run_molmo_keypoint_pipeline,
+    validate_confidence_threshold,
+)
 from .perception import (
     CameraSpec,
     PerceptionConfig,
@@ -1516,6 +1522,7 @@ class ClaudeAutoClient:
         feedback: str | None = None,
         history: list[dict[str, Any]] | None = None,
         phase_callback: Callable[[str, str, float], None] | None = None,
+        reference_policy: str = "uniform",
     ) -> ExplorationProposal:
         previous_visual_result = self.last_visual_plan_result
         self.last_plan_result = None
@@ -1533,15 +1540,31 @@ class ClaudeAutoClient:
             )
         history_items = list(history or [])[-8:]
         planning_mode, planning_mode_instruction = _planning_mode_from_history(history_items)
+        if reference_policy == "uniform":
+            reference_instruction = (
+                "Rxxx markers are uniform coordinate references, not ranked candidates. "
+                "Choose the single visible reference that best supports the next opening "
+                "motion"
+            )
+        elif reference_policy == "molmo_confidence_filtered_keypoints":
+            reference_instruction = (
+                "Rxxx markers in the Molmo keypoint-reference overlays are the only "
+                "allowed grasp references. Every shown marker passed the configured "
+                "Molmo confidence threshold and calibrated-geometry gate. Do not select "
+                "an unmarked pixel, a below-threshold/rejected keypoint, or a reference "
+                "from an older uniform overlay. Choose one of the currently shown Rxxx "
+                "keypoints"
+            )
+        else:
+            raise ValueError(f"unknown reference_policy: {reference_policy}")
         visual_prompt = (
             "Observe only the current garment shown in the supplied Camera A/B "
             "images. The goal is to make this garment as open and spread on the "
             "table as safely possible. Use the visible RGB, garment boundary, "
             "height-above-table, height-gradient/occlusion, and Rxxx overlay evidence "
-            "without assuming a garment category or semantic part labels. Rxxx "
-            "markers are uniform coordinate references, not ranked candidates. "
-            "Choose the single visible reference that best supports the next opening "
-            "motion and state the intended transport direction and approximate useful "
+            "without assuming a garment category beyond the named observations. "
+            f"{reference_instruction} and state the intended transport direction and "
+            "approximate useful "
             "distance. Apply the following mode exactly:\n"
             f"{planning_mode_instruction}\n"
             "This zero-shot visual stage has no prior coordinates or action values. Do not "
@@ -2269,6 +2292,16 @@ def run_auto_exploration_viewer(
     recording_native: bool = True,
     recording_codec: str = "mp4v",
     recording_warmup_frames: int | None = None,
+    molmo_keypoints: bool = False,
+    molmo_keypoint_confidence_threshold: float = (
+        DEFAULT_MOLMO_KEYPOINT_CONFIDENCE_THRESHOLD
+    ),
+    molmo_python: Path | None = None,
+    molmo_model: str = "allenai/MolmoPoint-8B",
+    molmo_keypoints_path: Path | None = None,
+    molmo_keypoint_cameras: Sequence[str] = ("A", "B"),
+    molmo_keypoint_timeout_s: int = 900,
+    molmo_allow_download: bool = False,
 ) -> int:
     """Run the continuous automatic real-agent loop with a Viser preview.
 
@@ -2301,6 +2334,21 @@ def run_auto_exploration_viewer(
         raise ValueError("recording_warmup_frames must be between 0 and 300")
     if len(recording_codec) != 4:
         raise ValueError("recording_codec must be a four-character code")
+    keypoint_threshold = validate_confidence_threshold(
+        molmo_keypoint_confidence_threshold
+    )
+    keypoint_cameras = tuple(
+        str(camera).strip().upper() for camera in molmo_keypoint_cameras
+    )
+    if not keypoint_cameras or any(
+        camera not in {"A", "B"} for camera in keypoint_cameras
+    ):
+        raise ValueError("molmo_keypoint_cameras must contain A and/or B")
+    if len(set(keypoint_cameras)) != len(keypoint_cameras):
+        raise ValueError("molmo_keypoint_cameras must be unique")
+    if not 30 <= molmo_keypoint_timeout_s <= 3600:
+        raise ValueError("molmo_keypoint_timeout_s must be between 30 and 3600")
+    keypoint_specs = load_keypoint_specs(molmo_keypoints_path) if molmo_keypoints else ()
     try:
         import viser
         from viser.extras import ViserUrdf
@@ -2369,6 +2417,14 @@ def run_auto_exploration_viewer(
         "The web page owns the CamA RGB-D preview. The preview pauses during "
         "synchronized A/B capture so both cameras are never opened twice."
     )
+    reference_policy_line = (
+        "- grasp-reference policy: `Molmo keypoints only`; each iteration reruns "
+        f"Molmo, requires confidence `> {keypoint_threshold:.3f}`, and stops before "
+        "Claude/robot if none pass"
+        if molmo_keypoints
+        else "- grasp-reference policy: `uniform calibrated Rxxx` "
+        "(Molmo keypoint mode disabled)"
+    )
     controls = server.gui.add_markdown(
         f"### Loop contract\n\n- max iterations: `{'continuous' if max_iterations is None else max_iterations}`\n"
         f"- settle time after motion: `{settle_s:.1f}s`\n"
@@ -2377,6 +2433,7 @@ def run_auto_exploration_viewer(
         f"- Claude visual-planning timeout: `{claude_timeout_s}s`; final Rxx grounding timeout: `{claude_grounding_timeout_s}s`\n"
         "- perception diagnostics: A/B garment height-above-table heatmaps and fused garment boundary are shown and sent to Claude\n"
         "- Claude grounding: choose one Rxxx visually, then perform exactly one final exact-coordinate lookup\n"
+        f"{reference_policy_line}\n"
         "- grasp target visualization: Base XYZ/yaw, Viser 3-D marker, and Camera A/B projection overlays\n"
         f"- rollout A/B RGB-D recording: `{'enabled' if record_rollouts else 'disabled'}`\n"
         "- stop takes effect between phases; it cannot interrupt a command already sent"
@@ -3052,8 +3109,63 @@ def run_auto_exploration_viewer(
                         )
                         fused_cloud_handle.colors = np.load(fused_colors_path).astype(np.uint8)
                         fused_cloud_handle.visible = True
-                    before_images = perception_image_paths(saved, saved_path)
                     record["perception"] = perception
+                    before_images = perception_image_paths(saved, saved_path)
+                    reference_policy = "uniform"
+                    if molmo_keypoints:
+                        set_status(
+                            f"### Iteration {iteration}/{limit_label}: Molmo keypoints\n\n"
+                            f"Querying {len(keypoint_specs)} keypoints on "
+                            f"Camera {','.join(keypoint_cameras)} and keeping only "
+                            f"confidence > {keypoint_threshold:.3f}."
+                        )
+                        keypoint_artifact_dir = (
+                            auto_results_dir
+                            / f"iteration_{iteration:03d}"
+                            / "molmo_keypoints"
+                        )
+                        keypoint_manifest = run_molmo_keypoint_pipeline(
+                            project_root=root,
+                            perception_dir=session.workspace / "perception_views",
+                            artifact_dir=keypoint_artifact_dir,
+                            confidence_threshold=keypoint_threshold,
+                            molmo_python=molmo_python,
+                            model=molmo_model,
+                            timeout_s=molmo_keypoint_timeout_s,
+                            local_files_only=not molmo_allow_download,
+                            keypoint_specs=keypoint_specs,
+                            cameras=keypoint_cameras,
+                            install=True,
+                        )
+                        record["molmo_keypoints"] = keypoint_manifest
+                        record.setdefault("artifacts", {})[
+                            "molmo_keypoints"
+                        ] = _run_relative(
+                            keypoint_artifact_dir
+                            / "molmo_keypoint_grasp_references.json",
+                            session.run_dir,
+                        )
+                        uniform_overlay_names = {
+                            "camera_A_coordinate_overlay.png",
+                            "camera_B_coordinate_overlay.png",
+                        }
+                        before_images = [
+                            path
+                            for path in before_images
+                            if path.name not in uniform_overlay_names
+                        ]
+                        for view in keypoint_manifest["views"]:
+                            overlay = Path(str(view["accepted_overlay"])).resolve()
+                            if overlay.is_file() and overlay not in before_images:
+                                before_images.append(overlay)
+                        if keypoint_manifest["status"] != "READY":
+                            raise AutoExplorationError(
+                                "Molmo keypoint pipeline produced no grasp reference "
+                                f"with confidence > {keypoint_threshold:.3f} and valid "
+                                "calibrated geometry; Claude planning and robot execution "
+                                "were not started"
+                            )
+                        reference_policy = "molmo_confidence_filtered_keypoints"
                     record["before_images"] = [
                         _run_relative(path, session.run_dir) for path in before_images
                     ]
@@ -3094,6 +3206,7 @@ def run_auto_exploration_viewer(
                                 feedback=proposal_feedback,
                                 history=state.history,
                                 phase_callback=planning_phase_callback,
+                                reference_policy=reference_policy,
                             )
                             break
                         except (ExplorationTimeoutError, ReferenceReselectionExhaustedError):
@@ -3211,6 +3324,7 @@ def run_auto_exploration_viewer(
                                     feedback=validation_feedback,
                                     history=state.history,
                                     phase_callback=planning_phase_callback,
+                                    reference_policy=reference_policy,
                                 )
                                 replanned_result = client.last_plan_result
                                 replanned_visual_result = client.last_visual_plan_result
@@ -3825,6 +3939,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--recording-codec", default="mp4v")
     parser.add_argument("--recording-warmup-frames", type=int)
+    parser.add_argument(
+        "--molmo-keypoints",
+        action="store_true",
+        help=(
+            "rerun Molmo keypoints every iteration and expose only confidence-filtered "
+            "points as task grasp references"
+        ),
+    )
+    parser.add_argument(
+        "--molmo-keypoint-confidence-threshold",
+        type=float,
+        default=DEFAULT_MOLMO_KEYPOINT_CONFIDENCE_THRESHOLD,
+        help=(
+            "accept a Molmo keypoint only when confidence is strictly greater "
+            "than this value"
+        ),
+    )
+    parser.add_argument("--molmo-python", type=Path)
+    parser.add_argument("--molmo-model", default="allenai/MolmoPoint-8B")
+    parser.add_argument(
+        "--molmo-keypoints-json",
+        type=Path,
+        help="optional JSON list of {name, description, color}; defaults to garment landmarks",
+    )
+    parser.add_argument(
+        "--molmo-keypoint-camera",
+        action="append",
+        choices=["A", "B"],
+        help="camera to query; repeat for both (default: A and B)",
+    )
+    parser.add_argument("--molmo-keypoint-timeout-s", type=int, default=900)
+    parser.add_argument(
+        "--molmo-allow-download",
+        action="store_true",
+        help="allow Molmo/Hugging Face files not already present locally",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument(
@@ -3854,6 +4004,20 @@ def main(argv: list[str] | None = None) -> int:
         recording_native=not args.recording_no_native,
         recording_codec=args.recording_codec,
         recording_warmup_frames=args.recording_warmup_frames,
+        molmo_keypoints=args.molmo_keypoints,
+        molmo_keypoint_confidence_threshold=args.molmo_keypoint_confidence_threshold,
+        molmo_python=args.molmo_python.resolve() if args.molmo_python else None,
+        molmo_model=args.molmo_model,
+        molmo_keypoints_path=(
+            args.molmo_keypoints_json.resolve()
+            if args.molmo_keypoints_json
+            else None
+        ),
+        molmo_keypoint_cameras=tuple(
+            args.molmo_keypoint_camera or ("A", "B")
+        ),
+        molmo_keypoint_timeout_s=args.molmo_keypoint_timeout_s,
+        molmo_allow_download=args.molmo_allow_download,
     )
 
 

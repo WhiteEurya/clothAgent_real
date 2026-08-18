@@ -164,6 +164,7 @@ class Backend(Protocol):
     def open_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
     def close_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
     def home(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
+    def perception_position(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def close(self) -> None: ...
 
 
@@ -190,6 +191,12 @@ class SimulatedBackend:
 
     def home(self, config: RobotConfig):
         self.pose = list(config.init_pose_mm_deg)
+        return list(self.pose), self.state
+
+    def perception_position(self, config: RobotConfig):
+        if config.perception_pose_mm_deg is None:
+            raise RobotExecutionError("perception_position is not configured")
+        self.pose = list(config.perception_pose_mm_deg)
         return list(self.pose), self.state
 
     def close(self) -> None:
@@ -249,6 +256,14 @@ class XArmBackend:
             "state": self.arm.get_state(),
             "error_warn": self.arm.get_err_warn_code(),
         }
+        angles = self.arm.get_servo_angle(is_radian=False)
+        if (
+            isinstance(angles, tuple)
+            and len(angles) >= 2
+            and int(angles[0]) == 0
+            and isinstance(angles[1], (list, tuple))
+        ):
+            state["servo_angles_deg"] = [float(value) for value in angles[1]]
         return pose, state
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
@@ -294,9 +309,87 @@ class XArmBackend:
         self._check("set_servo_angle(home)", code)
         return self._state()
 
+    def perception_position(self, config: RobotConfig):
+        target = config.perception_joints_deg
+        if target is None or len(target) != 7:
+            raise RobotExecutionError(
+                "perception_position requires seven configured joint angles"
+            )
+        code = self.arm.set_servo_angle(
+            angle=list(target),
+            speed=config.home_speed_deg_s,
+            mvacc=config.home_acceleration_deg_s2,
+            wait=True,
+            is_radian=False,
+        )
+        self._check("set_servo_angle(perception_position)", code)
+        actual = self._state()
+        state = actual[1]
+        actual_joints = state.get("servo_angles_deg") if isinstance(state, dict) else None
+        if not isinstance(actual_joints, list) or len(actual_joints) != 7:
+            raise RobotExecutionError(
+                "xArm did not report seven joint angles at perception_position"
+            )
+        max_error = max(
+            abs(observed - expected)
+            for observed, expected in zip(actual_joints, target)
+        )
+        if max_error > 1.0:
+            raise RobotExecutionError(
+                "perception_position joint verification failed: "
+                f"maximum error {max_error:.3f} deg exceeds 1.000 deg"
+            )
+        state["perception_position_max_joint_error_deg"] = max_error
+        return actual
+
     def close(self) -> None:
         if getattr(self.arm, "connected", False):
             self.arm.disconnect()
+
+
+def move_robot_to_perception_position(
+    config: RobotConfig,
+    *,
+    backend: Backend | None = None,
+) -> dict[str, Any]:
+    """Move through Home into the recorded camera-clear perception position.
+
+    This is an internal acquisition transition and is deliberately not exposed
+    to generated RobotAPI programs.  Joint-space motion preserves the recorded
+    arm shape; the stored TCP pose is retained as an audit/reference value.
+    """
+
+    if config.perception_joints_deg is None or config.perception_pose_mm_deg is None:
+        raise RobotExecutionError(
+            "perception_position is not configured; provide perception_pose_file"
+        )
+    if len(config.perception_joints_deg) != 7:
+        raise RobotExecutionError(
+            "perception_position requires seven configured joint angles"
+        )
+    if len(config.perception_pose_mm_deg) != 6:
+        raise RobotExecutionError(
+            "perception_position requires a six-value recorded TCP pose"
+        )
+    controller = backend or XArmBackend(config)
+    started_at = _timestamp()
+    try:
+        home_pose, home_state = controller.home(config)
+        perception_pose, perception_state = controller.perception_position(config)
+        return {
+            "name": "perception_position",
+            "started_at": started_at,
+            "completed_at": _timestamp(),
+            "sequence": ["home", "perception_position"],
+            "target_joint_angles_deg": list(config.perception_joints_deg),
+            "recorded_tcp_pose_mm_deg": list(config.perception_pose_mm_deg),
+            "home_actual_tcp_pose_mm_deg": home_pose,
+            "home_robot_state": home_state,
+            "actual_tcp_pose_mm_deg": perception_pose,
+            "robot_state": perception_state,
+        }
+    finally:
+        controller.close()
 
 
 class RobotAPI:

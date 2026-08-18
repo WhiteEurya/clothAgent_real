@@ -1067,6 +1067,20 @@ def _mask_boundary(mask: np.ndarray) -> np.ndarray:
     return mask & ~interior
 
 
+def _outer_mask_boundary(mask: np.ndarray) -> np.ndarray:
+    """Return only the outer silhouette, without outlining internal holes."""
+
+    numpy = _require_numpy()
+    mask = numpy.asarray(mask, dtype=bool)
+    try:
+        from scipy.ndimage import binary_fill_holes
+
+        outline_mask = binary_fill_holes(mask)
+    except ImportError:
+        outline_mask = mask
+    return _mask_boundary(outline_mask)
+
+
 def _solidify_largest_mask(
     mask: np.ndarray,
     *,
@@ -1086,16 +1100,23 @@ def _solidify_largest_mask(
             label,
         )
 
-        cleaned = binary_dilation(
-            mask,
-            structure=numpy.ones((3, 3), dtype=bool),
-            iterations=max(0, int(dilation_iterations)),
-        )
-        cleaned = binary_closing(
-            cleaned,
-            structure=numpy.ones((3, 3), dtype=bool),
-            iterations=max(0, int(closing_iterations)),
-        )
+        cleaned = mask.copy()
+        dilation_iterations = max(0, int(dilation_iterations))
+        closing_iterations = max(0, int(closing_iterations))
+        # scipy treats iterations=0 as "repeat until stable", not as a no-op.
+        # Skip the operator explicitly when the caller requests zero passes.
+        if dilation_iterations:
+            cleaned = binary_dilation(
+                cleaned,
+                structure=numpy.ones((3, 3), dtype=bool),
+                iterations=dilation_iterations,
+            )
+        if closing_iterations:
+            cleaned = binary_closing(
+                cleaned,
+                structure=numpy.ones((3, 3), dtype=bool),
+                iterations=closing_iterations,
+            )
         if fill_holes:
             cleaned = binary_fill_holes(cleaned)
         labels, count = label(cleaned, structure=numpy.ones((3, 3), dtype=numpy.uint8))
@@ -1214,11 +1235,85 @@ def _project_base_points_with_camera_depth(
     return x, y, z, visible
 
 
+def _camera_table_appearance_mask(
+    rgb: np.ndarray,
+    height_above_table_mm: np.ndarray,
+    valid_depth: np.ndarray,
+    *,
+    minimum_color_distance: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Separate garment appearance from the table in one camera's RGB space.
+
+    The fused-cloud table color is a useful lower bound, but cameras A and B
+    can have materially different white balance and illumination gradients.
+    Estimate a per-camera table color from bright pixels close to table zero,
+    then require the rendered garment silhouette to differ from that color.
+    """
+
+    numpy = _require_numpy()
+    rgb = numpy.asarray(rgb, dtype=numpy.uint8)
+    height_above_table_mm = numpy.asarray(height_above_table_mm, dtype=numpy.float64)
+    valid_depth = numpy.asarray(valid_depth, dtype=bool)
+    if rgb.shape[:2] != height_above_table_mm.shape:
+        raise PerceptionError("RGB and height map shapes do not match")
+    luma = (
+        0.2126 * rgb[..., 0].astype(numpy.float64)
+        + 0.7152 * rgb[..., 1].astype(numpy.float64)
+        + 0.0722 * rgb[..., 2].astype(numpy.float64)
+    )
+    near_table = (
+        valid_depth
+        & numpy.isfinite(height_above_table_mm)
+        & (numpy.abs(height_above_table_mm) <= 15.0)
+    )
+    if int(numpy.count_nonzero(near_table)) < 100:
+        return numpy.ones(height_above_table_mm.shape, dtype=bool), {
+            "applied": False,
+            "reason": "fewer than 100 near-table pixels",
+        }
+    bright_cut = float(numpy.percentile(luma[near_table], 60.0))
+    table_samples = near_table & (luma >= bright_cut)
+    if int(numpy.count_nonzero(table_samples)) < 40:
+        return numpy.ones(height_above_table_mm.shape, dtype=bool), {
+            "applied": False,
+            "reason": "fewer than 40 bright table samples",
+        }
+    table_rgb = numpy.median(
+        rgb[table_samples].astype(numpy.float64),
+        axis=0,
+    )
+    color_distance = numpy.linalg.norm(
+        rgb.astype(numpy.float64) - table_rgb[None, None, :],
+        axis=2,
+    )
+    table_color_noise = float(numpy.percentile(color_distance[table_samples], 50.0))
+    threshold = float(
+        max(
+            24.0,
+            float(minimum_color_distance),
+            min(140.0, table_color_noise * 6.0),
+        )
+    )
+    appearance_mask = color_distance >= threshold
+    return appearance_mask, {
+        "applied": True,
+        "bright_luma_cut": bright_cut,
+        "table_sample_count": int(numpy.count_nonzero(table_samples)),
+        "table_rgb_median": [float(value) for value in table_rgb],
+        "table_color_distance_p50": table_color_noise,
+        "minimum_color_distance": float(minimum_color_distance),
+        "applied_color_distance": threshold,
+        "appearance_pixel_count": int(numpy.count_nonzero(appearance_mask)),
+    }
+
+
 def _occlusion_aware_garment_mask(
     garment_points_base_mm: np.ndarray,
     frame: RGBDFrame,
     height_above_table_mm: np.ndarray,
     valid_depth: np.ndarray,
+    *,
+    minimum_table_color_distance: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Rasterize garment points without coloring nearer robot/fixture pixels.
 
@@ -1278,15 +1373,42 @@ def _occlusion_aware_garment_mask(
         & (height_above_table_mm >= -15.0)
         & (height_above_table_mm <= 160.0)
     )
-    garment_mask = silhouette & depth_consistent & plausible_height
+    appearance_mask = numpy.ones(depth.shape, dtype=bool)
+    appearance_diagnostics: dict[str, Any] = {
+        "applied": False,
+        "reason": "no minimum table-color distance supplied",
+    }
+    if minimum_table_color_distance is not None:
+        appearance_mask, appearance_diagnostics = _camera_table_appearance_mask(
+            frame.rgb,
+            height_above_table_mm,
+            valid_depth,
+            minimum_color_distance=float(minimum_table_color_distance),
+        )
+    unconnected_mask = (
+        silhouette & depth_consistent & plausible_height & appearance_mask
+    )
+    # Appearance filtering can split off dark cables, fixtures, or table-edge
+    # shadows. Keep the largest remaining image component without filling the
+    # holes back in, so occluders and rejected table pixels stay rejected.
+    garment_mask = _solidify_largest_mask(
+        unconnected_mask,
+        dilation_iterations=0,
+        closing_iterations=0,
+        fill_holes=False,
+    )
     diagnostics = {
         "projected_point_count": int(numpy.count_nonzero(visible)),
         "sparse_mask_pixels": int(numpy.count_nonzero(sparse_mask)),
         "silhouette_pixels": int(numpy.count_nonzero(silhouette)),
         "depth_consistent_pixels": int(numpy.count_nonzero(depth_consistent)),
+        "pre_component_garment_mask_pixels": int(
+            numpy.count_nonzero(unconnected_mask)
+        ),
         "garment_mask_pixels": int(numpy.count_nonzero(garment_mask)),
         "depth_consistency_tolerance_mm": 25.0,
         "height_interval_mm": [-15.0, 160.0],
+        "appearance_filter": appearance_diagnostics,
     }
     return garment_mask, sparse_mask, diagnostics
 
@@ -1484,6 +1606,7 @@ def _save_camera_height_heatmap(
     table_coefficients: np.ndarray,
     *,
     display_max_mm: float | None = None,
+    minimum_table_color_distance: float | None = None,
 ) -> dict[str, Any]:
     """Save camera-pixel height-above-table maps and heatmaps.
 
@@ -1508,6 +1631,7 @@ def _save_camera_height_heatmap(
             frame,
             height_above_table_mm,
             valid,
+            minimum_table_color_distance=minimum_table_color_distance,
         )
     )
     if display_max_mm is None:
@@ -1595,7 +1719,7 @@ def _save_camera_height_heatmap(
         higher_is_bright=True,
         value_range_mm=(0.0, display_max_mm),
     )
-    boundary = _mask_boundary(garment_mask)
+    boundary = _outer_mask_boundary(garment_mask)
     fold_edges, _ = _fold_edge_mask(height_above_table_mm, garment_mask)
     overlay = heatmap.copy()
     overlay[boundary] = numpy.asarray([255, 255, 255], dtype=numpy.uint8)
@@ -1605,16 +1729,19 @@ def _save_camera_height_heatmap(
     global_heatmap_name = f"camera_{frame.label}_height_map_heatmap_global.png"
     boundary_name = f"camera_{frame.label}_height_map_boundary.png"
     fold_edge_name = f"camera_{frame.label}_height_gradient_edges.png"
-    Image.fromarray(heatmap, mode="RGB").save(output_dir / heatmap_name)
-    Image.fromarray(global_heatmap, mode="RGB").save(output_dir / global_heatmap_name)
-    Image.fromarray(overlay, mode="RGB").save(output_dir / boundary_name)
-    Image.fromarray(fold_overlay, mode="RGB").save(output_dir / fold_edge_name)
+    Image.fromarray(heatmap).save(output_dir / heatmap_name)
+    Image.fromarray(global_heatmap).save(output_dir / global_heatmap_name)
+    Image.fromarray(overlay).save(output_dir / boundary_name)
+    Image.fromarray(fold_overlay).save(output_dir / fold_edge_name)
     coordinate_artifacts = _save_camera_coordinate_guide(
         output_dir,
         frame,
         config,
         height_above_table_mm,
-        coordinate_reference_mask,
+        # Use the final occlusion/appearance/depth-consistent garment mask.
+        # The sparse projected mask is retained for diagnostics, but it can
+        # contain isolated projected points on table/fixture pixels.
+        garment_mask,
     )
     return {
         "height_map": heatmap_name,
@@ -2283,6 +2410,7 @@ class ClothCenterPerception:
                 garment_points,
                 coefficients,
                 display_max_mm=heatmap_display_max_mm,
+                minimum_table_color_distance=garment_color_threshold,
             )
             camera_heatmaps[frame.label] = artifacts
             view.update(

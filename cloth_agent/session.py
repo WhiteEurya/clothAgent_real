@@ -96,6 +96,18 @@ class AgentSession:
                         "roll": robot_config.orientation_roll_deg,
                         "pitch": robot_config.orientation_pitch_deg,
                     },
+                    "perception_position": {
+                        "joint_angles_deg": (
+                            list(robot_config.perception_joints_deg)
+                            if robot_config.perception_joints_deg is not None
+                            else None
+                        ),
+                        "tcp_pose_mm_deg": (
+                            list(robot_config.perception_pose_mm_deg)
+                            if robot_config.perception_pose_mm_deg is not None
+                            else None
+                        ),
+                    },
                     "motion": {
                         "speed_mm_s": robot_config.speed_mm_s,
                         "acceleration_mm_s2": robot_config.acceleration_mm_s2,

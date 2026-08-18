@@ -40,6 +40,7 @@ from cloth_agent.robot_api import (
     SimulatedBackend,
     _controller_trajectory_with_arm,
     _validated_live_tcp_offset,
+    move_robot_to_perception_position,
 )
 from cloth_agent.randomization import (
     build_garment_randomization_plan,
@@ -257,6 +258,58 @@ def test_live_tcp_offset_is_one_time_hardware_guard() -> None:
     config.validate_live_tcp_offset([0, 0, 172, 0, 0, 0])
     with pytest.raises(ConfigError, match="TCP offset changed"):
         config.validate_live_tcp_offset([0, 0, 160, 0, 0, 0])
+
+
+def test_recorded_perception_position_loads_from_default_robot_config() -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = RobotConfig.load(root, root / "config" / "robot.example.json")
+    assert config.perception_joints_deg == pytest.approx(
+        (
+            13.596346,
+            -6.945108,
+            -11.614542,
+            128.426026,
+            1.351092,
+            70.942374,
+            187.543296,
+        )
+    )
+    assert config.perception_pose_mm_deg == pytest.approx(
+        (478.214813, 9.459489, 812.595703, 159.939106, 62.538974, 161.782139)
+    )
+
+
+def test_perception_position_transition_is_home_then_recorded_joint_pose() -> None:
+    config = RobotConfig(
+        **{
+            **robot_config().__dict__,
+            "perception_joints_deg": (1, 2, 3, 4, 5, 6, 7),
+            "perception_pose_mm_deg": (480, 10, 810, 160, 63, 162),
+        }
+    )
+
+    class RecordingBackend(SimulatedBackend):
+        def __init__(self, robot: RobotConfig):
+            super().__init__(robot)
+            self.calls: list[str] = []
+
+        def home(self, robot: RobotConfig):
+            self.calls.append("home")
+            return super().home(robot)
+
+        def perception_position(self, robot: RobotConfig):
+            self.calls.append("perception_position")
+            return super().perception_position(robot)
+
+        def close(self):
+            self.calls.append("close")
+
+    backend = RecordingBackend(config)
+    outcome = move_robot_to_perception_position(config, backend=backend)
+    assert backend.calls == ["home", "perception_position", "close"]
+    assert outcome["sequence"] == ["home", "perception_position"]
+    assert outcome["target_joint_angles_deg"] == [1, 2, 3, 4, 5, 6, 7]
+    assert outcome["actual_tcp_pose_mm_deg"] == [480, 10, 810, 160, 63, 162]
 
 
 class FakeReadOnlyArm:

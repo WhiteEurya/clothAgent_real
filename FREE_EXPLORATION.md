@@ -112,6 +112,39 @@ Use `--max-iterations N` to cap the run; the default `--max-iterations 0` means
 continuous opening until Claude judges the garment reasonably maximally spread
 or safe grounded continuation is no longer possible.
 
+To use confidence-filtered Molmo keypoints as the only task grasp references,
+add `--molmo-keypoints --molmo-keypoint-confidence-threshold 0.60`. This runs
+Molmo again after every A/B capture. A point is exposed as an `Rxxx` only when
+its point-token confidence is strictly greater than the threshold and its local
+calibrated RGB-D geometry is valid. If zero points pass, the iteration hard
+stops before Claude planning, preflight, IK, or robot motion. Raw/rejected
+points and their scores remain saved under the iteration's `molmo_keypoints/`
+directory for diagnosis.
+
+For this policy, prefer the terminal-only entry point so Viser/browser GPU
+memory is not present while loading MolmoPoint-8B:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.molmo_keypoint_cli \
+  --project-root . \
+  --run-id molmo_keypoint_cli_01 \
+  --perception-config config/perception.free_exploration.json \
+  --confidence-threshold 0.60 \
+  --max-iterations 1
+```
+
+Stop the previous Viser process and close its browser tab first. The CLI checks
+for at least `20000 MiB` of free GPU memory before each Molmo model load and
+fails immediately with the current/required values when that hard capability
+gate is not met.
+
+Add `--enable-real --max-iterations 0` only for continuous physical execution.
+The CLI prints all stage/keypoint/plan/IK/execution/evaluation results and
+checkpoints each iteration under
+`runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/`. Molmo stdout/stderr is
+streamed to the same terminal and retained in the iteration directory.
+
 The visual-planning timeout is `400` seconds and the final-grounding timeout is
 `120` seconds. A planning or evaluation timeout is terminal for that run: it is saved as
 `ExplorationTimeoutError`, the loop stops immediately, and no Claude replan or
@@ -157,25 +190,25 @@ every `move(x,y,z,yaw)` waypoint itself, including approach, grasp, lift,
 transfer, and release height. The runtime validates those exact coordinates and
 the controller IK before any physical execution.
 
-## Independent overview RealSense
+## Standalone Camera A RealSense monitor
 
-The additional RealSense can be used as a separate OpenCV overview stream. It
-is not added to the A/B perception configuration and does not participate in
-Molmo, Claude targeting, or IK.
+Camera A can be opened as a separate OpenCV stream for diagnostics. It uses the
+same manual RGB controls as the A/B perception configuration and must not run
+at the same time as the automatic A/B loop, because both processes would own
+the same device.
 
-For the currently detected overview device (`261722071490`):
+For Camera A (`261722071490`):
 
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent.camera_window \
   --project-root . \
   --serial 261722071490 \
-  --label Overview \
+  --label A \
   --width 640 \
   --height 480 \
   --fps 30
 ```
 
-The window is named `CamOverview live monitor (261722071490)`. Close it with
-`q`, `Esc`, or the window close button. Keep this process separate from the
-automatic A/B loop; it only opens the new serial and therefore does not compete
-with CamA or CamB.
+The window is named `CamA live monitor (261722071490)`. Close it with `q`,
+`Esc`, or the window close button. Keep this process separate from the
+automatic A/B loop because it competes with CamA ownership.

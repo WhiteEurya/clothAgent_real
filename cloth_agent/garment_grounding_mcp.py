@@ -109,8 +109,10 @@ class GarmentGrounding:
         height = float(match["height_above_table_mm"])
         if not math.isfinite(height):
             raise GroundingToolError("reference height is non-finite")
-        return {
-            "measurement_kind": "uniform_calibrated_reference",
+        result = {
+            "measurement_kind": str(
+                guide.get("measurement_kind", "uniform_calibrated_reference")
+            ),
             "camera": label,
             "reference_id": identifier,
             "pixel_xy": [int(value) for value in match["pixel_xy"]],
@@ -120,8 +122,27 @@ class GarmentGrounding:
             "coordinate_frame": str(guide.get("coordinate_frame", "robot_base_mm")),
             "reference_semantics": str(guide.get("reference_semantics", "")),
             "valid": True,
-            "warning": "Measured coordinate only; this reference is not a ranked grasp candidate.",
+            "warning": str(
+                guide.get(
+                    "warning",
+                    "Measured coordinate only; this reference is not a ranked grasp candidate.",
+                )
+            ),
         }
+        for key in (
+            "name",
+            "description",
+            "source_pixel_xy",
+            "confidence",
+            "confidence_threshold",
+            "confidence_definition",
+            "local_radius_px",
+            "local_sample_count",
+            "local_base_z_spread_mm",
+        ):
+            if key in match:
+                result[key] = match[key]
+        return result
 
     def nearest_reference(self, camera: str, x_px: int, y_px: int) -> dict[str, Any]:
         """Return the exact Rxxx sample nearest to a selected image pixel."""

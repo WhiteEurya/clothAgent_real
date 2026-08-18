@@ -2,7 +2,7 @@
   "cameras": [
     {
       "label": "A",
-      "serial": "243722070226",
+      "serial": "261722071490",
       "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_A.yaml",
       "color_exposure": 400,
       "color_white_balance": 3800

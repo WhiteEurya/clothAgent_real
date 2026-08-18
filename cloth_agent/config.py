@@ -108,6 +108,8 @@ class RobotConfig:
     init_pose_mm_deg: tuple[float, ...]
     orientation_roll_deg: float
     orientation_pitch_deg: float
+    perception_joints_deg: tuple[float, ...] | None = None
+    perception_pose_mm_deg: tuple[float, ...] | None = None
     expected_tcp_offset_mm_deg: tuple[float, ...] = (0.0, 0.0, 172.0, 0.0, 0.0, 0.0)
     tcp_offset_tolerance: float = 1.0
     workspace_margin_mm: float = 0.0
@@ -145,6 +147,41 @@ class RobotConfig:
         pose_doc = json.loads(pose_path.read_text(encoding="utf-8"))
         joints = tuple(_number(v, "init joint") for v in pose_doc["joint_angles_deg"])
         pose = tuple(_number(v, "init pose") for v in pose_doc["tcp_pose_mm_deg"])
+        perception_joints: tuple[float, ...] | None = None
+        perception_pose: tuple[float, ...] | None = None
+        perception_path_value: str | None = None
+        inline_perception = raw.get("perception_position")
+        if isinstance(inline_perception, dict) and inline_perception.get(
+            "joint_angles_deg"
+        ) is not None:
+            perception_joints = tuple(
+                _number(v, "perception joint")
+                for v in inline_perception["joint_angles_deg"]
+            )
+            perception_pose = tuple(
+                _number(v, "perception pose")
+                for v in inline_perception["tcp_pose_mm_deg"]
+            )
+        else:
+            perception_path_value = raw.get(
+                "perception_pose_file", "data/robot/xarm_perception_pose.json"
+            )
+        if perception_joints is None and perception_path_value is not None:
+            perception_path = Path(perception_path_value)
+            if not perception_path.is_absolute():
+                perception_path = project_root / perception_path
+            if perception_path.is_file():
+                perception_doc = json.loads(
+                    perception_path.read_text(encoding="utf-8")
+                )
+                perception_joints = tuple(
+                    _number(v, "perception joint")
+                    for v in perception_doc["joint_angles_deg"]
+                )
+                perception_pose = tuple(
+                    _number(v, "perception pose")
+                    for v in perception_doc["tcp_pose_mm_deg"]
+                )
         orientation = raw.get("fixed_orientation_deg", {})
         roll = _number(orientation.get("roll", pose[3]), "fixed roll")
         pitch = _number(orientation.get("pitch", pose[4]), "fixed pitch")
@@ -161,6 +198,8 @@ class RobotConfig:
             init_pose_mm_deg=pose,
             orientation_roll_deg=roll,
             orientation_pitch_deg=pitch,
+            perception_joints_deg=perception_joints,
+            perception_pose_mm_deg=perception_pose,
             expected_tcp_offset_mm_deg=tcp_offset,
             tcp_offset_tolerance=_number(
                 raw.get("tcp_offset_tolerance", 1.0), "TCP offset tolerance"
@@ -209,6 +248,14 @@ class RobotConfig:
             )
         if self.gripper_speed <= 0:
             raise ConfigError("real gripper speed must be positive")
+        if self.perception_joints_deg is not None and len(
+            self.perception_joints_deg
+        ) != 7:
+            raise ConfigError("perception position must contain seven joint angles")
+        if self.perception_pose_mm_deg is not None and len(
+            self.perception_pose_mm_deg
+        ) != 6:
+            raise ConfigError("perception TCP pose must contain six values")
         if len(self.expected_tcp_offset_mm_deg) != 6:
             raise ConfigError("expected_tcp_offset_mm_deg must contain six values")
         if self.tcp_offset_tolerance <= 0:

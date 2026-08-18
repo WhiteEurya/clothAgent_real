@@ -227,6 +227,7 @@ def test_auto_plan_runs_visual_then_final_grounding_stage(
         session,  # type: ignore[arg-type]
         "open garment",
         phase_callback=lambda phase, event, value: events.append((phase, event)),
+        reference_policy="molmo_confidence_filtered_keypoints",
     )
     assert result == proposal
     assert events == [
@@ -240,6 +241,8 @@ def test_auto_plan_runs_visual_then_final_grounding_stage(
     assert "zero-shot visual stage" in seen["visual_prompt"]
     assert "Previous physical outcomes" not in seen["visual_prompt"]
     assert "workspace bounds" not in seen["visual_prompt"].lower()
+    assert "only allowed grasp references" in seen["visual_prompt"]
+    assert "below-threshold/rejected keypoint" in seen["visual_prompt"]
     assert seen["grounding_history"] == []
     assert set(client.last_plan_timing) == {
         "visual_planning_s",

@@ -243,7 +243,7 @@ can still prevent physical return, but the attempt and error are never hidden.
 
 `config/perception.example.json` is pre-populated with the serials and A/B
 extrinsic paths found in the current calibration project. Verify that camera A
-is still serial `243722070226`, camera B is `261822074715`, and that the two
+is still serial `261722071490`, camera B is `261822074715`, and that the two
 YAML files match the physical camera mounts before use.
 
 Both cameras must provide enough calibrated depth for the fused cloud. The
@@ -297,6 +297,163 @@ The active perception config keeps RGB auto-white-balance disabled and uses a
 manual `color_white_balance` of 3800 K for both Camera A and B (Camera A also
 uses the configured manual exposure). The value was selected from a no-motion
 white-balance sweep saved under `results/white_balance_sweep/`.
+
+### Molmo confidence-filtered keypoint grasp-reference pipeline
+
+The opt-in Molmo keypoint pipeline reruns after every synchronized A/B
+observation. Molmo is queried independently once per named keypoint and camera.
+For every query, the worker saves either one image point or `not_found`, plus a
+confidence score. The score is the geometric mean of the model probabilities
+for the three generated point-location tokens; it is a model filtering score,
+not a calibrated grasp-success probability.
+
+Only points satisfying the strict policy `confidence > threshold` and having a
+finite calibrated local XYZ/height surface become the current task's `Rxxx`
+grasp references. The default threshold is `0.60`. Below-threshold, ambiguous,
+missing, or geometrically invalid points remain in the diagnostic manifest but
+cannot be returned by the grounding MCP tool. If no point passes, the automatic
+loop stops before Claude planning and before any robot command.
+
+The recommended entry point is now the headless CLI. It does not start Viser or
+a browser, so it avoids their GPU-memory overhead. Every phase is printed to
+the terminal, including the Molmo worker's raw loading/errors, every keypoint
+confidence decision, Claude's selected reference and action JSON, generated
+restricted source, preflight/controller IK, execution, and evaluation.
+Interactive terminals use status colors and symbols. Each line starts with the
+local clock, total run elapsed time, iteration, and current phase, for example:
+
+```text
+10:42:07  +00:00.0   RUN  STARTUP               • headless Molmo-keypoint loop started
+10:42:08  +00:01.1  I001  PERCEPTION            ▶ capturing synchronized Camera A/B RGB-D
+10:42:11  +00:04.2  I001  PERCEPTION            ✓ saved dense A/B result · phase 00:03.1
+10:42:12  +00:05.0  I001  MOLMO                 ▶ loading/inferencing keypoint queries
+10:42:22  +00:15.0  I001  MOLMO                 … still running · phase elapsed 00:10.0
+10:42:23  +00:16.3        MOLMO/WORKER          │ Loading checkpoint shards: 4/8
+```
+
+The `+MM:SS.s` (or `+HH:MM:SS.s`) field is elapsed time since launch; completed
+phase lines also show that phase's own duration. A heartbeat prints the active
+phase every 10 seconds during quiet camera, Molmo, Claude, IK, execution, and
+evaluation work. Configure it with `--heartbeat-s N`, use `--heartbeat-s 0` to
+disable it, and use `--no-color` for plain redirected/log-file output.
+Stop any older `cloth_agent.auto_exploration` process and close its Viser
+browser tab before starting the CLI; otherwise those graphics allocations are
+still present. Before each Molmo launch, the CLI hard-checks GPU 0 and requires
+at least `20000 MiB` free by default. This avoids loading most of the model only
+to fail on the last checkpoint shard. Override the gate with
+`--min-gpu-free-mib N` or disable it with `--min-gpu-free-mib 0` only when the
+model/memory requirement is known to differ.
+
+Run one dry iteration through Molmo, Claude, static preflight, and controller
+IK without sending robot motion:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.molmo_keypoint_cli \
+  --project-root . \
+  --run-id molmo_keypoint_cli_01 \
+  --perception-config config/perception.free_exploration.json \
+  --confidence-threshold 0.60 \
+  --max-iterations 1
+```
+
+For continuous physical execution, add the explicit real-execution flag and
+use `0` for an unbounded iteration count:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.molmo_keypoint_cli \
+  --project-root . \
+  --run-id molmo_keypoint_cli_real_01 \
+  --perception-config config/perception.free_exploration.json \
+  --confidence-threshold 0.60 \
+  --max-iterations 0 \
+  --enable-real
+```
+
+The CLI never exposes real motion without `--enable-real`. For a camera/Molmo/
+Claude-only diagnostic that also avoids connecting to xArm for read-only IK,
+add `--skip-controller-ik` to a dry run.
+
+To inspect the saved intermediate images while the CLI is running, start the
+separate lightweight artifact viewer in another terminal:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.molmo_artifact_viewer \
+  runs/molmo_keypoint_cli_real_20260818_01
+```
+
+The viewer only polls existing PNG/JSON files. It does not open either camera,
+connect to xArm, load Molmo/Claude, use CUDA, start a browser, or start Viser.
+It keeps one resizable OpenCV window with four pages: overview, A/B perception
+with separate raw camera-Z depth and garment-only height-above-table maps,
+all/accepted Molmo keypoints, and before/after RGB. The raw-depth tile is in
+metres; the height tile is `surface Z - fitted table Z` in millimetres and uses
+a per-camera table-appearance filter so solidified silhouettes cannot leak
+white table pixels into the garment heatmap. Calibrated coordinate references
+are generated from that same final mask; the viewer also filters legacy guides
+without renumbering their saved `Rxxx` IDs, so references outside the garment
+are not shown as valid coordinates.
+Press `1`-`4` to select a page, left/right (or `a`/`d`) to move between pages,
+`r` to refresh, and `q` or Escape to close it. The title area follows the same
+iteration, current phase, status, elapsed time, and heartbeat message as the
+CLI. Point it at the run directory and it automatically follows the newest
+`results/molmo_keypoint_cli/<timestamp>` child.
+
+For a zero-GUI snapshot instead, add:
+
+```bash
+--page 1 --snapshot /tmp/clothagent_artifacts.png
+```
+
+Every launch creates
+`runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/` with:
+
+```text
+events.jsonl                         # every terminal phase event
+summary.json                        # run status and per-iteration summary
+iteration_001.json                  # top-level iteration checkpoint
+iteration_001/
+  result.json                       # updated after every completed phase
+  molmo_keypoints/                  # raw worker log, points, overlays, guides
+  proposal.json
+  proposal.py
+  preflight.json
+  controller_ik.json
+  execution.json                    # real mode only
+  mandatory_return_home.json        # real mode only
+  after_capture/                    # real mode only
+  evaluation.json                   # real mode only
+```
+
+The Viser-based `cloth_agent.auto_exploration --molmo-keypoints` entry point is
+still available for visual debugging, but is no longer required by this
+pipeline.
+
+Use repeated `--keypoint-camera A|B` options to restrict CLI inference to a
+camera, or `--keypoints-json PATH` to supply up to 20 custom
+`{name, description, color}` records. Without those options, both cameras and
+the default garment landmarks are used. The corresponding legacy Viser flags
+retain their `--molmo-keypoint-camera` and `--molmo-keypoints-json` names.
+
+The same pipeline can be run against an existing captured workspace without
+starting Claude or the robot:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  -m cloth_agent.molmo_keypoint_pipeline \
+  --project-root . \
+  --perception-dir runs/RUN_ID/workspace/perception_views \
+  --output-dir runs/RUN_ID/results/molmo_keypoints/manual_001 \
+  --confidence-threshold 0.60
+```
+
+Each run writes the raw Molmo records, accepted-only overlays, all-candidate
+diagnostic overlays, per-camera filtered coordinate guides, and
+`molmo_keypoint_grasp_references.json`. Installing the result replaces only the
+workspace's current `camera_*_coordinate_guide.json`; the original uniform
+guide is preserved as `camera_*_uniform_coordinate_guide.json`.
 
 ### Claude plan preview with a hard stop before execution
 
