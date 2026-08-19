@@ -298,6 +298,7 @@ class AgentSession:
                 "height_map_global",
                 "height_map_boundary",
                 "height_map_path",
+                "garment_mask",
                 "height_gradient_overlay",
                 "base_xyz_map",
                 "coordinate_guide",
@@ -403,6 +404,18 @@ class AgentSession:
         notes: str = "",
     ) -> dict[str, Any]:
         """Execute one rollout and always attempt Home after physical Claude motion."""
+
+        if real:
+            metadata = json.loads(
+                (self.run_dir / "run_metadata.json").read_text(encoding="utf-8")
+            )
+            if (
+                metadata.get("last_perception_mode") == "single_camera_rgbd"
+                and not single_view_confirmed
+            ):
+                raise PermissionError(
+                    "single-camera RGB-D plan requires explicit single-view confirmation"
+                )
 
         result: dict[str, Any] | None = None
         self.last_return_home_outcome = None

@@ -112,14 +112,15 @@ Use `--max-iterations N` to cap the run; the default `--max-iterations 0` means
 continuous opening until Claude judges the garment reasonably maximally spread
 or safe grounded continuation is no longer possible.
 
-To use confidence-filtered Molmo keypoints as the only task grasp references,
-add `--molmo-keypoints --molmo-keypoint-confidence-threshold 0.60`. This runs
-Molmo again after every A/B capture. A point is exposed as an `Rxxx` only when
-its point-token confidence is strictly greater than the threshold and its local
-calibrated RGB-D geometry is valid. If zero points pass, the iteration hard
-stops before Claude planning, preflight, IK, or robot motion. Raw/rejected
-points and their scores remain saved under the iteration's `molmo_keypoints/`
-directory for diagnosis.
+The current headless path uses Molmo only for a few high-confidence semantic
+anchors. The default strict threshold is `0.80`: anchors equal to or below the
+threshold are withheld from Claude. Accepted `Sxxx` anchors describe uncertain
+part-associated regions and are never grasp points. A semantic-state builder
+adds centroid relations/hypotheses, Claude chooses the garment relation to
+change, and deterministic local geometry then creates `Rxxx` grasp candidates
+only inside the selected region. If no `Sxxx` survives confidence, final-mask,
+duplicate, and cross-view consistency gates, the iteration stops before Claude
+planning or robot motion.
 
 For this policy, prefer the terminal-only entry point so Viser/browser GPU
 memory is not present while loading MolmoPoint-8B:
@@ -130,7 +131,7 @@ memory is not present while loading MolmoPoint-8B:
   --project-root . \
   --run-id molmo_keypoint_cli_01 \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.60 \
+  --confidence-threshold 0.80 \
   --max-iterations 1
 ```
 
@@ -140,18 +141,28 @@ fails immediately with the current/required values when that hard capability
 gate is not met.
 
 Add `--enable-real --max-iterations 0` only for continuous physical execution.
-The CLI prints all stage/keypoint/plan/IK/execution/evaluation results and
+The CLI prints semantic anchors/state/strategy, local geometry, action scope,
+IK/execution/evaluation, and structured-experience results and
 checkpoints each iteration under
 `runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/`. Molmo stdout/stderr is
-streamed to the same terminal and retained in the iteration directory.
+streamed to the same terminal and retained in the iteration directory. Each
+Claude stage also saves its complete prompt, raw stdout/stderr, duration, and
+validated result in the same iteration directory. In local-grasp overlays,
+green Rxxx markers are selectable and red crosses are deterministic
+workspace/IK or persistence-gate rejections.
 
-The visual-planning timeout is `400` seconds and the final-grounding timeout is
-`120` seconds. A planning or evaluation timeout is terminal for that run: it is saved as
-`ExplorationTimeoutError`, the loop stops immediately, and no Claude replan or
-additional robot execution is attempted. Timeout exception text is kept concise so a
-previous command or prompt is never recursively inserted into another prompt.
+The semantic-strategy timeout is `400` seconds and the scoped-action timeout is
+`120` seconds. Schema/capability errors receive at most one compact correction;
+budget, missing-measurement, and exhausted-hypothesis gates stop before further
+compute or motion. A planning/evaluation timeout is terminal for that run.
+Every semantic action is one grasp/release cycle. The runtime limits both its
+lateral/lift authority and the number of post-grasp waypoints, so Claude cannot
+create its own multi-probe loop. After BAD_DIRECTION, the next iteration keeps
+the supported semantic hypothesis and local geometry family while changing the
+transport profile; after structure-engagement failure, it changes local grasp
+and returns to acquisition scope.
 
-Viser shows a live `Claude stage timer` panel with the active stage, Stage-1
+The legacy Viser console still shows a live `Claude stage timer` panel with the active stage, Stage-1
 reference-attempt count, elapsed time/timeout, and completed duration for each stage. The same values are saved
 under `planning_timing` in the iteration record, while the stage-one result is
 saved separately as `claude_visual_plan.json`.

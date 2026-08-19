@@ -870,6 +870,7 @@ def test_single_view_real_run_requires_extra_confirmation(tmp_path: Path) -> Non
     metadata_path.write_text(json.dumps(metadata))
     with pytest.raises(PermissionError, match="single-camera"):
         session.run_experiment("experiment_001.py", real=True, confirmed=True)
+    assert session.last_return_home_outcome is None
 
 
 def test_automatic_plan_caps_lift_at_safe_upper_z(tmp_path: Path) -> None:

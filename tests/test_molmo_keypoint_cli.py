@@ -10,10 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
-from cloth_agent.auto_exploration import (
-    ClaudeVisualPlanResult,
-    VisualPlanDecision,
-)
 from cloth_agent.config import RobotConfig, WorkspaceBounds
 from cloth_agent.free_exploration import validate_exploration_payload
 from cloth_agent.molmo_keypoint_cli import (
@@ -24,6 +20,12 @@ from cloth_agent.molmo_keypoint_cli import (
 from cloth_agent.molmo_keypoint_pipeline import (
     KeypointSpec,
     MolmoKeypointPipelineError,
+)
+from cloth_agent.semantic_claude import SemanticActionResult
+from cloth_agent.semantic_pipeline import (
+    SemanticStateBuilder,
+    validate_semantic_evaluation_payload,
+    validate_semantic_strategy_payload,
 )
 
 
@@ -51,6 +53,7 @@ class _Session:
         self.results = self.run_dir / "results"
         self.workspace.mkdir(parents=True)
         self.results.mkdir(parents=True)
+        (self.workspace / "perception_views").mkdir()
         self.robot_config = RobotConfig(
             robot_ip="127.0.0.1",
             boundaries=WorkspaceBounds(
@@ -84,57 +87,146 @@ class _Session:
 class _Client:
     def __init__(self, proposal):
         self.proposal = proposal
-        decision = VisualPlanDecision(
-            garment_observation="fold",
-            opening_strategy="lift edge",
-            confidence=0.8,
-            selected_reference={
-                "camera": "A",
-                "reference_id": "R001",
-                "reason": "high-confidence visible boundary",
+        self.last_strategy_log = None
+        self.last_action_log = None
+        self.last_evaluation_log = None
+
+    def plan_strategy(self, *, semantic_state, **kwargs):
+        strategy = validate_semantic_strategy_payload(
+            {
+                "semantic_objective": {
+                    "target_part": "sleeve_end",
+                    "desired_change": "move outward from torso",
+                },
+                "hypothesis": {
+                    "state": "possible_inward_fold",
+                    "confidence": 0.72,
+                    "rationale": "Anchor lies near the garment centroid.",
+                },
+                "local_search_region": {
+                    "around_anchor_id": "S001",
+                    "radius_px": 40,
+                    "include_connected_fold_edge": True,
+                },
+                "grasp_requirement": {
+                    "prefer": ["free_edge"],
+                    "avoid": ["flat_interior"],
+                },
+                "expected_semantic_observation": "Sleeve-associated edge moves outward.",
+                "safety_notes": ["Respect runtime action scope."],
             },
-            motion_intent="lift and lay down",
-            expected_observation="more spread",
-            safety_notes=("stay inside bounds",),
+            semantic_state=semantic_state,
         )
-        self.last_visual_plan_result = ClaudeVisualPlanResult(
-            prompt="visual",
-            command=("claude",),
-            returncode=0,
-            stdout="{}",
-            stderr="",
-            created_at="now",
-            duration_s=1.0,
-            decision=decision,
+        self.last_strategy_log = {"validated": strategy.as_dict()}
+        return strategy
+
+    def propose_action(self, *, local_geometry, **kwargs):
+        candidate = local_geometry["candidates"][0]
+        result = SemanticActionResult(
+            selected_candidate_id=candidate["reference_id"],
+            proposal=self.proposal,
+            scope_validation={
+                "grasp_xy_error_mm": 0.0,
+                "max_lateral_mm": 3.0,
+                "max_lift_mm": 15.0,
+            },
         )
-        self.last_plan_result = None
-        self.last_evaluation_result = None
-        self.last_plan_timing = {
-            "visual_planning_s": 1.0,
-            "final_grounding_s": 1.0,
-        }
+        self.last_action_log = {"validated": result.as_dict()}
+        return result
 
-    def plan(self, *args, phase_callback=None, reference_policy=None, **kwargs):
-        assert reference_policy == "molmo_confidence_filtered_keypoints"
-        if phase_callback:
-            phase_callback("visual_planning", "started", 400.0)
-            phase_callback("visual_planning", "completed", 1.0)
-            phase_callback("final_grounding", "started", 120.0)
-            phase_callback("final_grounding", "completed", 1.0)
-        return self.proposal
-
-    def evaluate(self, *args, **kwargs):
-        self.last_evaluation_result = {"status": "fake_evaluation"}
-        return SimpleNamespace(
-            as_dict=lambda: {
-                "task_progress": {"status": "NEUTRAL", "confidence": 0.8},
+    def evaluate(self, **kwargs):
+        evaluation = validate_semantic_evaluation_payload(
+            {
+                "semantic_target": {
+                    "status": "SUPPORTED",
+                    "confidence": 0.8,
+                    "evidence": ["Target region remained visible."],
+                    "hypothesis": "sleeve_end:possible_inward_fold",
+                },
+                "grasp_acquisition": {
+                    "status": "SUCCESS",
+                    "confidence": 0.8,
+                    "evidence": ["Associated fabric lifted."],
+                },
+                "structure_engagement": {
+                    "status": "SUCCESS",
+                    "confidence": 0.8,
+                    "evidence": ["Sleeve-associated edge moved."],
+                },
+                "opening_relevance": {
+                    "status": "SUPPORTED",
+                    "confidence": 0.7,
+                    "evidence": ["Local overlap decreased."],
+                },
+                "transport": {
+                    "status": "GOOD",
+                    "confidence": 0.7,
+                    "evidence": ["Motion was outward."],
+                },
+                "laydown": {
+                    "status": "SUCCESS",
+                    "confidence": 0.7,
+                    "evidence": ["Fabric was released on the table."],
+                },
+                "task_progress": {
+                    "status": "IMPROVED",
+                    "confidence": 0.8,
+                    "metrics": {
+                        "visible_area_delta": "INCREASED",
+                        "overlap_delta": "DECREASED",
+                        "relief_delta": "UNCHANGED",
+                        "boundary_change": "Sleeve-associated boundary moved outward.",
+                    },
+                },
                 "earliest_failure_stage": "NONE",
-            },
-            task_progress=SimpleNamespace(status="NEUTRAL", confidence=0.8),
-            earliest_failure_stage="NONE",
-            stop=True,
-            reason="test completed",
+                "next_experiment": {
+                    "keep": ["semantic_target"],
+                    "change": [],
+                    "reason": "Test iteration completed.",
+                },
+            }
         )
+        self.last_evaluation_log = {"validated": evaluation.as_dict()}
+        return evaluation
+
+
+class _LocalGrounder:
+    def ground(self, *, artifact_dir, strategy, **kwargs):
+        artifact_dir.mkdir(parents=True)
+        overlay = artifact_dir / "camera_A_local_grasp_candidates.png"
+        Image.new("RGB", (8, 6), (0, 255, 0)).save(overlay)
+        manifest = {
+            "status": "READY",
+            "semantic_anchor_id": strategy.anchor_id,
+            "target_part": strategy.target_part,
+            "camera": "A",
+            "source_image": str(overlay),
+            "semantic_anchor_pixel_xy": [4, 3],
+            "candidate_count": 1,
+            "candidates": [
+                {
+                    "reference_id": "R001",
+                    "semantic_anchor_id": strategy.anchor_id,
+                    "target_part": strategy.target_part,
+                    "pixel_xy": [4, 3],
+                    "base_xyz_mm": [520.0, -40.0, 18.0],
+                    "height_above_table_mm": 8.0,
+                    "feature": "free_edge",
+                    "free_boundary": True,
+                    "height_step_mm": 6.0,
+                    "relief_above_local_median_mm": 5.0,
+                    "local_gradient_mm_per_px": 2.0,
+                    "suggested_yaw_deg": 0.0,
+                    "graspability_score": 0.9,
+                }
+            ],
+            "overlay": str(overlay),
+            "coordinate_guide": str(artifact_dir / "guide.json"),
+        }
+        (artifact_dir / "local_geometry_candidates.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
 
 
 def _proposal():
@@ -147,16 +239,16 @@ def _proposal():
                 {"name": "open_gripper", "args": {}},
                 {
                     "name": "move",
-                    "args": {"x": 520, "y": -40, "z": 80, "yaw": 0},
+                    "args": {"x": 520, "y": -40, "z": 60, "yaw": 0},
                 },
                 {
                     "name": "move",
-                    "args": {"x": 520, "y": -40, "z": 15, "yaw": 0},
+                    "args": {"x": 520, "y": -40, "z": 20, "yaw": 0},
                 },
                 {"name": "close_gripper", "args": {}},
                 {
                     "name": "move",
-                    "args": {"x": 530, "y": -40, "z": 100, "yaw": 0},
+                    "args": {"x": 523, "y": -40, "z": 35, "yaw": 0},
                 },
                 {"name": "open_gripper", "args": {}},
             ],
@@ -184,23 +276,35 @@ def _saved_perception(tmp_path: Path):
 
 def _manifest(artifact_dir: Path) -> dict:
     artifact_dir.mkdir(parents=True)
-    overlay = artifact_dir / "camera_A_molmo_keypoint_references.png"
+    overlay = artifact_dir / "camera_A_semantic_anchors.png"
     Image.new("RGB", (8, 6), (0, 255, 0)).save(overlay)
     manifest = {
         "status": "READY",
-        "accepted_reference_count": 1,
-        "confidence_threshold": 0.6,
+        "anchor_count": 1,
+        "confidence_threshold": 0.8,
+        "anchors": [
+            {
+                "anchor_id": "S001",
+                "type": "sleeve_end",
+                "camera": "A",
+                "pixel_xy": [4, 3],
+                "base_xyz_mm": [520.0, -40.0, 18.0],
+                "height_above_table_mm": 8.0,
+                "local_base_z_spread_mm": 3.0,
+                "confidence": 0.9,
+            }
+        ],
         "views": [
             {
                 "camera": "A",
                 "accepted_overlay": str(overlay),
-                "candidates": [
+                "records": [
                     {
                         "name": "edge",
                         "status": "point_returned",
                         "confidence": 0.9,
                         "accepted": True,
-                        "reference_id": "R001",
+                        "anchor_id": "S001",
                         "rejection_reason": None,
                     },
                     {
@@ -214,7 +318,7 @@ def _manifest(artifact_dir: Path) -> dict:
             }
         ],
     }
-    (artifact_dir / "molmo_keypoint_grasp_references.json").write_text(
+    (artifact_dir / "molmo_semantic_anchors.json").write_text(
         json.dumps(manifest), encoding="utf-8"
     )
     return manifest
@@ -254,6 +358,8 @@ def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
         capture=lambda config: [object(), object()],
         keypoint_runner=fake_keypoints,
         client=_Client(proposal),  # type: ignore[arg-type]
+        semantic_state_builder=SemanticStateBuilder(),
+        local_geometry_grounder=_LocalGrounder(),  # type: ignore[arg-type]
         gpu_memory_probe=lambda: 24_000,
         stream=stream,
     )
@@ -261,17 +367,20 @@ def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
     assert code == 0
     assert session.execution_calls == 0
     text = stream.getvalue()
-    assert "ClothAgent · Molmo Confidence Keypoint CLI" in text
+    assert "ClothAgent · Semantic Anchor CLI" in text
     assert "MOLMO/WORKER" in text
     assert "loading fake model" in text
-    assert "confidence=0.9000 valid=true reference=R001" in text
+    assert "confidence=0.9000 valid=true anchor=S001" in text
     assert "confidence=0.5000 valid=false" in text
-    assert "selected=A/R001" in text
+    assert "target=sleeve_end" in text
+    assert "selected=R001" in text
     assert "DRY_RUN" in text or "dry run" in text
     assert "I001" in text
     assert "+00:" in text
     assert "PERCEPTION" in text
-    assert "VISUAL_PLANNING" in text
+    assert "SEMANTIC-STATE" in text
+    assert "SEMANTIC-STRATEGY" in text
+    assert "LOCAL-GEOMETRY" in text
     assert "phase 00:" in text
     assert "\x1b[" not in text
     result = json.loads(
@@ -279,6 +388,10 @@ def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
     )
     assert result["status"] == "DRY_RUN_VALIDATED"
     assert result["last_completed_stage"] == "PREEXECUTION_VALIDATED"
+    assert (output / "iteration_001" / "claude_semantic_strategy_log.json").is_file()
+    assert (
+        output / "iteration_001" / "claude_semantic_action_attempt_01.json"
+    ).is_file()
     assert (output / "iteration_001.json").is_file()
     assert (output / "events.jsonl").is_file()
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
@@ -336,6 +449,8 @@ def test_real_cli_positions_home_then_perception_before_every_capture(
         capture=fake_capture,
         keypoint_runner=lambda **kwargs: _manifest(kwargs["artifact_dir"]),
         client=_Client(proposal),  # type: ignore[arg-type]
+        semantic_state_builder=SemanticStateBuilder(),
+        local_geometry_grounder=_LocalGrounder(),  # type: ignore[arg-type]
         controller_validator=lambda *args: {"status": "PASS"},
         perception_positioner=fake_positioner,
         stream=stream,
