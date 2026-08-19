@@ -298,21 +298,40 @@ manual `color_white_balance` of 3800 K for both Camera A and B (Camera A also
 uses the configured manual exposure). The value was selected from a no-motion
 white-balance sweep saved under `results/white_balance_sweep/`.
 
-### Molmo confidence-filtered keypoint grasp-reference pipeline
+### Semantic-anchor → local-geometry garment-opening pipeline
 
-The opt-in Molmo keypoint pipeline reruns after every synchronized A/B
-observation. Molmo is queried independently once per named keypoint and camera.
-For every query, the worker saves either one image point or `not_found`, plus a
-confidence score. The score is the geometric mean of the model probabilities
-for the three generated point-location tokens; it is a model filtering score,
-not a calibrated grasp-success probability.
+The headless pipeline reruns after every synchronized A/B observation and uses
+Molmo for one narrow job: proposing a few semantic anchors such as collar,
+sleeve end, or hem corner. The default strict policy is `confidence > 0.80`.
+The score is the geometric mean probability of Molmo's three point-location
+tokens; it filters unstable outputs but is never treated as graspability or a
+calibrated semantic probability. Equal/below-threshold, off-mask, duplicated,
+and cross-view-inconsistent observations are withheld from Claude.
 
-Only points satisfying the strict policy `confidence > threshold` and having a
-finite calibrated local XYZ/height surface become the current task's `Rxxx`
-grasp references. The default threshold is `0.60`. Below-threshold, ambiguous,
-missing, or geometrically invalid points remain in the diagnostic manifest but
-cannot be returned by the grounding MCP tool. If no point passes, the automatic
-loop stops before Claude planning and before any robot command.
+Accepted `Sxxx` records are explicitly `semantic_anchor_not_grasp_point`. A
+light semantic-state builder relates them to the garment centroid and records
+possible fold/overlap states as hypotheses. Claude's strategy stage chooses
+which garment relation to change, but cannot emit Rxxx, coordinates, or robot
+actions. Local geometry then searches only inside that selected Sxxx region for
+free boundaries, raised fold edges, discrete height steps, and interior ridges;
+only these geometry-derived options become Rxxx grasp candidates.
+
+The runtime chooses action authority from evaluator state: acquisition unknown
+allows only a short lift; supported acquisition permits a structure/transport
+test; supported opening relevance permits a completion stroke. Claude has one
+normal `propose_action()` surface and cannot request arbitrary probe/run loops;
+each proposal is restricted to one grasp/release cycle and a scope-specific
+number of post-grasp waypoints. Workspace/controller-IK failures are removed
+before Claude sees the local candidate list. The local overlay marks selectable
+candidates in green and rejected candidates with red crosses.
+Evaluation is split into semantic target, acquisition, structure engagement,
+opening relevance, transport, laydown, and task progress. Each iteration writes
+a coordinate-independent structured experience and enforces acquisition and
+transport budgets before persisting or escaping a semantic hypothesis. A bad
+transport direction keeps the semantic hypothesis and prior successful local
+geometry family, then changes only transport; a failed structure engagement
+keeps the semantic target but resets the next action to acquisition scope with
+a different local grasp.
 
 The recommended entry point is now the headless CLI. It does not start Viser or
 a browser, so it avoids their GPU-memory overhead. Every phase is printed to
@@ -353,7 +372,7 @@ IK without sending robot motion:
   --project-root . \
   --run-id molmo_keypoint_cli_01 \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.60 \
+  --confidence-threshold 0.80 \
   --max-iterations 1
 ```
 
@@ -366,7 +385,7 @@ use `0` for an unbounded iteration count:
   --project-root . \
   --run-id molmo_keypoint_cli_real_01 \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.60 \
+  --confidence-threshold 0.80 \
   --max-iterations 0 \
   --enable-real
 ```
@@ -388,13 +407,13 @@ The viewer only polls existing PNG/JSON files. It does not open either camera,
 connect to xArm, load Molmo/Claude, use CUDA, start a browser, or start Viser.
 It keeps one resizable OpenCV window with four pages: overview, A/B perception
 with separate raw camera-Z depth and garment-only height-above-table maps,
-all/accepted Molmo keypoints, and before/after RGB. The raw-depth tile is in
+semantic-anchor diagnostics, local Rxxx geometry, and before/after RGB. The raw-depth tile is in
 metres; the height tile is `surface Z - fitted table Z` in millimetres and uses
 a per-camera table-appearance filter so solidified silhouettes cannot leak
 white table pixels into the garment heatmap. Calibrated coordinate references
 are generated from that same final mask; the viewer also filters legacy guides
-without renumbering their saved `Rxxx` IDs, so references outside the garment
-are not shown as valid coordinates.
+and the local Rxxx overlay shows candidates only within the active semantic
+region.
 Press `1`-`4` to select a page, left/right (or `a`/`d`) to move between pages,
 `r` to refresh, and `q` or Escape to close it. The title area follows the same
 iteration, current phase, status, elapsed time, and heartbeat message as the
@@ -416,15 +435,22 @@ summary.json                        # run status and per-iteration summary
 iteration_001.json                  # top-level iteration checkpoint
 iteration_001/
   result.json                       # updated after every completed phase
-  molmo_keypoints/                  # raw worker log, points, overlays, guides
+  semantic_anchors/                # raw Molmo log plus accepted/rejected Sxxx
+  semantic_state.json              # uncertain relations and hypotheses
+  semantic_strategy.json           # garment relation Claude intends to change
+  claude_semantic_strategy_log.json # full prompt, raw answer, timing, validation
+  local_geometry/                  # region-scoped geometry-derived Rxxx
   proposal.json
   proposal.py
+  claude_semantic_action_attempt_01.json # full scoped-action Claude record
   preflight.json
   controller_ik.json
   execution.json                    # real mode only
   mandatory_return_home.json        # real mode only
   after_capture/                    # real mode only
-  evaluation.json                   # real mode only
+  evaluation.json                   # semantic stage-wise evaluation, real mode
+  claude_semantic_evaluation_log.json # full evaluator prompt/raw answer
+  structured_experience.json        # coordinate-independent experience
 ```
 
 The Viser-based `cloth_agent.auto_exploration --molmo-keypoints` entry point is
@@ -446,14 +472,14 @@ starting Claude or the robot:
   --project-root . \
   --perception-dir runs/RUN_ID/workspace/perception_views \
   --output-dir runs/RUN_ID/results/molmo_keypoints/manual_001 \
-  --confidence-threshold 0.60
+  --confidence-threshold 0.80
 ```
 
-Each run writes the raw Molmo records, accepted-only overlays, all-candidate
-diagnostic overlays, per-camera filtered coordinate guides, and
-`molmo_keypoint_grasp_references.json`. Installing the result replaces only the
-workspace's current `camera_*_coordinate_guide.json`; the original uniform
-guide is preserved as `camera_*_uniform_coordinate_guide.json`.
+Each default standalone run writes raw Molmo records, accepted-only Sxxx
+overlays, diagnostics, and `molmo_semantic_anchors.json`. It does not replace
+the workspace Rxxx coordinate guide. Only the later local-geometry stage creates
+and installs an Rxxx guide for the selected semantic region; the original
+uniform guide remains preserved as `camera_*_uniform_coordinate_guide.json`.
 
 ### Claude plan preview with a hard stop before execution
 

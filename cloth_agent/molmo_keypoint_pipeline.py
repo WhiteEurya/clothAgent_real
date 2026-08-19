@@ -1,11 +1,12 @@
-"""Confidence-filtered Molmo keypoints as calibrated task grasp references.
+"""Confidence-filtered Molmo semantic anchors and legacy grasp references.
 
 This module is deliberately separate from dense RGB-D perception.  Dense
-perception first saves camera RGB, full-resolution robot-base XYZ maps, and
-height-above-table maps.  Molmo then proposes named image keypoints.  Only a
-single returned point whose model point-token confidence is strictly above the
-configured threshold and whose local RGB-D geometry is finite is installed as
-an ``Rxxx`` reference for downstream planning.
+perception first saves camera RGB, full-resolution robot-base XYZ maps, a final
+garment mask, and height-above-table maps. Molmo then proposes a small set of
+named semantic anchors. The default path exposes accepted observations as
+``Sxxx`` anchors only; local geometry later creates task ``Rxxx`` candidates
+inside one selected semantic region. The retired direct Molmo→Rxxx builder is
+kept as an explicit compatibility mode.
 
 The confidence is the geometric mean of the probabilities assigned by Molmo
 to the three generated point-location tokens.  It is a useful model score for
@@ -35,6 +36,7 @@ CONFIDENCE_DEFINITION = (
     "geometric_mean_probability_of_the_three_generated_molmo_point_tokens"
 )
 DEFAULT_CONFIDENCE_THRESHOLD = 0.60
+DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD = 0.80
 RAW_IMAGE_PATTERN = re.compile(r"^camera_[0-9]+_([A-Za-z0-9_-]+)\.png$")
 
 
@@ -67,6 +69,36 @@ DEFAULT_KEYPOINTS: tuple[KeypointSpec, ...] = (
     KeypointSpec("right_bottom_hem", "image-right end of the bottom hem", (220, 220, 60)),
     KeypointSpec("lower_left_half_center", "center of the lower image-left half of the garment", (120, 255, 120)),
     KeypointSpec("lower_right_half_center", "center of the lower image-right half of the garment", (120, 180, 255)),
+)
+
+# Semantic mode intentionally asks for a small set of task-level garment
+# anchors. These observations are never installed as Rxxx grasp references.
+DEFAULT_SEMANTIC_ANCHORS: tuple[KeypointSpec, ...] = (
+    KeypointSpec(
+        "collar",
+        "the visible collar, neckline, or neck opening; return no point when uncertain",
+        (255, 170, 0),
+    ),
+    KeypointSpec(
+        "left_sleeve_end",
+        "the garment's visible left sleeve endpoint; return no point when side identity is uncertain",
+        (180, 80, 255),
+    ),
+    KeypointSpec(
+        "right_sleeve_end",
+        "the garment's visible right sleeve endpoint; return no point when side identity is uncertain",
+        (255, 80, 190),
+    ),
+    KeypointSpec(
+        "left_hem_corner",
+        "the visible left corner/end of the garment hem; return no point when uncertain",
+        (80, 220, 220),
+    ),
+    KeypointSpec(
+        "right_hem_corner",
+        "the visible right corner/end of the garment hem; return no point when uncertain",
+        (220, 220, 60),
+    ),
 )
 
 
@@ -405,6 +437,317 @@ def _draw_overlays(
     return accepted_path, diagnostic_path
 
 
+def _semantic_anchor_geometry(
+    perception_dir: Path,
+    camera: str,
+    pixel_xy: Sequence[float],
+    *,
+    radius_px: int,
+) -> dict[str, Any]:
+    """Ground an anchor location while proving it lies on the final garment mask."""
+
+    geometry = _local_geometry(
+        perception_dir,
+        camera,
+        pixel_xy,
+        radius_px=radius_px,
+    )
+    mask_path = perception_dir / f"camera_{camera}_garment_mask.npy"
+    if not mask_path.is_file():
+        raise MolmoKeypointPipelineError(
+            f"Camera {camera} is missing its final garment mask"
+        )
+    mask = np.load(mask_path, mmap_mode="r", allow_pickle=False)
+    x_px, y_px = geometry["pixel_xy"]
+    x0, x1 = max(0, x_px - radius_px), min(mask.shape[1], x_px + radius_px + 1)
+    y0, y1 = max(0, y_px - radius_px), min(mask.shape[0], y_px + radius_px + 1)
+    local_mask = np.asarray(mask[y0:y1, x0:x1], dtype=bool)
+    garment_fraction = float(local_mask.mean()) if local_mask.size else 0.0
+    if not bool(mask[y_px, x_px]) and garment_fraction < 0.25:
+        raise MolmoKeypointPipelineError(
+            f"Camera {camera} semantic anchor is outside the final garment mask"
+        )
+    geometry["on_final_garment_mask"] = bool(mask[y_px, x_px])
+    geometry["local_garment_mask_fraction"] = garment_fraction
+    return geometry
+
+
+def _draw_semantic_anchor_overlays(
+    image_path: Path,
+    camera: str,
+    records: Sequence[dict[str, Any]],
+    artifact_dir: Path,
+) -> tuple[Path, Path]:
+    accepted_image = Image.open(image_path).convert("RGB")
+    diagnostic_image = accepted_image.copy()
+    accepted_draw = ImageDraw.Draw(accepted_image)
+    diagnostic_draw = ImageDraw.Draw(diagnostic_image)
+    for record in records:
+        pixel = record.get("source_pixel_xy")
+        if pixel is None:
+            continue
+        x_px, y_px = float(pixel[0]), float(pixel[1])
+        accepted = bool(record.get("accepted"))
+        color = (255, 210, 20) if accepted else (255, 70, 50)
+        diagnostic_draw.ellipse(
+            (x_px - 7, y_px - 7, x_px + 7, y_px + 7),
+            outline=color,
+            width=3,
+        )
+        diagnostic_draw.text(
+            (x_px + 9, y_px - 8),
+            f"{record['name']} {record['confidence']:.3f}",
+            fill=color,
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
+        if accepted:
+            accepted_draw.ellipse(
+                (x_px - 8, y_px - 8, x_px + 8, y_px + 8),
+                fill=(255, 210, 20),
+                outline=(0, 0, 0),
+                width=2,
+            )
+            accepted_draw.text(
+                (x_px + 10, y_px - 9),
+                f"{record['anchor_id']} {record['name']} c={record['confidence']:.3f}",
+                fill=(255, 255, 255),
+                stroke_width=2,
+                stroke_fill=(0, 0, 0),
+            )
+    accepted_path = artifact_dir / f"camera_{camera}_semantic_anchors.png"
+    diagnostic_path = artifact_dir / f"camera_{camera}_semantic_anchor_diagnostics.png"
+    accepted_image.save(accepted_path)
+    diagnostic_image.save(diagnostic_path)
+    return accepted_path, diagnostic_path
+
+
+def build_semantic_anchor_manifest(
+    worker_payload: Any,
+    *,
+    perception_dir: Path,
+    artifact_dir: Path,
+    image_paths: dict[str, Path],
+    cameras: Sequence[str],
+    specs: Sequence[KeypointSpec],
+    confidence_threshold: float = DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
+    local_radius_px: int = 3,
+    max_anchors: int = 4,
+    duplicate_radius_px: float = 10.0,
+    cross_view_tolerance_mm: float = 80.0,
+    install: bool = True,
+) -> dict[str, Any]:
+    """Return a small high-confidence Sxxx set, never an Rxxx grasp set."""
+
+    threshold = validate_confidence_threshold(confidence_threshold)
+    if not 1 <= max_anchors <= 8:
+        raise MolmoKeypointPipelineError("max_anchors must be between 1 and 8")
+    validated = _validate_worker_payload(worker_payload, cameras=cameras, specs=specs)
+    by_camera: dict[str, list[dict[str, Any]]] = {}
+    for camera in cameras:
+        records: list[dict[str, Any]] = []
+        for spec in specs:
+            raw = validated[camera][spec.name]
+            record: dict[str, Any] = {
+                "camera": camera,
+                "name": spec.name,
+                "description": spec.description,
+                "status": raw["status"],
+                "confidence": float(raw["confidence"]),
+                "confidence_threshold": threshold,
+                "confidence_definition": CONFIDENCE_DEFINITION,
+                "source_pixel_xy": raw.get("pixel_xy"),
+                "accepted": False,
+                "rejection_reason": None,
+                "point_token_probabilities": raw.get(
+                    "point_token_probabilities", []
+                ),
+            }
+            if raw["status"] != "point_returned":
+                record["rejection_reason"] = raw["status"]
+            elif float(raw["confidence"]) <= threshold:
+                record["rejection_reason"] = (
+                    f"confidence_not_strictly_above_{threshold:.6f}"
+                )
+            else:
+                try:
+                    record.update(
+                        _semantic_anchor_geometry(
+                            perception_dir,
+                            camera,
+                            raw["pixel_xy"],
+                            radius_px=local_radius_px,
+                        )
+                    )
+                except MolmoKeypointPipelineError as exc:
+                    record["rejection_reason"] = f"invalid_anchor_geometry: {exc}"
+                else:
+                    record["preliminarily_accepted"] = True
+            records.append(record)
+
+        # Molmo occasionally emits the same pixel for contradictory semantic
+        # labels. Keep only the strongest observation in that local cluster.
+        preliminary = sorted(
+            (item for item in records if item.get("preliminarily_accepted")),
+            key=lambda item: -float(item["confidence"]),
+        )
+        kept: list[dict[str, Any]] = []
+        for item in preliminary:
+            pixel = np.asarray(item["source_pixel_xy"], dtype=np.float64)
+            duplicate = next(
+                (
+                    existing
+                    for existing in kept
+                    if float(
+                        np.linalg.norm(
+                            pixel
+                            - np.asarray(
+                                existing["source_pixel_xy"], dtype=np.float64
+                            )
+                        )
+                    )
+                    <= duplicate_radius_px
+                ),
+                None,
+            )
+            if duplicate is None:
+                kept.append(item)
+            else:
+                item["preliminarily_accepted"] = False
+                item["rejection_reason"] = (
+                    "duplicate_semantic_location_with_"
+                    f"{duplicate['name']}_confidence_{duplicate['confidence']:.3f}"
+                )
+        by_camera[camera] = records
+
+    # Reconcile the same physical semantic type across A/B. If two confident
+    # observations disagree in calibrated base space, neither is safe enough to
+    # become a semantic state fact.
+    canonical: list[dict[str, Any]] = []
+    for spec in specs:
+        observations = [
+            item
+            for camera in cameras
+            for item in by_camera[camera]
+            if item["name"] == spec.name and item.get("preliminarily_accepted")
+        ]
+        if not observations:
+            continue
+        observations.sort(key=lambda item: -float(item["confidence"]))
+        if len(observations) > 1:
+            base_points = [
+                np.asarray(item["base_xyz_mm"][:2], dtype=np.float64)
+                for item in observations
+            ]
+            disagreement = max(
+                float(np.linalg.norm(first - second))
+                for first in base_points
+                for second in base_points
+            )
+            if disagreement > cross_view_tolerance_mm:
+                for item in observations:
+                    item["preliminarily_accepted"] = False
+                    item["rejection_reason"] = (
+                        f"cross_view_semantic_disagreement_{disagreement:.1f}mm"
+                    )
+                continue
+        chosen = observations[0]
+        chosen["corroborating_observations"] = [
+            {
+                "camera": item["camera"],
+                "pixel_xy": item["pixel_xy"],
+                "base_xyz_mm": item["base_xyz_mm"],
+                "confidence": item["confidence"],
+            }
+            for item in observations[1:]
+        ]
+        for item in observations[1:]:
+            item["preliminarily_accepted"] = False
+            item["rejection_reason"] = (
+                f"corroborates_canonical_camera_{chosen['camera']}"
+            )
+        canonical.append(chosen)
+    canonical.sort(key=lambda item: (-float(item["confidence"]), item["name"]))
+    for item in canonical[max_anchors:]:
+        item["preliminarily_accepted"] = False
+        item["rejection_reason"] = f"semantic_anchor_budget_max_{max_anchors}"
+    canonical = canonical[:max_anchors]
+    for index, item in enumerate(canonical, start=1):
+        item["accepted"] = True
+        item["anchor_id"] = f"S{index:03d}"
+
+    views: list[dict[str, Any]] = []
+    for camera in cameras:
+        records = by_camera[camera]
+        accepted_overlay, diagnostic_overlay = _draw_semantic_anchor_overlays(
+            image_paths[camera], camera, records, artifact_dir
+        )
+        views.append(
+            {
+                "camera": camera,
+                "input_image": str(image_paths[camera]),
+                "accepted_overlay": str(accepted_overlay),
+                "diagnostic_overlay": str(diagnostic_overlay),
+                "query_count": len(records),
+                "accepted_count": sum(bool(item["accepted"]) for item in records),
+                "records": records,
+            }
+        )
+    anchors = [
+        {
+            "anchor_id": item["anchor_id"],
+            "type": item["name"],
+            "description": item["description"],
+            "camera": item["camera"],
+            "pixel_xy": item["pixel_xy"],
+            "source_pixel_xy": item["source_pixel_xy"],
+            "base_xyz_mm": item["base_xyz_mm"],
+            "height_above_table_mm": item["height_above_table_mm"],
+            "local_base_z_spread_mm": item["local_base_z_spread_mm"],
+            "confidence": item["confidence"],
+            "confidence_definition": CONFIDENCE_DEFINITION,
+            "corroborating_observations": item.get(
+                "corroborating_observations", []
+            ),
+            "role": "semantic_anchor_not_grasp_point",
+        }
+        for item in canonical
+    ]
+    manifest = {
+        "schema_version": 1,
+        "created_at": _now(),
+        "status": "READY" if anchors else "NO_HIGH_CONFIDENCE_SEMANTIC_ANCHORS",
+        "confidence_threshold": threshold,
+        "confidence_policy": "confidence > threshold",
+        "confidence_definition": CONFIDENCE_DEFINITION,
+        "max_anchors": max_anchors,
+        "anchor_count": len(anchors),
+        "anchors": anchors,
+        "views": views,
+        "semantic_contract": (
+            "Sxxx observations define uncertain garment-part regions only. "
+            "They must never be passed directly to grasp execution."
+        ),
+        "next_stage": "semantic_state_builder",
+    }
+    _write_json(artifact_dir / "molmo_semantic_anchors.json", manifest)
+    if install:
+        _write_json(perception_dir / "molmo_semantic_anchors.json", manifest)
+        observation_path = perception_dir / "observation.json"
+        if observation_path.is_file():
+            observation = json.loads(observation_path.read_text(encoding="utf-8"))
+            if not isinstance(observation, dict):
+                raise MolmoKeypointPipelineError("observation.json must be an object")
+            observation["semantic_anchor_manifest"] = "molmo_semantic_anchors.json"
+            observation["semantic_anchor_count"] = len(anchors)
+            observation["semantic_anchor_confidence_threshold"] = threshold
+            observation["grasp_reference_policy"] = (
+                "not_available_until_local_geometry_grounding"
+            )
+            _write_json(observation_path, observation)
+    return manifest
+
+
 def build_confidence_filtered_references(
     worker_payload: Any,
     *,
@@ -711,10 +1054,12 @@ def run_molmo_keypoint_pipeline(
     cameras: Sequence[str] = ("A", "B"),
     local_radius_px: int = 3,
     install: bool = True,
+    semantic_anchors: bool = False,
+    max_semantic_anchors: int = 4,
     subprocess_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     worker_line_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Run Molmo once for the current observation and install filtered references."""
+    """Run Molmo once and build legacy Rxxx references or semantic Sxxx anchors."""
 
     root = Path(project_root).expanduser().resolve()
     perception = Path(perception_dir).expanduser().resolve()
@@ -801,17 +1146,31 @@ def run_molmo_keypoint_pipeline(
             "Molmo keypoint worker completed without its JSON output"
         )
     payload = json.loads(raw_output.read_text(encoding="utf-8"))
-    manifest = build_confidence_filtered_references(
-        payload,
-        perception_dir=perception,
-        artifact_dir=output,
-        image_paths=image_paths,
-        cameras=normalized_cameras,
-        specs=specs,
-        confidence_threshold=threshold,
-        local_radius_px=local_radius_px,
-        install=install,
-    )
+    if semantic_anchors:
+        manifest = build_semantic_anchor_manifest(
+            payload,
+            perception_dir=perception,
+            artifact_dir=output,
+            image_paths=image_paths,
+            cameras=normalized_cameras,
+            specs=specs,
+            confidence_threshold=threshold,
+            local_radius_px=local_radius_px,
+            max_anchors=max_semantic_anchors,
+            install=install,
+        )
+    else:
+        manifest = build_confidence_filtered_references(
+            payload,
+            perception_dir=perception,
+            artifact_dir=output,
+            image_paths=image_paths,
+            cameras=normalized_cameras,
+            specs=specs,
+            confidence_threshold=threshold,
+            local_radius_px=local_radius_px,
+            install=install,
+        )
     manifest["worker"] = {
         "command": command,
         "model": model,
@@ -820,12 +1179,63 @@ def run_molmo_keypoint_pipeline(
         "max_new_tokens": max_new_tokens,
         "local_files_only": local_files_only,
     }
-    _write_json(output / "molmo_keypoint_grasp_references.json", manifest)
-    if install:
+    manifest_name = (
+        "molmo_semantic_anchors.json"
+        if semantic_anchors
+        else "molmo_keypoint_grasp_references.json"
+    )
+    _write_json(output / manifest_name, manifest)
+    if install and not semantic_anchors:
         _write_json(
             perception / "molmo_keypoint_grasp_references.json", manifest
         )
     return manifest
+
+
+def run_molmo_semantic_anchor_pipeline(
+    *,
+    project_root: Path,
+    perception_dir: Path,
+    artifact_dir: Path,
+    confidence_threshold: float = DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
+    molmo_python: Path | None = None,
+    model: str = "allenai/MolmoPoint-8B",
+    dtype: str = "bf16",
+    max_crops: int = 1,
+    max_new_tokens: int = 96,
+    timeout_s: int = 900,
+    local_files_only: bool = True,
+    keypoint_specs: Sequence[KeypointSpec] = DEFAULT_SEMANTIC_ANCHORS,
+    cameras: Sequence[str] = ("A", "B"),
+    local_radius_px: int = 3,
+    max_anchors: int = 4,
+    install: bool = True,
+    subprocess_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    worker_line_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Run Molmo as a high-confidence semantic-anchor detector only."""
+
+    return run_molmo_keypoint_pipeline(
+        project_root=project_root,
+        perception_dir=perception_dir,
+        artifact_dir=artifact_dir,
+        confidence_threshold=confidence_threshold,
+        molmo_python=molmo_python,
+        model=model,
+        dtype=dtype,
+        max_crops=max_crops,
+        max_new_tokens=max_new_tokens,
+        timeout_s=timeout_s,
+        local_files_only=local_files_only,
+        keypoint_specs=keypoint_specs,
+        cameras=cameras,
+        local_radius_px=local_radius_px,
+        install=install,
+        semantic_anchors=True,
+        max_semantic_anchors=max_anchors,
+        subprocess_run=subprocess_run,
+        worker_line_callback=worker_line_callback,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -834,7 +1244,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--perception-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
-        "--confidence-threshold", type=float, default=DEFAULT_CONFIDENCE_THRESHOLD
+        "--confidence-threshold",
+        type=float,
+        default=DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
     )
     parser.add_argument("--keypoints-json", type=Path)
     parser.add_argument("--camera", action="append", choices=["A", "B"])
@@ -851,8 +1263,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write artifacts without replacing workspace Rxxx guides",
     )
+    parser.add_argument(
+        "--legacy-grasp-references",
+        action="store_true",
+        help=(
+            "use the retired direct Molmo→Rxxx behavior; default output is "
+            "high-confidence semantic Sxxx anchors"
+        ),
+    )
     args = parser.parse_args(argv)
-    manifest = run_molmo_keypoint_pipeline(
+    specs = (
+        load_keypoint_specs(args.keypoints_json)
+        if args.keypoints_json
+        else DEFAULT_KEYPOINTS
+        if args.legacy_grasp_references
+        else DEFAULT_SEMANTIC_ANCHORS
+    )
+    runner = (
+        run_molmo_keypoint_pipeline
+        if args.legacy_grasp_references
+        else run_molmo_semantic_anchor_pipeline
+    )
+    manifest = runner(
         project_root=Path(args.project_root),
         perception_dir=args.perception_dir,
         artifact_dir=args.output_dir,
@@ -864,7 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
         max_new_tokens=args.max_new_tokens,
         timeout_s=args.timeout_s,
         local_files_only=not args.allow_download,
-        keypoint_specs=load_keypoint_specs(args.keypoints_json),
+        keypoint_specs=specs,
         cameras=tuple(args.camera or ("A", "B")),
         local_radius_px=args.local_radius_px,
         install=not args.no_install,
@@ -873,7 +1305,10 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "status": manifest["status"],
-                "accepted_reference_count": manifest["accepted_reference_count"],
+                "semantic_anchor_count": manifest.get("anchor_count"),
+                "legacy_accepted_reference_count": manifest.get(
+                    "accepted_reference_count"
+                ),
                 "confidence_threshold": manifest["confidence_threshold"],
                 "output_dir": str(args.output_dir.expanduser().resolve()),
             },

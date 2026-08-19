@@ -6,8 +6,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import pytest
 
 from cloth_agent.molmo_artifact_viewer import (
+    RefinedCoordinateArtifact,
     build_pages,
     discover_output_dir,
     main,
@@ -26,8 +28,9 @@ def _make_run(tmp_path: Path) -> tuple[Path, Path, Path]:
     iteration = output / "iteration_001"
     perception = run_dir / "results" / "perception" / "capture_001"
     molmo = iteration / "molmo_keypoints"
+    local_geometry = iteration / "local_geometry"
     after = iteration / "after_capture"
-    for directory in (perception, molmo, after):
+    for directory in (perception, molmo, local_geometry, after):
         directory.mkdir(parents=True, exist_ok=True)
 
     image_names = {
@@ -49,6 +52,7 @@ def _make_run(tmp_path: Path) -> tuple[Path, Path, Path]:
             "camera_B_molmo_keypoint_references.png",
         ),
         after: ("camera_0_A.png", "camera_1_B.png"),
+        local_geometry: ("camera_A_local_grasp_candidates.png",),
     }
     color = 20
     for directory, names in image_names.items():
@@ -79,7 +83,12 @@ def _make_run(tmp_path: Path) -> tuple[Path, Path, Path]:
             "iteration": 1,
             "status": "RUNNING",
             "saved_perception_result": str(result_path),
+            "local_geometry": {"camera": "A"},
         },
+    )
+    _write_json(
+        local_geometry / "camera_A_local_geometry_coordinate_guide.json",
+        {"samples": [{"reference_id": "R001", "pixel_xy": [10, 10]}]},
     )
     _write_json(
         output / "summary.json",
@@ -119,12 +128,17 @@ def test_builds_four_pages_with_current_phase_and_saved_images(tmp_path: Path) -
     assert [page.name for page in pages] == [
         "Overview",
         "Perception",
-        "Molmo keypoints",
+        "Semantic + local geometry",
         "Before / after",
     ]
     assert all(len(page.tiles) == 6 for page in pages)
     assert all(path is not None for _, path in pages[1].tiles)
     assert all(path is not None for _, path in pages[2].tiles)
+    active_coordinates = pages[2].tiles[5][1]
+    assert isinstance(active_coordinates, RefinedCoordinateArtifact)
+    assert active_coordinates.guide_path.name == (
+        "camera_A_local_geometry_coordinate_guide.json"
+    )
     assert status["iteration"] == 1
     assert status["phase"] == "evaluation"
     assert status["level"] == "WAIT"
@@ -160,3 +174,15 @@ def test_renders_snapshot_without_opening_gui(tmp_path: Path) -> None:
     assert snapshot.is_file()
     with Image.open(snapshot) as saved:
         assert saved.size == (900, 600)
+
+
+def test_viewer_ctrl_c_exits_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, _, _ = _make_run(tmp_path)
+    monkeypatch.setattr(
+        "cloth_agent.molmo_artifact_viewer.run_viewer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    assert main([str(run_dir)]) == 130

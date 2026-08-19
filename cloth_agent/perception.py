@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -397,7 +398,16 @@ def capture_two_view_rgbd(config: PerceptionConfig) -> list[RGBDFrame]:
             depth_stack = numpy.stack(temporal_depth[camera.spec.label], axis=0).astype(numpy.float32)
             invalid = ~numpy.isfinite(depth_stack) | (depth_stack <= 0.0)
             depth_stack[invalid] = numpy.nan
-            depth_m = numpy.nanmedian(depth_stack, axis=0).astype(numpy.float32)
+            # Pixels missing in every temporal frame should remain NaN. NumPy
+            # otherwise prints one RuntimeWarning per capture, which obscures
+            # the CLI phase output even though this condition is expected.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="All-NaN slice encountered",
+                    category=RuntimeWarning,
+                )
+                depth_m = numpy.nanmedian(depth_stack, axis=0).astype(numpy.float32)
             rgb = numpy.rint(numpy.median(rgb_stack, axis=0)).clip(0, 255).astype(numpy.uint8)
             frames.append(
                 RGBDFrame(
@@ -1640,6 +1650,8 @@ def _save_camera_height_heatmap(
     garment_valid = valid & garment_mask & numpy.isfinite(height_above_table_mm)
     height_map_name = f"camera_{frame.label}_height_above_table_mm.npy"
     numpy.save(output_dir / height_map_name, height_above_table_mm)
+    garment_mask_name = f"camera_{frame.label}_garment_mask.npy"
+    numpy.save(output_dir / garment_mask_name, garment_mask.astype(numpy.bool_))
     # Save the actual table references used by the corner/edge interpolation
     # so the zero surface can be audited independently of the color image.
     _, table_reference_records = _sample_table_reference_points(frame, config)
@@ -1748,6 +1760,7 @@ def _save_camera_height_heatmap(
         "height_map_global": global_heatmap_name,
         "height_map_boundary": boundary_name,
         "height_map_path": height_map_name,
+        "garment_mask": garment_mask_name,
         "table_z_map": table_surface_name,
         "table_references": table_reference_name,
         "table_reference_overlay": table_reference_overlay_name,
@@ -1770,6 +1783,33 @@ def _save_camera_height_heatmap(
         "height_max_mm": float(numpy.percentile(height_above_table_mm[garment_valid], 98))
         if garment_valid.any()
         else None,
+    }
+
+
+def _camera_height_view_artifacts(artifacts: dict[str, Any]) -> dict[str, Any]:
+    """Expose every per-camera artifact required by workspace consumers."""
+
+    return {
+        "height_map": artifacts["height_map"],
+        "height_map_global": artifacts["height_map_global"],
+        "height_map_boundary": artifacts["height_map_boundary"],
+        # Compatibility aliases: their contents are now height maps.
+        "depth_heatmap": artifacts["height_map"],
+        "depth_heatmap_global": artifacts["height_map_global"],
+        "depth_heatmap_boundary": artifacts["height_map_boundary"],
+        "height_map_path": artifacts.get("height_map_path"),
+        "garment_mask": artifacts.get("garment_mask"),
+        "fold_edge_overlay": artifacts["fold_edge_overlay"],
+        "height_gradient_overlay": artifacts.get("height_gradient_overlay"),
+        "base_xyz_map": artifacts.get("base_xyz_map"),
+        "coordinate_guide": artifacts.get("coordinate_guide"),
+        "coordinate_overlay": artifacts.get("coordinate_overlay"),
+        "table_reference_overlay": artifacts.get("table_reference_overlay"),
+        "table_references": artifacts.get("table_references"),
+        "table_z_map": artifacts.get("table_z_map"),
+        "height_map_min_mm": artifacts.get("height_min_mm"),
+        "height_map_max_mm": artifacts.get("height_max_mm"),
+        "heatmap_quantity": artifacts.get("heatmap_quantity"),
     }
 
 
@@ -2413,30 +2453,7 @@ class ClothCenterPerception:
                 minimum_table_color_distance=garment_color_threshold,
             )
             camera_heatmaps[frame.label] = artifacts
-            view.update(
-                {
-                    "height_map": artifacts["height_map"],
-                    "height_map_global": artifacts["height_map_global"],
-                    "height_map_boundary": artifacts["height_map_boundary"],
-                    # Keep the old keys as aliases for existing run viewers and
-                    # saved workspaces.  Their contents are now height maps.
-                    "depth_heatmap": artifacts["height_map"],
-                    "depth_heatmap_global": artifacts["height_map_global"],
-                    "depth_heatmap_boundary": artifacts["height_map_boundary"],
-                    "height_map_path": artifacts.get("height_map_path"),
-                    "fold_edge_overlay": artifacts["fold_edge_overlay"],
-                    "height_gradient_overlay": artifacts.get("height_gradient_overlay"),
-                    "base_xyz_map": artifacts.get("base_xyz_map"),
-                    "coordinate_guide": artifacts.get("coordinate_guide"),
-                    "coordinate_overlay": artifacts.get("coordinate_overlay"),
-                    "table_reference_overlay": artifacts.get("table_reference_overlay"),
-                    "table_references": artifacts.get("table_references"),
-                    "table_z_map": artifacts.get("table_z_map"),
-                    "height_map_min_mm": artifacts.get("height_min_mm"),
-                    "height_map_max_mm": artifacts.get("height_max_mm"),
-                    "heatmap_quantity": artifacts.get("heatmap_quantity"),
-                }
-            )
+            view.update(_camera_height_view_artifacts(artifacts))
 
         observation_plan, motion_derivation = derive_grasp_plan(
             center, self.robot_config, self.config

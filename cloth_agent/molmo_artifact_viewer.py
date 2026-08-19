@@ -177,7 +177,16 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
             else output_dir
         )
 
-    molmo_dir = iteration_dir / "molmo_keypoints" if iteration_dir else output_dir
+    semantic_dir = (
+        iteration_dir / "semantic_anchors"
+        if iteration_dir and (iteration_dir / "semantic_anchors").is_dir()
+        else iteration_dir / "molmo_keypoints"
+        if iteration_dir
+        else output_dir
+    )
+    local_geometry_dir = (
+        iteration_dir / "local_geometry" if iteration_dir else output_dir
+    )
     after_dir = iteration_dir / "after_capture" if iteration_dir else output_dir
     before_a = _camera_raw(perception_dir, "A")
     before_b = _camera_raw(perception_dir, "B")
@@ -194,6 +203,11 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
         if isinstance(depth_fusion, dict)
         else 24.0
     )
+    active_local_camera = str(
+        (record.get("local_geometry") or {}).get("camera", "A")
+    ).upper()
+    if active_local_camera not in {"A", "B"}:
+        active_local_camera = "A"
 
     def raw_depth(camera: str, index: int) -> ArtifactSource:
         path = perception_dir / f"camera_{index}_{camera}_depth_m.npy"
@@ -214,10 +228,19 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
             minimum_table_color_distance=minimum_color_distance,
         )
 
-    def refined_coordinates(camera: str, rgb_path: Path | None) -> ArtifactSource:
+    def refined_coordinates(
+        camera: str,
+        rgb_path: Path | None,
+        *,
+        guide_override: Path | None = None,
+    ) -> ArtifactSource:
         heatmap_path = perception_dir / f"camera_{camera}_height_map_heatmap.png"
         height_path = perception_dir / f"camera_{camera}_height_above_table_mm.npy"
-        guide_path = perception_dir / f"camera_{camera}_coordinate_guide.json"
+        guide_path = (
+            guide_override.resolve()
+            if guide_override is not None and guide_override.is_file()
+            else perception_dir / f"camera_{camera}_coordinate_guide.json"
+        )
         required = (heatmap_path, height_path, guide_path)
         if rgb_path is None or not all(path.is_file() for path in required):
             return _first_existing(
@@ -245,15 +268,17 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                     ),
                 ),
                 (
-                    "Camera A · accepted Molmo Rxxx",
+                    "Camera A · Molmo semantic Sxxx",
                     _first_existing(
-                        molmo_dir / "camera_A_molmo_keypoint_references.png"
+                        semantic_dir / "camera_A_semantic_anchors.png",
+                        semantic_dir / "camera_A_molmo_keypoint_references.png",
                     ),
                 ),
                 (
-                    "Camera B · accepted Molmo Rxxx",
+                    "Camera B · Molmo semantic Sxxx",
                     _first_existing(
-                        molmo_dir / "camera_B_molmo_keypoint_references.png"
+                        semantic_dir / "camera_B_semantic_anchors.png",
+                        semantic_dir / "camera_B_molmo_keypoint_references.png",
                     ),
                 ),
                 ("Camera A · after RGB", after_a),
@@ -271,39 +296,55 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
             ),
         ),
         ArtifactPage(
-            "Molmo keypoints",
+            "Semantic + local geometry",
             (
                 (
-                    "Camera A · all candidates",
+                    "Camera A · Molmo diagnostics",
                     _first_existing(
-                        molmo_dir / "camera_A_molmo_keypoint_candidates.png"
+                        semantic_dir / "camera_A_semantic_anchor_diagnostics.png",
+                        semantic_dir / "camera_A_molmo_keypoint_candidates.png",
                     ),
                 ),
                 (
-                    "Camera A · accepted only",
+                    "Camera A · accepted semantic Sxxx",
                     _first_existing(
-                        molmo_dir / "camera_A_molmo_keypoint_references.png"
+                        semantic_dir / "camera_A_semantic_anchors.png",
+                        semantic_dir / "camera_A_molmo_keypoint_references.png",
                     ),
                 ),
                 (
-                    "Camera A · calibrated coordinates",
-                    refined_coordinates("A", before_a),
-                ),
-                (
-                    "Camera B · all candidates",
+                    "Selected region · local geometric Rxxx",
                     _first_existing(
-                        molmo_dir / "camera_B_molmo_keypoint_candidates.png"
+                        local_geometry_dir / "camera_A_local_grasp_candidates.png",
+                        local_geometry_dir / "camera_B_local_grasp_candidates.png",
+                        semantic_dir / "camera_A_molmo_keypoint_references.png",
+                        semantic_dir / "camera_B_molmo_keypoint_references.png",
                     ),
                 ),
                 (
-                    "Camera B · accepted only",
+                    "Camera B · Molmo diagnostics",
                     _first_existing(
-                        molmo_dir / "camera_B_molmo_keypoint_references.png"
+                        semantic_dir / "camera_B_semantic_anchor_diagnostics.png",
+                        semantic_dir / "camera_B_molmo_keypoint_candidates.png",
                     ),
                 ),
                 (
-                    "Camera B · calibrated coordinates",
-                    refined_coordinates("B", before_b),
+                    "Camera B · accepted semantic Sxxx",
+                    _first_existing(
+                        semantic_dir / "camera_B_semantic_anchors.png",
+                        semantic_dir / "camera_B_molmo_keypoint_references.png",
+                    ),
+                ),
+                (
+                    "Active Rxxx calibrated coordinates",
+                    refined_coordinates(
+                        active_local_camera,
+                        before_a if active_local_camera == "A" else before_b,
+                        guide_override=(
+                            local_geometry_dir
+                            / f"camera_{active_local_camera}_local_geometry_coordinate_guide.json"
+                        ),
+                    ),
                 ),
             ),
         ),
@@ -315,7 +356,9 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                 (
                     "Camera A · selected references",
                     _first_existing(
-                        molmo_dir / "camera_A_molmo_keypoint_references.png"
+                        local_geometry_dir / "camera_A_local_grasp_candidates.png",
+                        semantic_dir / "camera_A_semantic_anchors.png",
+                        semantic_dir / "camera_A_molmo_keypoint_references.png",
                     ),
                 ),
                 ("Camera B · before", before_b),
@@ -323,7 +366,9 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                 (
                     "Camera B · selected references",
                     _first_existing(
-                        molmo_dir / "camera_B_molmo_keypoint_references.png"
+                        local_geometry_dir / "camera_B_local_grasp_candidates.png",
+                        semantic_dir / "camera_B_semantic_anchors.png",
+                        semantic_dir / "camera_B_molmo_keypoint_references.png",
                     ),
                 ),
             ),
@@ -750,6 +795,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             width=args.width,
             height=args.height,
         )
+    except KeyboardInterrupt:
+        print("Lightweight viewer stopped by operator.", flush=True)
+        return 130
     except Exception as exc:
         print(f"Artifact viewer failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

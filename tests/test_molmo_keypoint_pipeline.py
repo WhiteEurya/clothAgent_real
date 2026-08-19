@@ -14,6 +14,7 @@ from cloth_agent.molmo_keypoint_pipeline import (
     KeypointSpec,
     MolmoKeypointPipelineError,
     build_confidence_filtered_references,
+    build_semantic_anchor_manifest,
     run_molmo_keypoint_pipeline,
 )
 from cloth_agent.molmo_keypoint_worker import (
@@ -43,6 +44,10 @@ def _perception_dir(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         height = np.full((4, 5), 7.5, dtype=np.float32)
         np.save(directory / f"camera_{camera}_base_xyz_mm.npy", xyz)
         np.save(directory / f"camera_{camera}_height_above_table_mm.npy", height)
+        np.save(
+            directory / f"camera_{camera}_garment_mask.npy",
+            np.ones((4, 5), dtype=bool),
+        )
         (directory / f"camera_{camera}_coordinate_guide.json").write_text(
             json.dumps(
                 {
@@ -200,6 +205,53 @@ def test_no_point_above_threshold_produces_explicit_stop_status(tmp_path: Path) 
     assert manifest["status"] == "NO_VALID_GRASP_REFERENCES"
     assert manifest["accepted_reference_count"] == 0
     assert manifest["safety_gate"].startswith("planning must not start")
+
+
+def test_semantic_mode_emits_few_sxxx_anchors_and_never_installs_grasp_rxxx(
+    tmp_path: Path,
+) -> None:
+    perception_dir, image_paths = _perception_dir(tmp_path)
+    artifact_dir = tmp_path / "semantic_artifacts"
+    artifact_dir.mkdir()
+    original_guide = (
+        perception_dir / "camera_A_coordinate_guide.json"
+    ).read_text(encoding="utf-8")
+    payload = _payload(
+        [
+            _record("center", status="point_returned", confidence=0.95, pixel=[2.0, 1.0]),
+            # Contradictory labels at the same pixel must collapse to one anchor.
+            _record("corner", status="point_returned", confidence=0.90, pixel=[2.0, 1.0]),
+        ],
+        [
+            _record("center", status="point_returned", confidence=0.79, pixel=[2.0, 1.0]),
+            _record("corner", status="not_found", confidence=0.0, pixel=None),
+        ],
+    )
+    manifest = build_semantic_anchor_manifest(
+        payload,
+        perception_dir=perception_dir,
+        artifact_dir=artifact_dir,
+        image_paths=image_paths,
+        cameras=("A", "B"),
+        specs=SPECS,
+        confidence_threshold=0.80,
+        max_anchors=2,
+        install=True,
+    )
+    assert manifest["status"] == "READY"
+    assert manifest["anchor_count"] == 1
+    assert manifest["anchors"][0]["anchor_id"] == "S001"
+    assert manifest["anchors"][0]["role"] == "semantic_anchor_not_grasp_point"
+    assert "reference_id" not in manifest["anchors"][0]
+    assert (
+        perception_dir / "camera_A_coordinate_guide.json"
+    ).read_text(encoding="utf-8") == original_guide
+    observation = json.loads(
+        (perception_dir / "observation.json").read_text(encoding="utf-8")
+    )
+    assert observation["grasp_reference_policy"] == (
+        "not_available_until_local_geometry_grounding"
+    )
 
 
 def test_restricting_queries_to_one_camera_disables_other_camera_references(

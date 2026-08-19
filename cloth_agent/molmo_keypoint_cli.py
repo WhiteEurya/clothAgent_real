@@ -1,10 +1,11 @@
-"""Headless CLI loop for confidence-filtered Molmo garment grasp references.
+"""Headless semantic-anchor garment-opening CLI.
 
 The loop mirrors the automatic Viser workflow without starting a web server or
-browser: synchronized A/B perception, Molmo keypoints and confidence filtering,
-Claude visual selection/final grounding, preflight/controller IK, optional real
-execution, and before/after evaluation.  Every phase is printed to stdout and
-checkpointed under a separate iteration directory.
+browser: synchronized A/B perception, high-confidence Molmo semantic anchors,
+semantic-state construction, Claude relation strategy, local geometry Rxxx,
+state-scoped action generation, preflight/controller IK, optional execution,
+stage-wise evaluation, and structured experience. Every phase is printed to
+stdout and checkpointed under a separate iteration directory.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ import numpy as np
 
 from .auto_exploration import (
     AutoExplorationError,
-    ClaudeAutoClient,
     ExplorationProposal,
     _is_preexecution_replan_error,
     _load_session,
@@ -36,14 +36,27 @@ from .auto_exploration import (
 from .experiment import ExperimentValidationError
 from .free_exploration import exploration_source, perception_image_paths
 from .molmo_keypoint_pipeline import (
-    DEFAULT_CONFIDENCE_THRESHOLD,
+    DEFAULT_SEMANTIC_ANCHORS,
+    DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
     KeypointSpec,
     load_keypoint_specs,
-    run_molmo_keypoint_pipeline,
+    run_molmo_semantic_anchor_pipeline,
     validate_confidence_threshold,
 )
 from .perception import PerceptionConfig, capture_two_view_rgbd
 from .robot_api import move_robot_to_perception_position, validate_controller_trajectory
+from .semantic_claude import SemanticActionResult, SemanticClaudeClient
+from .semantic_pipeline import (
+    LocalGeometryGrounder,
+    SemanticPipelineError,
+    SemanticStateBuilder,
+    action_scope_from_experiences,
+    append_structured_experience,
+    build_structured_experience,
+    load_structured_experiences,
+    refresh_local_geometry_artifacts,
+    semantic_hypothesis_budget,
+)
 from .session import AgentSession
 from .viewer import _load_latest_perception
 
@@ -140,7 +153,7 @@ class CliReporter:
         with self._io_lock:
             print("╭" + "─" * width + "╮", file=self.stream)
             print(
-                "│  ClothAgent · Molmo Confidence Keypoint CLI".ljust(width + 1)
+                "│  ClothAgent · Semantic Anchor CLI".ljust(width + 1)
                 + "│",
                 file=self.stream,
             )
@@ -282,7 +295,7 @@ class KeypointCliOptions:
     settle_s: float = 2.0
     enable_real: bool = False
     skip_controller_ik: bool = False
-    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
+    confidence_threshold: float = DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD
     molmo_python: Path | None = None
     molmo_model: str = "allenai/MolmoPoint-8B"
     keypoint_specs: tuple[KeypointSpec, ...] = ()
@@ -295,7 +308,7 @@ class KeypointCliOptions:
     claude_binary: str = "claude"
     claude_timeout_s: int = 400
     claude_grounding_timeout_s: int = 120
-    max_replans: int = 2
+    max_replans: int = 1
     objective: str = (
         "Take one planning-mode-appropriate action that makes the current garment "
         "as open and spread as safely possible."
@@ -312,8 +325,10 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError("settle_s must be between 0 and 60 seconds")
     if options.enable_real and options.skip_controller_ik:
         raise ValueError("controller IK cannot be skipped with --enable-real")
-    if not 0 <= options.max_replans <= 5:
-        raise ValueError("max_replans must be between 0 and 5")
+    if not 0 <= options.max_replans <= 1:
+        raise ValueError(
+            "max_replans must be 0 or 1; hard validation permits one correction"
+        )
     if not 30 <= options.claude_timeout_s <= 1200:
         raise ValueError("claude_timeout_s must be between 30 and 1200 seconds")
     if not 15 <= options.claude_grounding_timeout_s <= 400:
@@ -390,7 +405,7 @@ def _record_stage(
     _iteration_checkpoint(output_dir, iteration_dir, iteration, record)
 
 
-def _print_keypoints(
+def _print_semantic_anchors(
     reporter: CliReporter,
     iteration: int,
     manifest: dict[str, Any],
@@ -398,25 +413,29 @@ def _print_keypoints(
     reporter.emit(
         "molmo-summary",
         (
-            f"status={manifest['status']} accepted="
-            f"{manifest['accepted_reference_count']} threshold>"
+            f"status={manifest['status']} semantic_anchors="
+            f"{manifest['anchor_count']} threshold>"
             f"{manifest['confidence_threshold']:.3f}"
         ),
         iteration=iteration,
     )
     for view in manifest.get("views", []):
         camera = str(view.get("camera", "?"))
-        for candidate in view.get("candidates", []):
+        for candidate in view.get("records", []):
             accepted = bool(candidate.get("accepted"))
-            reference = candidate.get("reference_id", "-") if accepted else "-"
-            reason = "accepted" if accepted else candidate.get("rejection_reason", "rejected")
+            anchor = candidate.get("anchor_id", "-") if accepted else "-"
+            reason = (
+                "accepted_as_semantic_anchor"
+                if accepted
+                else candidate.get("rejection_reason", "rejected")
+            )
             reporter.emit(
-                "molmo-keypoint",
+                "molmo-semantic-anchor",
                 (
                     f"camera={camera} name={candidate.get('name')} "
                     f"status={candidate.get('status')} "
                     f"confidence={float(candidate.get('confidence', 0.0)):.4f} "
-                    f"valid={str(accepted).lower()} reference={reference} reason={reason}"
+                    f"valid={str(accepted).lower()} anchor={anchor} reason={reason}"
                 ),
                 iteration=iteration,
                 level="PASS" if accepted else "REJECT",
@@ -444,48 +463,39 @@ def _planning_images(
     return paths
 
 
-def _replan_feedback(
-    exc: BaseException,
-    proposal: ExplorationProposal | None,
-) -> str:
-    lines = [f"Error type: {type(exc).__name__}", f"Error: {exc}"]
-    if proposal is not None:
-        lines.append("Rejected proposal actions:")
-        lines.extend(
-            json.dumps(action, ensure_ascii=False) for action in proposal.actions
-        )
-    lines.append(
-        "Generate a materially different proposal that addresses this exact "
-        "pre-execution failure and stays inside workspace/IK limits."
-    )
-    return "\n".join(lines)
-
-
-def _print_proposal(
+def _print_semantic_action(
     reporter: CliReporter,
     iteration: int,
-    client: ClaudeAutoClient,
+    strategy: Any,
+    action_result: SemanticActionResult,
+    candidate: dict[str, Any],
     proposal: ExplorationProposal,
     source: str,
 ) -> None:
-    visual = client.last_visual_plan_result
-    if visual is not None:
-        selected = visual.decision.selected_reference
-        reporter.emit(
-            "claude-visual-plan",
-            (
-                f"selected={selected['camera']}/{selected['reference_id']} "
-                f"confidence={visual.decision.confidence:.3f} "
-                f"reason={selected['reason']}"
-            ),
-            iteration=iteration,
-            payload=visual.decision.as_dict(),
-        )
     reporter.emit(
-        "claude-final-plan",
+        "semantic-strategy",
+        (
+            f"target={strategy.target_part} hypothesis={strategy.hypothesis_state} "
+            f"anchor={strategy.anchor_id} desired_change={strategy.desired_change}"
+        ),
+        iteration=iteration,
+        payload=strategy.as_dict(),
+    )
+    reporter.emit(
+        "local-grasp-selection",
+        (
+            f"selected={action_result.selected_candidate_id} "
+            f"feature={candidate.get('feature')} "
+            f"graspability={float(candidate.get('graspability_score', 0.0)):.3f}"
+        ),
+        iteration=iteration,
+        payload=candidate,
+    )
+    reporter.emit(
+        "semantic-action",
         f"validated proposal with {len(proposal.actions)} action(s)",
         iteration=iteration,
-        payload=proposal.as_dict(),
+        payload=action_result.as_dict(),
     )
     reporter.emit(
         "generated-source",
@@ -509,8 +519,12 @@ def run_keypoint_cli_loop(
     options: KeypointCliOptions,
     *,
     capture: Callable[[PerceptionConfig], list[Any]] = capture_two_view_rgbd,
-    keypoint_runner: Callable[..., dict[str, Any]] = run_molmo_keypoint_pipeline,
-    client: ClaudeAutoClient | None = None,
+    keypoint_runner: Callable[..., dict[str, Any]] = (
+        run_molmo_semantic_anchor_pipeline
+    ),
+    client: SemanticClaudeClient | None = None,
+    semantic_state_builder: SemanticStateBuilder | None = None,
+    local_geometry_grounder: LocalGeometryGrounder | None = None,
     controller_validator: Callable[..., Any] = validate_controller_trajectory,
     perception_positioner: Callable[..., dict[str, Any]] = (
         move_robot_to_perception_position
@@ -531,12 +545,14 @@ def run_keypoint_cli_loop(
         stream=stream,
         color=options.color,
     )
-    client = client or ClaudeAutoClient(
+    client = client or SemanticClaudeClient(
         binary=options.claude_binary,
-        timeout_s=options.claude_timeout_s,
-        grounding_timeout_s=options.claude_grounding_timeout_s,
-        max_reference_reselections=options.max_replans,
+        strategy_timeout_s=options.claude_timeout_s,
+        action_timeout_s=options.claude_grounding_timeout_s,
+        evaluation_timeout_s=options.claude_timeout_s,
     )
+    semantic_state_builder = semantic_state_builder or SemanticStateBuilder()
+    local_geometry_grounder = local_geometry_grounder or LocalGeometryGrounder()
     summary: dict[str, Any] = {
         "created_at": _now(),
         "status": "RUNNING",
@@ -568,7 +584,7 @@ def run_keypoint_cli_loop(
             "Local start time": local_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "Mode": "REAL ROBOT" if options.enable_real else "DRY RUN (no motion)",
             "Iterations": options.max_iterations or "continuous",
-            "Cameras / keypoints": (
+            "Cameras / anchor queries": (
                 f"{','.join(options.keypoint_cameras)} / {len(options.keypoint_specs)}"
             ),
             "Confidence gate": f"confidence > {options.confidence_threshold:.3f}",
@@ -586,7 +602,7 @@ def run_keypoint_cli_loop(
     reporter.emit(
         "startup",
         (
-            "headless Molmo-keypoint loop started; physical execution "
+            "headless semantic-anchor loop started; physical execution "
             + ("ENABLED" if options.enable_real else "DISABLED (dry run)")
         ),
         payload={
@@ -632,8 +648,8 @@ def run_keypoint_cli_loop(
             sleep(options.settle_s)
             reporter.finish_phase("camera stabilization interval complete")
 
-    history: list[dict[str, Any]] = []
-    objective = options.objective
+    experience_path = session.workspace / "structured_experience.jsonl"
+    experiences = load_structured_experiences(experience_path)
     iteration = 0
     exit_code = 0
     while options.max_iterations is None or iteration < options.max_iterations:
@@ -644,7 +660,7 @@ def run_keypoint_cli_loop(
             "iteration": iteration,
             "started_at": _now(),
             "status": "RUNNING",
-            "objective": objective,
+            "objective": options.objective,
             "artifacts": {},
         }
         source_path = session.workspace / "_molmo_keypoint_cli.py"
@@ -738,12 +754,13 @@ def run_keypoint_cli_loop(
             reporter.start_phase(
                 "molmo",
                 (
-                    f"loading/inferencing {len(options.keypoint_specs)} keypoint "
-                    f"query/queries on Camera {','.join(options.keypoint_cameras)}"
+                    f"loading/inferencing {len(options.keypoint_specs)} semantic-anchor "
+                    f"query/queries on Camera {','.join(options.keypoint_cameras)}; "
+                    f"strict confidence > {options.confidence_threshold:.3f}"
                 ),
                 iteration=iteration,
             )
-            keypoint_dir = iteration_dir / "molmo_keypoints"
+            keypoint_dir = iteration_dir / "semantic_anchors"
             manifest = keypoint_runner(
                 project_root=session.project_root,
                 perception_dir=session.workspace / "perception_views",
@@ -758,86 +775,373 @@ def run_keypoint_cli_loop(
                 install=True,
                 worker_line_callback=reporter.worker_line,
             )
-            record["molmo_keypoints"] = manifest
-            record["artifacts"]["molmo_keypoints"] = str(
-                keypoint_dir / "molmo_keypoint_grasp_references.json"
+            record["semantic_anchors"] = manifest
+            record["artifacts"]["semantic_anchors"] = str(
+                keypoint_dir / "molmo_semantic_anchors.json"
             )
-            _print_keypoints(reporter, iteration, manifest)
+            _print_semantic_anchors(reporter, iteration, manifest)
             _record_stage(
-                output, iteration_dir, iteration, record, "MOLMO_KEYPOINTS_COMPLETED"
+                output, iteration_dir, iteration, record, "SEMANTIC_ANCHORS_COMPLETED"
             )
             if manifest.get("status") != "READY":
                 reporter.finish_phase(
-                    "finished, but no keypoint passed confidence/geometry gates",
+                    "finished, but no semantic anchor passed confidence/consistency gates",
                     success=False,
                 )
                 raise AutoExplorationError(
-                    "no Molmo keypoint passed the confidence and calibrated-geometry gates"
+                    "no high-confidence Molmo semantic anchor is available; "
+                    "planning is blocked before Claude and robot motion"
                 )
             reporter.finish_phase(
                 (
-                    f"accepted {manifest['accepted_reference_count']} reference(s); "
+                    f"accepted {manifest['anchor_count']} semantic anchor(s); "
                     f"artifacts saved in {keypoint_dir}"
                 )
             )
             before_images = _planning_images(saved, saved_path, manifest)
             record["before_images"] = [str(path) for path in before_images]
 
-            feedback: str | None = None
+            reporter.start_phase(
+                "semantic-state",
+                "building uncertain garment relations from Sxxx anchors",
+                iteration=iteration,
+            )
+            semantic_state = semantic_state_builder.build(manifest, saved)
+            record["semantic_state"] = semantic_state
+            _write_json(iteration_dir / "semantic_state.json", semantic_state)
+            _record_stage(
+                output, iteration_dir, iteration, record, "SEMANTIC_STATE_COMPLETED"
+            )
+            reporter.finish_phase(
+                (
+                    f"built {len(semantic_state['known']['anchors'])} known anchor(s) "
+                    f"and {len(semantic_state['hypotheses'])} relation hypothesis/hypotheses"
+                ),
+                payload=semantic_state,
+            )
+
+            previous_hypothesis_key = (
+                str(experiences[-1].get("hypothesis_key")) if experiences else None
+            )
+            previous_part = (
+                str(
+                    experiences[-1]
+                    .get("semantic_state", {})
+                    .get("target_part", "")
+                )
+                if experiences
+                else ""
+            )
+            current_previous_anchor = next(
+                (
+                    str(anchor["anchor_id"])
+                    for anchor in semantic_state["known"]["anchors"]
+                    if anchor.get("type") == previous_part
+                ),
+                None,
+            )
+            budget = semantic_hypothesis_budget(
+                experiences,
+                hypothesis_key=previous_hypothesis_key,
+                anchor_id=current_previous_anchor,
+            )
+            record["semantic_hypothesis_budget_before_strategy"] = budget.as_dict()
+            reporter.start_phase(
+                "semantic-strategy",
+                "Claude choosing the garment relation to change; no Rxxx/actions allowed",
+                iteration=iteration,
+            )
+            strategy = client.plan_strategy(
+                images=before_images,
+                run_dir=session.run_dir,
+                semantic_state=semantic_state,
+                experiences=experiences,
+                budget=budget,
+            )
+            reporter.finish_phase(
+                (
+                    f"target={strategy.target_part} hypothesis={strategy.hypothesis_state} "
+                    f"anchor={strategy.anchor_id}"
+                ),
+                payload=strategy.as_dict(),
+            )
+            record["semantic_strategy"] = strategy.as_dict()
+            record["claude_semantic_strategy"] = _jsonable(
+                client.last_strategy_log
+            )
+            _write_json(iteration_dir / "semantic_strategy.json", strategy.as_dict())
+            _write_json(
+                iteration_dir / "claude_semantic_strategy_log.json",
+                client.last_strategy_log,
+            )
+            _record_stage(
+                output, iteration_dir, iteration, record, "SEMANTIC_STRATEGY_COMPLETED"
+            )
+
+            selected_budget = semantic_hypothesis_budget(
+                experiences,
+                hypothesis_key=strategy.hypothesis_key,
+                anchor_id=strategy.anchor_id,
+            )
+            if selected_budget.disposition == "ESCAPE_HYPOTHESIS":
+                raise SemanticPipelineError(
+                    "Claude selected a semantic hypothesis whose finite budget is "
+                    f"already exhausted: {selected_budget.reason}"
+                )
+            record["semantic_hypothesis_budget"] = selected_budget.as_dict()
+            reporter.start_phase(
+                "local-geometry",
+                (
+                    f"searching only around {strategy.anchor_id} for free edges, "
+                    "height steps and ridges"
+                ),
+                iteration=iteration,
+            )
+            local_geometry_dir = iteration_dir / "local_geometry"
+            local_geometry = local_geometry_grounder.ground(
+                perception_dir=session.workspace / "perception_views",
+                artifact_dir=local_geometry_dir,
+                semantic_state=semantic_state,
+                strategy=strategy,
+                install=True,
+            )
+            record["local_geometry"] = local_geometry
+            record["artifacts"]["local_geometry"] = str(
+                local_geometry_dir / "local_geometry_candidates.json"
+            )
+            _record_stage(
+                output, iteration_dir, iteration, record, "LOCAL_GEOMETRY_COMPLETED"
+            )
+            reporter.finish_phase(
+                (
+                    f"generated {local_geometry['candidate_count']} local Rxxx "
+                    f"candidate(s) inside {strategy.target_part} region"
+                ),
+                payload=local_geometry,
+            )
+
+            reporter.start_phase(
+                "local-capability",
+                "checking workspace/controller IK for each local Rxxx before Claude action planning",
+                iteration=iteration,
+            )
+            reachable_candidates: list[dict[str, Any]] = []
+            rejected_candidates: list[dict[str, Any]] = []
+            for candidate in local_geometry["candidates"]:
+                checked = dict(candidate)
+                base_x, base_y, surface_z = (
+                    float(value) for value in checked["base_xyz_mm"]
+                )
+                yaw = float(checked.get("suggested_yaw_deg", 0.0))
+                z_high = session.robot_config.boundaries.z_max
+                approach_z = max(85.0, surface_z + 40.0)
+                if z_high is not None:
+                    approach_z = min(approach_z, float(z_high) - 5.0)
+                grasp_check_z = max(surface_z + 5.0, approach_z - 45.0)
+                capability_actions = [
+                    {
+                        "name": "move",
+                        "args": {
+                            "x": base_x,
+                            "y": base_y,
+                            "z": approach_z,
+                            "yaw": yaw,
+                        },
+                    },
+                    {
+                        "name": "move",
+                        "args": {
+                            "x": base_x,
+                            "y": base_y,
+                            "z": grasp_check_z,
+                            "yaw": yaw,
+                        },
+                    },
+                ]
+                try:
+                    for action in capability_actions:
+                        args = action["args"]
+                        session.robot_config.boundaries.validate(
+                            args["x"],
+                            args["y"],
+                            args["z"],
+                            session.robot_config.workspace_margin_mm,
+                            z_lower_margin_mm=session.robot_config.lower_z_margin_mm,
+                        )
+                    if options.skip_controller_ik:
+                        checked["controller_reachability"] = "SKIPPED_DRY_RUN"
+                    else:
+                        controller_validator(
+                            session.robot_config, capability_actions
+                        )
+                        checked["controller_reachability"] = "PASS"
+                except Exception as exc:
+                    checked["controller_reachability"] = "REJECTED"
+                    checked["rejection_reason"] = "workspace_or_controller_ik"
+                    checked["reachability_error"] = f"{type(exc).__name__}: {exc}"
+                    rejected_candidates.append(checked)
+                else:
+                    reachable_candidates.append(checked)
+            if not reachable_candidates:
+                raise SemanticPipelineError(
+                    "all local geometry candidates failed deterministic workspace/IK "
+                    "capability checks before Claude action planning"
+                )
+            if selected_budget.forced_geometry_type is not None:
+                geometry_rejected = [
+                    {
+                        **item,
+                        "rejection_reason": (
+                            f"previous_supported_geometry_family_"
+                            f"{selected_budget.forced_geometry_type}"
+                        ),
+                    }
+                    for item in reachable_candidates
+                    if item.get("feature") != selected_budget.forced_geometry_type
+                ]
+                matching_geometry = [
+                    item
+                    for item in reachable_candidates
+                    if item.get("feature") == selected_budget.forced_geometry_type
+                ]
+                if not matching_geometry:
+                    raise SemanticPipelineError(
+                        "the previous supported grasp geometry family is unavailable "
+                        f"in the current local region: {selected_budget.forced_geometry_type}"
+                    )
+                reachable_candidates = matching_geometry
+                rejected_candidates.extend(geometry_rejected)
+                reporter.emit(
+                    "local-persistence",
+                    (
+                        f"keeping previous supported geometry family "
+                        f"{selected_budget.forced_geometry_type}; "
+                        f"withheld {len(geometry_rejected)} other local candidate(s)"
+                    ),
+                    iteration=iteration,
+                    level="PASS",
+                )
+            local_geometry = {
+                **local_geometry,
+                "candidate_count": len(reachable_candidates),
+                "candidates": reachable_candidates,
+                "capability_rejected_candidates": rejected_candidates,
+            }
+            local_geometry = refresh_local_geometry_artifacts(
+                perception_dir=session.workspace / "perception_views",
+                artifact_dir=local_geometry_dir,
+                manifest=local_geometry,
+                install=True,
+            )
+            record["local_geometry"] = local_geometry
+            _write_json(
+                local_geometry_dir / "local_geometry_candidates.json",
+                local_geometry,
+            )
+            reporter.finish_phase(
+                (
+                    f"reachable={len(reachable_candidates)} "
+                    f"rejected={len(rejected_candidates)}"
+                ),
+                payload={
+                    "reachable": reachable_candidates,
+                    "rejected": rejected_candidates,
+                },
+            )
+            _record_stage(
+                output,
+                iteration_dir,
+                iteration,
+                record,
+                "LOCAL_CAPABILITY_COMPLETED",
+            )
+
+            scope = action_scope_from_experiences(
+                experiences,
+                hypothesis_key=strategy.hypothesis_key,
+                budget_disposition=selected_budget.disposition,
+            )
+            record["action_scope"] = scope.as_dict()
+            reporter.emit(
+                "action-scope",
+                (
+                    f"runtime authority={scope.name} lateral<={scope.max_lateral_mm:.1f}mm "
+                    f"lift<={scope.max_lift_mm:.1f}mm"
+                ),
+                iteration=iteration,
+                payload=scope.as_dict(),
+                level="PASS",
+            )
+
             proposal: ExplorationProposal | None = None
+            action_result: SemanticActionResult | None = None
+            selected_candidate: dict[str, Any] | None = None
             source = ""
             preflight = None
             controller = None
+            action_candidates = list(local_geometry["candidates"])
             for attempt in range(1, options.max_replans + 2):
                 reporter.emit(
                     "planning",
-                    f"Claude/preflight attempt {attempt}/{options.max_replans + 1}",
+                    (
+                        f"semantic action/preflight attempt {attempt}/"
+                        f"{options.max_replans + 1}"
+                    ),
                     iteration=iteration,
                 )
-
-                def phase_callback(phase: str, event: str, value: float) -> None:
-                    labels = {
-                        "visual_planning": "Claude Stage 1: inspecting images and selecting Camera/Rxxx",
-                        "final_grounding": "Claude Stage 2: grounding the selected Rxxx into robot actions",
-                    }
-                    if event == "started":
-                        reporter.start_phase(
-                            phase,
-                            f"{labels.get(phase, phase)} · timeout {value:.0f}s",
-                            iteration=iteration,
-                        )
-                    elif event == "completed":
-                        reporter.finish_phase(f"completed · reported {value:.2f}s")
-                    elif event == "failed":
-                        reporter.finish_phase(
-                            f"failed · reported {value:.2f}s",
-                            success=False,
-                        )
-                    elif event == "reselecting":
-                        reporter.finish_phase(
-                            (
-                                "selected reference failed deterministic validation; "
-                                f"reselecting · attempt {value:.2f}s"
-                            ),
-                            success=False,
-                            level="WARNING",
-                        )
-                    else:
-                        reporter.emit(
-                            phase,
-                            f"{event} · reported {value:.2f}s",
-                            iteration=iteration,
-                        )
-
                 try:
-                    proposal = client.plan(
-                        before_images,
-                        session,
-                        objective,
-                        feedback=feedback,
-                        history=history,
-                        phase_callback=phase_callback,
-                        reference_policy="molmo_confidence_filtered_keypoints",
+                    reporter.start_phase(
+                        "semantic-action",
+                        (
+                            f"Claude selecting among {len(action_candidates)} local "
+                            f"Rxxx candidate(s) under {scope.name}"
+                        ),
+                        iteration=iteration,
+                    )
+                    action_geometry = {**local_geometry, "candidates": action_candidates}
+                    action_result = client.propose_action(
+                        run_dir=session.run_dir,
+                        strategy=strategy,
+                        local_geometry=action_geometry,
+                        scope=scope,
+                        robot_context={
+                            "workspace_bounds_mm": _jsonable(
+                                session.robot_config.boundaries
+                            ),
+                            "fixed_orientation_deg": {
+                                "roll": session.robot_config.orientation_roll_deg,
+                                "pitch": session.robot_config.orientation_pitch_deg,
+                            },
+                            "capabilities": [
+                                "move(x,y,z,yaw)",
+                                "open_gripper()",
+                                "close_gripper()",
+                                "home()",
+                            ],
+                        },
+                        overlay_image=Path(local_geometry["overlay"]),
+                    )
+                    record.setdefault("claude_semantic_action_attempts", []).append(
+                        _jsonable(client.last_action_log)
+                    )
+                    _write_json(
+                        iteration_dir
+                        / f"claude_semantic_action_attempt_{attempt:02d}.json",
+                        client.last_action_log,
+                    )
+                    proposal = action_result.proposal
+                    selected_candidate = next(
+                        item
+                        for item in action_candidates
+                        if item["reference_id"]
+                        == action_result.selected_candidate_id
+                    )
+                    reporter.finish_phase(
+                        (
+                            f"selected={action_result.selected_candidate_id} "
+                            f"feature={selected_candidate['feature']}"
+                        ),
+                        payload=action_result.as_dict(),
                     )
                     source = exploration_source(proposal)
                     source_path.write_text(source, encoding="utf-8")
@@ -878,21 +1182,53 @@ def run_keypoint_cli_loop(
                         or not _is_preexecution_replan_error(exc)
                     ):
                         raise
-                    feedback = _replan_feedback(exc, proposal)
+                    if action_result is None:
+                        raise
+                    rejected_id = action_result.selected_candidate_id
+                    action_candidates = [
+                        item
+                        for item in action_candidates
+                        if item["reference_id"] != rejected_id
+                    ]
+                    if not action_candidates:
+                        raise SemanticPipelineError(
+                            "the only local grasp candidate failed deterministic "
+                            "pre-execution validation"
+                        ) from exc
                     reporter.emit(
                         "replan",
-                        f"pre-execution candidate rejected: {type(exc).__name__}: {exc}",
+                        (
+                            f"hard validation rejected local candidate {rejected_id}; "
+                            f"one bounded correction remains: {type(exc).__name__}: {exc}"
+                        ),
                         iteration=iteration,
                         level="WARNING",
                     )
-            if proposal is None or preflight is None or controller is None:
+            if (
+                proposal is None
+                or action_result is None
+                or selected_candidate is None
+                or preflight is None
+                or controller is None
+            ):
                 raise AutoExplorationError("planning ended without a validated proposal")
-            _print_proposal(reporter, iteration, client, proposal, source)
+            _print_semantic_action(
+                reporter,
+                iteration,
+                strategy,
+                action_result,
+                selected_candidate,
+                proposal,
+                source,
+            )
             record["proposal"] = proposal.as_dict()
+            record["semantic_action"] = action_result.as_dict()
+            record["selected_local_candidate"] = selected_candidate
             record["proposal_source"] = source
-            record["visual_plan"] = _jsonable(client.last_visual_plan_result)
-            record["claude_plan"] = _jsonable(client.last_plan_result)
-            record["planning_timing"] = dict(client.last_plan_timing)
+            record["claude_semantic_strategy"] = _jsonable(
+                client.last_strategy_log
+            )
+            record["claude_semantic_action"] = _jsonable(client.last_action_log)
             record["preflight"] = _jsonable(preflight)
             record["controller_ik"] = _jsonable(controller)
             (iteration_dir / "proposal.py").write_text(source, encoding="utf-8")
@@ -975,43 +1311,63 @@ def run_keypoint_cli_loop(
             reporter.finish_phase(f"saved {len(after_images)} after image(s) in {after_dir}")
             reporter.start_phase(
                 "evaluation",
-                "Claude comparing before/after images",
+                (
+                    "Claude evaluating semantic target → acquisition → structure "
+                    "engagement → opening relevance → transport → laydown"
+                ),
                 iteration=iteration,
             )
             evaluation = client.evaluate(
-                before_images,
-                after_images,
-                proposal=proposal,
+                before_images=before_images,
+                after_images=after_images,
                 run_dir=session.run_dir,
+                semantic_state=semantic_state,
+                strategy=strategy,
+                candidate=selected_candidate,
+                action_result=action_result,
             )
             record["evaluation"] = evaluation.as_dict()
-            record["claude_evaluation"] = _jsonable(client.last_evaluation_result)
+            record["claude_semantic_evaluation"] = _jsonable(
+                client.last_evaluation_log
+            )
             _write_json(iteration_dir / "evaluation.json", evaluation.as_dict())
+            _write_json(
+                iteration_dir / "claude_semantic_evaluation_log.json",
+                client.last_evaluation_log,
+            )
+            experience = build_structured_experience(
+                iteration=iteration,
+                semantic_state=semantic_state,
+                strategy=strategy,
+                candidate=selected_candidate,
+                action_scope=scope,
+                evaluation=evaluation,
+            )
+            append_structured_experience(experience_path, experience)
+            experiences.append(experience)
+            record["structured_experience"] = experience
+            _write_json(iteration_dir / "structured_experience.json", experience)
             record["status"] = "COMPLETED"
             record["completed_at"] = _now()
             _iteration_checkpoint(output, iteration_dir, iteration, record)
-            history_entry = {
-                "iteration": iteration,
-                "plan_status": "executed",
-                "proposal": proposal.as_dict(),
-                "execution_completed": True,
-                "before_images": record["before_images"],
-                "after_images": record["after_images"],
-                "evaluation": evaluation.as_dict(),
-            }
-            history.append(history_entry)
             summary["iterations"].append(
                 {
                     "iteration": iteration,
                     "status": record["status"],
-                    "task_progress": evaluation.task_progress.status,
-                    "confidence": evaluation.task_progress.confidence,
+                    "semantic_target": evaluation.semantic_target.status,
+                    "structure_engagement": evaluation.structure_engagement.status,
+                    "opening_relevance": evaluation.opening_relevance.status,
+                    "task_progress": evaluation.task_progress["status"],
+                    "confidence": evaluation.task_progress["confidence"],
                 }
             )
             reporter.finish_phase(
                 (
-                    f"task_progress={evaluation.task_progress.status} "
-                    f"confidence={evaluation.task_progress.confidence:.3f} "
+                    f"semantic_target={evaluation.semantic_target.status} "
+                    f"engagement={evaluation.structure_engagement.status} "
+                    f"opening_relevance={evaluation.opening_relevance.status} "
+                    f"task_progress={evaluation.task_progress['status']} "
+                    f"confidence={evaluation.task_progress['confidence']:.3f} "
                     f"earliest_failure={evaluation.earliest_failure_stage}"
                 ),
                 payload=evaluation.as_dict(),
@@ -1024,7 +1380,6 @@ def run_keypoint_cli_loop(
                 )
                 summary["stop_reason"] = evaluation.reason
                 break
-            objective = evaluation.next_objective
         except KeyboardInterrupt:
             reporter.fail_current_phase("operator interrupted the active phase")
             record["status"] = "INTERRUPTED"
@@ -1067,7 +1422,9 @@ def run_keypoint_cli_loop(
                 level="ERROR",
             )
             traceback.print_exc(file=stream)
-            molmo_log = iteration_dir / "molmo_keypoints" / "molmo_keypoints.stdout.txt"
+            molmo_log = (
+                iteration_dir / "semantic_anchors" / "molmo_keypoints.stdout.txt"
+            )
             if molmo_log.is_file():
                 reporter.emit(
                     "molmo-log",
@@ -1117,7 +1474,15 @@ def main(argv: list[str] | None = None) -> int:
             "real RGB-D capture"
         ),
     )
-    parser.add_argument("--confidence-threshold", type=float, default=0.60)
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
+        help=(
+            "strict Molmo semantic-anchor threshold; confidence equal to the "
+            "threshold is rejected"
+        ),
+    )
     parser.add_argument("--keypoints-json", type=Path)
     parser.add_argument("--keypoint-camera", action="append", choices=["A", "B"])
     parser.add_argument("--molmo-python", type=Path)
@@ -1147,7 +1512,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--claude-timeout-s", type=int, default=400)
     parser.add_argument("--claude-grounding-timeout-s", type=int, default=120)
-    parser.add_argument("--max-replans", type=int, default=2)
+    parser.add_argument(
+        "--max-replans",
+        type=int,
+        default=1,
+        help="hard validation correction budget; semantic mode permits at most one",
+    )
     parser.add_argument(
         "--objective",
         default=(
@@ -1199,7 +1569,11 @@ def main(argv: list[str] | None = None) -> int:
             args.molmo_python.expanduser().resolve() if args.molmo_python else None
         ),
         molmo_model=args.molmo_model,
-        keypoint_specs=load_keypoint_specs(args.keypoints_json),
+        keypoint_specs=(
+            load_keypoint_specs(args.keypoints_json)
+            if args.keypoints_json
+            else DEFAULT_SEMANTIC_ANCHORS
+        ),
         keypoint_cameras=tuple(args.keypoint_camera or ("A", "B")),
         molmo_timeout_s=args.molmo_timeout_s,
         molmo_allow_download=args.molmo_allow_download,

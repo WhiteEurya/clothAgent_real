@@ -9,10 +9,27 @@ from cloth_agent.perception import (
     CameraSpec,
     PerceptionConfig,
     RGBDFrame,
+    _camera_height_view_artifacts,
     _occlusion_aware_garment_mask,
     _outer_mask_boundary,
     _save_camera_height_heatmap,
 )
+
+
+def test_camera_view_exposes_final_garment_mask_to_session_copy() -> None:
+    artifacts = {
+        "height_map": "heat.png",
+        "height_map_global": "heat_global.png",
+        "height_map_boundary": "boundary.png",
+        "height_map_path": "height.npy",
+        "garment_mask": "garment_mask.npy",
+        "fold_edge_overlay": "fold.png",
+    }
+
+    view = _camera_height_view_artifacts(artifacts)
+
+    assert view["garment_mask"] == "garment_mask.npy"
+    assert view["height_map_path"] == "height.npy"
 
 
 def test_projected_garment_mask_rejects_table_colored_silhouette_pixels() -> None:
@@ -123,8 +140,13 @@ def test_coordinate_guide_uses_final_garment_mask_not_sparse_projection(
     guide = json.loads(
         (tmp_path / artifacts["coordinate_guide"]).read_text(encoding="utf-8")
     )
+    saved_mask = np.load(tmp_path / artifacts["garment_mask"], allow_pickle=False)
 
     assert guide["samples"]
+    assert saved_mask.dtype == np.bool_
+    assert saved_mask.shape == (height, width)
+    assert saved_mask[30, 30]
+    assert not saved_mask[70, 30]
     assert all(
         20 <= sample["pixel_xy"][0] <= 80
         and 20 <= sample["pixel_xy"][1] <= 55
