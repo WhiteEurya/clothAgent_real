@@ -1,17 +1,17 @@
-"""Headless semantic-anchor garment-opening CLI.
+"""Headless Claude-global garment-opening CLI.
 
-The loop mirrors the automatic Viser workflow without starting a web server or
-browser: synchronized A/B perception, high-confidence Molmo semantic anchors,
-semantic-state construction, Claude relation strategy, local geometry Rxxx,
-state-scoped action generation, preflight/controller IK, optional execution,
-stage-wise evaluation, and structured experience. Every phase is printed to
+The default loop gives Claude complete synchronized A/B perception and prior
+physical outcomes, lets it choose one arbitrary image pixel and action, then
+applies grounding, preflight, workspace, and controller safety gates. Molmo
+semantic anchors and local Rxxx candidates remain available only through the
+explicit ``semantic_local`` compatibility policy. Every phase is printed to
 stdout and checkpointed under a separate iteration directory.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
 import json
 import math
@@ -27,14 +27,25 @@ import numpy as np
 
 from .auto_exploration import (
     AutoExplorationError,
+    ClaudeAutoClient,
     ExplorationProposal,
     _is_preexecution_replan_error,
     _load_session,
     _save_frame_images,
     grasp_targets_from_actions,
 )
+from .config import SafetyError
 from .experiment import ExperimentValidationError
-from .free_exploration import exploration_source, perception_image_paths
+from .free_exploration import (
+    ClaudeExplorationClient,
+    ExplorationPlanningError,
+    ExplorationTimeoutError,
+    exploration_prompt,
+    exploration_source,
+    global_perception_image_paths,
+    ground_global_grasp_target,
+    perception_image_paths,
+)
 from .molmo_keypoint_pipeline import (
     DEFAULT_SEMANTIC_ANCHORS,
     DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
@@ -58,11 +69,46 @@ from .semantic_pipeline import (
     semantic_hypothesis_budget,
 )
 from .session import AgentSession
+from .skill_lifecycle import SkillStore
 from .viewer import _load_latest_perception
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _override_camera_controls(
+    config: PerceptionConfig,
+    *,
+    camera_a_exposure: float | None = None,
+    camera_b_exposure: float | None = None,
+    camera_a_white_balance: float | None = None,
+    camera_b_white_balance: float | None = None,
+) -> PerceptionConfig:
+    exposures = {"A": camera_a_exposure, "B": camera_b_exposure}
+    white_balances = {
+        "A": camera_a_white_balance,
+        "B": camera_b_white_balance,
+    }
+    cameras = tuple(
+        replace(
+            camera,
+            color_exposure=(
+                exposures[camera.label]
+                if exposures.get(camera.label) is not None
+                else camera.color_exposure
+            ),
+            color_white_balance=(
+                white_balances[camera.label]
+                if white_balances.get(camera.label) is not None
+                else camera.color_white_balance
+            ),
+        )
+        for camera in config.cameras
+    )
+    updated = replace(config, cameras=cameras)
+    updated.validate()
+    return updated
 
 
 def _jsonable(value: Any) -> Any:
@@ -91,6 +137,88 @@ def _write_json(path: Path, payload: Any) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw.strip():
+            continue
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AutoExplorationError(
+                f"invalid JSONL at {path}:{line_number}: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise AutoExplorationError(
+                f"global experience at {path}:{line_number} must be an object"
+            )
+        records.append(value)
+    return records
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
+
+
+def _save_global_selected_pixel_overlay(
+    proposal: ExplorationProposal,
+    perception: dict[str, Any],
+    result_path: Path,
+    output_path: Path,
+) -> Path:
+    """Draw only Claude's final selected pixel, never a candidate set."""
+
+    from PIL import Image, ImageDraw
+
+    selected = proposal.selected_grasp
+    if selected is None:
+        raise ExplorationPlanningError("global proposal is missing selected_grasp")
+    view = next(
+        (
+            item
+            for item in perception.get("views", [])
+            if isinstance(item, dict) and item.get("label") == selected["camera"]
+        ),
+        None,
+    )
+    if view is None or not view.get("image"):
+        raise ExplorationPlanningError(
+            f"Camera {selected['camera']} full RGB is unavailable for selected-pixel audit"
+        )
+    image_path = (result_path.parent / str(view["image"])).resolve()
+    image = Image.open(image_path).convert("RGB")
+    x_px, y_px = (int(value) for value in selected["pixel_xy"])
+    if not 0 <= x_px < image.width or not 0 <= y_px < image.height:
+        raise ExplorationPlanningError(
+            f"selected pixel ({x_px}, {y_px}) is outside RGB bounds "
+            f"{image.width}x{image.height}"
+        )
+    draw = ImageDraw.Draw(image)
+    radius = 10
+    color = (255, 40, 40)
+    draw.ellipse(
+        (x_px - radius, y_px - radius, x_px + radius, y_px + radius),
+        outline=color,
+        width=3,
+    )
+    draw.line((x_px - 15, y_px, x_px + 15, y_px), fill=color, width=2)
+    draw.line((x_px, y_px - 15, x_px, y_px + 15), fill=color, width=2)
+    draw.text(
+        (min(x_px + 14, max(0, image.width - 150)), max(0, y_px - 24)),
+        f"CLAUDE {selected['camera']} ({x_px},{y_px})",
+        fill=color,
+        stroke_width=2,
+        stroke_fill=(255, 255, 255),
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path)
+    return output_path.resolve()
 
 
 class CliReporter:
@@ -138,6 +266,13 @@ class CliReporter:
         self._current_phase: dict[str, Any] | None = None
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
+        # Heartbeats are rendered in-place only on a real terminal. Pipes,
+        # StringIO, and redirected worker logs retain one complete line per
+        # event so machine-readable/non-interactive logs never lose history.
+        self._dynamic_terminal = bool(
+            getattr(stream, "isatty", lambda: False)()
+        )
+        self._dynamic_line_active = False
 
     @staticmethod
     def _duration(seconds: float) -> str:
@@ -151,9 +286,10 @@ class CliReporter:
     def banner(self, payload: dict[str, Any]) -> None:
         width = 86
         with self._io_lock:
+            self._clear_dynamic_line_locked(add_newline=True)
             print("╭" + "─" * width + "╮", file=self.stream)
             print(
-                "│  ClothAgent · Semantic Anchor CLI".ljust(width + 1)
+                "│  ClothAgent · Global Garment CLI".ljust(width + 1)
                 + "│",
                 file=self.stream,
             )
@@ -196,6 +332,21 @@ class CliReporter:
         if thread is not None:
             thread.join(timeout=2.0)
         self._heartbeat_thread = None
+        with self._io_lock:
+            self._clear_dynamic_line_locked(add_newline=True)
+
+    def _clear_dynamic_line_locked(self, *, add_newline: bool = False) -> None:
+        """Erase a previously rendered in-place heartbeat under ``_io_lock``."""
+
+        if not self._dynamic_line_active:
+            return
+        # CR + erase-line also works when color output is disabled; the ANSI
+        # sequence is terminal control, not semantic color formatting.
+        self.stream.write("\r\033[2K")
+        if add_newline:
+            self.stream.write("\n")
+        self.stream.flush()
+        self._dynamic_line_active = False
 
     def start_phase(
         self,
@@ -271,13 +422,20 @@ class CliReporter:
             reset = "\033[0m" if color else ""
             prefix = f"{color}{prefix}{reset}"
         with self._io_lock:
-            print(f"{prefix}{message}", file=self.stream, flush=True)
-            if payload is not None:
-                print(
-                    json.dumps(_jsonable(payload), ensure_ascii=False, indent=2),
-                    file=self.stream,
-                    flush=True,
-                )
+            dynamic_wait = level == "WAIT" and self._dynamic_terminal
+            if dynamic_wait:
+                self.stream.write(f"\r\033[2K{prefix}{message}")
+                self.stream.flush()
+                self._dynamic_line_active = True
+            else:
+                self._clear_dynamic_line_locked()
+                print(f"{prefix}{message}", file=self.stream, flush=True)
+                if payload is not None:
+                    print(
+                        json.dumps(_jsonable(payload), ensure_ascii=False, indent=2),
+                        file=self.stream,
+                        flush=True,
+                    )
             with self.events_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
@@ -286,11 +444,13 @@ class CliReporter:
         elapsed_text = self._duration(time.monotonic() - self.run_started_monotonic)
         prefix = f"{clock_text}  +{elapsed_text}        MOLMO/WORKER          │ "
         with self._io_lock:
+            self._clear_dynamic_line_locked(add_newline=True)
             print(f"{prefix}{line}", end="", file=self.stream, flush=True)
 
 
 @dataclass(frozen=True)
 class KeypointCliOptions:
+    planning_policy: str = "claude_global"
     max_iterations: int | None = 1
     settle_s: float = 2.0
     enable_real: bool = False
@@ -302,13 +462,16 @@ class KeypointCliOptions:
     keypoint_cameras: tuple[str, ...] = ("A", "B")
     molmo_timeout_s: int = 900
     molmo_allow_download: bool = False
-    min_gpu_free_mib: int = 20_000
+    min_gpu_free_mib: int = 19_000
     heartbeat_s: float = 10.0
     color: bool | None = None
     claude_binary: str = "claude"
     claude_timeout_s: int = 400
     claude_grounding_timeout_s: int = 120
     max_replans: int = 1
+    continue_on_recoverable_errors: bool = False
+    max_consecutive_recoverable_failures: int = 3
+    recovery_backoff_s: float = 2.0
     objective: str = (
         "Take one planning-mode-appropriate action that makes the current garment "
         "as open and spread as safely possible."
@@ -316,6 +479,10 @@ class KeypointCliOptions:
 
 
 def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
+    if options.planning_policy not in {"claude_global", "semantic_local"}:
+        raise ValueError(
+            "planning_policy must be claude_global or semantic_local"
+        )
     validate_confidence_threshold(options.confidence_threshold)
     if options.max_iterations is not None and not 1 <= options.max_iterations <= 100:
         raise ValueError("max_iterations must be 1..100 or None for continuous")
@@ -329,6 +496,10 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError(
             "max_replans must be 0 or 1; hard validation permits one correction"
         )
+    if options.max_consecutive_recoverable_failures < 1 or options.max_consecutive_recoverable_failures > 20:
+        raise ValueError("max_consecutive_recoverable_failures must be between 1 and 20")
+    if not 0 <= options.recovery_backoff_s <= 300:
+        raise ValueError("recovery_backoff_s must be between 0 and 300 seconds")
     if not 30 <= options.claude_timeout_s <= 1200:
         raise ValueError("claude_timeout_s must be between 30 and 1200 seconds")
     if not 15 <= options.claude_grounding_timeout_s <= 400:
@@ -339,15 +510,43 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError("min_gpu_free_mib must be between 0 and 24564")
     if not 0 <= options.heartbeat_s <= 300:
         raise ValueError("heartbeat_s must be between 0 and 300 seconds")
-    if not options.keypoint_specs:
+    if options.planning_policy == "semantic_local" and not options.keypoint_specs:
         raise ValueError("at least one keypoint spec is required")
-    if not options.keypoint_cameras or any(
+    if options.planning_policy == "semantic_local" and (
+        not options.keypoint_cameras or any(
         camera not in {"A", "B"} for camera in options.keypoint_cameras
+        )
     ):
         raise ValueError("keypoint_cameras must contain A and/or B")
     if len(set(options.keypoint_cameras)) != len(options.keypoint_cameras):
         raise ValueError("keypoint_cameras must be unique")
     return options
+
+
+def _is_recoverable_loop_error(exc: BaseException, record: dict[str, Any]) -> bool:
+    """Allow a fresh perception/replan only before any physical rollout starts."""
+
+    if record.get("execution") is not None:
+        return False
+    if record.get("last_completed_stage") not in {None, "PERCEPTION_COMPLETED"}:
+        return False
+    if isinstance(
+        exc,
+        (
+            ExplorationTimeoutError,
+            ExplorationPlanningError,
+            ExperimentValidationError,
+            SafetyError,
+        ),
+    ):
+        return True
+    if isinstance(exc, (AutoExplorationError, SemanticPipelineError)):
+        message = str(exc).lower()
+        return not any(
+            token in message
+            for token in ("robot", "xarm", "set_position", "set_servo_angle", "physical rollout", "perception_position")
+        )
+    return False
 
 
 def probe_gpu_free_mib() -> int:
@@ -523,6 +722,8 @@ def run_keypoint_cli_loop(
         run_molmo_semantic_anchor_pipeline
     ),
     client: SemanticClaudeClient | None = None,
+    global_client: ClaudeExplorationClient | None = None,
+    global_evaluator: ClaudeAutoClient | None = None,
     semantic_state_builder: SemanticStateBuilder | None = None,
     local_geometry_grounder: LocalGeometryGrounder | None = None,
     controller_validator: Callable[..., Any] = validate_controller_trajectory,
@@ -545,20 +746,32 @@ def run_keypoint_cli_loop(
         stream=stream,
         color=options.color,
     )
-    client = client or SemanticClaudeClient(
-        binary=options.claude_binary,
-        strategy_timeout_s=options.claude_timeout_s,
-        action_timeout_s=options.claude_grounding_timeout_s,
-        evaluation_timeout_s=options.claude_timeout_s,
-    )
-    semantic_state_builder = semantic_state_builder or SemanticStateBuilder()
-    local_geometry_grounder = local_geometry_grounder or LocalGeometryGrounder()
+    if options.planning_policy == "semantic_local":
+        client = client or SemanticClaudeClient(
+            binary=options.claude_binary,
+            strategy_timeout_s=options.claude_timeout_s,
+            action_timeout_s=options.claude_grounding_timeout_s,
+            evaluation_timeout_s=options.claude_timeout_s,
+        )
+        semantic_state_builder = semantic_state_builder or SemanticStateBuilder()
+        local_geometry_grounder = local_geometry_grounder or LocalGeometryGrounder()
+    else:
+        global_client = global_client or ClaudeExplorationClient(
+            binary=options.claude_binary,
+            timeout_s=options.claude_timeout_s,
+        )
+        global_evaluator = global_evaluator or ClaudeAutoClient(
+            binary=options.claude_binary,
+            timeout_s=options.claude_timeout_s,
+            grounding_timeout_s=options.claude_grounding_timeout_s,
+        )
     summary: dict[str, Any] = {
         "created_at": _now(),
         "status": "RUNNING",
         "run_dir": str(session.run_dir),
         "output_dir": str(output),
         "enable_real": options.enable_real,
+        "planning_policy": options.planning_policy,
         "confidence_threshold": options.confidence_threshold,
         "max_iterations": options.max_iterations,
         "perception_position": {
@@ -583,11 +796,18 @@ def run_keypoint_cli_loop(
         {
             "Local start time": local_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "Mode": "REAL ROBOT" if options.enable_real else "DRY RUN (no motion)",
+            "Planning policy": options.planning_policy,
             "Iterations": options.max_iterations or "continuous",
-            "Cameras / anchor queries": (
-                f"{','.join(options.keypoint_cameras)} / {len(options.keypoint_specs)}"
+            "Visual input": (
+                "complete A/B scene; no candidates"
+                if options.planning_policy == "claude_global"
+                else f"{','.join(options.keypoint_cameras)} / {len(options.keypoint_specs)} anchors"
             ),
-            "Confidence gate": f"confidence > {options.confidence_threshold:.3f}",
+            "Confidence gate": (
+                "not applicable"
+                if options.planning_policy == "claude_global"
+                else f"confidence > {options.confidence_threshold:.3f}"
+            ),
             "Before each capture": (
                 "Home → perception_position → settle"
                 if options.enable_real
@@ -602,11 +822,12 @@ def run_keypoint_cli_loop(
     reporter.emit(
         "startup",
         (
-            "headless semantic-anchor loop started; physical execution "
+            f"headless {options.planning_policy} loop started; physical execution "
             + ("ENABLED" if options.enable_real else "DISABLED (dry run)")
         ),
         payload={
             "output_dir": str(output),
+            "planning_policy": options.planning_policy,
             "confidence_policy": f"confidence > {options.confidence_threshold}",
             "keypoint_cameras": list(options.keypoint_cameras),
             "keypoint_count": len(options.keypoint_specs),
@@ -650,7 +871,15 @@ def run_keypoint_cli_loop(
 
     experience_path = session.workspace / "structured_experience.jsonl"
     experiences = load_structured_experiences(experience_path)
+    global_experience_path = session.workspace / "global_experience.jsonl"
+    global_experiences = _load_jsonl(global_experience_path)
+    skill_store = SkillStore(session.project_root / "data" / "skills")
+    if global_client is not None:
+        global_client.skill_names = tuple(
+            skill.name for skill in skill_store.approved()
+        )
     iteration = 0
+    consecutive_recoverable_failures = 0
     exit_code = 0
     while options.max_iterations is None or iteration < options.max_iterations:
         iteration += 1
@@ -703,6 +932,303 @@ def run_keypoint_cli_loop(
                     "active_cameras": saved.get("active_cameras"),
                 },
             )
+
+            if options.planning_policy == "claude_global":
+                if global_client is None or global_evaluator is None:
+                    raise AutoExplorationError(
+                        "claude_global clients were not initialized"
+                    )
+                before_images = global_perception_image_paths(saved, saved_path)
+                record["before_images"] = [str(path) for path in before_images]
+                record["candidate_policy"] = "NONE_CLAUDE_SELECTS_ARBITRARY_PIXEL"
+                proposal: ExplorationProposal | None = None
+                grounding: dict[str, Any] | None = None
+                source = ""
+                preflight = None
+                controller = None
+                validation_feedback: str | None = None
+                for attempt in range(1, options.max_replans + 2):
+                    reporter.start_phase(
+                        "global-planning",
+                        (
+                            "Claude inspecting the complete A/B scene with Camera A as the "
+                            "action view, summarizing state, and choosing an arbitrary "
+                            f"Camera A pixel; attempt {attempt}/"
+                            f"{options.max_replans + 1}"
+                        ),
+                        iteration=iteration,
+                    )
+                    prompt = exploration_prompt(
+                        session.experiment_config,
+                        session.robot_config,
+                        objective=options.objective,
+                        history=global_experiences,
+                        skill_guidance=skill_store.prompt(),
+                    )
+                    if validation_feedback:
+                        prompt += (
+                            "\n\nThe previous proposal was rejected before motion by a hard "
+                            "runtime validation. Reinspect the complete scene and choose a "
+                            "new safe pixel/action that directly corrects this exact failure; "
+                            "do not bypass the gate:\n"
+                            f"{validation_feedback}\n"
+                        )
+                    try:
+                        response = global_client.invoke(
+                            before_images,
+                            prompt,
+                            session.run_dir,
+                        )
+                        proposal, grounding = ground_global_grasp_target(
+                            response.proposal,
+                            session.workspace / "perception_views",
+                        )
+                        source = exploration_source(proposal)
+                        source_path.write_text(source, encoding="utf-8")
+                        preflight = session.runner.preflight(source_path.name)
+                        if preflight.error:
+                            raise ExperimentValidationError(preflight.error)
+                        if options.skip_controller_ik:
+                            controller = {"status": "SKIPPED_DRY_RUN"}
+                        else:
+                            controller = controller_validator(
+                                session.robot_config, preflight.actions
+                            )
+                    except Exception as exc:
+                        reporter.fail_current_phase(
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        validation_feedback = f"{type(exc).__name__}: {exc}"
+                        record.setdefault("global_planning_rejections", []).append(
+                            {
+                                "attempt": attempt,
+                                "error": validation_feedback,
+                                "proposal": (
+                                    proposal.as_dict() if proposal is not None else None
+                                ),
+                            }
+                        )
+                        if (
+                            attempt >= options.max_replans + 1
+                            or not _is_preexecution_replan_error(exc)
+                        ):
+                            raise
+                        proposal = None
+                        grounding = None
+                        continue
+                    record.setdefault("claude_global_attempts", []).append(
+                        {
+                            "prompt": response.prompt,
+                            "command": list(response.command),
+                            "returncode": response.returncode,
+                            "stdout": response.stdout,
+                            "stderr": response.stderr,
+                            "created_at": getattr(response, "created_at", None),
+                            "proposal": proposal.as_dict(),
+                        }
+                    )
+                    reporter.finish_phase(
+                        (
+                            f"selected pixel={proposal.selected_grasp['camera']}/"
+                            f"{proposal.selected_grasp['pixel_xy']} and passed grounding, "
+                            f"static workspace, and controller gates"
+                        ),
+                        payload={
+                            "selected_grasp": proposal.selected_grasp,
+                            "grounding": grounding,
+                        },
+                    )
+                    break
+                if (
+                    proposal is None
+                    or grounding is None
+                    or preflight is None
+                    or controller is None
+                ):
+                    raise AutoExplorationError(
+                        "global planning ended without a validated proposal"
+                    )
+
+                record["proposal"] = proposal.as_dict()
+                record["global_grounding"] = grounding
+                selected_pixel_overlay = _save_global_selected_pixel_overlay(
+                    proposal,
+                    saved,
+                    saved_path,
+                    iteration_dir / "claude_selected_pixel.png",
+                )
+                record["artifacts"]["claude_selected_pixel"] = str(
+                    selected_pixel_overlay
+                )
+                record["proposal_source"] = source
+                record["preflight"] = _jsonable(preflight)
+                record["controller_ik"] = _jsonable(controller)
+                (iteration_dir / "proposal.py").write_text(source, encoding="utf-8")
+                _write_json(iteration_dir / "proposal.json", proposal.as_dict())
+                _write_json(iteration_dir / "global_grounding.json", grounding)
+                _write_json(iteration_dir / "preflight.json", preflight)
+                _write_json(iteration_dir / "controller_ik.json", controller)
+                _record_stage(
+                    output,
+                    iteration_dir,
+                    iteration,
+                    record,
+                    "GLOBAL_PREEXECUTION_VALIDATED",
+                )
+                reporter.emit(
+                    "global-plan",
+                    (
+                        "Claude selected the interaction directly from the complete scene; "
+                        "no Sxxx/Rxxx candidate generation or ranking was run"
+                    ),
+                    iteration=iteration,
+                    level="PASS",
+                    payload=proposal.as_dict(),
+                )
+                print(source, file=reporter.stream, flush=True)
+
+                if not options.enable_real:
+                    record["status"] = "DRY_RUN_VALIDATED"
+                    record["completed_at"] = _now()
+                    _iteration_checkpoint(output, iteration_dir, iteration, record)
+                    summary["iterations"].append(
+                        {"iteration": iteration, "status": record["status"]}
+                    )
+                    reporter.emit(
+                        "dry-run",
+                        "global proposal validated; physical execution disabled",
+                        iteration=iteration,
+                        level="DONE",
+                    )
+                    continue
+
+                reporter.start_phase(
+                    "execution",
+                    "sending one validated physical rollout; pre-run and post-run Home remain mandatory",
+                    iteration=iteration,
+                )
+                execution = session.run_experiment(
+                    source_path.name,
+                    real=True,
+                    confirmed=True,
+                    notes=f"Claude global CLI iteration {iteration}.",
+                )
+                record["execution"] = execution
+                record["mandatory_return_home"] = session.last_return_home_outcome
+                _write_json(iteration_dir / "execution.json", execution)
+                _write_json(
+                    iteration_dir / "mandatory_return_home.json",
+                    session.last_return_home_outcome,
+                )
+                reporter.finish_phase(
+                    f"execution_completed={bool(execution.get('execution_completed'))}",
+                    success=bool(execution.get("execution_completed")),
+                    payload=execution,
+                )
+                if not execution.get("execution_completed"):
+                    raise AutoExplorationError(
+                        "physical rollout did not complete: "
+                        f"{execution.get('robot_errors', [])}"
+                    )
+
+                prepare_real_perception_position(
+                    iteration,
+                    record,
+                    "post_action_perception_robot_positioning",
+                )
+                reporter.start_phase(
+                    "after-capture",
+                    "capturing and processing complete post-action Camera A/B state",
+                    iteration=iteration,
+                )
+                after_frames = capture(perception_config)
+                after_perception = session.locate_cloth_center(
+                    perception_config, frames=after_frames
+                )
+                after_saved, after_saved_path = _load_latest_perception(session)
+                if after_saved is None or after_saved_path is None:
+                    raise AutoExplorationError(
+                        "post-action perception completed without a saved result"
+                    )
+                after_images = global_perception_image_paths(
+                    after_saved, after_saved_path
+                )
+                record["after_perception"] = after_perception
+                record["after_images"] = [str(path) for path in after_images]
+                reporter.finish_phase(
+                    f"saved {len(after_images)} complete after-state image(s)"
+                )
+
+                reporter.start_phase(
+                    "evaluation",
+                    "Claude comparing complete before/after state and choosing keep/change",
+                    iteration=iteration,
+                )
+                evaluation = global_evaluator.evaluate(
+                    before_images,
+                    after_images,
+                    proposal=proposal,
+                    run_dir=session.run_dir,
+                    skill_guidance=skill_store.prompt(),
+                )
+                evaluation_dict = evaluation.as_dict()
+                record["evaluation"] = evaluation_dict
+                _write_json(iteration_dir / "evaluation.json", evaluation_dict)
+                # Keep compatibility with lightweight/fake evaluators used by
+                # integrations and older callers that predate skill proposals.
+                skill_update = getattr(evaluation, "skill_update", None)
+                skill_review = skill_store.review_and_apply(skill_update)
+                if skill_review is not None:
+                    record["skill_review"] = skill_review.as_dict()
+                    _write_json(iteration_dir / "skill_review.json", skill_review.as_dict())
+                    if global_client is not None:
+                        global_client.skill_names = tuple(
+                            skill.name for skill in skill_store.approved()
+                        )
+                experience = {
+                    "created_at": _now(),
+                    "iteration": iteration,
+                    "objective": options.objective,
+                    "before_images": [str(path) for path in before_images],
+                    "after_images": [str(path) for path in after_images],
+                    "selected_grasp": proposal.selected_grasp,
+                    "grounding": grounding,
+                    "proposal": proposal.as_dict(),
+                    "evaluation": evaluation_dict,
+                    "skill_review": skill_review.as_dict() if skill_review is not None else None,
+                }
+                _append_jsonl(global_experience_path, experience)
+                global_experiences.append(experience)
+                record["global_experience"] = experience
+                record["status"] = "COMPLETED"
+                record["completed_at"] = _now()
+                consecutive_recoverable_failures = 0
+                _iteration_checkpoint(output, iteration_dir, iteration, record)
+                summary["iterations"].append(
+                    {
+                        "iteration": iteration,
+                        "status": record["status"],
+                        "task_progress": evaluation.task_progress.status,
+                        "confidence": evaluation.task_progress.confidence,
+                    }
+                )
+                reporter.finish_phase(
+                    (
+                        f"task_progress={evaluation.task_progress.status} "
+                        f"keep={list(evaluation.next_experiment.keep)} "
+                        f"change={list(evaluation.next_experiment.change)}"
+                    ),
+                    payload=evaluation_dict,
+                )
+                if evaluation.stop:
+                    summary["stop_reason"] = evaluation.reason
+                    reporter.emit(
+                        "stop",
+                        f"evaluator requested stop: {evaluation.reason}",
+                        iteration=iteration,
+                    )
+                    break
+                continue
 
             if options.min_gpu_free_mib:
                 reporter.start_phase(
@@ -1112,6 +1638,8 @@ def run_keypoint_cli_loop(
                                 "roll": session.robot_config.orientation_roll_deg,
                                 "pitch": session.robot_config.orientation_pitch_deg,
                             },
+                            "home_tcp_yaw_deg": session.robot_config.init_pose_mm_deg[5],
+                            "yaw_semantics": "move yaw is relative to calibrated Home TCP yaw; 0 preserves gripper orientation",
                             "capabilities": [
                                 "move(x,y,z,yaw)",
                                 "open_gripper()",
@@ -1349,6 +1877,7 @@ def run_keypoint_cli_loop(
             _write_json(iteration_dir / "structured_experience.json", experience)
             record["status"] = "COMPLETED"
             record["completed_at"] = _now()
+            consecutive_recoverable_failures = 0
             _iteration_checkpoint(output, iteration_dir, iteration, record)
             summary["iterations"].append(
                 {
@@ -1400,6 +1929,44 @@ def run_keypoint_cli_loop(
             break
         except BaseException as exc:
             reporter.fail_current_phase(f"{type(exc).__name__}: {exc}")
+            if (
+                options.continue_on_recoverable_errors
+                and _is_recoverable_loop_error(exc, record)
+                and consecutive_recoverable_failures < options.max_consecutive_recoverable_failures
+            ):
+                consecutive_recoverable_failures += 1
+                record["status"] = "RECOVERABLE_ERROR"
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                record["traceback"] = traceback.format_exc()
+                record["recovery"] = {
+                    "enabled": True,
+                    "consecutive_failure": consecutive_recoverable_failures,
+                    "max_consecutive_failures": options.max_consecutive_recoverable_failures,
+                    "next_step": "fresh perception and new planning iteration",
+                }
+                record["completed_at"] = _now()
+                _iteration_checkpoint(output, iteration_dir, iteration, record)
+                summary["iterations"].append(
+                    {
+                        "iteration": iteration,
+                        "status": record["status"],
+                        "error": record["error"],
+                    }
+                )
+                reporter.emit(
+                    "recovery",
+                    (
+                        f"recoverable pre-execution failure recorded; continuing with a fresh "
+                        f"iteration ({consecutive_recoverable_failures}/"
+                        f"{options.max_consecutive_recoverable_failures})"
+                    ),
+                    iteration=iteration,
+                    level="WARNING",
+                    payload=record["recovery"],
+                )
+                if options.recovery_backoff_s > 0:
+                    time.sleep(options.recovery_backoff_s)
+                continue
             record["status"] = "FAILED"
             record["error"] = f"{type(exc).__name__}: {exc}"
             record["traceback"] = traceback.format_exc()
@@ -1463,8 +2030,22 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path("config/perception.free_exploration.json"),
     )
+    parser.add_argument("--camera-a-exposure", type=float)
+    parser.add_argument("--camera-b-exposure", type=float)
+    parser.add_argument("--camera-a-white-balance", type=float)
+    parser.add_argument("--camera-b-white-balance", type=float)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-iterations", type=int, default=1)
+    parser.add_argument(
+        "--planning-policy",
+        choices=("claude_global", "semantic_local"),
+        default="claude_global",
+        help=(
+            "claude_global lets Claude choose any Camera A pixel while using Camera B as "
+            "an observation-only second view; "
+            "semantic_local enables the legacy Molmo Sxxx/local Rxxx pipeline"
+        ),
+    )
     parser.add_argument(
         "--settle-s",
         type=float,
@@ -1492,7 +2073,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--min-gpu-free-mib",
         type=int,
-        default=20_000,
+        default=19_000,
         help=(
             "hard-stop before Molmo unless GPU 0 has at least this much free "
             "memory; use 0 to disable"
@@ -1516,7 +2097,27 @@ def main(argv: list[str] | None = None) -> int:
         "--max-replans",
         type=int,
         default=1,
-        help="hard validation correction budget; semantic mode permits at most one",
+        help="hard validation correction budget; at most one correction is permitted",
+    )
+    parser.add_argument(
+        "--continue-on-recoverable-errors",
+        action="store_true",
+        help=(
+            "after a pre-execution Claude/planning failure, save the failed iteration, "
+            "capture a fresh scene, and continue until the consecutive-failure cap"
+        ),
+    )
+    parser.add_argument(
+        "--max-consecutive-recoverable-failures",
+        type=int,
+        default=3,
+        help="stop continuous recovery after this many consecutive pre-execution failures",
+    )
+    parser.add_argument(
+        "--recovery-backoff-s",
+        type=float,
+        default=2.0,
+        help="seconds to wait before starting the next recovered iteration",
     )
     parser.add_argument(
         "--objective",
@@ -1551,7 +2152,13 @@ def main(argv: list[str] | None = None) -> int:
         args.run_id,
         robot_config_path,
     )
-    perception_config = PerceptionConfig.load(root, perception_path.resolve())
+    perception_config = _override_camera_controls(
+        PerceptionConfig.load(root, perception_path.resolve()),
+        camera_a_exposure=args.camera_a_exposure,
+        camera_b_exposure=args.camera_b_exposure,
+        camera_a_white_balance=args.camera_a_white_balance,
+        camera_b_white_balance=args.camera_b_white_balance,
+    )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output_dir = (
         args.output_dir.expanduser().resolve()
@@ -1560,6 +2167,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     max_iterations = None if args.max_iterations == 0 else args.max_iterations
     options = KeypointCliOptions(
+        planning_policy=args.planning_policy,
         max_iterations=max_iterations,
         settle_s=args.settle_s,
         enable_real=args.enable_real,
@@ -1584,6 +2192,9 @@ def main(argv: list[str] | None = None) -> int:
         claude_timeout_s=args.claude_timeout_s,
         claude_grounding_timeout_s=args.claude_grounding_timeout_s,
         max_replans=args.max_replans,
+        continue_on_recoverable_errors=args.continue_on_recoverable_errors,
+        max_consecutive_recoverable_failures=args.max_consecutive_recoverable_failures,
+        recovery_backoff_s=args.recovery_backoff_s,
         objective=args.objective,
     )
     return run_keypoint_cli_loop(

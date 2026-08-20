@@ -239,6 +239,8 @@ class GarmentGrounding:
         x_px: int,
         y_px: int,
         radius_px: int = 3,
+        *,
+        include_nearest_reference: bool = True,
     ) -> dict[str, Any]:
         """Return robust local XYZ/height statistics around a selected pixel."""
 
@@ -302,21 +304,22 @@ class GarmentGrounding:
             local_table = local_table[np.isfinite(local_table)]
             if len(local_table):
                 result["table_z_median_mm"] = float(np.percentile(local_table, 50))
-        nearest = self.nearest_reference(label, x_value, y_value)
-        result["nearest_reference"] = {
-            key: nearest[key]
-            for key in (
-                "reference_id",
-                "pixel_xy",
-                "pixel_distance",
-                "base_xyz_mm",
-                "height_above_table_mm",
-            )
-        }
+        if include_nearest_reference:
+            nearest = self.nearest_reference(label, x_value, y_value)
+            result["nearest_reference"] = {
+                key: nearest[key]
+                for key in (
+                    "reference_id",
+                    "pixel_xy",
+                    "pixel_distance",
+                    "base_xyz_mm",
+                    "height_above_table_mm",
+                )
+            }
         return result
 
 
-TOOLS: list[dict[str, Any]] = [
+REFERENCE_TOOLS: list[dict[str, Any]] = [
     {
         "name": "lookup_reference",
         "description": (
@@ -337,6 +340,38 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+PIXEL_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "sample_local_surface",
+        "description": (
+            "Measure robust calibrated robot-base XYZ and table-relative height around "
+            "one final Camera A/B image pixel already selected by Claude from the full "
+            "visual scene. Call exactly once, only after visual reasoning is complete. "
+            "This tool is not for scanning, comparing, ranking, or searching pixels."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "camera": {"type": "string", "enum": ["A", "B"]},
+                "x_px": {"type": "integer", "minimum": 0},
+                "y_px": {"type": "integer", "minimum": 0},
+                "radius_px": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 25,
+                    "default": 3,
+                },
+            },
+            "required": ["camera", "x_px", "y_px"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+# Backward-compatible module constant for callers that use the original
+# reference-grounding server mode.
+TOOLS = REFERENCE_TOOLS
+
 
 def _tool_result(data: Any, *, is_error: bool = False) -> dict[str, Any]:
     return {
@@ -353,12 +388,21 @@ def _tool_result(data: Any, *, is_error: bool = False) -> dict[str, Any]:
 def _call_tool(grounding: GarmentGrounding, name: str, arguments: dict[str, Any]) -> Any:
     if name == "lookup_reference":
         return grounding.lookup_reference(**arguments)
+    if name == "sample_local_surface":
+        return grounding.sample_local_surface(
+            **arguments,
+            include_nearest_reference=False,
+        )
     raise GroundingToolError(f"unknown grounding tool: {name}")
 
 
-def serve_stdio(grounding: GarmentGrounding) -> None:
+def serve_stdio(grounding: GarmentGrounding, *, mode: str = "reference") -> None:
     """Serve the minimal MCP JSON-RPC tool protocol over stdin/stdout."""
 
+    if mode not in {"reference", "pixel"}:
+        raise ValueError("grounding mode must be reference or pixel")
+    tools = REFERENCE_TOOLS if mode == "reference" else PIXEL_TOOLS
+    allowed_tool = "lookup_reference" if mode == "reference" else "sample_local_surface"
     successful_lookup_count = 0
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -390,23 +434,31 @@ def serve_stdio(grounding: GarmentGrounding) -> None:
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                     "instructions": (
-                        "Choose one Rxxx visually before using this server. Call the "
-                        "single lookup tool exactly once at the end of planning, then "
-                        "compose the final run. The measurement is not a grasp "
-                        "recommendation and never authorizes robot motion."
+                        (
+                            "Choose one image pixel from the complete visual scene before "
+                            "using this server. Call the single local-surface tool exactly "
+                            "once at the end of planning, then compose the final run."
+                            if mode == "pixel"
+                            else
+                            "Choose one Rxxx visually before using this server. Call the "
+                            "single lookup tool exactly once at the end of planning, then "
+                            "compose the final run."
+                        )
+                        + " The measurement is not a grasp recommendation and never "
+                        "authorizes robot motion."
                     ),
                 }
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {"tools": tools}
             elif method == "tools/call":
                 params = message.get("params") or {}
                 name = str(params.get("name", ""))
                 arguments = params.get("arguments") or {}
                 if not isinstance(arguments, dict):
                     raise GroundingToolError("tool arguments must be an object")
-                if name != "lookup_reference":
+                if name != allowed_tool:
                     raise GroundingToolError(
-                        "only lookup_reference is exposed in final-grounding mode"
+                        f"only {allowed_tool} is exposed in {mode} grounding mode"
                     )
                 if successful_lookup_count >= 1:
                     raise GroundingToolError(
@@ -417,8 +469,14 @@ def serve_stdio(grounding: GarmentGrounding) -> None:
                 successful_lookup_count += 1
                 measurement["lookup_budget_remaining"] = 0
                 measurement["next_step"] = (
-                    "Use this chosen Rxxx measurement to compose the final proposal now; "
-                    "do not call another coordinate tool."
+                    (
+                        "Use this chosen pixel's local surface measurement to compose the "
+                        "final proposal now; do not call another coordinate tool."
+                        if mode == "pixel"
+                        else
+                        "Use this chosen Rxxx measurement to compose the final proposal now; "
+                        "do not call another coordinate tool."
+                    )
                 )
                 result = _tool_result(measurement)
             elif method == "ping":
@@ -453,13 +511,19 @@ def serve_stdio(grounding: GarmentGrounding) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--perception-dir", required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("reference", "pixel"),
+        default="reference",
+        help="expose either legacy Rxxx lookup or one arbitrary-pixel surface lookup",
+    )
     args = parser.parse_args(argv)
     try:
         grounding = GarmentGrounding(Path(args.perception_dir))
     except BaseException as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return 2
-    serve_stdio(grounding)
+    serve_stdio(grounding, mode=args.mode)
     return 0
 
 

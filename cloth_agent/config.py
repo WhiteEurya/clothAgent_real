@@ -127,6 +127,18 @@ class RobotConfig:
     MAX_SAFE_HOME_SPEED_DEG_S = 10.0
     MAX_SAFE_HOME_ACCELERATION_DEG_S2 = 20.0
 
+    def command_yaw_deg(self, relative_yaw_deg: float) -> float:
+        """Convert a generated relative wrist yaw into the calibrated TCP yaw.
+
+        The xArm home joint configuration has a non-zero TCP yaw on this tool
+        frame.  Generated programs use ``yaw=0`` to mean "keep the calibrated
+        home/gripper orientation"; adding the saved home yaw prevents every
+        grasp from first making an unnecessary ~180-degree wrist turn.
+        """
+
+        value = float(relative_yaw_deg) + float(self.init_pose_mm_deg[5])
+        return (value + 180.0) % 360.0 - 180.0
+
     @classmethod
     def load(cls, project_root: Path, config_path: Path | None = None) -> "RobotConfig":
         project_root = project_root.resolve()

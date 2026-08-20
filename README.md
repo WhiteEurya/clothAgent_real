@@ -172,6 +172,19 @@ configuration it may invoke `laydown`, then it must still emit every concrete
 `move`/gripper action itself. The intended maneuver is a quasi-static retreat
 and descent followed by controlled release, not a fling or high drop.
 
+### Evolving skills and review
+
+After a completed before/after experiment, Claude may omit a skill update,
+propose a genuinely new skill (`create`), or propose a revision to an approved
+skill (`modify`). Proposals contain a purpose, high-level guidance, rationale,
+confidence, and visual before/after evidence. They are persisted under
+`data/skills/proposals.jsonl` and pass through the independent
+`SkillStore` reviewer before activation. The reviewer rejects low-confidence,
+duplicate, malformed, or low-level robot/API guidance; only approved versions
+are written to `data/skills/approved.json` and included in later prompts.
+Each iteration also saves `skill_review.json` when a proposal was made. Skills
+never contain coordinates, joint angles, SDK calls, or executable code.
+
 The xArm controller already defines its TCP at the installed gripper tool
 point. A read-only hardware check on 2026-08-11 reported
 `tcp_offset=[0, 0, 172, 0, 0, 0]`. Real execution verifies this value before
@@ -294,13 +307,33 @@ The outer process uses the existing `cali` environment for RealSense and xArm;
 no Molmo process or GPU model is launched.
 
 The active perception config keeps RGB auto-white-balance disabled and uses a
-manual `color_white_balance` of 3800 K for both Camera A and B (Camera A also
-uses the configured manual exposure). The value was selected from a no-motion
-white-balance sweep saved under `results/white_balance_sweep/`.
+manual `color_white_balance` of 3800 K and a manual `color_exposure` of 400 for
+both Camera A and B. The values were selected from no-motion camera-control
+sweeps saved under `results/white_balance_sweep/`.
 
-### Semantic-anchor → local-geometry garment-opening pipeline
+### Claude-global garment-opening pipeline
 
-The headless pipeline reruns after every synchronized A/B observation and uses
+The headless CLI defaults to `--planning-policy claude_global`. After each
+synchronized A/B observation, Claude receives the full RGB scenes, garment-only
+RGB, table-relative height maps, garment boundaries, height gradients, fused
+scene diagnostics, calibration context, and previous before/after evaluations.
+It summarizes the current garment state, decides the next experiment, and
+selects one arbitrary Camera A/B pixel. The runtime does not generate, rank, or
+filter Sxxx/Rxxx grasp candidates in this mode.
+
+Only after Claude has selected its pixel, a read-only MCP tool may be called
+once to measure the robust local Base XYZ. The move immediately before
+`close_gripper()` must use that measured X/Y within 2 mm. Static workspace,
+controller IK, trajectory, and action-schema checks remain hard safety gates;
+they do not choose a point. A rejected proposal is returned to Claude once with
+the exact validation error. After a real rollout, Claude compares the complete
+before/after state and writes causal `keep`, `change`, and `reason` fields to
+`workspace/global_experience.jsonl` for the next iteration.
+
+The earlier semantic pipeline remains available only through the explicit
+`--planning-policy semantic_local` compatibility mode:
+
+That compatibility pipeline reruns after every synchronized A/B observation and uses
 Molmo for one narrow job: proposing a few semantic anchors such as collar,
 sleeve end, or hem corner. The default strict policy is `confidence > 0.80`.
 The score is the geometric mean probability of Molmo's three point-location
@@ -333,46 +366,40 @@ geometry family, then changes only transport; a failed structure engagement
 keeps the semantic target but resets the next action to acquisition scope with
 a different local grasp.
 
-The recommended entry point is now the headless CLI. It does not start Viser or
-a browser, so it avoids their GPU-memory overhead. Every phase is printed to
-the terminal, including the Molmo worker's raw loading/errors, every keypoint
-confidence decision, Claude's selected reference and action JSON, generated
-restricted source, preflight/controller IK, execution, and evaluation.
+The recommended entry point is the headless CLI. It does not start Viser or a
+browser. Every phase is printed to the terminal, including Claude's
+complete-scene summary, selected pixel and action JSON, generated restricted
+source, preflight/controller IK, execution, and evaluation.
 Interactive terminals use status colors and symbols. Each line starts with the
 local clock, total run elapsed time, iteration, and current phase, for example:
 
 ```text
-10:42:07  +00:00.0   RUN  STARTUP               • headless Molmo-keypoint loop started
+10:42:07  +00:00.0   RUN  STARTUP               • headless claude_global loop started
 10:42:08  +00:01.1  I001  PERCEPTION            ▶ capturing synchronized Camera A/B RGB-D
 10:42:11  +00:04.2  I001  PERCEPTION            ✓ saved dense A/B result · phase 00:03.1
-10:42:12  +00:05.0  I001  MOLMO                 ▶ loading/inferencing keypoint queries
-10:42:22  +00:15.0  I001  MOLMO                 … still running · phase elapsed 00:10.0
-10:42:23  +00:16.3        MOLMO/WORKER          │ Loading checkpoint shards: 4/8
+10:42:12  +00:05.0  I001  GLOBAL-PLANNING       ▶ Claude inspecting the complete A/B scene
+10:42:22  +00:15.0  I001  GLOBAL-PLANNING       … still running · phase elapsed 00:10.0
 ```
 
 The `+MM:SS.s` (or `+HH:MM:SS.s`) field is elapsed time since launch; completed
 phase lines also show that phase's own duration. A heartbeat prints the active
-phase every 10 seconds during quiet camera, Molmo, Claude, IK, execution, and
+phase every 10 seconds during quiet camera, Claude, IK, execution, and
 evaluation work. Configure it with `--heartbeat-s N`, use `--heartbeat-s 0` to
 disable it, and use `--no-color` for plain redirected/log-file output.
-Stop any older `cloth_agent.auto_exploration` process and close its Viser
-browser tab before starting the CLI; otherwise those graphics allocations are
-still present. Before each Molmo launch, the CLI hard-checks GPU 0 and requires
-at least `20000 MiB` free by default. This avoids loading most of the model only
-to fail on the last checkpoint shard. Override the gate with
-`--min-gpu-free-mib N` or disable it with `--min-gpu-free-mib 0` only when the
-model/memory requirement is known to differ.
+Global mode does not load Molmo and does not run the Molmo GPU-memory gate. In
+`semantic_local` compatibility mode, the CLI checks GPU 0 and requires at least
+`19000 MiB` free before every Molmo launch.
 
-Run one dry iteration through Molmo, Claude, static preflight, and controller
+Run one dry iteration through complete-scene Claude planning, static preflight, and controller
 IK without sending robot motion:
 
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python \
   -m cloth_agent.molmo_keypoint_cli \
   --project-root . \
-  --run-id molmo_keypoint_cli_01 \
+  --run-id claude_global_cli_01 \
+  --planning-policy claude_global \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.80 \
   --max-iterations 1
 ```
 
@@ -383,16 +410,30 @@ use `0` for an unbounded iteration count:
 /home/CNS2026330003/miniconda3/envs/cali/bin/python \
   -m cloth_agent.molmo_keypoint_cli \
   --project-root . \
-  --run-id molmo_keypoint_cli_real_01 \
+  --run-id claude_global_cli_real_01 \
+  --planning-policy claude_global \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.80 \
   --max-iterations 0 \
   --enable-real
 ```
 
-The CLI never exposes real motion without `--enable-real`. For a camera/Molmo/
-Claude-only diagnostic that also avoids connecting to xArm for read-only IK,
+For a long unattended run that recovers from bounded Claude/planning failures,
+add:
+
+```bash
+  --continue-on-recoverable-errors \
+  --max-consecutive-recoverable-failures 3 \
+  --recovery-backoff-s 2
+```
+
+The CLI never exposes real motion without `--enable-real`. For a camera/Claude
+diagnostic that also avoids connecting to xArm for read-only IK,
 add `--skip-controller-ik` to a dry run.
+
+Cartesian action `yaw` is interpreted as a wrist-yaw delta relative to the
+calibrated Home TCP orientation. Therefore `yaw=0` preserves the Home gripper
+orientation instead of rotating the wrist by the roughly 170-degree Euler yaw
+difference present in the xArm home joint report.
 
 To inspect the saved intermediate images while the CLI is running, start the
 separate lightweight artifact viewer in another terminal:
@@ -400,20 +441,17 @@ separate lightweight artifact viewer in another terminal:
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python \
   -m cloth_agent.molmo_artifact_viewer \
-  runs/molmo_keypoint_cli_real_20260818_01
+  runs/claude_global_cli_real_01
 ```
 
 The viewer only polls existing PNG/JSON files. It does not open either camera,
 connect to xArm, load Molmo/Claude, use CUDA, start a browser, or start Viser.
-It keeps one resizable OpenCV window with four pages: overview, A/B perception
-with separate raw camera-Z depth and garment-only height-above-table maps,
-semantic-anchor diagnostics, local Rxxx geometry, and before/after RGB. The raw-depth tile is in
+It keeps one resizable OpenCV window with overview, A/B perception, planning,
+and before/after pages. In global mode, the perception page shows the complete
+scene without a generated candidate overlay. The raw-depth tile is in
 metres; the height tile is `surface Z - fitted table Z` in millimetres and uses
 a per-camera table-appearance filter so solidified silhouettes cannot leak
-white table pixels into the garment heatmap. Calibrated coordinate references
-are generated from that same final mask; the viewer also filters legacy guides
-and the local Rxxx overlay shows candidates only within the active semantic
-region.
+white table pixels into the garment heatmap.
 Press `1`-`4` to select a page, left/right (or `a`/`d`) to move between pages,
 `r` to refresh, and `q` or Escape to close it. The title area follows the same
 iteration, current phase, status, elapsed time, and heartbeat message as the
@@ -426,6 +464,29 @@ For a zero-GUI snapshot instead, add:
 --page 1 --snapshot /tmp/clothagent_artifacts.png
 ```
 
+The dashboard launcher can enable both recovery and a browser-based, read-only
+Viser point-cloud view in one command.  In real mode both are enabled by
+default:
+
+```bash
+bash scripts/start_molmo_dashboard.sh --real
+```
+
+The launcher passes `--continue-on-recoverable-errors`, with a cap of three
+consecutive pre-execution failures and a two-second backoff.  It also starts
+`cloth_agent.molmo_artifact_viser` on `http://127.0.0.1:8765`; that process only
+reads the saved Camera A/B and fused point-cloud/height-map artifacts, the
+static xArm7 model, the validated TCP path, and Claude's structured
+proposal/evaluation summaries. It has no camera, robot connection, Claude
+process, or action controls. When Viser is enabled, the OpenCV artifact
+dashboard is suppressed so Viser is the sole dashboard. Use `--no-recover` or
+`--no-viser` to disable either behavior, and `--viser-port PORT` to change the
+Viser port. The Viser panels also follow the skill lifecycle audit
+(`proposals.jsonl`, `reviews.jsonl`, and `approved.json`) and show the explicit
+Claude CLI stdout/stderr, parsed proposal, evaluator output, grounding,
+preflight, controller-IK, and recovery checkpoints. These are recorded model
+outputs and runtime variables; hidden chain-of-thought is not synthesized.
+
 Every launch creates
 `runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/` with:
 
@@ -435,29 +496,35 @@ summary.json                        # run status and per-iteration summary
 iteration_001.json                  # top-level iteration checkpoint
 iteration_001/
   result.json                       # updated after every completed phase
-  semantic_anchors/                # raw Molmo log plus accepted/rejected Sxxx
-  semantic_state.json              # uncertain relations and hypotheses
-  semantic_strategy.json           # garment relation Claude intends to change
-  claude_semantic_strategy_log.json # full prompt, raw answer, timing, validation
-  local_geometry/                  # region-scoped geometry-derived Rxxx
   proposal.json
   proposal.py
-  claude_semantic_action_attempt_01.json # full scoped-action Claude record
+  global_grounding.json             # selected pixel and measured local Base XYZ
   preflight.json
   controller_ik.json
   execution.json                    # real mode only
   mandatory_return_home.json        # real mode only
-  after_capture/                    # real mode only
-  evaluation.json                   # semantic stage-wise evaluation, real mode
-  claude_semantic_evaluation_log.json # full evaluator prompt/raw answer
-  structured_experience.json        # coordinate-independent experience
+  evaluation.json                   # before/after keep/change result, real mode
+  skill_review.json                 # proposal review/activation decision, when proposed
 ```
+
+Global experience is appended to `workspace/global_experience.jsonl`.
+`semantic_local` compatibility runs additionally write Sxxx, semantic-state,
+local-Rxxx, and structured-semantic-experience artifacts.
 
 The Viser-based `cloth_agent.auto_exploration --molmo-keypoints` entry point is
 still available for visual debugging, but is no longer required by this
 pipeline.
 
-Use repeated `--keypoint-camera A|B` options to restrict CLI inference to a
+Both automatic entry points support opt-in recovery for failures that happen
+before physical execution, or after a completed rollout has returned Home.
+Use `--continue-on-recoverable-errors` with
+`--max-consecutive-recoverable-failures N` and `--recovery-backoff-s S` to save
+the failed iteration and begin a fresh perception/planning iteration. Unknown
+robot state, incomplete execution, and failed return-Home remain hard stops;
+the loop never blindly retries those conditions.
+
+In `--planning-policy semantic_local` only, use repeated
+`--keypoint-camera A|B` options to restrict CLI inference to a
 camera, or `--keypoints-json PATH` to supply up to 20 custom
 `{name, description, color}` records. Without those options, both cameras and
 the default garment landmarks are used. The corresponding legacy Viser flags
@@ -575,11 +642,12 @@ judges it reasonably maximally spread or safe continuation is no longer
 possible. Use `--recording-no-native` to omit the large `.db3` files.
 
 Visual planning defaults to a `400` second timeout; the final exact-Rxxx
-grounding/run-generation stage defaults to `120` seconds. A timeout stops
-the automatic loop immediately without Claude replanning or additional robot
-execution; it is not treated as candidate-validation feedback. If evaluation
-times out after a completed rollout, that rollout is preserved and no further
-robot action is started.
+grounding/run-generation stage defaults to `120` seconds. Without the recovery
+flag, a timeout stops the automatic loop immediately. With
+`--continue-on-recoverable-errors`, a pre-execution timeout (or an evaluation
+timeout after a completed rollout and verified return-Home) is checkpointed and
+the next iteration starts from a fresh capture. It is never treated as proof
+that a physical action is safe to retry.
 
 For every proposal, the Viser console marks the `move()` immediately before
 `close_gripper()` as the grasp target: Base-frame XYZ/yaw in the GUI, a red 3-D

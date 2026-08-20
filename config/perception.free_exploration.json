@@ -4,20 +4,20 @@
       "label": "A",
       "serial": "261722071490",
       "extrinsics_file": "config/extrinsics_A.yaml",
-      "color_exposure": 400,
+      "color_exposure": 700,
       "color_white_balance": 3800
     },
     {
       "label": "B",
       "serial": "261822074715",
       "extrinsics_file": "../RobotCamCalib/outputs/extrinsics_B.yaml",
-      "color_exposure": 800,
+      "color_exposure": 400,
       "color_white_balance": 3800
     }
   ],
   "active_cameras": ["A", "B"],
-  "width": 640,
-  "height": 480,
+  "width": 1280,
+  "height": 720,
   "fps": 30,
   "warmup_frames": 10,
   "temporal_median_frames": 25,

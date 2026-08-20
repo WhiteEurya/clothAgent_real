@@ -38,6 +38,21 @@ class AuxiliaryDepthUnavailable(PerceptionError):
         self.diagnostics = diagnostics or {}
 
 
+DEFAULT_TABLE_CLIP_TOLERANCE_MM = 12.0
+MAX_TABLE_CLIP_TOLERANCE_MM = 30.0
+DEFAULT_FUSED_VOXEL_SIZE_MM = 6.0
+TABLE_APPEARANCE_LUMA_PERCENTILE = 95.0
+MIN_CONFIDENT_TABLE_LUMA = 90.0
+MAX_CONFIDENT_TABLE_COLOR_NOISE = 45.0
+MIN_PROJECTED_GARMENT_COVERAGE = 0.35
+EDGE_FIXTURE_HEIGHT_MM = 20.0
+MIN_EDGE_FIXTURE_MEDIAN_HEIGHT_MM = 35.0
+MIN_EDGE_FIXTURE_SEED_PIXELS = 100
+EDGE_FIXTURE_BORDER_MARGIN_PX = 8
+EDGE_FIXTURE_PADDING_PX = 30
+MAX_EDGE_FIXTURE_IMAGE_FRACTION = 0.08
+
+
 def _require_numpy():
     if np is None:
         raise PerceptionError("NumPy is required for two-camera perception; use the configured cali environment")
@@ -428,6 +443,8 @@ def capture_two_view_rgbd(config: PerceptionConfig) -> list[RGBDFrame]:
 def _frame_points_base_mm(
     frame: RGBDFrame,
     config: PerceptionConfig,
+    *,
+    base_z_offset_mm: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Project one aligned RGB-D frame into the calibrated base frame."""
 
@@ -451,9 +468,56 @@ def _frame_points_base_mm(
     base_points_mm = (
         camera_points @ X[:3, :3].T + X[:3, 3]
     ) * 1000.0
+    if not math.isfinite(float(base_z_offset_mm)):
+        raise PerceptionError("base Z offset must be finite")
+    base_points_mm[:, 2] += float(base_z_offset_mm)
     colors = numpy.asarray(frame.rgb[y_px, x_px], dtype=numpy.uint8)
     finite = numpy.all(numpy.isfinite(base_points_mm), axis=1)
     return base_points_mm[finite], colors[finite]
+
+
+def table_clip_tolerance_mm(table_noise_mm: float | None = None) -> float:
+    """Return a bounded below-table allowance for noisy RGB-D geometry."""
+
+    if table_noise_mm is None:
+        return DEFAULT_TABLE_CLIP_TOLERANCE_MM
+    noise = float(table_noise_mm)
+    if not math.isfinite(noise) or noise < 0:
+        raise PerceptionError("table noise must be a finite non-negative value")
+    return min(
+        MAX_TABLE_CLIP_TOLERANCE_MM,
+        max(DEFAULT_TABLE_CLIP_TOLERANCE_MM, 2.0 * noise),
+    )
+
+
+def table_height_and_clip_mask(
+    points_base_mm: np.ndarray,
+    table_coefficients: np.ndarray,
+    *,
+    tolerance_mm: float = DEFAULT_TABLE_CLIP_TOLERANCE_MM,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Measure point height over a tilted table and reject points below it."""
+
+    numpy = _require_numpy()
+    points = numpy.asarray(points_base_mm, dtype=numpy.float64)
+    coefficients = numpy.asarray(table_coefficients, dtype=numpy.float64)
+    tolerance = float(tolerance_mm)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise PerceptionError("base-frame points must have shape (N, 3)")
+    if coefficients.shape != (3,) or not numpy.all(numpy.isfinite(coefficients)):
+        raise PerceptionError("table plane coefficients must contain three finite values")
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise PerceptionError("table clip tolerance must be finite and non-negative")
+    finite = numpy.all(numpy.isfinite(points), axis=1)
+    height_above_table = numpy.full(len(points), numpy.nan, dtype=numpy.float64)
+    height_above_table[finite] = (
+        points[finite, 2]
+        - coefficients[0] * points[finite, 0]
+        - coefficients[1] * points[finite, 1]
+        - coefficients[2]
+    )
+    keep = finite & (height_above_table >= -tolerance)
+    return height_above_table, keep
 
 
 def _voxel_fuse_base_points(
@@ -461,7 +525,8 @@ def _voxel_fuse_base_points(
     config: PerceptionConfig,
     robot_config: RobotConfig,
     *,
-    voxel_size_mm: float = 6.0,
+    voxel_size_mm: float = DEFAULT_FUSED_VOXEL_SIZE_MM,
+    camera_z_offsets_mm: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     """Fuse A/B points by median-free deterministic voxel aggregation.
 
@@ -478,7 +543,11 @@ def _voxel_fuse_base_points(
     source_chunks: list[np.ndarray] = []
     input_counts: dict[str, int] = {}
     for frame_index, frame in enumerate(frames):
-        points, colors = _frame_points_base_mm(frame, config)
+        points, colors = _frame_points_base_mm(
+            frame,
+            config,
+            base_z_offset_mm=float((camera_z_offsets_mm or {}).get(frame.label, 0.0)),
+        )
         # Keep only points plausibly belonging to the calibrated work envelope.
         mask = numpy.ones(len(points), dtype=bool)
         if bounds.x_min is not None:
@@ -607,6 +676,7 @@ def _sample_table_reference_points(
     config: PerceptionConfig,
     *,
     patch_radius_px: int = 12,
+    base_z_offset_mm: float = 0.0,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Sample robust depth references around image corners and table edges.
 
@@ -617,6 +687,8 @@ def _sample_table_reference_points(
     """
 
     numpy = _require_numpy()
+    if not math.isfinite(float(base_z_offset_mm)):
+        raise PerceptionError("base Z offset must be finite")
     depth = numpy.asarray(frame.depth_m, dtype=numpy.float64)
     rgb = numpy.asarray(frame.rgb, dtype=numpy.uint8)
     height, width = depth.shape[:2]
@@ -682,6 +754,7 @@ def _sample_table_reference_points(
             records.append({"name": name, "pixel_xy": [cx, cy], "valid": False})
             continue
         patch_point = numpy.median(base_points_mm[finite], axis=0)
+        patch_point[2] += float(base_z_offset_mm)
         point_index = int(numpy.flatnonzero(finite)[len(numpy.flatnonzero(finite)) // 2])
         points.append(patch_point)
         records.append(
@@ -705,6 +778,8 @@ def _fit_table_plane_from_references(
     frames: list[RGBDFrame],
     config: PerceptionConfig,
     fallback_coefficients: np.ndarray,
+    *,
+    camera_z_offsets_mm: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Fit the table from sampled edge/corner depths with deterministic RANSAC."""
 
@@ -715,7 +790,11 @@ def _fit_table_plane_from_references(
     camera_records: dict[str, list[dict[str, Any]]] = {}
     point_records: list[dict[str, Any]] = []
     for frame in frames:
-        points, records = _sample_table_reference_points(frame, config)
+        points, records = _sample_table_reference_points(
+            frame,
+            config,
+            base_z_offset_mm=float((camera_z_offsets_mm or {}).get(frame.label, 0.0)),
+        )
         camera_records[frame.label] = records
         if len(points):
             all_points.append(points)
@@ -867,39 +946,53 @@ def _save_fused_height_map(
     """
 
     numpy = _require_numpy()
-    x0, y0 = numpy.floor(points_mm[:, :2].min(axis=0) / grid_size_mm) * grid_size_mm
-    x1, y1 = numpy.ceil(points_mm[:, :2].max(axis=0) / grid_size_mm) * grid_size_mm
+    points_mm = numpy.asarray(points_mm, dtype=numpy.float64)
+    heights_mm = numpy.asarray(heights_mm, dtype=numpy.float64)
+    if points_mm.ndim != 2 or points_mm.shape[1] != 3:
+        raise PerceptionError("fused points must have shape (N, 3)")
+    if heights_mm.shape != (len(points_mm),):
+        raise PerceptionError("fused heights must match fused points")
+    finite_points = numpy.all(numpy.isfinite(points_mm), axis=1)
+    finite_heights = numpy.isfinite(heights_mm)
+    if garment_mask is not None:
+        garment_mask = numpy.asarray(garment_mask, dtype=bool)
+        if garment_mask.shape != (len(points_mm),):
+            raise PerceptionError("garment boundary mask must match fused point count")
+        map_keep = garment_mask & finite_points & finite_heights
+    else:
+        map_keep = finite_points & finite_heights
+    if not map_keep.any():
+        raise PerceptionError("fused height map has no finite garment points")
+    map_points = points_mm[map_keep]
+    map_heights = heights_mm[map_keep]
+    x0, y0 = numpy.floor(map_points[:, :2].min(axis=0) / grid_size_mm) * grid_size_mm
+    x1, y1 = numpy.ceil(map_points[:, :2].max(axis=0) / grid_size_mm) * grid_size_mm
     width = max(1, int(round((x1 - x0) / grid_size_mm)) + 1)
     height = max(1, int(round((y1 - y0) / grid_size_mm)) + 1)
     if width * height > 8_000_000:
         raise PerceptionError("fused height map would be unreasonably large")
-    ix = numpy.clip(numpy.rint((points_mm[:, 0] - x0) / grid_size_mm).astype(numpy.int64), 0, width - 1)
-    iy = numpy.clip(numpy.rint((points_mm[:, 1] - y0) / grid_size_mm).astype(numpy.int64), 0, height - 1)
+    ix = numpy.clip(numpy.rint((map_points[:, 0] - x0) / grid_size_mm).astype(numpy.int64), 0, width - 1)
+    iy = numpy.clip(numpy.rint((map_points[:, 1] - y0) / grid_size_mm).astype(numpy.int64), 0, height - 1)
     flat = iy * width + ix
-    height_map = numpy.full(width * height, -numpy.inf, dtype=numpy.float32)
-    finite = numpy.isfinite(heights_mm)
-    numpy.maximum.at(height_map, flat[finite], heights_mm[finite].astype(numpy.float32))
-    height_map = height_map.reshape(height, width)
-    height_map[~numpy.isfinite(height_map)] = numpy.nan
-    numpy.save(output_dir / "fused_height_map_mm.npy", height_map)
+    height_map = _aggregate_grid_height_percentile(
+        flat,
+        map_heights,
+        width * height,
+        percentile=50.0,
+    ).reshape(height, width)
     finite_map = numpy.isfinite(height_map)
-    garment_grid: np.ndarray | None = None
-    if garment_mask is not None:
-        garment_mask = numpy.asarray(garment_mask, dtype=bool)
-        if garment_mask.shape != points_mm.shape[:1]:
-            raise PerceptionError("garment boundary mask must match fused point count")
-        garment_grid = numpy.zeros(height_map.shape, dtype=bool)
-        garment_grid.reshape(-1)[flat[garment_mask]] = True
-        garment_grid = _solidify_largest_mask(
-            garment_grid,
-            dilation_iterations=1,
-            closing_iterations=2,
-        )
+    numpy.save(output_dir / "fused_height_map_mm.npy", height_map)
+    garment_grid: np.ndarray | None = numpy.zeros(height_map.shape, dtype=bool)
+    garment_grid.reshape(-1)[flat] = True
+    garment_grid = _solidify_largest_mask(
+        garment_grid,
+        dilation_iterations=1,
+        closing_iterations=2,
+    )
     heatmap_values = height_map
     heatmap_quantity = "height_above_table_mm"
     if display_max_mm is None:
-        finite_garment = finite_map & garment_grid if garment_grid is not None else finite_map
-        display_max_mm = _height_display_max_mm(height_map[finite_garment])
+        display_max_mm = DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM
     display_max_mm = float(max(1.0, display_max_mm))
     preview = numpy.zeros(height_map.shape, dtype=numpy.uint8)
     if finite_map.any():
@@ -915,7 +1008,7 @@ def _save_fused_height_map(
             finite_map,
             focus_mask=garment_grid,
             higher_is_bright=True,
-            value_range_mm=(0.0, display_max_mm),
+            normalization="global_softmax",
         )
         Image.fromarray(heatmap, mode="RGB").save(output_dir / "fused_height_map_heatmap.png")
         boundary_path: str | None = None
@@ -942,9 +1035,15 @@ def _save_fused_height_map(
         # Compatibility alias retained for existing consumers.
         "fold_edge_overlay": fold_edge_path,
         "heatmap_quantity": heatmap_quantity,
-        "heatmap_display_min_mm": 0.0,
+        "heatmap_color_direction": "higher_height_hotter",
+        "heatmap_color_normalization": "garment_height_global_softmax",
+        "heatmap_softmax_temperature_mm": HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM,
+        "heatmap_softmax_physical_blend": HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND,
+        "heatmap_display_min_mm": DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
         "heatmap_display_max_mm": display_max_mm,
-        "heatmap_normalization": "absolute_table_zero_shared",
+        "heatmap_normalization": "fixed_physical_-5_to_40mm",
+        "height_map_aggregation": "garment_only_grid_median",
+        "height_map_display_scale": "fixed_physical_-5_to_40mm",
         "height_min_mm": float(numpy.percentile(heatmap_values[finite_map], 2))
         if finite_map.any()
         else None,
@@ -970,19 +1069,27 @@ def _scalar_heatmap_rgb(
     *,
     higher_is_bright: bool = False,
     value_range_mm: tuple[float, float] | None = None,
+    normalization: str = "linear",
 ) -> np.ndarray:
     """Colorize a scalar map, optionally normalizing only inside a focus mask.
 
     When ``focus_mask`` is supplied, percentile statistics and the softmax
     palette are computed from that region only.  Pixels outside the region are
     rendered as a dark background so table/robot values cannot flatten the
-    focused garment signal or erase its silhouette.  By default lower values
-    are brighter (the historical depth-preview behavior); height maps pass
-    ``higher_is_bright=True`` so larger garment/table height differences are
-    visually hotter.
+    focused garment signal or erase its silhouette.  ``normalization`` may be
+    ``"linear"`` or ``"global_softmax"``.  With an explicit physical range,
+    the latter applies a softmax over palette-center distances while preserving
+    the physical height scale.  Without an explicit range it additionally uses
+    an empirical CDF for a diagnostic-only contrast stretch.
+    By default lower values are brighter; setting ``higher_is_bright=False``
+    makes taller garment points darker, as used by the garment relief maps.
     """
 
     numpy = _require_numpy()
+    if normalization not in {"linear", "global_softmax"}:
+        raise PerceptionError(
+            "heatmap normalization must be 'linear' or 'global_softmax'"
+        )
     values = numpy.asarray(values, dtype=numpy.float64)
     finite = numpy.isfinite(values)
     if valid is not None:
@@ -1027,17 +1134,25 @@ def _scalar_heatmap_rgb(
         dtype=numpy.float64,
     )
     normalized = numpy.clip((values - low) / scale, 0.0, 1.0)
-    if focused_region and value_range_mm is None:
-        # A linear range leaves concentrated garment values in one color. Mix
-        # it with an empirical CDF computed only from the focused region so the
-        # available palette is spread over the observed height distribution.
+    if focused_region and value_range_mm is None and normalization == "global_softmax":
+        # For the garment-focused image, apply a real softmax across the
+        # current garment heights.  The probabilities are divided by their
+        # maximum only for display, so the highest current fold maps to the
+        # hottest color while the raw millimetre map remains untouched.
         focused_values = values[finite_for_color].astype(numpy.float64, copy=False)
-        sorted_values = numpy.sort(focused_values)
-        ranks = numpy.searchsorted(sorted_values, focused_values, side="left")
-        rank_normalized = ranks.astype(numpy.float64) / max(1, len(sorted_values) - 1)
-        normalized_focus = normalized[render_mask].astype(numpy.float64, copy=False)
+        logits = (
+            focused_values - float(numpy.max(focused_values))
+        ) / HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM
+        logits -= float(numpy.max(logits))
+        weights = numpy.exp(logits)
+        weights /= max(float(weights.sum()), 1e-12)
+        softmax_activation = weights / max(float(weights.max()), 1e-12)
+        physical_activation = normalized[render_mask].astype(numpy.float64, copy=False)
         normalized = normalized.copy()
-        normalized[render_mask] = 0.35 * normalized_focus + 0.65 * rank_normalized
+        normalized[render_mask] = (
+            HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND * physical_activation
+            + (1.0 - HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND) * softmax_activation
+        )
     if higher_is_bright:
         normalized = 1.0 - normalized
     centers = numpy.linspace(0.0, 1.0, len(stops), dtype=numpy.float64)
@@ -1245,19 +1360,48 @@ def _project_base_points_with_camera_depth(
     return x, y, z, visible
 
 
-def _camera_table_appearance_mask(
+def _projected_voxel_support_radius_px(
+    frame: RGBDFrame,
+    projected_depth_m: np.ndarray,
+    visible: np.ndarray,
+    *,
+    voxel_size_mm: float = DEFAULT_FUSED_VOXEL_SIZE_MM,
+) -> int:
+    """Return the pixel radius needed to connect neighboring fused voxels."""
+
+    numpy = _require_numpy()
+    projected_depth_m = numpy.asarray(projected_depth_m, dtype=numpy.float64)
+    visible = numpy.asarray(visible, dtype=bool)
+    if projected_depth_m.shape != visible.shape:
+        raise PerceptionError("projected depth and visibility shapes do not match")
+    if not math.isfinite(voxel_size_mm) or voxel_size_mm <= 0:
+        raise PerceptionError("projected voxel size must be finite and positive")
+    valid_depth = visible & numpy.isfinite(projected_depth_m) & (projected_depth_m > 0)
+    if not valid_depth.any():
+        return 1
+    reference_depth_m = float(numpy.percentile(projected_depth_m[valid_depth], 50.0))
+    intrinsics = numpy.asarray(frame.intrinsics, dtype=numpy.float64)
+    focal_length_px = float(max(intrinsics[0, 0], intrinsics[1, 1]))
+    projected_spacing_px = (
+        focal_length_px * (float(voxel_size_mm) / 1000.0) / reference_depth_m
+    )
+    return int(max(1, min(6, math.ceil(projected_spacing_px * 0.5))))
+
+
+def _estimate_camera_table_appearance(
     rgb: np.ndarray,
     height_above_table_mm: np.ndarray,
     valid_depth: np.ndarray,
     *,
     minimum_color_distance: float,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """Separate garment appearance from the table in one camera's RGB space.
+) -> dict[str, Any]:
+    """Estimate a bright tabletop appearance without sampling flat dark cloth.
 
-    The fused-cloud table color is a useful lower bound, but cameras A and B
-    can have materially different white balance and illumination gradients.
-    Estimate a per-camera table color from bright pixels close to table zero,
-    then require the rendered garment silhouette to differ from that color.
+    Cameras A and B can have materially different white balance and lighting.
+    The tabletop is therefore estimated independently in each image.  Only the
+    high-luma tail of geometrically near-table pixels is used: a percentile near
+    the middle of that population is unsafe when a flat garment covers most of
+    the image.
     """
 
     numpy = _require_numpy()
@@ -1276,17 +1420,24 @@ def _camera_table_appearance_mask(
         & numpy.isfinite(height_above_table_mm)
         & (numpy.abs(height_above_table_mm) <= 15.0)
     )
-    if int(numpy.count_nonzero(near_table)) < 100:
-        return numpy.ones(height_above_table_mm.shape, dtype=bool), {
-            "applied": False,
+    near_table_count = int(numpy.count_nonzero(near_table))
+    if near_table_count < 100:
+        return {
+            "confident": False,
             "reason": "fewer than 100 near-table pixels",
+            "near_table_pixel_count": near_table_count,
         }
-    bright_cut = float(numpy.percentile(luma[near_table], 60.0))
+    bright_cut = float(
+        numpy.percentile(luma[near_table], TABLE_APPEARANCE_LUMA_PERCENTILE)
+    )
     table_samples = near_table & (luma >= bright_cut)
-    if int(numpy.count_nonzero(table_samples)) < 40:
-        return numpy.ones(height_above_table_mm.shape, dtype=bool), {
-            "applied": False,
+    table_sample_count = int(numpy.count_nonzero(table_samples))
+    if table_sample_count < 40:
+        return {
+            "confident": False,
             "reason": "fewer than 40 bright table samples",
+            "near_table_pixel_count": near_table_count,
+            "table_sample_count": table_sample_count,
         }
     table_rgb = numpy.median(
         rgb[table_samples].astype(numpy.float64),
@@ -1297,23 +1448,314 @@ def _camera_table_appearance_mask(
         axis=2,
     )
     table_color_noise = float(numpy.percentile(color_distance[table_samples], 50.0))
+    table_luma = float(
+        0.2126 * table_rgb[0] + 0.7152 * table_rgb[1] + 0.0722 * table_rgb[2]
+    )
     threshold = float(
         max(
             24.0,
             float(minimum_color_distance),
-            min(140.0, table_color_noise * 6.0),
+            min(100.0, table_color_noise * 4.0),
         )
     )
-    appearance_mask = color_distance >= threshold
-    return appearance_mask, {
-        "applied": True,
+    rejection_reasons: list[str] = []
+    if table_luma < MIN_CONFIDENT_TABLE_LUMA:
+        rejection_reasons.append(
+            f"table luma {table_luma:.1f} is below {MIN_CONFIDENT_TABLE_LUMA:.1f}"
+        )
+    if table_color_noise > MAX_CONFIDENT_TABLE_COLOR_NOISE:
+        rejection_reasons.append(
+            "bright table samples have excessive color spread "
+            f"({table_color_noise:.1f} > {MAX_CONFIDENT_TABLE_COLOR_NOISE:.1f})"
+        )
+    return {
+        "confident": not rejection_reasons,
+        "reason": "; ".join(rejection_reasons) if rejection_reasons else None,
+        "method": "per_camera_near_table_high_luma_tail",
+        "high_luma_percentile": TABLE_APPEARANCE_LUMA_PERCENTILE,
         "bright_luma_cut": bright_cut,
-        "table_sample_count": int(numpy.count_nonzero(table_samples)),
+        "near_table_luma_p50": float(numpy.percentile(luma[near_table], 50.0)),
+        "near_table_pixel_count": near_table_count,
+        "table_sample_count": table_sample_count,
         "table_rgb_median": [float(value) for value in table_rgb],
+        "table_luma_median": table_luma,
         "table_color_distance_p50": table_color_noise,
         "minimum_color_distance": float(minimum_color_distance),
         "applied_color_distance": threshold,
-        "appearance_pixel_count": int(numpy.count_nonzero(appearance_mask)),
+    }
+
+
+def _camera_table_appearance_mask(
+    rgb: np.ndarray,
+    height_above_table_mm: np.ndarray,
+    valid_depth: np.ndarray,
+    *,
+    minimum_color_distance: float,
+    table_appearance: dict[str, Any] | None = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Separate garment appearance from the table in one camera's RGB space."""
+
+    numpy = _require_numpy()
+    rgb = numpy.asarray(rgb, dtype=numpy.uint8)
+    if table_appearance is None:
+        table_appearance = _estimate_camera_table_appearance(
+            rgb,
+            height_above_table_mm,
+            valid_depth,
+            minimum_color_distance=minimum_color_distance,
+        )
+    diagnostics = dict(table_appearance)
+    if not diagnostics.get("confident"):
+        diagnostics["applied"] = False
+        return numpy.ones(rgb.shape[:2], dtype=bool), diagnostics
+    table_rgb = numpy.asarray(diagnostics["table_rgb_median"], dtype=numpy.float64)
+    threshold = float(diagnostics["applied_color_distance"])
+    color_distance = numpy.linalg.norm(
+        rgb.astype(numpy.float64) - table_rgb[None, None, :],
+        axis=2,
+    )
+    rgb_float = rgb.astype(numpy.float64)
+    table_chromaticity = table_rgb / max(float(numpy.sum(table_rgb)), 1.0)
+    pixel_sum = numpy.maximum(numpy.sum(rgb_float, axis=2, keepdims=True), 1.0)
+    pixel_chromaticity = rgb_float / pixel_sum
+    chromaticity_distance = numpy.linalg.norm(
+        pixel_chromaticity - table_chromaticity[None, None, :],
+        axis=2,
+    )
+    # Euclidean RGB distance alone mistakes a shadowed white table for dark
+    # fabric.  Chromaticity is largely invariant to illumination magnitude and
+    # preserves the color cast that separates the blue/black garment from the
+    # same table under a camera-bracket shadow.
+    chromaticity_threshold = 0.07
+    dark_garment_luma_cut = 80.0
+    luma = (
+        0.2126 * rgb_float[..., 0]
+        + 0.7152 * rgb_float[..., 1]
+        + 0.0722 * rgb_float[..., 2]
+    )
+    appearance_mask = (
+        (color_distance >= threshold)
+        & (
+            (chromaticity_distance >= chromaticity_threshold)
+            | (luma < dark_garment_luma_cut)
+        )
+    )
+    diagnostics["applied"] = True
+    diagnostics["applied_chromaticity_distance"] = chromaticity_threshold
+    diagnostics["dark_garment_luma_cut"] = dark_garment_luma_cut
+    diagnostics["appearance_pixel_count"] = int(
+        numpy.count_nonzero(appearance_mask)
+    )
+    return appearance_mask, diagnostics
+
+
+def _fused_source_appearance_mask(
+    colors: np.ndarray,
+    source_mask: np.ndarray,
+    camera_labels: tuple[str, ...],
+    table_appearances: dict[str, dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Compare each fused voxel with the table color of its source camera(s)."""
+
+    numpy = _require_numpy()
+    colors = numpy.asarray(colors, dtype=numpy.uint8)
+    source_mask = numpy.asarray(source_mask, dtype=numpy.uint8)
+    if colors.ndim != 2 or colors.shape[1] != 3 or source_mask.shape != (len(colors),):
+        raise PerceptionError("fused colors/source mask shapes do not match")
+    if not camera_labels:
+        raise PerceptionError("source-specific appearance requires camera labels")
+    distinct = numpy.zeros(len(colors), dtype=bool)
+    color_distance = numpy.full(len(colors), numpy.nan, dtype=numpy.float64)
+    applied_threshold = numpy.full(len(colors), numpy.nan, dtype=numpy.float64)
+    source_diagnostics: dict[str, Any] = {}
+    known_source_bits = (1 << len(camera_labels)) - 1
+    source_values = source_mask.astype(numpy.int64)
+    if numpy.any((source_values == 0) | ((source_values & ~known_source_bits) != 0)):
+        raise PerceptionError("fused source mask contains unknown camera bits")
+    for source_bits in sorted(int(value) for value in numpy.unique(source_mask)):
+        labels = [
+            label
+            for index, label in enumerate(camera_labels)
+            if source_bits & (1 << index)
+        ]
+        appearances = [table_appearances[label] for label in labels]
+        if any(not appearance.get("confident") for appearance in appearances):
+            raise PerceptionError(
+                "source-specific garment appearance received an unvalidated table estimate"
+            )
+        expected_rgb = numpy.mean(
+            numpy.asarray(
+                [appearance["table_rgb_median"] for appearance in appearances],
+                dtype=numpy.float64,
+            ),
+            axis=0,
+        )
+        threshold = max(
+            float(appearance["applied_color_distance"])
+            for appearance in appearances
+        )
+        selected = source_mask == source_bits
+        distances = numpy.linalg.norm(
+            colors[selected].astype(numpy.float64) - expected_rgb[None, :],
+            axis=1,
+        )
+        color_distance[selected] = distances
+        applied_threshold[selected] = threshold
+        distinct[selected] = distances >= threshold
+        source_diagnostics["".join(labels)] = {
+            "source_bits": source_bits,
+            "point_count": int(numpy.count_nonzero(selected)),
+            "table_rgb_expected": [float(value) for value in expected_rgb],
+            "applied_color_distance": threshold,
+            "appearance_distinct_point_count": int(numpy.count_nonzero(distinct[selected])),
+        }
+    return distinct, color_distance, applied_threshold, {
+        "method": "source_specific_camera_table_color",
+        "sources": source_diagnostics,
+    }
+
+
+def _require_projected_garment_validation(
+    camera_artifacts: dict[str, dict[str, Any]],
+    source_support_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Hard-stop thin or single-view garment components before model calls."""
+
+    camera_diagnostics: dict[str, Any] = {}
+    failures: list[str] = []
+    for label, artifacts in camera_artifacts.items():
+        projection = artifacts.get("projection_diagnostics", {})
+        silhouette_pixels = int(projection.get("silhouette_pixels") or 0)
+        garment_pixels = int(projection.get("garment_mask_pixels") or 0)
+        coverage = (
+            float(garment_pixels) / float(silhouette_pixels)
+            if silhouette_pixels > 0
+            else 0.0
+        )
+        camera_diagnostics[label] = {
+            "silhouette_pixels": silhouette_pixels,
+            "garment_mask_pixels": garment_pixels,
+            "mask_to_silhouette_coverage": coverage,
+            "minimum_coverage": MIN_PROJECTED_GARMENT_COVERAGE,
+        }
+        if silhouette_pixels < 100:
+            failures.append(f"camera {label} garment silhouette has fewer than 100 pixels")
+        elif coverage < MIN_PROJECTED_GARMENT_COVERAGE:
+            failures.append(
+                f"camera {label} garment mask covers only {coverage:.3f} of its silhouette "
+                f"(< {MIN_PROJECTED_GARMENT_COVERAGE:.3f})"
+            )
+        if garment_pixels < 100:
+            failures.append(f"camera {label} final garment mask has fewer than 100 pixels")
+    for label, count in source_support_counts.items():
+        if count < 100:
+            failures.append(
+                f"camera {label} supports only {count} fused garment points (< 100)"
+            )
+    validation = {
+        "valid": not failures,
+        "camera_masks": camera_diagnostics,
+        "source_support_counts": source_support_counts,
+        "failures": failures,
+    }
+    if failures:
+        raise PerceptionError(
+            "perception validation blocked Molmo/Claude/robot: " + "; ".join(failures)
+        )
+    return validation
+
+
+def _edge_connected_fixture_mask(
+    garment_mask: np.ndarray,
+    height_above_table_mm: np.ndarray,
+    *,
+    height_threshold_mm: float = EDGE_FIXTURE_HEIGHT_MM,
+    border_margin_px: int = EDGE_FIXTURE_BORDER_MARGIN_PX,
+    padding_px: int = EDGE_FIXTURE_PADDING_PX,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Mask a compact high object entering the image from a border.
+
+    A table-mounted camera bracket or gripper can be dark like the garment and
+    can also project inside the fused cloth silhouette.  Unlike a garment fold,
+    it forms a tall component connected to an image edge.  The entire padded
+    component box is excluded so its low mounting stem cannot survive a simple
+    height cutoff.
+    """
+
+    numpy = _require_numpy()
+    garment_mask = numpy.asarray(garment_mask, dtype=bool)
+    heights = numpy.asarray(height_above_table_mm, dtype=numpy.float64)
+    if garment_mask.shape != heights.shape or garment_mask.ndim != 2:
+        raise PerceptionError("garment and height masks must be matching 2-D rasters")
+    border_margin_px = max(1, int(border_margin_px))
+    padding_px = max(0, int(padding_px))
+    high_seed = (
+        garment_mask
+        & numpy.isfinite(heights)
+        & (heights >= float(height_threshold_mm))
+    )
+    fixture_mask = numpy.zeros_like(garment_mask)
+    component_records: list[dict[str, Any]] = []
+    try:
+        from scipy.ndimage import label
+
+        labels, component_count = label(
+            high_seed,
+            structure=numpy.ones((3, 3), dtype=numpy.uint8),
+        )
+        border_labels = numpy.unique(
+            numpy.concatenate(
+                [
+                    labels[:border_margin_px, :].reshape(-1),
+                    labels[-border_margin_px:, :].reshape(-1),
+                    labels[:, :border_margin_px].reshape(-1),
+                    labels[:, -border_margin_px:].reshape(-1),
+                ]
+            )
+        )
+        border_labels = border_labels[border_labels > 0]
+        max_component_pixels = int(
+            math.ceil(garment_mask.size * MAX_EDGE_FIXTURE_IMAGE_FRACTION)
+        )
+        for component_label in border_labels:
+            y_px, x_px = numpy.nonzero(labels == component_label)
+            component_heights = heights[labels == component_label]
+            median_height_mm = (
+                float(numpy.median(component_heights))
+                if len(component_heights)
+                else float("nan")
+            )
+            if (
+                len(x_px) < MIN_EDGE_FIXTURE_SEED_PIXELS
+                or len(x_px) > max_component_pixels
+                or median_height_mm < MIN_EDGE_FIXTURE_MEDIAN_HEIGHT_MM
+            ):
+                continue
+            x0 = max(0, int(x_px.min()) - padding_px)
+            x1 = min(garment_mask.shape[1], int(x_px.max()) + padding_px + 1)
+            y0 = max(0, int(y_px.min()) - padding_px)
+            y1 = min(garment_mask.shape[0], int(y_px.max()) + padding_px + 1)
+            fixture_mask[y0:y1, x0:x1] = True
+            component_records.append(
+                {
+                    "seed_pixel_count": int(len(x_px)),
+                    "bbox_xyxy": [x0, y0, x1 - 1, y1 - 1],
+                    "height_p50_mm": median_height_mm,
+                    "height_max_mm": float(numpy.max(component_heights)),
+                }
+            )
+    except ImportError:
+        component_count = 0
+    fixture_mask &= garment_mask
+    return fixture_mask, {
+        "applied": bool(component_records),
+        "height_threshold_mm": float(height_threshold_mm),
+        "border_margin_px": border_margin_px,
+        "padding_px": padding_px,
+        "high_component_count": int(component_count),
+        "excluded_component_count": len(component_records),
+        "excluded_pixel_count": int(numpy.count_nonzero(fixture_mask)),
+        "components": component_records,
     }
 
 
@@ -1324,6 +1766,7 @@ def _occlusion_aware_garment_mask(
     valid_depth: np.ndarray,
     *,
     minimum_table_color_distance: float | None = None,
+    table_appearance: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Rasterize garment points without coloring nearer robot/fixture pixels.
 
@@ -1339,6 +1782,11 @@ def _occlusion_aware_garment_mask(
     x, y, projected_z_m, visible = _project_base_points_with_camera_depth(
         garment_points_base_mm, frame
     )
+    projection_support_radius_px = _projected_voxel_support_radius_px(
+        frame,
+        projected_z_m,
+        visible,
+    )
     sparse_mask = numpy.zeros(depth.shape, dtype=bool)
     expected_depth = numpy.full(depth.shape, numpy.inf, dtype=numpy.float64)
     if visible.any():
@@ -1349,7 +1797,7 @@ def _occlusion_aware_garment_mask(
     # morphology is applied after that rejection step.
     silhouette = _solidify_largest_mask(
         sparse_mask,
-        dilation_iterations=1,
+        dilation_iterations=projection_support_radius_px,
         closing_iterations=1,
         fill_holes=True,
     )
@@ -1394,6 +1842,7 @@ def _occlusion_aware_garment_mask(
             height_above_table_mm,
             valid_depth,
             minimum_color_distance=float(minimum_table_color_distance),
+            table_appearance=table_appearance,
         )
     unconnected_mask = (
         silhouette & depth_consistent & plausible_height & appearance_mask
@@ -1416,6 +1865,8 @@ def _occlusion_aware_garment_mask(
             numpy.count_nonzero(unconnected_mask)
         ),
         "garment_mask_pixels": int(numpy.count_nonzero(garment_mask)),
+        "projection_support_radius_px": projection_support_radius_px,
+        "projected_voxel_size_mm": DEFAULT_FUSED_VOXEL_SIZE_MM,
         "depth_consistency_tolerance_mm": 25.0,
         "height_interval_mm": [-15.0, 160.0],
         "appearance_filter": appearance_diagnostics,
@@ -1461,6 +1912,8 @@ def camera_height_map_mm(
     frame: RGBDFrame,
     config: PerceptionConfig,
     table_coefficients: np.ndarray | None = None,
+    *,
+    base_z_offset_mm: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return a camera raster of surface height above the fitted table.
 
@@ -1475,15 +1928,27 @@ def camera_height_map_mm(
     base_xyz_mm, valid_map = camera_base_xyz_map_mm(frame, config)
     y_px, x_px = numpy.nonzero(valid_map)
     base_points_mm = base_xyz_mm[y_px, x_px].astype(numpy.float64)
+    if not math.isfinite(float(base_z_offset_mm)):
+        raise PerceptionError("base Z offset must be finite")
+    base_points_mm[:, 2] += float(base_z_offset_mm)
     if table_coefficients is None:
         colors = numpy.asarray(frame.rgb[y_px, x_px], dtype=numpy.uint8)
         reference_coefficients, reference_stats = _fit_table_plane_from_references(
-            [frame], config, numpy.asarray([0.0, 0.0, 0.0], dtype=numpy.float64)
+            [frame],
+            config,
+            numpy.asarray([0.0, 0.0, 0.0], dtype=numpy.float64),
+            camera_z_offsets_mm={frame.label: float(base_z_offset_mm)},
         )
         if reference_stats.get("mode") == "corner_edge_depth_interpolation":
             coefficients = reference_coefficients
         else:
             coefficients, _, _ = _fit_table_plane(base_points_mm, colors)
+        slope = float(numpy.linalg.norm(coefficients[:2]))
+        if not math.isfinite(slope) or slope > 0.12:
+            raise PerceptionError(
+                "single-camera table fit is not geometrically plausible; "
+                "use a validated A/B table plane before rendering height"
+            )
     else:
         coefficients = numpy.asarray(table_coefficients, dtype=numpy.float64)
         if coefficients.shape != (3,) or not numpy.all(numpy.isfinite(coefficients)):
@@ -1498,6 +1963,148 @@ def camera_height_map_mm(
     return height_map, valid_map, coefficients
 
 
+def _estimate_camera_table_z_offset_mm(
+    frame: RGBDFrame,
+    config: PerceptionConfig,
+    table_coefficients: np.ndarray,
+) -> tuple[float, dict[str, Any]]:
+    """Estimate a bounded per-camera Z bias from bright near-table pixels.
+
+    A shared base-frame table plane is geometrically correct, but a depth
+    camera can report a material-dependent vertical bias.  Bright, near-table
+    pixels provide a conservative table-only reference without using garment
+    semantics.  The returned offset is added to that camera's base Z values.
+    """
+
+    numpy = _require_numpy()
+    base_xyz_mm, valid_map = camera_base_xyz_map_mm(frame, config)
+    y_px, x_px = numpy.nonzero(valid_map)
+    points = base_xyz_mm[y_px, x_px].astype(numpy.float64)
+    coefficients = numpy.asarray(table_coefficients, dtype=numpy.float64)
+    if coefficients.shape != (3,) or not numpy.all(numpy.isfinite(coefficients)):
+        raise PerceptionError("table plane coefficients must contain three finite values")
+    heights = points[:, 2] - (
+        coefficients[0] * points[:, 0]
+        + coefficients[1] * points[:, 1]
+        + coefficients[2]
+    )
+    luma = (
+        0.2126 * frame.rgb[y_px, x_px, 0].astype(numpy.float64)
+        + 0.7152 * frame.rgb[y_px, x_px, 1].astype(numpy.float64)
+        + 0.0722 * frame.rgb[y_px, x_px, 2].astype(numpy.float64)
+    )
+    near = numpy.isfinite(heights) & (numpy.abs(heights) <= 25.0)
+    near_count = int(numpy.count_nonzero(near))
+    if near_count < 500:
+        return 0.0, {
+            "applied": False,
+            "reason": "fewer than 500 near-table pixels",
+            "near_table_pixel_count": near_count,
+        }
+    bright_cut = float(numpy.percentile(luma[near], TABLE_APPEARANCE_LUMA_PERCENTILE))
+    samples = near & (luma >= bright_cut)
+    sample_count = int(numpy.count_nonzero(samples))
+    if sample_count < 500:
+        return 0.0, {
+            "applied": False,
+            "reason": "fewer than 500 bright table pixels",
+            "near_table_pixel_count": near_count,
+            "table_sample_count": sample_count,
+            "bright_luma_cut": bright_cut,
+        }
+    sample_heights = heights[samples]
+    median_height = float(numpy.median(sample_heights))
+    mad_mm = float(numpy.median(numpy.abs(sample_heights - median_height)))
+    offset_mm = -median_height
+    if not math.isfinite(offset_mm) or abs(offset_mm) > 20.0:
+        return 0.0, {
+            "applied": False,
+            "reason": "estimated table Z bias exceeds 20 mm safety bound",
+            "near_table_pixel_count": near_count,
+            "table_sample_count": sample_count,
+            "bright_luma_cut": bright_cut,
+            "sample_height_median_mm": median_height,
+            "sample_height_mad_mm": mad_mm,
+        }
+    return offset_mm, {
+        "applied": abs(offset_mm) >= 0.5,
+        "method": "bright_near_table_median_residual",
+        "near_table_pixel_count": near_count,
+        "table_sample_count": sample_count,
+        "bright_luma_cut": bright_cut,
+        "sample_height_median_mm": median_height,
+        "sample_height_mad_mm": mad_mm,
+        "sample_height_p05_p95_mm": [
+            float(value) for value in numpy.percentile(sample_heights, [5.0, 95.0])
+        ],
+        "offset_mm": float(offset_mm),
+    }
+
+
+def _signed_height_display_range_mm(values_mm: np.ndarray) -> float:
+    """Choose a symmetric signed range so below-table values remain visible."""
+
+    numpy = _require_numpy()
+    values = numpy.asarray(values_mm, dtype=numpy.float64)
+    values = values[numpy.isfinite(values)]
+    if values.size == 0:
+        return 20.0
+    low, high = numpy.percentile(values, [2.0, 98.0])
+    magnitude = max(abs(float(low)), abs(float(high)), 20.0)
+    return float(min(160.0, numpy.ceil(magnitude / 5.0) * 5.0))
+
+
+# Garments on the table are normally within a few centimetres of the fitted
+# tabletop.  Keep this range fixed across captures so a color means the same
+# physical height from one iteration to the next.  A small below-table band is
+# retained for depth noise; values above the range are intentionally saturated
+# instead of stretching the palette around an outlier.
+DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM = -5.0
+DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM = 40.0
+HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM = 8.0
+HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND = 0.25
+
+
+def _aggregate_grid_height_percentile(
+    flat_indices: np.ndarray,
+    values_mm: np.ndarray,
+    grid_size: int,
+    *,
+    percentile: float = 50.0,
+) -> np.ndarray:
+    """Aggregate one height value per occupied grid cell robustly.
+
+    The old fused map used ``maximum.at`` over every fused point.  A single
+    high fixture/background point could therefore overwrite a garment cell.
+    This reducer expects already-filtered garment points and uses a median by
+    default, which is stable when a cell contains several depth samples.
+    """
+
+    numpy = _require_numpy()
+    flat_indices = numpy.asarray(flat_indices, dtype=numpy.int64)
+    values_mm = numpy.asarray(values_mm, dtype=numpy.float64)
+    if flat_indices.shape != values_mm.shape:
+        raise PerceptionError("grid indices and height values must have the same shape")
+    finite = numpy.isfinite(values_mm)
+    if not finite.any():
+        return numpy.full(grid_size, numpy.nan, dtype=numpy.float32)
+    if not 0.0 <= float(percentile) <= 100.0:
+        raise PerceptionError("height aggregation percentile must be between 0 and 100")
+    flat_indices = flat_indices[finite]
+    values_mm = values_mm[finite]
+    order = numpy.argsort(flat_indices, kind="stable")
+    sorted_indices = flat_indices[order]
+    sorted_values = values_mm[order]
+    starts = numpy.r_[0, numpy.flatnonzero(numpy.diff(sorted_indices)) + 1]
+    ends = numpy.r_[starts[1:], len(sorted_indices)]
+    output = numpy.full(grid_size, numpy.nan, dtype=numpy.float32)
+    for start, end in zip(starts.tolist(), ends.tolist()):
+        output[sorted_indices[start]] = numpy.percentile(
+            sorted_values[start:end], float(percentile)
+        )
+    return output
+
+
 def _save_camera_coordinate_guide(
     output_dir: Path,
     frame: RGBDFrame,
@@ -1506,6 +2113,7 @@ def _save_camera_coordinate_guide(
     garment_mask: np.ndarray,
     *,
     sample_stride_px: int = 48,
+    base_z_offset_mm: float = 0.0,
 ) -> dict[str, str]:
     """Save an unranked image-to-base coordinate guide for Claude.
 
@@ -1521,6 +2129,7 @@ def _save_camera_coordinate_guide(
     if sample_stride_px < 8:
         raise PerceptionError("coordinate-guide sample stride must be at least 8 pixels")
     base_xyz_mm, valid = camera_base_xyz_map_mm(frame, config)
+    base_xyz_mm[valid, 2] += float(base_z_offset_mm)
     garment_valid = (
         numpy.asarray(garment_mask, dtype=bool)
         & valid
@@ -1617,6 +2226,8 @@ def _save_camera_height_heatmap(
     *,
     display_max_mm: float | None = None,
     minimum_table_color_distance: float | None = None,
+    table_appearance: dict[str, Any] | None = None,
+    base_z_offset_mm: float = 0.0,
 ) -> dict[str, Any]:
     """Save camera-pixel height-above-table maps and heatmaps.
 
@@ -1634,6 +2245,7 @@ def _save_camera_height_heatmap(
         frame,
         config,
         table_coefficients,
+        base_z_offset_mm=base_z_offset_mm,
     )
     garment_mask, coordinate_reference_mask, projection_diagnostics = (
         _occlusion_aware_garment_mask(
@@ -1642,19 +2254,52 @@ def _save_camera_height_heatmap(
             height_above_table_mm,
             valid,
             minimum_table_color_distance=minimum_table_color_distance,
+            table_appearance=table_appearance,
         )
     )
+    garment_mask_pixels_before_fixture_filter = int(
+        numpy.count_nonzero(garment_mask)
+    )
+    fixture_mask, fixture_diagnostics = _edge_connected_fixture_mask(
+        garment_mask,
+        height_above_table_mm,
+    )
+    if fixture_mask.any():
+        garment_mask = _solidify_largest_mask(
+            garment_mask & ~fixture_mask,
+            dilation_iterations=0,
+            closing_iterations=0,
+            fill_holes=False,
+        )
+    projection_diagnostics["edge_fixture_filter"] = fixture_diagnostics
+    projection_diagnostics["garment_mask_pixels_before_fixture_filter"] = (
+        garment_mask_pixels_before_fixture_filter
+    )
+    projection_diagnostics["garment_mask_pixels"] = int(
+        numpy.count_nonzero(garment_mask)
+    )
     if display_max_mm is None:
-        display_max_mm = _height_display_max_mm(height_above_table_mm[garment_mask])
+        display_max_mm = DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM
     display_max_mm = float(max(1.0, display_max_mm))
     garment_valid = valid & garment_mask & numpy.isfinite(height_above_table_mm)
     height_map_name = f"camera_{frame.label}_height_above_table_mm.npy"
     numpy.save(output_dir / height_map_name, height_above_table_mm)
     garment_mask_name = f"camera_{frame.label}_garment_mask.npy"
     numpy.save(output_dir / garment_mask_name, garment_mask.astype(numpy.bool_))
+    garment_rgb = numpy.full_like(
+        numpy.asarray(frame.rgb, dtype=numpy.uint8),
+        127,
+    )
+    garment_rgb[garment_mask] = numpy.asarray(frame.rgb, dtype=numpy.uint8)[garment_mask]
+    garment_rgb_name = f"camera_{frame.label}_garment_only.png"
+    Image.fromarray(garment_rgb).save(output_dir / garment_rgb_name)
     # Save the actual table references used by the corner/edge interpolation
     # so the zero surface can be audited independently of the color image.
-    _, table_reference_records = _sample_table_reference_points(frame, config)
+    _, table_reference_records = _sample_table_reference_points(
+        frame,
+        config,
+        base_z_offset_mm=base_z_offset_mm,
+    )
     for record in table_reference_records:
         if record.get("valid") and "base_xyz_mm" in record:
             base_x, base_y, base_z = record["base_xyz_mm"]
@@ -1710,6 +2355,7 @@ def _save_camera_height_heatmap(
         encoding="utf-8",
     )
     base_xyz_mm, xyz_valid = camera_base_xyz_map_mm(frame, config)
+    base_xyz_mm[xyz_valid, 2] += float(base_z_offset_mm)
     table_surface_map = numpy.full(depth.shape, numpy.nan, dtype=numpy.float32)
     table_surface_map[xyz_valid] = (
         table_coefficients[0] * base_xyz_mm[xyz_valid, 0]
@@ -1723,13 +2369,13 @@ def _save_camera_height_heatmap(
         valid,
         focus_mask=garment_mask,
         higher_is_bright=True,
-        value_range_mm=(0.0, display_max_mm),
+        normalization="global_softmax",
     )
     global_heatmap = _scalar_heatmap_rgb(
         height_above_table_mm,
         valid,
         higher_is_bright=True,
-        value_range_mm=(0.0, display_max_mm),
+        value_range_mm=(DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM, display_max_mm),
     )
     boundary = _outer_mask_boundary(garment_mask)
     fold_edges, _ = _fold_edge_mask(height_above_table_mm, garment_mask)
@@ -1754,6 +2400,7 @@ def _save_camera_height_heatmap(
         # The sparse projected mask is retained for diagnostics, but it can
         # contain isolated projected points on table/fixture pixels.
         garment_mask,
+        base_z_offset_mm=base_z_offset_mm,
     )
     return {
         "height_map": heatmap_name,
@@ -1761,6 +2408,7 @@ def _save_camera_height_heatmap(
         "height_map_boundary": boundary_name,
         "height_map_path": height_map_name,
         "garment_mask": garment_mask_name,
+        "garment_rgb": garment_rgb_name,
         "table_z_map": table_surface_name,
         "table_references": table_reference_name,
         "table_reference_overlay": table_reference_overlay_name,
@@ -1773,9 +2421,14 @@ def _save_camera_height_heatmap(
         "fold_edge_overlay": fold_edge_name,
         "height_map_quantity": "height_above_table_mm",
         "heatmap_quantity": "height_above_table_mm",
-        "heatmap_display_min_mm": 0.0,
+        "heatmap_color_direction": "higher_height_hotter",
+        "heatmap_color_normalization": "garment_height_global_softmax",
+        "heatmap_softmax_temperature_mm": HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM,
+        "heatmap_softmax_physical_blend": HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND,
+        "heatmap_display_min_mm": DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
         "heatmap_display_max_mm": display_max_mm,
-        "heatmap_normalization": "absolute_table_zero_shared",
+        "heatmap_normalization": "fixed_physical_-5_to_40mm",
+        "base_z_offset_mm": float(base_z_offset_mm),
         "projection_diagnostics": projection_diagnostics,
         "height_min_mm": float(numpy.percentile(height_above_table_mm[garment_valid], 2))
         if garment_valid.any()
@@ -1799,6 +2452,7 @@ def _camera_height_view_artifacts(artifacts: dict[str, Any]) -> dict[str, Any]:
         "depth_heatmap_boundary": artifacts["height_map_boundary"],
         "height_map_path": artifacts.get("height_map_path"),
         "garment_mask": artifacts.get("garment_mask"),
+        "garment_rgb": artifacts.get("garment_rgb"),
         "fold_edge_overlay": artifacts["fold_edge_overlay"],
         "height_gradient_overlay": artifacts.get("height_gradient_overlay"),
         "base_xyz_map": artifacts.get("base_xyz_map"),
@@ -1809,6 +2463,10 @@ def _camera_height_view_artifacts(artifacts: dict[str, Any]) -> dict[str, Any]:
         "table_z_map": artifacts.get("table_z_map"),
         "height_map_min_mm": artifacts.get("height_min_mm"),
         "height_map_max_mm": artifacts.get("height_max_mm"),
+        "heatmap_display_min_mm": artifacts.get("heatmap_display_min_mm"),
+        "heatmap_display_max_mm": artifacts.get("heatmap_display_max_mm"),
+        "heatmap_normalization": artifacts.get("heatmap_normalization"),
+        "base_z_offset_mm": artifacts.get("base_z_offset_mm"),
         "heatmap_quantity": artifacts.get("heatmap_quantity"),
     }
 
@@ -2360,7 +3018,39 @@ class ClothCenterPerception:
             self.config,
             coefficients,
         )
+        initial_table_coefficients = coefficients.copy()
+        camera_z_offsets_mm: dict[str, float] = {}
+        camera_z_offset_diagnostics: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            offset_mm, offset_diagnostics = _estimate_camera_table_z_offset_mm(
+                frame,
+                self.config,
+                initial_table_coefficients,
+            )
+            camera_z_offsets_mm[frame.label] = float(offset_mm)
+            camera_z_offset_diagnostics[frame.label] = offset_diagnostics
+        if any(abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()):
+            fused_points, fused_colors, source_mask, fusion_stats = (
+                _voxel_fuse_base_points(
+                    frames,
+                    self.config,
+                    self.robot_config,
+                    camera_z_offsets_mm=camera_z_offsets_mm,
+                )
+            )
         table_stats["reference_interpolation"] = table_reference_stats
+        table_stats["camera_z_bias_correction"] = {
+            "applied": any(
+                abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()
+            ),
+            "initial_coefficients": {
+                "a": float(initial_table_coefficients[0]),
+                "b": float(initial_table_coefficients[1]),
+                "c_mm": float(initial_table_coefficients[2]),
+            },
+            "offsets_mm": camera_z_offsets_mm,
+            "cameras": camera_z_offset_diagnostics,
+        }
         design = numpy.column_stack(
             (fused_points[:, 0], fused_points[:, 1], numpy.ones(len(fused_points)))
         )
@@ -2375,21 +3065,100 @@ class ClothCenterPerception:
         table_stats["coefficient_source"] = table_reference_stats.get(
             "mode", "fused_cloud"
         )
+        geometric_inlier_appearance = {
+            "authoritative": False,
+            "reason": "flat garment can be a geometric table-plane inlier",
+            "table_luma_median": table_stats.pop("table_luma_median", None),
+            "table_rgb_median": table_stats.pop("table_rgb_median", None),
+            "table_color_distance_p50": table_stats.pop(
+                "table_color_distance_p50", None
+            ),
+        }
+        table_stats["geometric_inlier_appearance_diagnostic"] = (
+            geometric_inlier_appearance
+        )
         table_noise_mm = float(
-            table_stats.get("residual_p95_abs_mm")
+            table_reference_stats.get("residual_p95_abs_mm")
+            or table_stats.get("residual_p95_abs_mm")
             or (numpy.percentile(numpy.abs(table_residual), 90) if len(table_residual) else 5.0)
         )
+        point_cloud_clip_tolerance_mm = table_clip_tolerance_mm(table_noise_mm)
+        fused_point_count_before_table_clip = int(len(fused_points))
+        height_above_table, table_clip_mask = table_height_and_clip_mask(
+            fused_points,
+            coefficients,
+            tolerance_mm=point_cloud_clip_tolerance_mm,
+        )
+        fused_points = fused_points[table_clip_mask]
+        fused_colors = fused_colors[table_clip_mask]
+        source_mask = source_mask[table_clip_mask]
+        height_above_table = height_above_table[table_clip_mask]
+        table_z = table_z[table_clip_mask]
+        table_residual = table_residual[table_clip_mask]
+        if len(fused_points) < 100:
+            raise PerceptionError(
+                "table clipping left fewer than 100 fused points above the validated table"
+            )
+        fusion_stats["fused_point_count_before_table_clip"] = (
+            fused_point_count_before_table_clip
+        )
+        fusion_stats["fused_point_count"] = int(len(fused_points))
+        fusion_stats["source_voxel_counts"] = {
+            "A": int(numpy.count_nonzero(source_mask & 1)),
+            "B": int(numpy.count_nonzero(source_mask & 2)),
+            "AB_overlap": int(numpy.count_nonzero(source_mask == 3)),
+        }
+        fusion_stats["table_clip"] = {
+            "applied": True,
+            "height_definition": "base_z_mm - (a*base_x_mm + b*base_y_mm + c_mm)",
+            "tolerance_mm": point_cloud_clip_tolerance_mm,
+            "input_point_count": fused_point_count_before_table_clip,
+            "retained_point_count": int(len(fused_points)),
+            "removed_below_table_count": int(
+                fused_point_count_before_table_clip - len(fused_points)
+            ),
+        }
         relief_threshold_mm = max(5.0, min(15.0, table_noise_mm * 2.5))
-        table_rgb = numpy.asarray(
-            table_stats.get("table_rgb_median", [255.0, 255.0, 255.0]),
-            dtype=numpy.float64,
+        table_appearances: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            frame_height_mm, frame_valid, _ = camera_height_map_mm(
+                frame,
+                self.config,
+                coefficients,
+                base_z_offset_mm=camera_z_offsets_mm.get(frame.label, 0.0),
+            )
+            appearance = _estimate_camera_table_appearance(
+                frame.rgb,
+                frame_height_mm,
+                frame_valid,
+                minimum_color_distance=24.0,
+            )
+            table_appearances[frame.label] = appearance
+        invalid_table_appearances = {
+            label: appearance.get("reason") or "unknown confidence failure"
+            for label, appearance in table_appearances.items()
+            if not appearance.get("confident")
+        }
+        if invalid_table_appearances:
+            raise PerceptionError(
+                "perception validation blocked Molmo/Claude/robot because table "
+                "appearance is not trustworthy: "
+                + "; ".join(
+                    f"camera {label}: {reason}"
+                    for label, reason in invalid_table_appearances.items()
+                )
+            )
+        (
+            appearance_distinct,
+            color_distance,
+            point_color_threshold,
+            fused_appearance_diagnostics,
+        ) = _fused_source_appearance_mask(
+            fused_colors,
+            source_mask,
+            tuple(frame.label for frame in frames),
+            table_appearances,
         )
-        color_distance = numpy.linalg.norm(
-            fused_colors.astype(numpy.float64) - table_rgb[None, :],
-            axis=1,
-        )
-        table_color_noise = float(table_stats.get("table_color_distance_p50") or 0.0)
-        garment_color_threshold = max(24.0, min(80.0, table_color_noise * 4.0))
         lower_surface_tolerance_mm = max(12.0, table_noise_mm * 2.0)
         # The complete garment mask must include fabric lying directly on the
         # table.  Height-only thresholding selected only raised folds and
@@ -2397,7 +3166,7 @@ class ClothCenterPerception:
         # difference from the fitted table plus a loose table-height envelope
         # for the outer garment mask; keep height relief as a separate fold cue.
         garment_candidate = (
-            (color_distance >= garment_color_threshold)
+            appearance_distinct
             & (height_above_table >= -lower_surface_tolerance_mm)
             & (height_above_table <= 160.0)
         )
@@ -2410,7 +3179,15 @@ class ClothCenterPerception:
         relief_candidate = garment_candidate & (height_above_table >= relief_threshold_mm)
         garment_points = fused_points[garment_indices]
         garment_heights = height_above_table[garment_indices]
-        heatmap_display_max_mm = _height_display_max_mm(garment_heights)
+        source_support_counts = {
+            frame.label: int(
+                numpy.count_nonzero(
+                    garment_candidate & ((source_mask & (1 << index)) != 0)
+                )
+            )
+            for index, frame in enumerate(frames)
+        }
+        heatmap_display_max_mm = DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM
         xy_center = numpy.median(garment_points[:, :2], axis=0)
         distance = numpy.sum((garment_points[:, :2] - xy_center) ** 2, axis=1)
         nearest = numpy.argsort(distance)[: min(128, len(distance))]
@@ -2450,10 +3227,23 @@ class ClothCenterPerception:
                 garment_points,
                 coefficients,
                 display_max_mm=heatmap_display_max_mm,
-                minimum_table_color_distance=garment_color_threshold,
+                minimum_table_color_distance=float(
+                    table_appearances[frame.label]["applied_color_distance"]
+                ),
+                table_appearance=table_appearances[frame.label],
+                base_z_offset_mm=camera_z_offsets_mm.get(frame.label, 0.0),
             )
             camera_heatmaps[frame.label] = artifacts
             view.update(_camera_height_view_artifacts(artifacts))
+            view["point_cloud_table_clip_tolerance_mm"] = (
+                point_cloud_clip_tolerance_mm
+            )
+            view["base_z_offset_mm"] = camera_z_offsets_mm.get(frame.label, 0.0)
+
+        perception_validation = _require_projected_garment_validation(
+            camera_heatmaps,
+            source_support_counts,
+        )
 
         observation_plan, motion_derivation = derive_grasp_plan(
             center, self.robot_config, self.config
@@ -2469,17 +3259,34 @@ class ClothCenterPerception:
             "temporal_median_applied": bool(temporal_median_applied),
             **fusion_stats,
             "table_plane": table_stats,
+            "table_appearance_by_camera": table_appearances,
+            "fused_table_appearance": fused_appearance_diagnostics,
             "table_noise_p90_mm": table_noise_mm,
             "garment_relief_threshold_mm": relief_threshold_mm,
-            "garment_color_distance_threshold": garment_color_threshold,
+            "garment_color_distance_threshold": max(
+                float(appearance["applied_color_distance"])
+                for appearance in table_appearances.values()
+            ),
+            "garment_color_distance_threshold_by_camera": {
+                label: float(appearance["applied_color_distance"])
+                for label, appearance in table_appearances.items()
+            },
             "garment_lower_surface_tolerance_mm": lower_surface_tolerance_mm,
             "garment_point_count": int(len(garment_points)),
+            "garment_source_support_counts": source_support_counts,
+            "garment_color_distance_p50": float(
+                numpy.percentile(color_distance[garment_candidate], 50)
+            ),
+            "garment_color_threshold_p50": float(
+                numpy.percentile(point_color_threshold[garment_candidate], 50)
+            ),
             "relief_point_count": int(numpy.count_nonzero(relief_candidate)),
             "garment_height_p50_mm": float(numpy.percentile(garment_heights, 50)),
             "garment_height_p95_mm": float(numpy.percentile(garment_heights, 95)),
-            "heatmap_display_min_mm": 0.0,
+            "heatmap_display_min_mm": DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
             "heatmap_display_max_mm": heatmap_display_max_mm,
-            "heatmap_normalization": "absolute_table_zero_shared",
+            "heatmap_normalization": "fixed_physical_-5_to_40mm",
+            "perception_validation": perception_validation,
             "center_base_mm": center.tolist(),
             "artifacts": {
                 "fused_points_base_mm": fused_points_path.name,

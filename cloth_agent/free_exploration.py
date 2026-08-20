@@ -23,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -32,11 +32,12 @@ import numpy as np
 
 from .config import ExperimentConfig, RobotConfig
 from .experiment import ExperimentValidationError, Preflight
+from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .kinematics import AnimationFrame, XArm7Kinematics
 from .perception import PerceptionConfig, capture_two_view_rgbd
 from .robot_api import ControllerTrajectoryValidation, validate_controller_trajectory
 from .session import AgentSession
-from .skills import skill_prompt, validate_skill_name
+from .skills import skill_prompt
 from .viewer import (
     _load_latest_perception,
     _preflight_markdown,
@@ -47,14 +48,25 @@ from .viewer import (
 
 
 GROUNDING_MCP_SERVER = "garment_grounding"
-GROUNDING_MCP_TOOLS = (
+REFERENCE_GROUNDING_MCP_TOOLS = (
     f"mcp__{GROUNDING_MCP_SERVER}__lookup_reference",
 )
+PIXEL_GROUNDING_MCP_TOOLS = (
+    f"mcp__{GROUNDING_MCP_SERVER}__sample_local_surface",
+)
+# Compatibility export for the existing two-stage Rxxx planner.
+GROUNDING_MCP_TOOLS = REFERENCE_GROUNDING_MCP_TOOLS
 
 
-def grounding_mcp_config(run_dir: Path) -> dict[str, Any]:
+def grounding_mcp_config(
+    run_dir: Path,
+    *,
+    mode: str = "reference",
+) -> dict[str, Any]:
     """Return the single strictly scoped read-only MCP server configuration."""
 
+    if mode not in {"reference", "pixel"}:
+        raise ExplorationPlanningError("grounding mode must be reference or pixel")
     root = Path(run_dir).resolve()
     perception_dir = root / "workspace" / "perception_views"
     if not perception_dir.is_dir():
@@ -75,6 +87,8 @@ def grounding_mcp_config(run_dir: Path) -> dict[str, Any]:
                     str(server_script),
                     "--perception-dir",
                     str(perception_dir),
+                    "--mode",
+                    mode,
                 ],
             }
         }
@@ -92,8 +106,74 @@ EXPLORATION_FIELDS = frozenset(
     }
 )
 EXPLORATION_OPTIONAL_FIELDS = frozenset({"skill_invocations"})
+GLOBAL_EXPLORATION_REQUIRED_FIELDS = EXPLORATION_FIELDS | frozenset(
+    {"selected_grasp"}
+)
+GLOBAL_EXPLORATION_OPTIONAL_FIELDS = EXPLORATION_OPTIONAL_FIELDS
 EXPLORATION_ACTIONS = frozenset({"move", "open_gripper", "close_gripper", "home"})
 MAX_EXPLORATION_ACTIONS = 12
+GLOBAL_EXPLORATION_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "selected_grasp": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "camera": {"type": "string", "enum": ["A"]},
+                "pixel_xy": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {"type": "integer", "minimum": 0},
+                },
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["camera", "pixel_xy", "reason"],
+        },
+        "garment_observation": {"type": "string", "minLength": 1},
+        "reveal_strategy": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "actions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_EXPLORATION_ACTIONS,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": sorted(EXPLORATION_ACTIONS),
+                    },
+                    "args": {"type": "object"},
+                },
+                "required": ["name", "args"],
+            },
+        },
+        "expected_observation": {"type": "string", "minLength": 1},
+        "safety_notes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {"type": "string", "minLength": 1},
+        },
+        "skill_invocations": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "enum": ["laydown"]},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                "required": ["name", "reason"],
+            },
+        },
+    },
+    "required": sorted(GLOBAL_EXPLORATION_REQUIRED_FIELDS),
+}
 
 
 def _voxel_balance_cloud(
@@ -196,9 +276,10 @@ class ExplorationProposal:
     expected_observation: str
     safety_notes: tuple[str, ...]
     skill_invocations: tuple[dict[str, str], ...] = ()
+    selected_grasp: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "garment_observation": self.garment_observation,
             "reveal_strategy": self.reveal_strategy,
             "confidence": self.confidence,
@@ -207,6 +288,9 @@ class ExplorationProposal:
             "safety_notes": list(self.safety_notes),
             "skill_invocations": [dict(skill) for skill in self.skill_invocations],
         }
+        if self.selected_grasp is not None:
+            payload["selected_grasp"] = dict(self.selected_grasp)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -233,7 +317,11 @@ def _finite_number(value: Any, name: str) -> float:
     return number
 
 
-def validate_exploration_payload(payload: Any) -> ExplorationProposal:
+def validate_exploration_payload(
+    payload: Any,
+    *,
+    allowed_skill_names: Sequence[str] | None = None,
+) -> ExplorationProposal:
     """Validate Claude's JSON before generating executable RobotAPI source."""
 
     if not isinstance(payload, dict):
@@ -263,6 +351,7 @@ def validate_exploration_payload(payload: Any) -> ExplorationProposal:
         notes.append(note.strip())
 
     raw_skills = payload.get("skill_invocations", [])
+    approved_names = set(allowed_skill_names or ("laydown",))
     if not isinstance(raw_skills, list) or len(raw_skills) > 4:
         raise ExplorationPlanningError(
             "skill_invocations must be a list with at most four entries"
@@ -273,10 +362,13 @@ def validate_exploration_payload(payload: Any) -> ExplorationProposal:
             raise ExplorationPlanningError(
                 f"skill invocation {index} must contain exactly name and reason"
             )
-        try:
-            name = validate_skill_name(raw_skill["name"])
-        except (TypeError, ValueError) as exc:
-            raise ExplorationPlanningError(str(exc)) from exc
+        name = raw_skill["name"]
+        if not isinstance(name, str) or name.strip().lower() not in approved_names:
+            raise ExplorationPlanningError(
+                f"unknown or inactive skill {name!r}; approved skills: "
+                f"{', '.join(sorted(approved_names))}"
+            )
+        name = name.strip().lower()
         reason = raw_skill["reason"]
         if not isinstance(reason, str) or not reason.strip():
             raise ExplorationPlanningError(
@@ -370,6 +462,236 @@ def validate_exploration_payload(payload: Any) -> ExplorationProposal:
     )
 
 
+def validate_global_exploration_payload(
+    payload: Any,
+    *,
+    allowed_skill_names: Sequence[str] | None = None,
+) -> ExplorationProposal:
+    """Validate a full-scene proposal with one Claude-selected image pixel."""
+
+    if not isinstance(payload, dict):
+        raise ExplorationPlanningError("Claude response must be a JSON object")
+    missing = GLOBAL_EXPLORATION_REQUIRED_FIELDS.difference(payload)
+    unknown = set(payload).difference(
+        GLOBAL_EXPLORATION_REQUIRED_FIELDS | GLOBAL_EXPLORATION_OPTIONAL_FIELDS
+    )
+    if missing:
+        raise ExplorationPlanningError(
+            f"missing global exploration fields: {sorted(missing)}"
+        )
+    if unknown:
+        raise ExplorationPlanningError(
+            f"unknown global exploration fields: {sorted(unknown)}"
+        )
+    selected = payload["selected_grasp"]
+    if not isinstance(selected, dict) or set(selected) != {
+        "camera",
+        "pixel_xy",
+        "reason",
+    }:
+        raise ExplorationPlanningError(
+            "selected_grasp must contain exactly camera, pixel_xy, and reason"
+        )
+    camera = selected["camera"]
+    if camera != "A":
+        raise ExplorationPlanningError(
+            "selected_grasp.camera must be A; Camera B is observation-only"
+        )
+    pixel = selected["pixel_xy"]
+    if (
+        not isinstance(pixel, list)
+        or len(pixel) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in pixel)
+        or any(value < 0 for value in pixel)
+    ):
+        raise ExplorationPlanningError(
+            "selected_grasp.pixel_xy must contain two non-negative integers"
+        )
+    reason = selected["reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        raise ExplorationPlanningError(
+            "selected_grasp.reason must be a non-empty string"
+        )
+    base_payload = dict(payload)
+    base_payload.pop("selected_grasp")
+    proposal = validate_exploration_payload(
+        base_payload,
+        allowed_skill_names=allowed_skill_names,
+    )
+    return ExplorationProposal(
+        garment_observation=proposal.garment_observation,
+        reveal_strategy=proposal.reveal_strategy,
+        confidence=proposal.confidence,
+        actions=proposal.actions,
+        expected_observation=proposal.expected_observation,
+        safety_notes=proposal.safety_notes,
+        skill_invocations=proposal.skill_invocations,
+        selected_grasp={
+            "camera": camera,
+            "pixel_xy": [int(pixel[0]), int(pixel[1])],
+            "reason": reason.strip(),
+        },
+    )
+
+
+def _measure_global_selected_surface(
+    proposal: ExplorationProposal,
+    perception_dir: Path,
+    *,
+    radius_px: int = 3,
+) -> dict[str, Any]:
+    """Measure the calibrated local surface selected by Claude."""
+
+    selected = proposal.selected_grasp
+    if selected is None:
+        raise ExplorationPlanningError("global proposal is missing selected_grasp")
+    try:
+        measurement = GarmentGrounding(perception_dir).sample_local_surface(
+            selected["camera"],
+            selected["pixel_xy"][0],
+            selected["pixel_xy"][1],
+            radius_px=radius_px,
+            include_nearest_reference=False,
+        )
+    except GroundingToolError as exc:
+        raise ExplorationPlanningError(
+            f"selected pixel has no usable calibrated surface: {exc}"
+        ) from exc
+    if not measurement.get("valid"):
+        raise ExplorationPlanningError(
+            "selected pixel has no usable calibrated surface: "
+            f"{measurement.get('reason', 'unknown measurement failure')}"
+        )
+    return measurement
+
+
+def _first_grasp_move(
+    proposal: ExplorationProposal,
+) -> tuple[int, dict[str, Any]]:
+    latest_move: tuple[int, dict[str, Any]] | None = None
+    for action_index, action in enumerate(proposal.actions):
+        if action["name"] == "home":
+            latest_move = None
+        elif action["name"] == "move":
+            latest_move = action_index, action["args"]
+        elif action["name"] == "close_gripper":
+            if latest_move is None:
+                break
+            return latest_move
+    raise ExplorationPlanningError(
+        "global proposal has no finite move immediately before close_gripper"
+    )
+
+
+def ground_global_grasp_target(
+    proposal: ExplorationProposal,
+    perception_dir: Path,
+    *,
+    radius_px: int = 3,
+    anchor_match_tolerance_mm: float = 2.0,
+) -> tuple[ExplorationProposal, dict[str, Any]]:
+    """Apply the selected pixel's measured XY to every grasp-anchor waypoint."""
+
+    selected = proposal.selected_grasp
+    if selected is None:
+        raise ExplorationPlanningError("global proposal is missing selected_grasp")
+    measurement = _measure_global_selected_surface(
+        proposal,
+        perception_dir,
+        radius_px=radius_px,
+    )
+    grasp_action_index, grasp_move = _first_grasp_move(proposal)
+    requested_xy = np.asarray(
+        [grasp_move["x"], grasp_move["y"]], dtype=np.float64
+    )
+    measured_xy = np.asarray(
+        measurement["base_xyz_median_mm"][:2], dtype=np.float64
+    )
+    tolerance = float(anchor_match_tolerance_mm)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ExplorationPlanningError(
+            "anchor_match_tolerance_mm must be finite and non-negative"
+        )
+
+    grounded_actions: list[dict[str, Any]] = []
+    grounded_action_numbers: list[int] = []
+    for action_index, action in enumerate(proposal.actions):
+        grounded_action = {"name": action["name"], "args": dict(action["args"])}
+        if action["name"] == "move":
+            args = grounded_action["args"]
+            action_xy = np.asarray([args["x"], args["y"]], dtype=np.float64)
+            matches_anchor = float(np.linalg.norm(action_xy - requested_xy)) <= tolerance
+            if action_index == grasp_action_index or matches_anchor:
+                args["x"] = float(measured_xy[0])
+                args["y"] = float(measured_xy[1])
+                grounded_action_numbers.append(action_index + 1)
+        grounded_actions.append(grounded_action)
+
+    grounded_proposal = replace(proposal, actions=tuple(grounded_actions))
+    _, grounded_grasp_move = _first_grasp_move(grounded_proposal)
+    post_grounding_xy = np.asarray(
+        [grounded_grasp_move["x"], grounded_grasp_move["y"]], dtype=np.float64
+    )
+    post_grounding_error_mm = float(np.linalg.norm(post_grounding_xy - measured_xy))
+    if post_grounding_error_mm > 1e-6:
+        raise ExplorationPlanningError(
+            "runtime failed to apply selected-pixel XY to the grasp target"
+        )
+    return grounded_proposal, {
+        "selected_grasp": dict(selected),
+        "measurement": measurement,
+        "grounding_policy": "runtime_authoritative_selected_pixel_xy",
+        "claude_requested_grasp_xy_mm": requested_xy.tolist(),
+        "commanded_grasp_xy_mm": post_grounding_xy.tolist(),
+        "xy_correction_mm": float(np.linalg.norm(requested_xy - measured_xy)),
+        "post_grounding_xy_error_mm": post_grounding_error_mm,
+        "grounded_action_numbers": grounded_action_numbers,
+        "anchor_match_tolerance_mm": tolerance,
+        "valid": True,
+    }
+
+
+def validate_global_grasp_grounding(
+    proposal: ExplorationProposal,
+    perception_dir: Path,
+    *,
+    radius_px: int = 3,
+    xy_tolerance_mm: float = 2.0,
+) -> dict[str, Any]:
+    """Check that a grounded proposal uses the selected pixel's measured XY."""
+
+    selected = proposal.selected_grasp
+    if selected is None:
+        raise ExplorationPlanningError("global proposal is missing selected_grasp")
+    measurement = _measure_global_selected_surface(
+        proposal,
+        perception_dir,
+        radius_px=radius_px,
+    )
+
+    _, grasp_move = _first_grasp_move(proposal)
+    measured_xy = np.asarray(measurement["base_xyz_median_mm"][:2], dtype=np.float64)
+    commanded_xy = np.asarray(
+        [grasp_move["x"], grasp_move["y"]], dtype=np.float64
+    )
+    error_mm = float(np.linalg.norm(commanded_xy - measured_xy))
+    if error_mm > float(xy_tolerance_mm):
+        raise ExplorationPlanningError(
+            "grasp move XY does not match the Claude-selected pixel measurement: "
+            f"camera={selected['camera']} pixel={selected['pixel_xy']} "
+            f"measured_xy={measured_xy.tolist()} commanded_xy={commanded_xy.tolist()} "
+            f"error={error_mm:.3f} mm tolerance={xy_tolerance_mm:.3f} mm"
+        )
+    return {
+        "selected_grasp": dict(selected),
+        "measurement": measurement,
+        "commanded_grasp_xy_mm": commanded_xy.tolist(),
+        "xy_error_mm": error_mm,
+        "xy_tolerance_mm": float(xy_tolerance_mm),
+        "valid": True,
+    }
+
+
 def _json_from_claude_text(text: str) -> dict[str, Any]:
     """Extract one JSON object from direct, wrapped, or fenced CLI output."""
 
@@ -411,9 +733,15 @@ def _json_from_claude_text(text: str) -> dict[str, Any]:
 class ClaudeExplorationClient:
     """Read-only Claude CLI adapter for visual garment reasoning."""
 
-    def __init__(self, binary: str = "claude", timeout_s: int = 400):
+    def __init__(
+        self,
+        binary: str = "claude",
+        timeout_s: int = 400,
+        skill_names: Sequence[str] | None = None,
+    ):
         self.binary = binary
         self.timeout_s = timeout_s
+        self.skill_names = tuple(skill_names or ("laydown",))
 
     @staticmethod
     def _save_invocation_log(root: Path, payload: dict[str, Any], *, failed: bool = False) -> None:
@@ -455,8 +783,11 @@ class ClaudeExplorationClient:
             "You are a cautious robotics garment analyst maximizing how open and spread "
             "the garment becomes. A lifting anchor is useful only when it advances that "
             "goal. Read the supplied garment photographs and return only one JSON "
-            "object. You may inspect files and, only after selecting the final Rxxx, "
-            "call the explicitly supplied read-only lookup measurement tool exactly "
+            "object. Camera A is the primary action and coordinate-grounding view; Camera B "
+            "is observation-only secondary context. You may inspect files and, only after "
+            "selecting one final Camera A image pixel "
+            "from the complete scene, call the explicitly supplied read-only local-surface "
+            "measurement tool exactly "
             "once, but may not edit anything, execute "
             "commands, or control a robot. The action contract uses only move(x,y,z,yaw), "
             "open_gripper(), close_gripper(), and home(). Do not return Python, SDK "
@@ -467,21 +798,27 @@ class ClaudeExplorationClient:
         )
         full_prompt = (
             f"{prompt}\n\nGarment images to inspect:\n{image_text}\n\n"
-            "Coordinate grounding files are available under "
-            "`workspace/perception_views/observation.json` and the listed "
-            "`camera_*_coordinate_guide.json` files. Cyan Rxxx markers in coordinate "
-            "overlay images are uniform calibrated references, not ranked grasp "
-            "candidates. Choose the visual region yourself, then ground it with the "
-            "nearest measured reference and state any remaining spatial uncertainty.\n\n"
+            "The supplied files cover both full Camera A/B RGB scenes, garment-only RGB, "
+            "table-relative height maps, boundaries, and height gradients when available. "
+            "Use the complete scene and history to summarize the current state and decide "
+            "what to try next. Treat Camera A as the authoritative action view. Use Camera B "
+            "only to understand occlusion, overlap, and overall state; never select or ground "
+            "a grasp from Camera B. If a useful region is visible only in Camera B, choose a "
+            "different actionable region that is visible in Camera A. No system-generated "
+            "grasp candidates are available.\n\n"
             "A strictly read-only MCP server named `garment_grounding` exposes exactly "
-            "one tool: `lookup_reference(camera, reference_id)`. Preserve the original "
-            "visual-planning flow: first inspect all supplied images/overlays, reason "
-            "without coordinate-tool calls, and independently choose exactly one final "
-            "Camera A/B Rxxx grasp reference. Only after that choice is settled, and "
+            "one tool: `sample_local_surface(camera, x_px, y_px, radius_px=3)`. First "
+            "inspect all supplied images and history, reason without coordinate-tool calls, "
+            "and independently choose exactly one final Camera A pixel. Only after that "
+            "choice is settled, and "
             "immediately before composing the final JSON/run actions, call "
-            "`lookup_reference` exactly once for that chosen Rxxx. Do not use the tool "
-            "to compare, rank, scan, or search multiple references. Ground the grasp "
-            "location with the returned measurement. You remain responsible for all "
+            "`sample_local_surface` exactly once with camera=A for that chosen pixel. Do not use the tool "
+            "to compare, rank, scan, or search pixels. The runtime owns the precise grasp "
+            "target: after your proposal, it independently measures the chosen pixel and "
+            "replaces the grasp-anchor X/Y with `base_xyz_median_mm`. Use that returned X/Y "
+            "for a coherent provisional approach and lift path, but never intentionally "
+            "offset it toward another visual region. To grasp another region, select that "
+            "Camera A pixel instead. You remain responsible for all "
             "other action coordinates and geometry, including approach, grasp TCP "
             "height, lift, retreat, laydown, release, and yaw. Cite the single returned "
             "measurement in `reveal_strategy` or `safety_notes`, then return the final "
@@ -490,29 +827,34 @@ class ClaudeExplorationClient:
             "The workspace also contains the calibrated full-resolution base-XYZ maps "
             "and fused point cloud when produced by perception; use them only as measured "
             "geometry, never as a perception-selected grasp recommendation.\n\n"
-            "Return exactly these fields and no others: "
+            "Return exactly these fields and no others: selected_grasp "
+            "({camera: A, pixel_xy: [integer x, integer y], reason: string}), "
             "garment_observation (string), reveal_strategy (string; compatibility name, "
             "describe the opening/regrasp/laydown strategy here), confidence (number "
             "0..1), actions (non-empty list of {name,args}), expected_observation (string), "
             "safety_notes (non-empty list of strings), and optional skill_invocations "
-            "(list of {name,reason}; use name=laydown only when you choose that skill). "
-            "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees. "
+            "(list of {name,reason}; use only an approved skill name from the library). "
+            "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees; "
+            "yaw is relative to the calibrated Home TCP orientation, so yaw=0 keeps "
+            "the gripper orientation without an unnecessary wrist turn. "
             "You choose the grasp region and all waypoint geometry. Prefer an action that "
             "directly increases spread, exposes overlapped fabric, or creates a useful "
             "hanging configuration for controlled laydown. Use a small anchor test only "
-            "when uncertainty prevents a grounded opening action. If you invoke laydown, use its procedural guidance "
+            "when uncertainty prevents a grounded opening action. If you invoke an approved skill, use its procedural guidance "
             "but still emit explicit Claude-chosen move waypoints; the skill never supplies "
             "fixed coordinates. Always release before the action list ends. Keep the action "
             "list at or below 12."
         )
-        mcp_config = grounding_mcp_config(root)
-        enabled_tools = ("Read", *GROUNDING_MCP_TOOLS)
+        mcp_config = grounding_mcp_config(root, mode="pixel")
+        enabled_tools = ("Read", *PIXEL_GROUNDING_MCP_TOOLS)
         command = [
             binary,
             "--print",
             full_prompt,
             "--output-format",
             "json",
+            "--json-schema",
+            json.dumps(GLOBAL_EXPLORATION_JSON_SCHEMA, separators=(",", ":")),
             "--permission-mode",
             "dontAsk",
             "--allowedTools",
@@ -596,7 +938,10 @@ class ClaudeExplorationClient:
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
         try:
-            proposal = validate_exploration_payload(_json_from_claude_text(completed.stdout))
+            proposal = validate_global_exploration_payload(
+                _json_from_claude_text(completed.stdout),
+                allowed_skill_names=self.skill_names,
+            )
         except BaseException as exc:
             self._save_invocation_log(
                 root,
@@ -660,6 +1005,7 @@ def exploration_prompt(
         "and spread as safely possible."
     ),
     history: Iterable[dict[str, Any]] | None = None,
+    skill_guidance: str | None = None,
 ) -> str:
     """Build a bounded garment-opening prompt with explicit robot capabilities."""
 
@@ -734,6 +1080,8 @@ def exploration_prompt(
         "a move(x,y,z,yaw) action and the runtime executes those values without replacing them "
         "with a template. You must choose the approach height, grasp height, lift/retreat "
         "height, lateral destination, release height, and yaw from the current observation. "
+        "Yaw is relative to the calibrated Home TCP orientation; yaw=0 preserves the "
+        "gripper orientation and does not request a pre-grasp wrist rotation. "
         "The validated center surface point below is a reference and coordinate sanity check, "
         "not a required grasp target. Coordinate-guide images/files in `perception_views` map "
         "camera pixels or visible geometry to calibrated robot-base XYZ; do not invent a "
@@ -757,7 +1105,7 @@ def exploration_prompt(
         f"Robot workspace bounds (mm): {json.dumps(bounds, ensure_ascii=False)}\n"
         f"Fixed orientation: roll={robot.orientation_roll_deg} deg, pitch={robot.orientation_pitch_deg} deg\n\n"
         "Available procedural skill guidance:\n"
-        f"{skill_prompt()}\n"
+        f"{skill_guidance if skill_guidance is not None else skill_prompt()}\n"
     )
 
 
@@ -768,9 +1116,16 @@ def perception_image_paths(result: dict[str, Any], result_path: Path) -> list[Pa
     for view in result.get("views", []):
         if not isinstance(view, dict) or "image" not in view:
             continue
+        garment_rgb = result_path.parent / str(view.get("garment_rgb", ""))
         annotated = result_path.parent / str(view.get("annotated_image", ""))
         original = result_path.parent / str(view["image"])
-        candidate = annotated if annotated.is_file() else original
+        candidate = (
+            garment_rgb
+            if garment_rgb.is_file()
+            else annotated
+            if annotated.is_file()
+            else original
+        )
         if candidate.is_file():
             paths.append(candidate.resolve())
         for key in (
@@ -807,6 +1162,44 @@ def perception_image_paths(result: dict[str, Any], result_path: Path) -> list[Pa
             resolved = fused_map.resolve()
             if resolved not in paths:
                 paths.append(resolved)
+    return paths
+
+
+def global_perception_image_paths(
+    result: dict[str, Any], result_path: Path
+) -> list[Path]:
+    """Return complete visual evidence without any generated grasp-point overlay."""
+
+    paths: list[Path] = []
+
+    def add(relative: Any) -> None:
+        if not relative:
+            return
+        path = (result_path.parent / str(relative)).resolve()
+        if path.is_file() and path not in paths:
+            paths.append(path)
+
+    for view in result.get("views", []):
+        if not isinstance(view, dict):
+            continue
+        for key in (
+            "image",
+            "garment_rgb",
+            "height_map",
+            "height_map_global",
+            "height_map_boundary",
+            "height_gradient_overlay",
+            "depth_heatmap",
+            "depth_heatmap_global",
+            "depth_heatmap_boundary",
+            "fold_edge_overlay",
+        ):
+            add(view.get(key))
+    fusion = result.get("depth_fusion", {}).get("artifacts", {})
+    for key in ("preview", "heatmap", "boundary_overlay"):
+        add(fusion.get(key))
+    if not paths:
+        raise FileNotFoundError("perception result contains no saved full-scene images")
     return paths
 
 
@@ -1051,19 +1444,23 @@ def run_exploration_viewer(
         set_busy(True)
         status.content = "### Claude is thinking\n\nInspecting geometry and previous outcomes for a cautious garment-opening action."
         try:
-            images = perception_image_paths(state.result, state.result_path)
+            images = global_perception_image_paths(state.result, state.result_path)
             prompt = exploration_prompt(
                 session.experiment_config,
                 robot,
                 history=state.history,
             )
             response = planner.invoke(images, prompt, session.run_dir)
-            state.proposal = response.proposal
-            state.proposal_source = exploration_source(response.proposal)
+            grounded_proposal, _ = ground_global_grasp_target(
+                response.proposal,
+                session.workspace / "perception_views",
+            )
+            state.proposal = grounded_proposal
+            state.proposal_source = exploration_source(grounded_proposal)
             state.controller = None
             state.animation_frames = []
             state.approved_hash = None
-            proposal_panel.content = _proposal_markdown(response.proposal, state.proposal_source)
+            proposal_panel.content = _proposal_markdown(grounded_proposal, state.proposal_source)
             validate_button.disabled = False
             status.content = "### Claude proposal ready\n\nReview the opening strategy and action path, then validate it."
         except Exception as exc:
@@ -1096,6 +1493,7 @@ def run_exploration_viewer(
                 robot.init_joints_deg,
                 robot.orientation_roll_deg,
                 robot.orientation_pitch_deg,
+                yaw_offset_deg=robot.init_pose_mm_deg[5],
                 joint_targets_rad=controller.joint_targets_rad,
             )
             state.controller = controller

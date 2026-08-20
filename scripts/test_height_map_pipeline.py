@@ -125,7 +125,12 @@ def _save_contact_sheet(
 ) -> list[dict[str, str]]:
     result_dir = result_path.parent
     display_max = result.get("depth_fusion", {}).get("heatmap_display_max_mm")
-    scale_suffix = f" [0..{float(display_max):g} mm]" if display_max is not None else ""
+    display_min = result.get("depth_fusion", {}).get("heatmap_display_min_mm")
+    scale_suffix = (
+        f" [{float(display_min):g}..{float(display_max):g} mm]"
+        if display_min is not None and display_max is not None
+        else ""
+    )
     items: list[tuple[str, Path]] = []
     for view in result.get("views", []):
         if not isinstance(view, dict):
@@ -190,7 +195,7 @@ Pipeline:
    reject robot/fixture outliers, and interpolate `table_z = a*x + b*y + c`.
 4. Segment the garment from table-relative height and appearance evidence.
 5. Compute every height value as `surface_z_mm - table_z_mm`.
-6. Render every heatmap against one absolute table-zero scale (`0..max mm`),
+6. Render every heatmap against one signed table-zero scale (`-range..+range mm`),
    and save camera-pixel height maps, focused/global heatmaps, boundaries,
    height-gradient overlays, coordinate maps, and the fused top-down map.
 7. Assemble `heatmap_contact_sheet.png` for visual inspection.
@@ -304,10 +309,10 @@ def main(argv: list[str] | None = None) -> int:
             "garment_point_count": fusion.get("garment_point_count"),
             "garment_height_p50_mm": fusion.get("garment_height_p50_mm"),
             "garment_height_p95_mm": fusion.get("garment_height_p95_mm"),
-            "heatmap_display_min_mm": fusion.get("heatmap_display_min_mm", 0.0),
+            "heatmap_display_min_mm": fusion.get("heatmap_display_min_mm", -20.0),
             "heatmap_display_max_mm": fusion.get("heatmap_display_max_mm"),
             "heatmap_normalization": fusion.get(
-                "heatmap_normalization", "absolute_table_zero_shared"
+                "heatmap_normalization", "signed_table_zero_symmetric"
             ),
             "camera_height_maps": camera_maps,
             "fused_height_map": {

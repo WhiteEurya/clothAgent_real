@@ -184,6 +184,9 @@ def load_keypoint_specs(path: Path | None) -> tuple[KeypointSpec, ...]:
 
 
 def _raw_image_for_camera(perception_dir: Path, camera: str) -> Path:
+    garment_only = perception_dir / f"camera_{camera}_garment_only.png"
+    if garment_only.is_file():
+        return garment_only.resolve()
     matches = [
         path
         for path in perception_dir.glob(f"camera_*_{camera}.png")

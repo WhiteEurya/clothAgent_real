@@ -22,6 +22,7 @@ class ControllerTrajectoryValidation:
     joint_targets_rad: dict[int, tuple[float, ...]]
     controller_warning_code: int
     tcp_offset_mm_deg: tuple[float, ...]
+    validated_sample_count: int
 
 
 def _timestamp() -> str:
@@ -57,12 +58,50 @@ def _validated_live_tcp_offset(arm: Any, config: RobotConfig) -> tuple[float, ..
     return tuple(float(value) for value in actual)
 
 
+def _controller_home_pose(arm: Any, config: RobotConfig) -> list[float]:
+    """Read the controller's Cartesian pose for the configured home joints."""
+
+    forward_kinematics = getattr(arm, "get_forward_kinematics", None)
+    if not callable(forward_kinematics):
+        raise RobotExecutionError(
+            "xArm controller does not expose forward kinematics for the configured home"
+        )
+    result = forward_kinematics(
+        list(config.init_joints_deg),
+        input_is_radian=False,
+        return_is_radian=False,
+    )
+    if (
+        not isinstance(result, (list, tuple))
+        or len(result) < 2
+        or int(result[0]) != 0
+        or not isinstance(result[1], (list, tuple))
+        or len(result[1]) != 6
+    ):
+        raise RobotExecutionError(
+            "xArm forward kinematics rejected the configured home joints: "
+            f"result={result}"
+        )
+    pose = [float(value) for value in result[1]]
+    if not all(math.isfinite(value) for value in pose):
+        raise RobotExecutionError(
+            "xArm forward kinematics returned non-finite home pose values"
+        )
+    return pose
+
+
+def _shortest_angle_delta_deg(start: float, target: float) -> float:
+    """Return the shortest signed Euler-angle delta in degrees."""
+
+    return (target - start + 180.0) % 360.0 - 180.0
+
+
 def _controller_trajectory_with_arm(
     arm: Any,
     config: RobotConfig,
     actions: list[dict[str, Any]],
 ) -> ControllerTrajectoryValidation:
-    """Validate every Cartesian target with controller IK without enabling motion."""
+    """Validate sampled Cartesian segments with joint-limited controller IK."""
 
     live_tcp_offset = _validated_live_tcp_offset(arm, config)
     err_warn = arm.get_err_warn_code()
@@ -76,13 +115,16 @@ def _controller_trajectory_with_arm(
         raise RobotExecutionError(f"xArm controller has active error code {error_code}")
 
     targets: dict[int, tuple[float, ...]] = {}
-    cached_pose_targets: dict[tuple[float, ...], tuple[float, ...]] = {}
     reference_deg = [float(value) for value in config.init_joints_deg]
+    home_pose = _controller_home_pose(arm, config)
+    current_pose = list(home_pose)
+    validated_sample_count = 0
     for action_index, action in enumerate(actions):
         name = action.get("name")
         if name == "home":
             targets[action_index] = tuple(math.radians(value) for value in config.init_joints_deg)
             reference_deg = [float(value) for value in config.init_joints_deg]
+            current_pose = list(home_pose)
             continue
         if name != "move":
             continue
@@ -93,36 +135,67 @@ def _controller_trajectory_with_arm(
             float(args["z"]),
             config.orientation_roll_deg,
             config.orientation_pitch_deg,
-            float(args["yaw"]),
+            config.command_yaw_deg(float(args["yaw"])),
         ]
-        pose_key = tuple(pose)
-        if pose_key in cached_pose_targets:
-            targets[action_index] = cached_pose_targets[pose_key]
-            reference_deg = [math.degrees(value) for value in targets[action_index]]
-            continue
-        code, angles_deg = arm.get_inverse_kinematics(
-            pose,
-            input_is_radian=False,
-            return_is_radian=False,
-            limited=False,
-            ref_angles=reference_deg,
+        cartesian_distance_mm = math.dist(current_pose[:3], pose[:3])
+        angular_deltas = [
+            _shortest_angle_delta_deg(current_pose[index], pose[index])
+            for index in range(3, 6)
+        ]
+        angular_distance_deg = max(abs(value) for value in angular_deltas)
+        sample_count = max(
+            1,
+            int(math.ceil(cartesian_distance_mm / 10.0)),
+            int(math.ceil(angular_distance_deg / 10.0)),
         )
-        if int(code) != 0 or not isinstance(angles_deg, (list, tuple)) or len(angles_deg) != 7:
-            raise SafetyError(
-                f"controller IK rejected action {action_index + 1} "
-                f"pose={pose}, code={code}"
+        if cartesian_distance_mm < 1e-9 and angular_distance_deg < 1e-9:
+            targets[action_index] = tuple(
+                math.radians(value) for value in reference_deg
             )
-        reference_deg = [float(value) for value in angles_deg]
-        if not all(math.isfinite(value) for value in reference_deg):
-            raise RobotExecutionError(
-                f"controller IK returned non-finite joints for action {action_index + 1}"
+            continue
+        segment_start = list(current_pose)
+        for sample_index in range(1, sample_count + 1):
+            fraction = sample_index / sample_count
+            sample_pose = [
+                segment_start[index] + fraction * (pose[index] - segment_start[index])
+                for index in range(6)
+            ]
+            for index, delta in zip(range(3, 6), angular_deltas):
+                sample_pose[index] = segment_start[index] + fraction * delta
+            if sample_index == sample_count:
+                sample_pose = list(pose)
+            code, angles_deg = arm.get_inverse_kinematics(
+                sample_pose,
+                input_is_radian=False,
+                return_is_radian=False,
+                limited=True,
+                ref_angles=reference_deg,
             )
+            if (
+                int(code) != 0
+                or not isinstance(angles_deg, (list, tuple))
+                or len(angles_deg) != 7
+            ):
+                raise SafetyError(
+                    f"controller IK rejected action {action_index + 1} "
+                    f"segment sample {sample_index}/{sample_count} "
+                    f"pose={sample_pose}, code={code}"
+                )
+            next_reference = [float(value) for value in angles_deg]
+            if not all(math.isfinite(value) for value in next_reference):
+                raise RobotExecutionError(
+                    "controller IK returned non-finite joints for action "
+                    f"{action_index + 1} segment sample {sample_index}/{sample_count}"
+                )
+            reference_deg = next_reference
+            validated_sample_count += 1
         targets[action_index] = tuple(math.radians(value) for value in reference_deg)
-        cached_pose_targets[pose_key] = targets[action_index]
+        current_pose = pose
     return ControllerTrajectoryValidation(
         joint_targets_rad=targets,
         controller_warning_code=warning_code,
         tcp_offset_mm_deg=live_tcp_offset,
+        validated_sample_count=validated_sample_count,
     )
 
 
@@ -178,7 +251,14 @@ class SimulatedBackend:
         self.state = "simulated"
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
-        self.pose = [x, y, z, config.orientation_roll_deg, config.orientation_pitch_deg, yaw]
+        self.pose = [
+            x,
+            y,
+            z,
+            config.orientation_roll_deg,
+            config.orientation_pitch_deg,
+            config.command_yaw_deg(yaw),
+        ]
         return list(self.pose), self.state
 
     def open_gripper(self, config: RobotConfig):
@@ -273,7 +353,7 @@ class XArmBackend:
             z=z,
             roll=config.orientation_roll_deg,
             pitch=config.orientation_pitch_deg,
-            yaw=yaw,
+            yaw=config.command_yaw_deg(yaw),
             speed=config.speed_mm_s,
             mvacc=config.acceleration_mm_s2,
             wait=True,

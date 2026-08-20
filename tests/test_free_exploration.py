@@ -16,7 +16,10 @@ from cloth_agent.free_exploration import (
     _json_from_claude_text,
     exploration_prompt,
     exploration_source,
+    ground_global_grasp_target,
     _voxel_balance_cloud,
+    validate_global_exploration_payload,
+    validate_global_grasp_grounding,
     validate_exploration_payload,
     _load_or_create_session,
     _controller_ik_failure_message,
@@ -117,6 +120,109 @@ def test_free_exploration_allows_minimal_anchor_test_before_release():
     assert len([action for action in proposal.actions if action["name"] == "move"]) == 2
 
 
+def test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy(
+    tmp_path: Path,
+) -> None:
+    perception_dir = tmp_path / "perception_views"
+    perception_dir.mkdir()
+    xyz = np.zeros((5, 6, 3), dtype=np.float32)
+    xyz[:, :, 0] = 520.0
+    xyz[:, :, 1] = -40.0
+    xyz[:, :, 2] = 18.0
+    np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(
+        perception_dir / "camera_A_height_above_table_mm.npy",
+        np.full((5, 6), 8.0, dtype=np.float32),
+    )
+    guide = {
+        "samples": [
+            {
+                "reference_id": "R001",
+                "pixel_xy": [2, 2],
+                "base_xyz_mm": [520.0, -40.0, 18.0],
+                "height_above_table_mm": 8.0,
+            }
+        ]
+    }
+    (perception_dir / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(guide), encoding="utf-8"
+    )
+    proposal = validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [2, 2],
+                "reason": "Claude sees a useful free boundary here.",
+            },
+            "garment_observation": "One raised boundary overlaps the main sheet.",
+            "reveal_strategy": "Probe the selected boundary and lift it outward.",
+            "confidence": 0.7,
+            "actions": [
+                {"name": "move", "args": {"x": 520, "y": -40, "z": 60, "yaw": 0}},
+                {"name": "move", "args": {"x": 520, "y": -40, "z": 20, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 530, "y": -40, "z": 40, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The selected boundary follows the grasp.",
+            "safety_notes": ["Use the runtime workspace and IK gates."],
+        }
+    )
+
+    result = validate_global_grasp_grounding(proposal, perception_dir)
+    assert result["valid"] is True
+    assert result["measurement"]["query_pixel_xy"] == [2, 2]
+    assert result["xy_error_mm"] == pytest.approx(0.0)
+
+    offset_payload = proposal.as_dict()
+    offset_payload["actions"][0]["args"]["x"] = 530.0
+    offset_payload["actions"][0]["args"]["y"] = -35.0
+    offset_payload["actions"][1]["args"]["x"] = 530.0
+    offset_payload["actions"][1]["args"]["y"] = -35.0
+    offset_payload["actions"][3]["args"]["x"] = 530.0
+    offset_payload["actions"][3]["args"]["y"] = -35.0
+    offset = validate_global_exploration_payload(offset_payload)
+
+    grounded, grounding = ground_global_grasp_target(offset, perception_dir)
+
+    assert grounding["claude_requested_grasp_xy_mm"] == pytest.approx([530.0, -35.0])
+    assert grounding["commanded_grasp_xy_mm"] == pytest.approx([520.0, -40.0])
+    assert grounding["xy_correction_mm"] == pytest.approx(np.hypot(10.0, 5.0))
+    assert grounding["post_grounding_xy_error_mm"] == pytest.approx(0.0)
+    assert grounding["grounded_action_numbers"] == [1, 2, 4]
+    assert [
+        (action["args"]["x"], action["args"]["y"])
+        for action in grounded.actions
+        if action["name"] == "move"
+    ] == [(520.0, -40.0), (520.0, -40.0), (520.0, -40.0)]
+    assert offset.actions[1]["args"]["x"] == 530.0
+    assert validate_global_grasp_grounding(grounded, perception_dir)["valid"] is True
+
+
+def test_global_proposal_rejects_camera_b_as_action_source() -> None:
+    payload = {
+        "selected_grasp": {
+            "camera": "B",
+            "pixel_xy": [320, 240],
+            "reason": "Only visible from the secondary view.",
+        },
+        "garment_observation": "One raised boundary overlaps the main sheet.",
+        "reveal_strategy": "Probe the selected boundary.",
+        "confidence": 0.5,
+        "actions": [
+            {"name": "move", "args": {"x": 520, "y": -40, "z": 20, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 530, "y": -40, "z": 40, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        "expected_observation": "The selected boundary follows the grasp.",
+        "safety_notes": ["Use the runtime workspace and IK gates."],
+    }
+
+    with pytest.raises(ExplorationPlanningError, match="Camera B is observation-only"):
+        validate_global_exploration_payload(payload)
+
+
 def test_free_exploration_requires_test_motion_before_release():
     payload = {
         "garment_observation": "uncertain region",
@@ -163,6 +269,35 @@ def test_free_exploration_accepts_laydown_skill_without_hidden_trajectory():
     assert "move(580.0, 0.0, 80.0, 0.0)" in source
 
 
+def test_global_payload_accepts_active_dynamic_skill_name():
+    payload = {
+        "selected_grasp": {
+            "camera": "A",
+            "pixel_xy": [3, 2],
+            "reason": "supported edge",
+        },
+        "garment_observation": "supported edge",
+        "reveal_strategy": "apply the approved edge-release procedure",
+        "confidence": 0.8,
+        "skill_invocations": [
+            {"name": "edge-release", "reason": "repeated before/after response"}
+        ],
+        "actions": [
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 540, "y": 0, "z": 150, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        "expected_observation": "edge opens",
+        "safety_notes": ["check workspace"],
+    }
+    proposal = validate_global_exploration_payload(
+        payload,
+        allowed_skill_names=("laydown", "edge-release"),
+    )
+    assert proposal.skill_invocations[0]["name"] == "edge-release"
+
+
 def test_claude_json_extractor_accepts_cli_envelope_and_fence():
     payload = {
         "garment_observation": "fold",
@@ -202,6 +337,11 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
     image.write_bytes(b"image")
     (run_dir / "workspace" / "perception_views").mkdir(parents=True)
     payload = {
+        "selected_grasp": {
+            "camera": "A",
+            "pixel_xy": [320, 240],
+            "reason": "visible free boundary",
+        },
         "garment_observation": "fold",
         "reveal_strategy": "lift",
         "confidence": 0.6,
@@ -243,11 +383,19 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
     assert seen["command"][permission_index + 1] == "dontAsk"
     tools_index = seen["command"].index("--tools")
     assert seen["command"][tools_index + 1] == "Read"
-    assert any("mcp__garment_grounding__lookup_reference" in str(part) for part in seen["command"])
-    assert not any("mcp__garment_grounding__sample_pixel_xyz" in str(part) for part in seen["command"])
-    assert any("call `lookup_reference` exactly once" in str(part) for part in seen["command"])
+    assert any(
+        "mcp__garment_grounding__sample_local_surface" in str(part)
+        for part in seen["command"]
+    )
+    assert not any(
+        "mcp__garment_grounding__lookup_reference" in str(part)
+        for part in seen["command"]
+    )
+    assert any("`sample_local_surface` exactly once" in str(part) for part in seen["command"])
+    assert any("Camera B is observation-only secondary context" in str(part) for part in seen["command"])
+    assert any("runtime owns the precise grasp target" in str(part) for part in seen["command"])
     assert any("as open and spread" in str(part) for part in seen["command"])
-    assert any("camera_*_coordinate_guide.json" in str(part) for part in seen["command"])
+    assert any("No system-generated grasp candidates" in str(part) for part in seen["command"])
     assert any("Skill: laydown" in str(part) for part in seen["command"])
     assert list((run_dir / "results" / "claude_exploration").glob("*.json"))
 

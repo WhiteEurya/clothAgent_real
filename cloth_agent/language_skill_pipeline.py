@@ -553,6 +553,7 @@ class ClaudeSkillExecutor(_ClaudeJSONClient):
             "The center observation is only a reference. Claude chooses the interaction region and every waypoint. "
             "Return exactly skill_name, interpretation, confidence, actions, expected_observation, and safety_notes. "
             "Each action must be {name,args}; move args must contain numeric x,y,z,yaw in robot-base millimetres/degrees. "
+            "Move yaw is relative to the calibrated Home TCP yaw; yaw=0 preserves the gripper orientation. "
             "Use only move, open_gripper, close_gripper, and home. Keep at most 12 actions. If you close the gripper, release it before ending. "
             "Do not return Python, SDK calls, shell commands, candidate lists, or a hidden state machine."
         )

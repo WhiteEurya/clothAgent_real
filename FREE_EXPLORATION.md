@@ -37,7 +37,7 @@ with garment reasoning plus actions using only `move`, `open_gripper`,
 `close_gripper`, and `home`. Invalid schema, unknown actions, non-finite values,
 or a path with no Cartesian move are rejected before source generation.
 
-Automatic planning is split into two independent Claude processes:
+The legacy Viser automatic planner is split into two independent Claude processes:
 
 1. **Visual planning:** the original `safe-mode + plan + Read` flow, with no
    MCP configuration. Claude inspects the images/overlays and returns one final
@@ -112,55 +112,39 @@ Use `--max-iterations N` to cap the run; the default `--max-iterations 0` means
 continuous opening until Claude judges the garment reasonably maximally spread
 or safe grounded continuation is no longer possible.
 
-The current headless path uses Molmo only for a few high-confidence semantic
-anchors. The default strict threshold is `0.80`: anchors equal to or below the
-threshold are withheld from Claude. Accepted `Sxxx` anchors describe uncertain
-part-associated regions and are never grasp points. A semantic-state builder
-adds centroid relations/hypotheses, Claude chooses the garment relation to
-change, and deterministic local geometry then creates `Rxxx` grasp candidates
-only inside the selected region. If no `Sxxx` survives confidence, final-mask,
-duplicate, and cross-view consistency gates, the iteration stops before Claude
-planning or robot motion.
+The headless path defaults to `claude_global`. Claude receives the complete
+Camera A/B RGB scenes, garment-only images, height maps, boundaries, gradients,
+calibration context, and prior physical outcomes. It summarizes the current
+state, decides the next experiment, and chooses any Camera A/B pixel. The
+runtime does not generate or rank Sxxx/Rxxx candidates.
 
-For this policy, prefer the terminal-only entry point so Viser/browser GPU
-memory is not present while loading MolmoPoint-8B:
+After the visual decision, a read-only MCP server exposes only one
+`sample_local_surface(camera, x_px, y_px, radius_px=3)` call. The returned local
+median Base X/Y must match the grasp move within 2 mm. Workspace, action schema,
+controller IK, and trajectory validation remain hard execution gates, but they
+never select the interaction point. A failed gate is returned once to Claude
+with the exact reason. Real rollouts append complete before/after `keep/change`
+evaluations to `workspace/global_experience.jsonl`.
+
+Use the terminal-only entry point:
 
 ```bash
 /home/CNS2026330003/miniconda3/envs/cali/bin/python \
   -m cloth_agent.molmo_keypoint_cli \
   --project-root . \
-  --run-id molmo_keypoint_cli_01 \
+  --run-id claude_global_cli_01 \
+  --planning-policy claude_global \
   --perception-config config/perception.free_exploration.json \
-  --confidence-threshold 0.80 \
   --max-iterations 1
 ```
 
-Stop the previous Viser process and close its browser tab first. The CLI checks
-for at least `20000 MiB` of free GPU memory before each Molmo model load and
-fails immediately with the current/required values when that hard capability
-gate is not met.
-
 Add `--enable-real --max-iterations 0` only for continuous physical execution.
-The CLI prints semantic anchors/state/strategy, local geometry, action scope,
-IK/execution/evaluation, and structured-experience results and
-checkpoints each iteration under
-`runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/`. Molmo stdout/stderr is
-streamed to the same terminal and retained in the iteration directory. Each
-Claude stage also saves its complete prompt, raw stdout/stderr, duration, and
-validated result in the same iteration directory. In local-grasp overlays,
-green Rxxx markers are selectable and red crosses are deterministic
-workspace/IK or persistence-gate rejections.
-
-The semantic-strategy timeout is `400` seconds and the scoped-action timeout is
-`120` seconds. Schema/capability errors receive at most one compact correction;
-budget, missing-measurement, and exhausted-hypothesis gates stop before further
-compute or motion. A planning/evaluation timeout is terminal for that run.
-Every semantic action is one grasp/release cycle. The runtime limits both its
-lateral/lift authority and the number of post-grasp waypoints, so Claude cannot
-create its own multi-probe loop. After BAD_DIRECTION, the next iteration keeps
-the supported semantic hypothesis and local geometry family while changing the
-transport profile; after structure-engagement failure, it changes local grasp
-and returns to acquisition scope.
+The CLI prints global planning, selected pixel/measurement, IK, execution, and
+before/after evaluation results under
+`runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/`. The older
+Molmo/Sxxx/local-Rxxx flow is retained only as explicit
+`--planning-policy semantic_local`; only that compatibility mode loads Molmo or
+uses the `19000 MiB` GPU gate.
 
 The legacy Viser console still shows a live `Claude stage timer` panel with the active stage, Stage-1
 reference-attempt count, elapsed time/timeout, and completed duration for each stage. The same values are saved

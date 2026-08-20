@@ -30,8 +30,10 @@ close_gripper()
 home()
 ```
 
-Coordinates are xArm base-frame millimetres; `yaw` is degrees around the
-vertical axis. Roll and pitch are fixed to the configured safe grasp
+Coordinates are xArm base-frame millimetres; `yaw` is a wrist-yaw delta in
+degrees around the vertical axis relative to the calibrated Home TCP
+orientation (`yaw=0` keeps the gripper orientation and avoids an unnecessary
+turn before grasping). Roll and pitch are fixed to the configured safe grasp
 orientation. Perception supplies observations and calibrated coordinate guides;
 the fused garment center is a reference rather than a mandatory grasp target.
 The Agent chooses the interaction region and every approach, grasp, lift,
@@ -60,6 +62,7 @@ class AgentSession:
         self.experiment_config = experiment_config
         self.claude = claude or ClaudeCodeClient()
         self.runner = ExperimentRunner(self.run_dir, robot_config)
+        self.last_pre_run_home_outcome: dict[str, Any] | None = None
         self.last_return_home_outcome: dict[str, Any] | None = None
 
     @classmethod
@@ -137,6 +140,7 @@ class AgentSession:
                     "goal": goal,
                     "experiment_config": experiment_config.as_dict(),
                     "robot_config": asdict(robot_config),
+                    "pre_run_home_required": False,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -299,6 +303,7 @@ class AgentSession:
                 "height_map_boundary",
                 "height_map_path",
                 "garment_mask",
+                "garment_rgb",
                 "height_gradient_overlay",
                 "base_xyz_map",
                 "coordinate_guide",
@@ -367,6 +372,8 @@ class AgentSession:
         metadata["experiment_config"] = updated.as_dict()
         metadata["last_perception_mode"] = result["perception_mode"]
         metadata["last_active_cameras"] = result["active_cameras"]
+        metadata["pre_run_home_required"] = True
+        metadata["pre_run_home_required_at"] = _now()
         metadata.setdefault("perception_results", []).append(
             str((output_dir / "result.json").relative_to(self.run_dir))
         )
@@ -403,12 +410,14 @@ class AgentSession:
         single_view_confirmed: bool = False,
         notes: str = "",
     ) -> dict[str, Any]:
-        """Execute one rollout and always attempt Home after physical Claude motion."""
+        """Execute one rollout, bracketing post-perception motion with Home."""
+
+        metadata_path = self.run_dir / "run_metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        self.last_pre_run_home_outcome = None
+        self.last_return_home_outcome = None
 
         if real:
-            metadata = json.loads(
-                (self.run_dir / "run_metadata.json").read_text(encoding="utf-8")
-            )
             if (
                 metadata.get("last_perception_mode") == "single_camera_rgbd"
                 and not single_view_confirmed
@@ -417,8 +426,30 @@ class AgentSession:
                     "single-camera RGB-D plan requires explicit single-view confirmation"
                 )
 
+        pre_run_home: dict[str, Any] | None = None
+        if real and confirmed and metadata.get("pre_run_home_required"):
+            pre_run_home = self._attempt_pre_run_home(
+                notes=(
+                    "Mandatory return to configured Home after perception and before "
+                    "the next physical rollout."
+                )
+            )
+            self.last_pre_run_home_outcome = pre_run_home
+            metadata["last_pre_run_home_outcome"] = pre_run_home
+            metadata["pre_run_home_required"] = not pre_run_home["completed"]
+            if pre_run_home["completed"]:
+                metadata["pre_run_home_completed_at"] = _now()
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            if not pre_run_home["completed"]:
+                detail = pre_run_home.get("error") or pre_run_home.get("robot_errors")
+                raise RuntimeError(
+                    "mandatory pre-run Home did not complete; physical rollout was "
+                    f"blocked: {detail}"
+                )
+
         result: dict[str, Any] | None = None
-        self.last_return_home_outcome = None
         try:
             result = self.runner.run_experiment(
                 path,
@@ -426,6 +457,8 @@ class AgentSession:
                 confirmed=confirmed,
                 notes=notes,
             )
+            if pre_run_home is not None:
+                result["mandatory_pre_run_home"] = pre_run_home
             return result
         finally:
             if real and confirmed:
@@ -443,6 +476,51 @@ class AgentSession:
                         json.dumps(result, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
+
+    def _attempt_pre_run_home(self, *, notes: str) -> dict[str, Any]:
+        """Attempt the Home required between perception and physical execution."""
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        source_name = f"_mandatory_pre_run_home_{stamp}.py"
+        source_path = self.workspace / source_name
+        outcome: dict[str, Any] = {
+            "attempted": True,
+            "completed": False,
+            "result_path": None,
+            "error": None,
+        }
+        try:
+            source_path.write_text("def run():\n    home()\n", encoding="utf-8")
+            home_result = self.runner.run_experiment(
+                source_name,
+                real=True,
+                confirmed=True,
+                notes=notes,
+            )
+            robot_errors = list(home_result.get("robot_errors", []))
+            outcome["completed"] = bool(
+                home_result.get("execution_completed") and not robot_errors
+            )
+            outcome["result_path"] = str(
+                (self.results / f"{home_result['experiment']}.json").relative_to(
+                    self.run_dir
+                )
+            )
+            outcome["robot_errors"] = robot_errors
+        except BaseException as exc:
+            outcome["error"] = f"{type(exc).__name__}: {exc}"
+            expected_result = self.results / f"{Path(source_name).stem}.json"
+            if expected_result.is_file():
+                outcome["result_path"] = str(expected_result.relative_to(self.run_dir))
+        finally:
+            if source_path.is_file():
+                source_path.unlink()
+            event_dir = self.results / "mandatory_pre_run_home"
+            event_dir.mkdir(parents=True, exist_ok=True)
+            (event_dir / f"{stamp}.json").write_text(
+                json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        return outcome
 
     def _attempt_return_home(self, *, notes: str) -> dict[str, Any]:
         """Attempt a fresh, isolated Home command without masking the rollout result."""

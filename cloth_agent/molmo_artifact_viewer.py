@@ -1,4 +1,4 @@
-"""Lightweight live image viewer for the headless Molmo keypoint CLI.
+"""Lightweight live image viewer for the headless garment CLI.
 
 This process only polls already-saved JSON/PNG artifacts.  It does not open a
 camera, connect to the robot, load Molmo/Claude, or create a WebGL/Viser server.
@@ -121,6 +121,9 @@ def _first_existing(*paths: Path) -> Path | None:
 
 
 def _camera_raw(directory: Path, camera: str) -> Path | None:
+    garment_only = directory / f"camera_{camera}_garment_only.png"
+    if garment_only.is_file():
+        return garment_only.resolve()
     return next(
         (
             path.resolve()
@@ -129,6 +132,20 @@ def _camera_raw(directory: Path, camera: str) -> Path | None:
         ),
         None,
     )
+
+
+def _record_camera_image(
+    record: dict[str, Any], key: str, camera: str
+) -> Path | None:
+    for value in record.get(key, []):
+        path = Path(str(value)).expanduser().resolve()
+        if (
+            path.is_file()
+            and path.name.startswith("camera_")
+            and path.name.endswith(f"_{camera}.png")
+        ):
+            return path
+    return None
 
 
 def _last_event(path: Path) -> dict[str, Any]:
@@ -188,10 +205,19 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
         iteration_dir / "local_geometry" if iteration_dir else output_dir
     )
     after_dir = iteration_dir / "after_capture" if iteration_dir else output_dir
+    global_selection_overlay = (
+        iteration_dir / "claude_selected_pixel.png"
+        if iteration_dir
+        else output_dir / "claude_selected_pixel.png"
+    )
     before_a = _camera_raw(perception_dir, "A")
     before_b = _camera_raw(perception_dir, "B")
-    after_a = _camera_raw(after_dir, "A")
-    after_b = _camera_raw(after_dir, "B")
+    after_a = _camera_raw(after_dir, "A") or _record_camera_image(
+        record, "after_images", "A"
+    )
+    after_b = _camera_raw(after_dir, "B") or _record_camera_image(
+        record, "after_images", "B"
+    )
     perception_result = (
         _load_json(saved_result_path)
         if saved_result_path is not None and saved_result_path.is_file()
@@ -258,8 +284,8 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
         ArtifactPage(
             "Overview",
             (
-                ("Camera A · before RGB", before_a),
-                ("Camera B · before RGB", before_b),
+                ("Camera A · before RGB (garment-only)", before_a),
+                ("Camera B · before RGB (garment-only)", before_b),
                 (
                     "Fused height/boundary",
                     _first_existing(
@@ -268,8 +294,9 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                     ),
                 ),
                 (
-                    "Camera A · Molmo semantic Sxxx",
+                    "Claude selected pixel / semantic compatibility",
                     _first_existing(
+                        global_selection_overlay,
                         semantic_dir / "camera_A_semantic_anchors.png",
                         semantic_dir / "camera_A_molmo_keypoint_references.png",
                     ),
@@ -287,20 +314,21 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
         ArtifactPage(
             "Perception",
             (
-                ("Camera A · RGB", before_a),
+                ("Camera A · RGB (garment-only)", before_a),
                 ("Camera A · raw depth (camera Z)", raw_depth("A", 0)),
                 ("Camera A · height above table (garment only)", refined_height("A", before_a)),
-                ("Camera B · RGB", before_b),
+                ("Camera B · RGB (garment-only)", before_b),
                 ("Camera B · raw depth (camera Z)", raw_depth("B", 1)),
                 ("Camera B · height above table (garment only)", refined_height("B", before_b)),
             ),
         ),
         ArtifactPage(
-            "Semantic + local geometry",
+            "Planning decision",
             (
                 (
-                    "Camera A · Molmo diagnostics",
+                    "Claude selected pixel",
                     _first_existing(
+                        global_selection_overlay,
                         semantic_dir / "camera_A_semantic_anchor_diagnostics.png",
                         semantic_dir / "camera_A_molmo_keypoint_candidates.png",
                     ),
@@ -354,8 +382,9 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                 ("Camera A · before", before_a),
                 ("Camera A · after", after_a),
                 (
-                    "Camera A · selected references",
+                    "Camera A · Claude decision / compatibility references",
                     _first_existing(
+                        global_selection_overlay,
                         local_geometry_dir / "camera_A_local_grasp_candidates.png",
                         semantic_dir / "camera_A_semantic_anchors.png",
                         semantic_dir / "camera_A_molmo_keypoint_references.png",
@@ -364,8 +393,9 @@ def build_pages(output_dir: Path) -> tuple[list[ArtifactPage], dict[str, Any]]:
                 ("Camera B · before", before_b),
                 ("Camera B · after", after_b),
                 (
-                    "Camera B · selected references",
+                    "Camera B · Claude decision / compatibility references",
                     _first_existing(
+                        global_selection_overlay,
                         local_geometry_dir / "camera_B_local_grasp_candidates.png",
                         semantic_dir / "camera_B_semantic_anchors.png",
                         semantic_dir / "camera_B_molmo_keypoint_references.png",

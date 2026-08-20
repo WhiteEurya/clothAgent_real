@@ -7,8 +7,11 @@ adds an opt-in state machine for one cautious real rollout at a time:
 Viser RGB-D preview -> before/after Claude evaluation -> next iteration``.
 
 Pre-execution validation failures are returned to Claude for a bounded
-replanning attempt. The loop never retries after physical motion has started or
-interrupts an in-progress physical command.
+replanning attempt. With the opt-in recovery flags, a failed pre-execution
+planning/evaluation phase can be checkpointed and followed by a fresh
+perception iteration. The loop never retries after unknown physical state,
+incomplete execution, or failed mandatory return-Home, and never interrupts
+an in-progress physical command.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +71,12 @@ from .robot_api import RobotExecutionError, validate_controller_trajectory
 from .rollout_recorder import DualRealSenseRolloutRecorder
 from .report_figure import compose_camera_perception_report
 from .session import AgentSession
-from .viewer import _frame_point_cloud, _load_latest_perception
+from .skill_lifecycle import SkillProposal, SkillStore
+from .viewer import (
+    _frame_point_cloud,
+    _load_fused_point_cloud,
+    _load_latest_perception,
+)
 
 
 AUTO_EVALUATION_FIELDS = frozenset(
@@ -82,6 +91,7 @@ AUTO_EVALUATION_FIELDS = frozenset(
         "next_experiment",
     }
 )
+AUTO_EVALUATION_OPTIONAL_FIELDS = frozenset({"skill_update"})
 AUTO_EVALUATION_STAGE_FIELDS = frozenset({"status", "confidence", "evidence"})
 AUTO_EVALUATION_PROGRESS_FIELDS = frozenset({"status", "confidence", "metrics"})
 AUTO_EVALUATION_METRIC_FIELDS = frozenset(
@@ -207,6 +217,34 @@ AUTO_EVALUATION_JSON_SCHEMA["properties"].update(
                 "reason": {"type": "string", "minLength": 1},
             },
             "required": ["keep", "change", "reason"],
+        },
+        "skill_update": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "operation": {"type": "string", "enum": ["create", "modify"]},
+                "name": {"type": "string", "minLength": 1},
+                "base_skill": {"type": ["string", "null"]},
+                "purpose": {"type": "string", "minLength": 1},
+                "guidance": {"type": "string", "minLength": 1},
+                "rationale": {"type": "string", "minLength": 1},
+                "evidence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
+            "required": [
+                "operation",
+                "name",
+                "purpose",
+                "guidance",
+                "rationale",
+                "evidence",
+                "confidence",
+            ],
         },
     }
 )
@@ -372,6 +410,53 @@ def _is_preexecution_replan_error(exc: BaseException) -> bool:
             ExplorationPlanningError,
         ),
     ) and "physical rollout did not complete" not in str(exc)
+
+
+def _is_recoverable_viewer_error(
+    exc: BaseException,
+    record: dict[str, Any],
+) -> bool:
+    """Return whether the viewer loop may start a fresh iteration safely.
+
+    A fresh perception/replan is safe before any robot command.  After a
+    completed rollout it is also safe to recover from a Claude/evidence
+    failure only when the mandatory return-home phase completed.  Unknown
+    robot state, incomplete physical execution, and controller errors remain
+    hard stops.
+    """
+
+    message = str(exc).lower()
+    hard_tokens = (
+        "physical rollout did not complete",
+        "robotexecutionerror",
+        "robot error",
+        "xarm",
+        "set_position",
+        "set_servo_angle",
+        "return home",
+        "home failed",
+    )
+    if any(token in message for token in hard_tokens):
+        return False
+    execution = record.get("execution")
+    if not isinstance(execution, dict):
+        return isinstance(
+            exc,
+            (
+                ExplorationTimeoutError,
+                ReferenceReselectionExhaustedError,
+                ExplorationPlanningError,
+                ExperimentValidationError,
+                SafetyError,
+                AutoExplorationError,
+            ),
+        )
+    if not execution.get("execution_completed"):
+        return False
+    home = record.get("mandatory_return_home")
+    if not isinstance(home, dict) or not home.get("completed"):
+        return False
+    return isinstance(exc, (ExplorationTimeoutError, AutoExplorationError))
 
 
 def grasp_targets_from_actions(
@@ -588,6 +673,7 @@ class ExplorationEvaluation:
     task_progress: TaskProgressEvaluation
     earliest_failure_stage: str
     next_experiment: NextExperiment
+    skill_update: SkillProposal | None = None
 
     @property
     def useful(self) -> bool:
@@ -621,7 +707,7 @@ class ExplorationEvaluation:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "target_selection": self.target_selection.as_dict(),
             "grasp_acquisition": self.grasp_acquisition.as_dict(),
             "target_structure_acquired": self.target_structure_acquired.as_dict(),
@@ -631,6 +717,9 @@ class ExplorationEvaluation:
             "earliest_failure_stage": self.earliest_failure_stage,
             "next_experiment": self.next_experiment.as_dict(),
         }
+        if self.skill_update is not None:
+            payload["skill_update"] = self.skill_update.as_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -749,11 +838,12 @@ def _evaluation_exact_fields(
     fields: frozenset[str],
     *,
     context: str,
+    optional_fields: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AutoExplorationError(f"{context} must be a JSON object")
     missing = fields.difference(payload)
-    unknown = set(payload).difference(fields)
+    unknown = set(payload).difference(fields | optional_fields)
     if missing:
         raise AutoExplorationError(f"{context} is missing fields: {sorted(missing)}")
     if unknown:
@@ -838,6 +928,7 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
         payload,
         AUTO_EVALUATION_FIELDS,
         context="Claude evaluation",
+        optional_fields=AUTO_EVALUATION_OPTIONAL_FIELDS,
     )
     stages = {
         name: _validate_stage_evaluation(name, value[name])
@@ -918,6 +1009,11 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
             "evaluation.next_experiment.reason must be a non-empty string"
         )
 
+    try:
+        skill_update = SkillStore.parse_update(value.get("skill_update"))
+    except ValueError as exc:
+        raise AutoExplorationError(str(exc)) from exc
+
     return ExplorationEvaluation(
         target_selection=stages["target_selection"],
         grasp_acquisition=stages["grasp_acquisition"],
@@ -937,10 +1033,15 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
             change=change,
             reason=reason.strip(),
         ),
+        skill_update=skill_update,
     )
 
 
-def validate_visual_plan_payload(payload: Any) -> VisualPlanDecision:
+def validate_visual_plan_payload(
+    payload: Any,
+    *,
+    allowed_skill_names: Sequence[str] = ("laydown",),
+) -> VisualPlanDecision:
     """Validate stage-one output before exact Rxx grounding is permitted."""
 
     if not isinstance(payload, dict):
@@ -1018,11 +1119,17 @@ def validate_visual_plan_payload(payload: Any) -> VisualPlanDecision:
                 "each visual skill invocation needs exactly name and reason"
             )
         name, skill_reason = item["name"], item["reason"]
-        if name != "laydown" or not isinstance(skill_reason, str) or not skill_reason.strip():
+        if (
+            not isinstance(name, str)
+            or name.strip().lower() not in set(allowed_skill_names)
+            or not isinstance(skill_reason, str)
+            or not skill_reason.strip()
+        ):
             raise ExplorationPlanningError(
-                "visual skill invocation must use laydown with a non-empty reason"
+                "visual plan skill invocation must use an approved skill with a "
+                "non-empty reason"
             )
-        skills.append({"name": name, "reason": skill_reason.strip()})
+        skills.append({"name": name.strip().lower(), "reason": skill_reason.strip()})
     return VisualPlanDecision(
         garment_observation=strings["garment_observation"],
         opening_strategy=strings["opening_strategy"],
@@ -1048,6 +1155,8 @@ class ClaudeAutoClient:
         timeout_s: int = 400,
         grounding_timeout_s: int = 120,
         max_reference_reselections: int = 2,
+        skill_guidance: str | None = None,
+        skill_names: Sequence[str] | None = None,
     ):
         if max_reference_reselections < 0 or max_reference_reselections > 10:
             raise ValueError("max_reference_reselections must be between 0 and 10")
@@ -1055,6 +1164,8 @@ class ClaudeAutoClient:
         self.timeout_s = timeout_s
         self.grounding_timeout_s = grounding_timeout_s
         self.max_reference_reselections = max_reference_reselections
+        self.skill_guidance = skill_guidance
+        self.skill_names = tuple(skill_names or ("laydown",))
         self.planner = ClaudeExplorationClient(binary=binary, timeout_s=timeout_s)
         self.last_plan_result: ClaudeExplorationResult | None = None
         self.last_visual_plan_result: ClaudeVisualPlanResult | None = None
@@ -1215,7 +1326,8 @@ class ClaudeAutoClient:
             )
         try:
             decision = validate_visual_plan_payload(
-                _json_from_claude_text(completed.stdout)
+                _json_from_claude_text(completed.stdout),
+                allowed_skill_names=self.skill_names,
             )
         except BaseException as exc:
             self._save_visual_log(
@@ -1346,7 +1458,9 @@ class ClaudeAutoClient:
             "list of {name,args}), expected_observation (string), safety_notes "
             "(non-empty list of strings), and optional skill_invocations (list of "
             "{name,reason}; only laydown). For move, args must contain exactly numeric "
-            "x,y,z,yaw in millimetres/degrees. The action contract permits only move, "
+            "x,y,z,yaw in millimetres/degrees; yaw is relative to the calibrated Home "
+            "TCP orientation, so yaw=0 keeps the gripper orientation without an "
+            "unnecessary wrist turn. The action contract permits only move, "
             "open_gripper, close_gripper, and home. Follow the planning mode in the context: "
             "in EXPLORATION, use a small reversible probe sufficient to distinguish the layer "
             "response; in VALIDATED_EXPANSION, preserve the validated grasp anchor/depth and "
@@ -1444,7 +1558,8 @@ class ClaudeAutoClient:
             )
         try:
             proposal = validate_exploration_payload(
-                _json_from_claude_text(completed.stdout)
+                _json_from_claude_text(completed.stdout),
+                allowed_skill_names=self.skill_names,
             )
             measurement = GarmentGrounding(
                 root / "workspace" / "perception_views"
@@ -1569,7 +1684,9 @@ class ClaudeAutoClient:
             f"{planning_mode_instruction}\n"
             "This zero-shot visual stage has no prior coordinates or action values. Do not "
             "invent them; use prior evaluation only to decide whether this is a probe or an "
-            "expansion."
+            "expansion.\n\n"
+            "Approved procedural skill library:\n"
+            f"{self.skill_guidance or 'No dynamic skill updates are active.'}"
         )
         rejected_keys: set[tuple[str, str]] = set()
         if feedback and previous_visual_result is not None:
@@ -1760,6 +1877,7 @@ class ClaudeAutoClient:
         proposal: ExplorationProposal,
         run_dir: Path,
         rollout_recording_dir: Path | None = None,
+        skill_guidance: str | None = None,
     ) -> ExplorationEvaluation:
         self.last_evaluation_result = None
         root = run_dir.resolve()
@@ -1815,6 +1933,17 @@ class ClaudeAutoClient:
             "Use an empty change list only when the garment is already as open as this setup can "
             "reasonably achieve, or continuing is unsafe, visually ungrounded, or blocked by a "
             "hard physical/infrastructure condition.\n\n"
+            "Optionally propose one skill_update only when the completed before/after evidence "
+            "supports reusable procedural knowledge. Use operation=create for a genuinely new "
+            "pattern, or operation=modify for a real change to an existing skill. The guidance "
+            "must remain high-level and must not contain coordinates, SDK calls, joint angles, "
+            "or executable code. The skill name must be lowercase kebab-case with hyphens "
+            "only, for example `grasp-acquisition-check`; never use underscores, spaces, "
+            "or CamelCase. A proposal is not activated automatically: an independent "
+            "reviewer checks safety, evidence, and duplicate skills before activation. Omit "
+            "skill_update when the result only changes this one experiment.\n\n"
+            "Approved procedural skill library for duplicate checking:\n"
+            f"{skill_guidance or 'No dynamic skill updates are active.'}\n\n"
             "Return exactly one JSON object with exactly this structure and no markdown:\n"
             "{\n"
             '  "target_selection": {"status": "SUPPORTED|CONTRADICTED|UNKNOWN", '
@@ -1836,6 +1965,7 @@ class ClaudeAutoClient:
             '  "next_experiment": {"keep": ["validated choice"], '
             '"change": ["choice to revise"], "reason": "causal evidence-based explanation"}\n'
             "}\n\n"
+            f"Previous selected grasp: {json.dumps(proposal.selected_grasp, ensure_ascii=False)}\n"
             f"Previous proposal strategy: {proposal.reveal_strategy}\n"
             f"Previous invoked skills: {json.dumps(list(proposal.skill_invocations), ensure_ascii=False)}\n"
             f"Previous expected observation: {proposal.expected_observation}\n"
@@ -2302,6 +2432,9 @@ def run_auto_exploration_viewer(
     molmo_keypoint_cameras: Sequence[str] = ("A", "B"),
     molmo_keypoint_timeout_s: int = 900,
     molmo_allow_download: bool = False,
+    continue_on_recoverable_errors: bool = False,
+    max_consecutive_recoverable_failures: int = 3,
+    recovery_backoff_s: float = 2.0,
 ) -> int:
     """Run the continuous automatic real-agent loop with a Viser preview.
 
@@ -2348,6 +2481,12 @@ def run_auto_exploration_viewer(
         raise ValueError("molmo_keypoint_cameras must be unique")
     if not 30 <= molmo_keypoint_timeout_s <= 3600:
         raise ValueError("molmo_keypoint_timeout_s must be between 30 and 3600")
+    if not 1 <= max_consecutive_recoverable_failures <= 20:
+        raise ValueError(
+            "max_consecutive_recoverable_failures must be between 1 and 20"
+        )
+    if not 0 <= recovery_backoff_s <= 300:
+        raise ValueError("recovery_backoff_s must be between 0 and 300 seconds")
     keypoint_specs = load_keypoint_specs(molmo_keypoints_path) if molmo_keypoints else ()
     try:
         import viser
@@ -2752,14 +2891,26 @@ def run_auto_exploration_viewer(
 
         try:
             preview_rgb_handle.image = np.asarray(frame.rgb, dtype=np.uint8)
-            preview_depth_handle.image = _height_map_heatmap_preview(frame, config)
-            points, colors = _frame_point_cloud(frame, stride=4)
+            height_map, height_valid, _ = camera_height_map_mm(frame, config)
+            preview_depth_handle.image = _scalar_heatmap_rgb(
+                height_map,
+                height_valid,
+                higher_is_bright=True,
+            )
+            points, colors = _frame_point_cloud(
+                frame,
+                stride=4,
+                height_above_table_mm=height_map,
+            )
             points, colors = _voxel_balance_cloud(
                 points, colors, voxel_size_mm=5.0, max_points=25000
             )
             if len(points):
                 live_cloud_handle.points = points
                 live_cloud_handle.colors = colors
+                live_cloud_handle.visible = True
+            else:
+                live_cloud_handle.visible = False
             depth = np.asarray(frame.depth_m)
             valid = np.isfinite(depth) & (depth > config.min_depth_m) & (depth < config.max_depth_m)
             preview_panel.content = (
@@ -2770,7 +2921,16 @@ def run_auto_exploration_viewer(
                 f"- serial: `{frame.serial}`"
             )
         except Exception as exc:
-            preview_panel.content = f"### Live CamA RGB-D\n\nPreview update failed: `{exc}`"
+            live_cloud_handle.visible = False
+            preview_depth_handle.image = _depth_heatmap_preview(
+                frame.depth_m,
+                min_depth_m=config.min_depth_m,
+                max_depth_m=config.max_depth_m,
+            )
+            preview_panel.content = (
+                "### Live CamA RGB-D\n\n"
+                f"Table validation failed; point cloud hidden: `{exc}`"
+            )
 
     def render_capture_frames(frames: list[RGBDFrame]) -> None:
         for frame in frames:
@@ -2778,16 +2938,36 @@ def run_auto_exploration_viewer(
             if label not in capture_rgb_handles:
                 continue
             capture_rgb_handles[label].image = np.asarray(frame.rgb, dtype=np.uint8)
-            capture_depth_handles[label].image = _height_map_heatmap_preview(frame, config)
-            points, colors = _frame_point_cloud(frame, stride=4)
+            handle = capture_cloud_handles[label]
+            try:
+                height_map, height_valid, _ = camera_height_map_mm(frame, config)
+            except Exception:
+                capture_depth_handles[label].image = _depth_heatmap_preview(
+                    frame.depth_m,
+                    min_depth_m=config.min_depth_m,
+                    max_depth_m=config.max_depth_m,
+                )
+                handle.visible = False
+                continue
+            capture_depth_handles[label].image = _scalar_heatmap_rgb(
+                height_map,
+                height_valid,
+                higher_is_bright=True,
+            )
+            points, colors = _frame_point_cloud(
+                frame,
+                stride=4,
+                height_above_table_mm=height_map,
+            )
             points, colors = _voxel_balance_cloud(
                 points, colors, voxel_size_mm=5.0, max_points=25000
             )
-            handle = capture_cloud_handles[label]
             if len(points):
                 handle.points = points
                 handle.colors = colors
                 handle.visible = True
+            else:
+                handle.visible = False
 
     def render_grasp_target_visualization(
         actions: Sequence[dict[str, Any]],
@@ -3061,15 +3241,19 @@ def run_auto_exploration_viewer(
         return "\n".join(details)
 
     def run_loop(iterations: int | None) -> None:
+        skill_store = SkillStore(session.project_root / "data" / "skills")
         client = ClaudeAutoClient(
             binary=claude_binary,
             timeout_s=claude_timeout_s,
             grounding_timeout_s=claude_grounding_timeout_s,
             max_reference_reselections=max_replans,
+            skill_guidance=skill_store.prompt(),
+            skill_names=tuple(skill.name for skill in skill_store.approved()),
         )
         try:
             objective = state.objective
             iteration = 0
+            consecutive_recoverable_failures = 0
             while iterations is None or iteration < iterations:
                 iteration += 1
                 if stopped():
@@ -3096,19 +3280,15 @@ def run_auto_exploration_viewer(
                     if saved is None or saved_path is None:
                         raise AutoExplorationError("perception completed without saved result")
                     render_perception_diagnostics(saved, saved_path)
-                    fusion_artifacts = saved.get("depth_fusion", {}).get("artifacts", {})
-                    fused_points_path = saved_path.parent / str(
-                        fusion_artifacts.get("fused_points_base_mm", "")
+                    fused_points, fused_colors = _load_fused_point_cloud(
+                        saved, saved_path.parent
                     )
-                    fused_colors_path = saved_path.parent / str(
-                        fusion_artifacts.get("fused_colors_rgb", "")
-                    )
-                    if fused_points_path.is_file() and fused_colors_path.is_file():
-                        fused_cloud_handle.points = (
-                            np.load(fused_points_path).astype(np.float32) / 1000.0
-                        )
-                        fused_cloud_handle.colors = np.load(fused_colors_path).astype(np.uint8)
+                    if len(fused_points):
+                        fused_cloud_handle.points = fused_points
+                        fused_cloud_handle.colors = fused_colors
                         fused_cloud_handle.visible = True
+                    else:
+                        fused_cloud_handle.visible = False
                     record["perception"] = perception
                     before_images = perception_image_paths(saved, saved_path)
                     reference_policy = "uniform"
@@ -3385,6 +3565,7 @@ def run_auto_exploration_viewer(
                             robot.init_joints_deg,
                             robot.orientation_roll_deg,
                             robot.orientation_pitch_deg,
+                            yaw_offset_deg=robot.init_pose_mm_deg[5],
                             joint_targets_rad=controller.joint_targets_rad,
                         )
                         if not animation_frames:
@@ -3648,6 +3829,7 @@ def run_auto_exploration_viewer(
                             == "completed"
                             else None
                         ),
+                        skill_guidance=skill_store.prompt(),
                     )
                     evaluation_result = client.last_evaluation_result
                     if evaluation_result is None:
@@ -3660,6 +3842,22 @@ def run_auto_exploration_viewer(
                         phase="claude_evaluation",
                         payload=evaluation_result,
                     )
+                    # Older evaluator adapters may return an evaluation-shaped
+                    # object without the optional skill_update field.
+                    skill_update = getattr(evaluation, "skill_update", None)
+                    skill_review = skill_store.review_and_apply(skill_update)
+                    if skill_review is not None:
+                        record["skill_review"] = skill_review.as_dict()
+                        save_agent_artifact(
+                            iteration,
+                            record,
+                            phase="skill_review",
+                            payload=skill_review.as_dict(),
+                        )
+                        client.skill_guidance = skill_store.prompt()
+                        client.skill_names = tuple(
+                            skill.name for skill in skill_store.approved()
+                        )
                     with state_lock:
                         state.evaluation = evaluation
                         state.history.append(
@@ -3732,6 +3930,7 @@ def run_auto_exploration_viewer(
                         f"Claude artifacts: `{len(record.get('artifacts', {}))}`"
                     )
                     record_saved = True
+                    consecutive_recoverable_failures = 0
                     if evaluation.stop:
                         set_status(
                             f"### Automatic exploration stopped after iteration {iteration}\n\n"
@@ -3750,6 +3949,46 @@ def run_auto_exploration_viewer(
                             client.last_rejected_visual_references
                         )
                     record["error"] = f"{type(exc).__name__}: {exc}"
+                    if (
+                        continue_on_recoverable_errors
+                        and _is_recoverable_viewer_error(exc, record)
+                        and consecutive_recoverable_failures
+                        < max_consecutive_recoverable_failures
+                    ):
+                        consecutive_recoverable_failures += 1
+                        record["status"] = "RECOVERABLE_ERROR"
+                        record["traceback"] = traceback.format_exc()
+                        record["recovery"] = {
+                            "enabled": True,
+                            "consecutive_failure": consecutive_recoverable_failures,
+                            "max_consecutive_failures": max_consecutive_recoverable_failures,
+                            "next_step": "fresh perception and new planning iteration",
+                        }
+                        record["completed_at"] = _now()
+                        save_auto_record(
+                            f"iteration_{iteration:03d}_recoverable.json",
+                            record,
+                        )
+                        record_saved = True
+                        with state_lock:
+                            state.history.append(
+                                {
+                                    "iteration": iteration,
+                                    "plan_status": "recoverable_error",
+                                    "error": record["error"],
+                                    "evaluation": {},
+                                }
+                            )
+                        render_history()
+                        set_status(
+                            f"### Recoverable Claude timeout at iteration {iteration}\n\n"
+                            f"`{exc}`. Continuing with a fresh perception/planning iteration "
+                            f"({consecutive_recoverable_failures}/"
+                            f"{max_consecutive_recoverable_failures})."
+                        )
+                        if recovery_backoff_s > 0:
+                            time.sleep(recovery_backoff_s)
+                        continue
                     save_auto_record(
                         f"iteration_{iteration:03d}_failed.json",
                         {**record, "completed_at": _now()},
@@ -3784,6 +4023,46 @@ def run_auto_exploration_viewer(
                             client.last_rejected_visual_references
                         )
                     record["error"] = f"{type(exc).__name__}: {exc}"
+                    if (
+                        continue_on_recoverable_errors
+                        and _is_recoverable_viewer_error(exc, record)
+                        and consecutive_recoverable_failures
+                        < max_consecutive_recoverable_failures
+                    ):
+                        consecutive_recoverable_failures += 1
+                        record["status"] = "RECOVERABLE_ERROR"
+                        record["traceback"] = traceback.format_exc()
+                        record["recovery"] = {
+                            "enabled": True,
+                            "consecutive_failure": consecutive_recoverable_failures,
+                            "max_consecutive_failures": max_consecutive_recoverable_failures,
+                            "next_step": "fresh perception and new planning iteration",
+                        }
+                        record["completed_at"] = _now()
+                        save_auto_record(
+                            f"iteration_{iteration:03d}_recoverable.json",
+                            record,
+                        )
+                        record_saved = True
+                        with state_lock:
+                            state.history.append(
+                                {
+                                    "iteration": iteration,
+                                    "plan_status": "recoverable_error",
+                                    "error": record["error"],
+                                    "evaluation": {},
+                                }
+                            )
+                        render_history()
+                        set_status(
+                            f"### Recoverable pre-execution failure at iteration {iteration}\n\n"
+                            f"`{exc}`. Continuing with a fresh perception/planning iteration "
+                            f"({consecutive_recoverable_failures}/"
+                            f"{max_consecutive_recoverable_failures})."
+                        )
+                        if recovery_backoff_s > 0:
+                            time.sleep(recovery_backoff_s)
+                        continue
                     save_auto_record(
                         f"iteration_{iteration:03d}_failed.json",
                         {**record, "completed_at": _now()},
@@ -3975,6 +4254,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow Molmo/Hugging Face files not already present locally",
     )
+    parser.add_argument(
+        "--continue-on-recoverable-errors",
+        action="store_true",
+        help=(
+            "continue with a fresh perception/planning iteration after bounded "
+            "pre-execution or post-home Claude failures"
+        ),
+    )
+    parser.add_argument(
+        "--max-consecutive-recoverable-failures",
+        type=int,
+        default=3,
+        help="hard-stop after this many consecutive recoverable failures",
+    )
+    parser.add_argument(
+        "--recovery-backoff-s",
+        type=float,
+        default=2.0,
+        help="seconds to wait before a recoverable retry",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument(
@@ -4018,6 +4317,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         molmo_keypoint_timeout_s=args.molmo_keypoint_timeout_s,
         molmo_allow_download=args.molmo_allow_download,
+        continue_on_recoverable_errors=args.continue_on_recoverable_errors,
+        max_consecutive_recoverable_failures=args.max_consecutive_recoverable_failures,
+        recovery_backoff_s=args.recovery_backoff_s,
     )
 
 

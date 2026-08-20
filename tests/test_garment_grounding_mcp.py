@@ -127,3 +127,60 @@ def test_stdio_server_lists_and_calls_read_only_tools(tmp_path: Path):
     assert responses[3]["result"]["isError"] is True
     second_payload = json.loads(responses[3]["result"]["content"][0]["text"])
     assert "already been used" in second_payload["error"]
+
+
+def test_stdio_pixel_mode_exposes_only_one_arbitrary_pixel_lookup(tmp_path: Path):
+    perception_dir = _perception_dir(tmp_path)
+    requests = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05"},
+        },
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "sample_local_surface",
+                "arguments": {"camera": "A", "x_px": 2, "y_px": 1, "radius_px": 1},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "sample_local_surface",
+                "arguments": {"camera": "A", "x_px": 3, "y_px": 2},
+            },
+        },
+    ]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cloth_agent.garment_grounding_mcp",
+            "--perception-dir",
+            str(perception_dir),
+            "--mode",
+            "pixel",
+        ],
+        input="\n".join(json.dumps(item) for item in requests) + "\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    responses = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert {tool["name"] for tool in responses[1]["result"]["tools"]} == {
+        "sample_local_surface"
+    }
+    payload = json.loads(responses[2]["result"]["content"][0]["text"])
+    assert payload["query_pixel_xy"] == [2, 1]
+    assert payload["base_xyz_median_mm"] == pytest.approx([502.0, -199.0, 14.0])
+    assert payload["lookup_budget_remaining"] == 0
+    assert "nearest_reference" not in payload
+    assert responses[3]["result"]["isError"] is True

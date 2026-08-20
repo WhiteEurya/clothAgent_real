@@ -128,7 +128,7 @@ def test_builds_four_pages_with_current_phase_and_saved_images(tmp_path: Path) -
     assert [page.name for page in pages] == [
         "Overview",
         "Perception",
-        "Semantic + local geometry",
+        "Planning decision",
         "Before / after",
     ]
     assert all(len(page.tiles) == 6 for page in pages)

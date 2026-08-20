@@ -10,17 +10,22 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
-from cloth_agent.config import RobotConfig, WorkspaceBounds
-from cloth_agent.free_exploration import validate_exploration_payload
+from cloth_agent.config import ExperimentConfig, RobotConfig, WorkspaceBounds
+from cloth_agent.free_exploration import (
+    validate_exploration_payload,
+    validate_global_exploration_payload,
+)
 from cloth_agent.molmo_keypoint_cli import (
     CliReporter,
     KeypointCliOptions,
+    _override_camera_controls,
     run_keypoint_cli_loop,
 )
 from cloth_agent.molmo_keypoint_pipeline import (
     KeypointSpec,
     MolmoKeypointPipelineError,
 )
+from cloth_agent.perception import CameraSpec, PerceptionConfig
 from cloth_agent.semantic_claude import SemanticActionResult
 from cloth_agent.semantic_pipeline import (
     SemanticStateBuilder,
@@ -35,6 +40,28 @@ class _Preflight:
     actions: list[dict]
     stdout: str = ""
     error: str | None = None
+
+
+def test_camera_control_overrides_apply_per_launch(tmp_path: Path) -> None:
+    config = PerceptionConfig(
+        cameras=(
+            CameraSpec("A", "a", tmp_path / "a.yaml", 400.0, 3800.0),
+            CameraSpec("B", "b", tmp_path / "b.yaml", 400.0, 3800.0),
+        )
+    )
+
+    updated = _override_camera_controls(
+        config,
+        camera_a_exposure=300.0,
+        camera_b_exposure=350.0,
+        camera_b_white_balance=4000.0,
+    )
+
+    assert updated.cameras[0].color_exposure == 300.0
+    assert updated.cameras[0].color_white_balance == 3800.0
+    assert updated.cameras[1].color_exposure == 350.0
+    assert updated.cameras[1].color_white_balance == 4000.0
+    assert config.cameras[0].color_exposure == 400.0
 
 
 class _Runner:
@@ -69,6 +96,7 @@ class _Session:
             orientation_roll_deg=180,
             orientation_pitch_deg=0,
         )
+        self.experiment_config = ExperimentConfig(520.0, -40.0, 18.0, None, None, None)
         self.runner = _Runner(actions)
         self.execution_calls = 0
         self.last_return_home_outcome = None
@@ -258,6 +286,31 @@ def _proposal():
     )
 
 
+def _global_proposal():
+    return validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [4, 3],
+                "reason": "A visible raised free boundary can reveal overlap.",
+            },
+            "garment_observation": "A raised boundary overlaps the main sheet.",
+            "reveal_strategy": "Probe and move the selected boundary outward.",
+            "confidence": 0.75,
+            "actions": [
+                {"name": "open_gripper", "args": {}},
+                {"name": "move", "args": {"x": 520, "y": -40, "z": 60, "yaw": 0}},
+                {"name": "move", "args": {"x": 520, "y": -40, "z": 20, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 530, "y": -40, "z": 35, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The selected layer moves independently.",
+            "safety_notes": ["Respect deterministic workspace and IK gates."],
+        }
+    )
+
+
 def _saved_perception(tmp_path: Path):
     directory = tmp_path / "saved_perception"
     directory.mkdir()
@@ -324,6 +377,206 @@ def _manifest(artifact_dir: Path) -> dict:
     return manifest
 
 
+class _GlobalClient:
+    def __init__(self, proposal):
+        self.proposal = proposal
+        self.prompts: list[str] = []
+
+    def invoke(self, image_paths, prompt, run_dir):
+        self.prompts.append(prompt)
+        return SimpleNamespace(
+            proposal=self.proposal,
+            prompt=prompt,
+            command=("claude",),
+            returncode=0,
+            stdout="{}",
+            stderr="",
+        )
+
+
+class _GlobalEvaluation:
+    def __init__(self):
+        self.task_progress = SimpleNamespace(status="IMPROVED", confidence=0.8)
+        self.next_experiment = SimpleNamespace(
+            keep=("selected_pixel",),
+            change=("transport_direction",),
+        )
+        self.stop = False
+        self.reason = "Keep the acquired layer and revise transport direction."
+
+    def as_dict(self):
+        return {
+            "task_progress": {"status": "IMPROVED", "confidence": 0.8},
+            "next_experiment": {
+                "keep": ["selected_pixel"],
+                "change": ["transport_direction"],
+                "reason": self.reason,
+            },
+        }
+
+
+class _GlobalEvaluator:
+    def __init__(self):
+        self.calls = 0
+
+    def evaluate(self, *args, **kwargs):
+        self.calls += 1
+        return _GlobalEvaluation()
+
+
+def test_global_cli_skips_molmo_and_local_candidates(tmp_path: Path, monkeypatch) -> None:
+    proposal_payload = json.loads(json.dumps(_global_proposal().as_dict()))
+    proposal_payload["actions"][1]["args"].update({"x": 535.0, "y": -30.0})
+    proposal_payload["actions"][2]["args"].update({"x": 535.0, "y": -30.0})
+    proposal = validate_global_exploration_payload(proposal_payload)
+    session = _Session(tmp_path, list(proposal.actions))
+    saved, result_path, _ = _saved_perception(tmp_path)
+    monkeypatch.setattr(
+        "cloth_agent.molmo_keypoint_cli._load_latest_perception",
+        lambda session: (saved, result_path),
+    )
+    perception_dir = session.workspace / "perception_views"
+    xyz = np.zeros((6, 8, 3), dtype=np.float32)
+    xyz[:, :, :] = [520.0, -40.0, 18.0]
+    np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(
+        perception_dir / "camera_A_height_above_table_mm.npy",
+        np.full((6, 8), 8.0, dtype=np.float32),
+    )
+    (perception_dir / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(
+            {
+                "samples": [
+                    {
+                        "reference_id": "R001",
+                        "pixel_xy": [4, 3],
+                        "base_xyz_mm": [520.0, -40.0, 18.0],
+                        "height_above_table_mm": 8.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    keypoint_started = False
+    gpu_probed = False
+
+    def forbidden_keypoints(**kwargs):
+        nonlocal keypoint_started
+        keypoint_started = True
+        raise AssertionError("global planning must not start Molmo")
+
+    def forbidden_gpu_probe():
+        nonlocal gpu_probed
+        gpu_probed = True
+        raise AssertionError("global planning does not need a Molmo GPU gate")
+
+    global_client = _GlobalClient(proposal)
+    output = tmp_path / "global_cli"
+    stream = StringIO()
+    code = run_keypoint_cli_loop(
+        session,  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        output,
+        KeypointCliOptions(
+            max_iterations=1,
+            enable_real=False,
+            skip_controller_ik=True,
+            keypoint_specs=(),
+        ),
+        capture=lambda config: [object(), object()],
+        keypoint_runner=forbidden_keypoints,
+        global_client=global_client,  # type: ignore[arg-type]
+        global_evaluator=object(),  # type: ignore[arg-type]
+        gpu_memory_probe=forbidden_gpu_probe,
+        stream=stream,
+    )
+
+    assert code == 0
+    assert keypoint_started is False
+    assert gpu_probed is False
+    result = json.loads((output / "iteration_001" / "result.json").read_text())
+    assert result["candidate_policy"] == "NONE_CLAUDE_SELECTS_ARBITRARY_PIXEL"
+    assert result["proposal"]["selected_grasp"]["pixel_xy"] == [4, 3]
+    assert result["proposal"]["actions"][1]["args"]["x"] == 520.0
+    assert result["proposal"]["actions"][1]["args"]["y"] == -40.0
+    assert result["proposal"]["actions"][2]["args"]["x"] == 520.0
+    assert result["proposal"]["actions"][2]["args"]["y"] == -40.0
+    assert result["global_grounding"]["grounding_policy"] == (
+        "runtime_authoritative_selected_pixel_xy"
+    )
+    assert result["global_grounding"]["claude_requested_grasp_xy_mm"] == [535.0, -30.0]
+    assert result["global_grounding"]["commanded_grasp_xy_mm"] == [520.0, -40.0]
+    assert result["global_grounding"]["grounded_action_numbers"] == [2, 3]
+    assert "semantic_anchors" not in result
+    assert "local_geometry" not in result
+    assert "no Sxxx/Rxxx candidate generation" in stream.getvalue()
+    assert "Previous exploration outcomes" in global_client.prompts[0]
+
+
+def test_global_cli_feeds_before_after_learning_into_next_iteration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    proposal = _global_proposal()
+    session = _Session(tmp_path, list(proposal.actions))
+    saved, result_path, _ = _saved_perception(tmp_path)
+    monkeypatch.setattr(
+        "cloth_agent.molmo_keypoint_cli._load_latest_perception",
+        lambda session: (saved, result_path),
+    )
+    perception_dir = session.workspace / "perception_views"
+    xyz = np.zeros((6, 8, 3), dtype=np.float32)
+    xyz[:, :, :] = [520.0, -40.0, 18.0]
+    np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    (perception_dir / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(
+            {
+                "samples": [
+                    {
+                        "reference_id": "R001",
+                        "pixel_xy": [4, 3],
+                        "base_xyz_mm": [520.0, -40.0, 18.0],
+                        "height_above_table_mm": 8.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    global_client = _GlobalClient(proposal)
+    evaluator = _GlobalEvaluator()
+    code = run_keypoint_cli_loop(
+        session,  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        tmp_path / "global_learning_cli",
+        KeypointCliOptions(
+            max_iterations=2,
+            settle_s=0,
+            enable_real=True,
+            keypoint_specs=(),
+        ),
+        capture=lambda config: [object(), object()],
+        global_client=global_client,  # type: ignore[arg-type]
+        global_evaluator=evaluator,  # type: ignore[arg-type]
+        controller_validator=lambda *args: {"status": "PASS"},
+        perception_positioner=lambda config: {
+            "actual_tcp_pose_mm_deg": [500, 0, 800, 180, 0, 0]
+        },
+        stream=StringIO(),
+    )
+
+    assert code == 0
+    assert session.execution_calls == 2
+    assert evaluator.calls == 2
+    assert len(global_client.prompts) == 2
+    assert '"transport_direction"' in global_client.prompts[1]
+    assert "Keep the acquired layer and revise transport direction" in global_client.prompts[1]
+    history = (session.workspace / "global_experience.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert len(history.splitlines()) == 2
+
+
 def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -350,6 +603,7 @@ def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
         SimpleNamespace(),  # type: ignore[arg-type]
         output,
         KeypointCliOptions(
+            planning_policy="semantic_local",
             max_iterations=1,
             enable_real=False,
             skip_controller_ik=True,
@@ -367,7 +621,7 @@ def test_cli_dry_run_prints_all_phases_and_checkpoints_iteration(
     assert code == 0
     assert session.execution_calls == 0
     text = stream.getvalue()
-    assert "ClothAgent · Semantic Anchor CLI" in text
+    assert "ClothAgent · Global Garment CLI" in text
     assert "MOLMO/WORKER" in text
     assert "loading fake model" in text
     assert "confidence=0.9000 valid=true anchor=S001" in text
@@ -440,6 +694,7 @@ def test_real_cli_positions_home_then_perception_before_every_capture(
         SimpleNamespace(),  # type: ignore[arg-type]
         output,
         KeypointCliOptions(
+            planning_policy="semantic_local",
             max_iterations=1,
             settle_s=0,
             enable_real=True,
@@ -503,6 +758,7 @@ def test_cli_worker_failure_is_printed_and_saved(
         SimpleNamespace(),  # type: ignore[arg-type]
         output,
         KeypointCliOptions(
+            planning_policy="semantic_local",
             max_iterations=1,
             keypoint_specs=(KeypointSpec("edge", "visible edge", (0, 255, 0)),),
         ),
@@ -555,20 +811,21 @@ def test_cli_rejects_low_gpu_memory_before_starting_worker(
         SimpleNamespace(),  # type: ignore[arg-type]
         output,
         KeypointCliOptions(
+            planning_policy="semantic_local",
             max_iterations=1,
-            min_gpu_free_mib=20_000,
+            min_gpu_free_mib=19_000,
             keypoint_specs=(KeypointSpec("edge", "visible edge", (0, 255, 0)),),
         ),
         capture=lambda config: [object(), object()],
         keypoint_runner=must_not_start,
         client=_Client(proposal),  # type: ignore[arg-type]
-        gpu_memory_probe=lambda: 19_500,
+        gpu_memory_probe=lambda: 18_500,
         stream=stream,
     )
 
     assert code == 1
     assert worker_started is False
-    assert "free=19500 MiB required>=20000 MiB" in stream.getvalue()
+    assert "free=18500 MiB required>=19000 MiB" in stream.getvalue()
     assert "insufficient free GPU memory before Molmo model load" in stream.getvalue()
     result = json.loads(
         (output / "iteration_001" / "result.json").read_text(encoding="utf-8")
@@ -605,3 +862,32 @@ def test_cli_reporter_heartbeat_shows_active_phase_and_elapsed_time(
     ]
     assert any(event["level"] == "WAIT" for event in events)
     assert all("local_time" in event and "run_elapsed_s" in event for event in events)
+
+
+def test_cli_reporter_heartbeat_refreshes_one_terminal_line(tmp_path: Path) -> None:
+    class _TtyBuffer(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    stream = _TtyBuffer()
+    reporter = CliReporter(tmp_path / "events.jsonl", stream=stream, color=False)
+    reporter.start_phase("global-planning", "inspect complete scene", iteration=1)
+    reporter.emit(
+        "global-planning",
+        "still running: inspect complete scene · phase elapsed 00:10.0",
+        iteration=1,
+        level="WAIT",
+    )
+    heartbeat_text = stream.getvalue()
+    assert heartbeat_text.count("still running:") == 1
+    assert not heartbeat_text.endswith("\n")
+
+    reporter.finish_phase("validated proposal")
+    text = stream.getvalue()
+    assert "validated proposal" in text
+    assert "\033[2K" in text
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["level"] for event in events] == ["START", "WAIT", "DONE"]

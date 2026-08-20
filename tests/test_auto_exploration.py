@@ -17,6 +17,7 @@ from cloth_agent.auto_exploration import (
     VisualPlanDecision,
     _depth_preview,
     _is_preexecution_replan_error,
+    _is_recoverable_viewer_error,
     _json_default,
     _planning_mode_from_history,
     grasp_targets_from_actions,
@@ -93,6 +94,45 @@ def test_evaluation_contract_is_strict():
     assert "useful" not in evaluation.as_dict()
 
 
+def test_evaluation_accepts_optional_skill_update_without_leaking_none():
+    payload = _stage_evaluation_payload()
+    payload["skill_update"] = {
+        "operation": "create",
+        "name": "edge-release",
+        "purpose": "Release a supported edge safely.",
+        "guidance": "Check workspace and IK before a gradual release.",
+        "rationale": "The same before/after response appeared twice.",
+        "evidence": ["Repeated visible edge displacement after release."],
+        "confidence": 0.8,
+    }
+    evaluation = validate_evaluation_payload(payload)
+    assert evaluation.skill_update is not None
+    assert evaluation.as_dict()["skill_update"]["name"] == "edge-release"
+
+
+def test_viewer_recovery_never_crosses_unknown_robot_state():
+    timeout = ExplorationTimeoutError("Claude timed out")
+    assert _is_recoverable_viewer_error(timeout, {}) is True
+    assert _is_recoverable_viewer_error(
+        timeout,
+        {"execution": {"execution_completed": False}},
+    ) is False
+    assert _is_recoverable_viewer_error(
+        timeout,
+        {
+            "execution": {"execution_completed": True},
+            "mandatory_return_home": {"completed": False},
+        },
+    ) is False
+    assert _is_recoverable_viewer_error(
+        timeout,
+        {
+            "execution": {"execution_completed": True},
+            "mandatory_return_home": {"completed": True},
+        },
+    ) is True
+
+
 def test_planning_mode_starts_as_exploration_and_expands_after_validation():
     mode, instruction = _planning_mode_from_history([])
     assert mode == "EXPLORATION"
@@ -134,6 +174,32 @@ def test_visual_plan_contract_selects_one_camera_reference():
     )
     assert decision.selected_reference["camera"] == "A"
     assert decision.selected_reference["reference_id"] == "R026"
+
+
+def test_visual_plan_accepts_only_active_dynamic_skills():
+    payload = {
+        "garment_observation": "A supported edge is visible.",
+        "opening_strategy": "Use the approved edge-release procedure.",
+        "confidence": 0.7,
+        "selected_reference": {
+            "camera": "A",
+            "reference_id": "R026",
+            "reason": "raised boundary",
+        },
+        "motion_intent": "Lift and lay down outward.",
+        "expected_observation": "The overlap opens.",
+        "safety_notes": ["Stay inside the workspace."],
+        "skill_invocations": [
+            {"name": "edge-release", "reason": "The repeated edge response is supported."}
+        ],
+    }
+    decision = validate_visual_plan_payload(
+        payload,
+        allowed_skill_names=("laydown", "edge-release"),
+    )
+    assert decision.skill_invocations == (
+        {"name": "edge-release", "reason": "The repeated edge response is supported."},
+    )
 
 
 def test_auto_plan_runs_visual_then_final_grounding_stage(

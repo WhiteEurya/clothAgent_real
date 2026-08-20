@@ -15,9 +15,14 @@ class SkillSpec:
     name: str
     purpose: str
     guidance: str
+    version: int = 1
+    source: str = "builtin"
 
     def prompt(self) -> str:
-        return f"### Skill: {self.name}\nPurpose: {self.purpose}\nGuidance:\n{self.guidance}"
+        return (
+            f"### Skill: {self.name} (v{self.version})\n"
+            f"Purpose: {self.purpose}\nGuidance:\n{self.guidance}"
+        )
 
 
 LAYDOWN_SKILL = SkillSpec(
@@ -49,10 +54,13 @@ def available_skill_names() -> tuple[str, ...]:
     return tuple(sorted(SKILL_REGISTRY))
 
 
-def skill_prompt() -> str:
-    """Return all currently available skill guidance for a Claude prompt."""
+def skill_prompt(extra_skills: tuple[SkillSpec, ...] | list[SkillSpec] | None = None) -> str:
+    """Return built-in guidance plus approved dynamic skills for a Claude prompt."""
 
-    return "\n\n".join(SKILL_REGISTRY[name].prompt() for name in sorted(SKILL_REGISTRY))
+    merged = dict(SKILL_REGISTRY)
+    for skill in extra_skills or ():
+        merged[skill.name] = skill
+    return "\n\n".join(merged[name].prompt() for name in sorted(merged))
 
 
 def validate_skill_name(name: str) -> str:

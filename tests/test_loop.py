@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from cloth_agent.config import ConfigError, ExperimentConfig, RobotConfig, SafetyError, WorkspaceBounds
 from cloth_agent.claude import ClaudeCodeClient
@@ -31,9 +32,17 @@ from cloth_agent.perception import (
     _fold_edge_mask,
     _fit_table_plane_from_references,
     _height_display_max_mm,
+    _save_fused_height_map,
+    DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
+    DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM,
     _mask_boundary,
     _occlusion_aware_garment_mask,
     _save_camera_height_heatmap,
+    _estimate_camera_table_z_offset_mm,
+    _signed_height_display_range_mm,
+    camera_height_map_mm,
+    table_clip_tolerance_mm,
+    table_height_and_clip_mask,
 )
 from cloth_agent.robot_api import (
     RobotAPI,
@@ -52,6 +61,9 @@ from cloth_agent.viewer import (
     _ensure_experiment_source,
     canonical_grasp_source,
     canonical_home_source,
+    _frame_point_cloud,
+    _load_fused_point_cloud,
+    _view_point_cloud,
     path_waypoints_mm,
     run_viewer,
 )
@@ -104,6 +116,18 @@ def test_restricted_script_and_sequence(tmp_path: Path) -> None:
     assert [item.name for item in api.actions] == [
         "home", "open_gripper", "move", "move", "close_gripper", "move", "open_gripper", "move", "home"
     ]
+
+
+def test_zero_relative_yaw_preserves_calibrated_home_gripper_orientation() -> None:
+    config = RobotConfig(
+        **{**robot_config().__dict__, "init_pose_mm_deg": (500, 0, 180, 180, 0, 170.569135)}
+    )
+    api = RobotAPI(config, SimulatedBackend(config))
+    api.move(500, 0, 100, 0)
+
+    assert api.actions[0].actual_ee_pose is not None
+    assert api.actions[0].actual_ee_pose[5] == pytest.approx(170.569135)
+    assert config.command_yaw_deg(15) == pytest.approx(-174.430865)
 
 
 def test_viewer_canonical_source_and_waypoints() -> None:
@@ -318,15 +342,26 @@ class FakeReadOnlyArm:
     def __init__(self, ik_code: int = 0):
         self.ik_code = ik_code
         self.ik_calls = 0
+        self.fk_calls = 0
+        self.tcp_limit_calls = 0
+        self.ik_poses: list[list[float]] = []
+        self.ik_kwargs: list[dict] = []
 
     def get_err_warn_code(self):
         return 0, [0, 14]
 
     def is_tcp_limit(self, pose, is_radian=False):
-        return 0, False
+        self.tcp_limit_calls += 1
+        return 0, True
+
+    def get_forward_kinematics(self, angles, **kwargs):
+        self.fk_calls += 1
+        return 0, [500, 0, 180, 180, 0, 123]
 
     def get_inverse_kinematics(self, pose, **kwargs):
         self.ik_calls += 1
+        self.ik_poses.append(list(pose))
+        self.ik_kwargs.append(kwargs)
         return self.ik_code, [0, 10, 20, 30, 40, 50, 60] if self.ik_code == 0 else []
 
 
@@ -335,11 +370,27 @@ def test_controller_ik_is_a_hard_gate_before_real_motion() -> None:
         {"name": "home", "args": {}},
         {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
     ]
-    validated = _controller_trajectory_with_arm(FakeReadOnlyArm(), robot_config(), actions)
+    arm = FakeReadOnlyArm()
+    validated = _controller_trajectory_with_arm(arm, robot_config(), actions)
     assert set(validated.joint_targets_rad) == {0, 1}
     assert validated.controller_warning_code == 14
+    assert validated.validated_sample_count >= 1
+    assert arm.fk_calls == 1
+    assert arm.tcp_limit_calls == 0
+    assert arm.ik_poses[0][5] == pytest.approx(123 - 123 / 13)
     with pytest.raises(SafetyError, match="IK rejected"):
         _controller_trajectory_with_arm(FakeReadOnlyArm(ik_code=10), robot_config(), actions)
+
+
+def test_controller_ik_uses_home_yaw_for_zero_relative_yaw() -> None:
+    config = RobotConfig(
+        **{**robot_config().__dict__, "init_pose_mm_deg": (500, 0, 180, 180, 0, 123)}
+    )
+    actions = [{"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}}]
+    arm = FakeReadOnlyArm()
+    _controller_trajectory_with_arm(arm, config, actions)
+
+    assert arm.ik_poses[0][5] == pytest.approx(123)
 
 
 def test_controller_ik_deduplicates_repeated_cartesian_targets() -> None:
@@ -347,7 +398,25 @@ def test_controller_ik_deduplicates_repeated_cartesian_targets() -> None:
     move = {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}}
     validated = _controller_trajectory_with_arm(arm, robot_config(), [move, move])
     assert set(validated.joint_targets_rad) == {0, 1}
-    assert arm.ik_calls == 1
+    assert arm.ik_calls == validated.validated_sample_count
+    assert arm.ik_calls >= 1
+    assert all(call["limited"] is True for call in arm.ik_kwargs)
+
+
+def test_controller_ik_rejects_an_intermediate_cartesian_sample() -> None:
+    class IntermediateFailureArm(FakeReadOnlyArm):
+        def get_inverse_kinematics(self, pose, **kwargs):
+            self.ik_calls += 1
+            self.ik_kwargs.append(kwargs)
+            if self.ik_calls == 2:
+                return 10, []
+            return 0, [0, 10, 20, 30, 40, 50, 60]
+
+    move = {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}}
+    with pytest.raises(SafetyError, match="segment sample 2/"):
+        _controller_trajectory_with_arm(
+            IntermediateFailureArm(), robot_config(), [move]
+        )
 
 
 def test_tcp_validation_waits_for_initial_controller_report() -> None:
@@ -518,6 +587,82 @@ def test_real_session_always_attempts_home_after_claude_rollout(
     assert list((session.results / "mandatory_return_home").glob("*.json"))
 
 
+def test_real_session_returns_home_between_perception_and_rollout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = AgentSession.create(
+        tmp_path,
+        "pre-run home",
+        robot_config(),
+        ExperimentConfig(500, 0, 40, None, None, None),
+        run_id="pre_run_home",
+    )
+    metadata_path = session.run_dir / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["pre_run_home_required"] = True
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    calls = []
+
+    def fake_run(path, *, real=False, confirmed=False, notes=""):
+        calls.append(str(path))
+        return {
+            "experiment": Path(path).stem,
+            "execution_completed": True,
+            "robot_errors": [],
+        }
+
+    monkeypatch.setattr(session.runner, "run_experiment", fake_run)
+    result = session.run_experiment("experiment_001.py", real=True, confirmed=True)
+
+    assert calls[0].startswith("_mandatory_pre_run_home_")
+    assert calls[1] == "experiment_001.py"
+    assert calls[2].startswith("_mandatory_return_home_")
+    assert result["mandatory_pre_run_home"]["completed"] is True
+    assert session.last_pre_run_home_outcome == result["mandatory_pre_run_home"]
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))[
+        "pre_run_home_required"
+    ] is False
+    assert list((session.results / "mandatory_pre_run_home").glob("*.json"))
+
+
+def test_failed_pre_run_home_blocks_rollout_and_keeps_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = AgentSession.create(
+        tmp_path,
+        "failed pre-run home",
+        robot_config(),
+        ExperimentConfig(500, 0, 40, None, None, None),
+        run_id="failed_pre_run_home",
+    )
+    metadata_path = session.run_dir / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["pre_run_home_required"] = True
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    calls = []
+
+    def fake_run(path, *, real=False, confirmed=False, notes=""):
+        calls.append(str(path))
+        return {
+            "experiment": Path(path).stem,
+            "execution_completed": False,
+            "robot_errors": ["home failed"],
+        }
+
+    monkeypatch.setattr(session.runner, "run_experiment", fake_run)
+    with pytest.raises(RuntimeError, match="physical rollout was blocked"):
+        session.run_experiment("experiment_001.py", real=True, confirmed=True)
+
+    assert len(calls) == 1
+    assert calls[0].startswith("_mandatory_pre_run_home_")
+    assert session.last_pre_run_home_outcome is not None
+    assert session.last_pre_run_home_outcome["completed"] is False
+    assert session.last_return_home_outcome is None
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))[
+        "pre_run_home_required"
+    ] is True
+
+
 def test_real_session_attempts_home_even_when_claude_rollout_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -647,6 +792,166 @@ def test_height_heatmap_explicit_table_zero_range_is_physical() -> None:
     assert int(heatmap[0, 3].sum()) == int(heatmap[0, 4].sum())
     assert _height_display_max_mm(np.asarray([2.0, 99.0])) == 100.0
     assert _height_display_max_mm(np.asarray([200.0])) == 160.0
+
+
+def test_garment_softmax_heatmap_makes_higher_height_hotter() -> None:
+    values = np.asarray([[0.0, 10.0, 20.0]], dtype=np.float64)
+    mask = np.ones(values.shape, dtype=bool)
+    heatmap = _scalar_heatmap_rgb(
+        values,
+        mask,
+        focus_mask=mask,
+        higher_is_bright=True,
+        value_range_mm=(-20.0, 20.0),
+        normalization="global_softmax",
+    )
+    assert int(heatmap[0, 2].sum()) > int(heatmap[0, 0].sum())
+
+
+def test_fused_height_map_filters_non_garment_before_grid_median(tmp_path: Path) -> None:
+    points = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 100.0],  # non-garment high outlier in the same cell
+            [1.0, 0.0, 20.0],
+            [4.0, 0.0, 10.0],
+        ],
+        dtype=np.float64,
+    )
+    heights = np.asarray([0.0, 100.0, 20.0, 10.0], dtype=np.float64)
+    garment_mask = np.asarray([True, False, True, True])
+
+    metadata = _save_fused_height_map(
+        tmp_path,
+        points,
+        heights,
+        garment_mask,
+        grid_size_mm=4.0,
+    )
+    height_map = np.load(tmp_path / "fused_height_map_mm.npy")
+
+    assert height_map[0, 0] == pytest.approx(10.0)
+    assert float(np.nanmax(height_map)) == pytest.approx(10.0)
+    assert metadata["height_map_aggregation"] == "garment_only_grid_median"
+    assert metadata["height_map_display_scale"] == "fixed_physical_-5_to_40mm"
+    assert metadata["heatmap_display_min_mm"] == DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM
+    assert DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM == 40.0
+
+
+def test_table_clip_uses_tilted_plane_and_bounded_noise_tolerance() -> None:
+    coefficients = np.asarray([0.1, -0.2, 50.0])
+    xy = np.asarray([[0.0, 0.0], [100.0, 50.0], [20.0, -40.0], [5.0, 5.0]])
+    table_z = coefficients[0] * xy[:, 0] + coefficients[1] * xy[:, 1] + coefficients[2]
+    points = np.column_stack((xy, table_z + np.asarray([0.0, -11.0, -13.0, 40.0])))
+    points = np.vstack((points, np.asarray([np.nan, 0.0, 0.0])))
+
+    heights, keep = table_height_and_clip_mask(
+        points,
+        coefficients,
+        tolerance_mm=12.0,
+    )
+
+    assert heights[:4].tolist() == pytest.approx([0.0, -11.0, -13.0, 40.0])
+    assert keep.tolist() == [True, True, False, True, False]
+    assert table_clip_tolerance_mm(None) == pytest.approx(12.0)
+    assert table_clip_tolerance_mm(8.0) == pytest.approx(16.0)
+    assert table_clip_tolerance_mm(100.0) == pytest.approx(30.0)
+
+
+def test_camera_table_z_bias_correction_centers_bright_table(tmp_path: Path) -> None:
+    config = perception_config(tmp_path)
+    depth = np.ones((30, 30), dtype=np.float32)
+    transform = np.eye(4)
+    transform[2, 3] = -1.006
+    frame = RGBDFrame(
+        "B",
+        "B1",
+        np.full((30, 30, 3), 240, dtype=np.uint8),
+        depth,
+        np.asarray([[100.0, 0.0, 14.5], [0.0, 100.0, 14.5], [0.0, 0.0, 1.0]]),
+        transform,
+    )
+
+    offset_mm, diagnostics = _estimate_camera_table_z_offset_mm(
+        frame,
+        config,
+        np.asarray([0.0, 0.0, 0.0]),
+    )
+    height_map, valid, _ = camera_height_map_mm(
+        frame,
+        config,
+        np.asarray([0.0, 0.0, 0.0]),
+        base_z_offset_mm=offset_mm,
+    )
+
+    assert diagnostics["applied"] is True
+    assert offset_mm == pytest.approx(6.0, abs=1e-3)
+    assert np.nanmedian(height_map[valid]) == pytest.approx(0.0, abs=1e-3)
+    assert _signed_height_display_range_mm(np.asarray([-11.0, 0.0, 12.0])) == 20.0
+
+
+def test_frame_and_saved_view_point_clouds_clip_below_table(tmp_path: Path) -> None:
+    rgb = np.asarray([[[10, 0, 0], [20, 0, 0], [30, 0, 0]]], dtype=np.uint8)
+    depth = np.ones((1, 3), dtype=np.float32)
+    height_map = np.asarray([[0.0, -20.0, 25.0]], dtype=np.float32)
+    frame = RGBDFrame(
+        "A",
+        "A1",
+        rgb,
+        depth,
+        np.asarray([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        np.eye(4),
+    )
+
+    points, colors = _frame_point_cloud(
+        frame,
+        stride=1,
+        height_above_table_mm=height_map,
+    )
+    assert len(points) == 2
+    assert colors[:, 0].tolist() == [10, 30]
+
+    Image.fromarray(rgb).save(tmp_path / "camera_0_A.png")
+    np.save(tmp_path / "camera_0_A_depth_m.npy", depth)
+    np.save(tmp_path / "camera_A_height_above_table_mm.npy", height_map)
+    view = {
+        "label": "A",
+        "serial": "A1",
+        "image": "camera_0_A.png",
+        "depth_m": "camera_0_A_depth_m.npy",
+        "height_map_path": "camera_A_height_above_table_mm.npy",
+        "intrinsics": frame.intrinsics.tolist(),
+        "X_base_camera": frame.X_base_camera.tolist(),
+    }
+    _, saved_colors = _view_point_cloud(view, tmp_path, stride=1)
+    assert saved_colors[:, 0].tolist() == [10, 30]
+
+
+def test_fused_cloud_loader_enforces_saved_height_contract(tmp_path: Path) -> None:
+    np.save(
+        tmp_path / "points.npy",
+        np.asarray([[100.0, 0.0, 50.0], [200.0, 0.0, -40.0], [300.0, 0.0, 80.0]]),
+    )
+    np.save(
+        tmp_path / "colors.npy",
+        np.asarray([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.uint8),
+    )
+    np.save(tmp_path / "height.npy", np.asarray([0.0, -40.0, 30.0]))
+    result = {
+        "depth_fusion": {
+            "table_clip": {"tolerance_mm": 12.0},
+            "artifacts": {
+                "fused_points_base_mm": "points.npy",
+                "fused_colors_rgb": "colors.npy",
+                "fused_height_above_table_mm": "height.npy",
+            },
+        }
+    }
+
+    points, colors = _load_fused_point_cloud(result, tmp_path)
+
+    assert np.allclose(points, [[0.1, 0.0, 0.05], [0.3, 0.0, 0.08]])
+    assert colors.tolist() == [[1, 2, 3], [7, 8, 9]]
 
 
 def test_projected_garment_mask_rejects_nearer_occluder(tmp_path: Path) -> None:
@@ -800,6 +1105,50 @@ def make_frames(
         RGBDFrame("A", "A1", rgb, primary_depth, K, X_a),
         RGBDFrame("B", "B1", rgb, auxiliary_depth, K, X_b),
     ]
+
+
+def test_successful_session_perception_requires_home_before_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = AgentSession.create(
+        tmp_path,
+        "perception home marker",
+        robot_config(),
+        ExperimentConfig(),
+        run_id="perception_home_marker",
+    )
+
+    def fake_locate(self, output_dir, experiment, frames=None):
+        output_dir.mkdir(parents=True)
+        result = {
+            "center_base_mm": [500.0, 0.0, 20.0],
+            "surface_z_mm": 20.0,
+            "perception_mode": "dual_camera_rgbd",
+            "active_cameras": ["A", "B"],
+            "views": [],
+            "depth_fusion": {
+                "fused_point_count": 100,
+                "input_point_count": 120,
+                "source_voxel_counts": {"AB_overlap": 80},
+                "artifacts": {},
+            },
+        }
+        (output_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        return result, ExperimentConfig(500, 0, 20, 100, 180, 0)
+
+    monkeypatch.setattr(ClothCenterPerception, "locate", fake_locate)
+    before = json.loads(
+        (session.run_dir / "run_metadata.json").read_text(encoding="utf-8")
+    )
+    assert before["pre_run_home_required"] is False
+
+    session.locate_cloth_center(perception_config(tmp_path), frames=make_frames())
+
+    after = json.loads(
+        (session.run_dir / "run_metadata.json").read_text(encoding="utf-8")
+    )
+    assert after["pre_run_home_required"] is True
+    assert after["pre_run_home_required_at"]
 
 
 def test_two_view_molmo_center_updates_experiment(tmp_path: Path) -> None:

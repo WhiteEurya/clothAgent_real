@@ -17,9 +17,13 @@ from .config import ExperimentConfig
 from .experiment import Preflight, format_action_sequence, format_speed_profile
 from .kinematics import AnimationFrame, XArm7Kinematics
 from .perception import (
+    DEFAULT_TABLE_CLIP_TOLERANCE_MM,
     PerceptionConfig,
+    PerceptionError,
     RGBDFrame,
+    camera_height_map_mm,
     capture_two_view_rgbd,
+    table_height_and_clip_mask,
 )
 from .robot_api import ControllerTrajectoryValidation, validate_controller_trajectory
 from .randomization import (
@@ -94,12 +98,30 @@ def _load_latest_perception(
     return json.loads(result_path.read_text(encoding="utf-8")), result_path
 
 
-def _frame_point_cloud(frame: RGBDFrame, stride: int = 5) -> tuple[np.ndarray, np.ndarray]:
+def _frame_point_cloud(
+    frame: RGBDFrame,
+    stride: int = 5,
+    *,
+    height_above_table_mm: np.ndarray | None = None,
+    table_clip_tolerance_mm: float = DEFAULT_TABLE_CLIP_TOLERANCE_MM,
+    base_z_offset_mm: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
     depth = frame.depth_m
     K = frame.intrinsics
+    if stride < 1:
+        raise ValueError("point-cloud stride must be positive")
     y_px, x_px = np.mgrid[0 : depth.shape[0] : stride, 0 : depth.shape[1] : stride]
     z = depth[::stride, ::stride].astype(np.float64)
     valid = np.isfinite(z) & (z > 0.15) & (z < 2.0)
+    if height_above_table_mm is not None:
+        height_map = np.asarray(height_above_table_mm, dtype=np.float64)
+        if height_map.shape != depth.shape:
+            raise ValueError("height-above-table map must match the depth image")
+        tolerance = float(table_clip_tolerance_mm)
+        if not np.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("table clip tolerance must be finite and non-negative")
+        sampled_height = height_map[::stride, ::stride]
+        valid &= np.isfinite(sampled_height) & (sampled_height >= -tolerance)
     x_px, y_px, z = x_px[valid], y_px[valid], z[valid]
     camera_points = np.stack(
         [
@@ -110,6 +132,10 @@ def _frame_point_cloud(frame: RGBDFrame, stride: int = 5) -> tuple[np.ndarray, n
         axis=1,
     )
     points = camera_points @ frame.X_base_camera[:3, :3].T + frame.X_base_camera[:3, 3]
+    z_offset_m = float(base_z_offset_mm) / 1000.0
+    if not np.isfinite(z_offset_m):
+        raise ValueError("base Z offset must be finite")
+    points[:, 2] += z_offset_m
     colors = frame.rgb[::stride, ::stride][valid]
     return points.astype(np.float32), colors.astype(np.uint8)
 
@@ -118,7 +144,14 @@ def _view_point_cloud(
     view: dict[str, Any], result_dir: Path, stride: int = 5
 ) -> tuple[np.ndarray, np.ndarray]:
     image_path = result_dir / view["image"]
-    depth_path = result_dir / f"{Path(view['image']).stem}_depth_m.npy"
+    depth_path = result_dir / str(
+        view.get("depth_m", f"{Path(view['image']).stem}_depth_m.npy")
+    )
+    height_path = result_dir / str(view.get("height_map_path", ""))
+    if not height_path.is_file():
+        raise PerceptionError(
+            f"saved camera {view.get('label', '?')} has no validated table height map"
+        )
     frame = RGBDFrame(
         label=str(view["label"]),
         serial=str(view["serial"]),
@@ -127,7 +160,112 @@ def _view_point_cloud(
         intrinsics=np.asarray(view["intrinsics"], dtype=np.float64),
         X_base_camera=np.asarray(view["X_base_camera"], dtype=np.float64),
     )
-    return _frame_point_cloud(frame, stride=stride)
+    return _frame_point_cloud(
+        frame,
+        stride=stride,
+        height_above_table_mm=np.load(height_path),
+        table_clip_tolerance_mm=float(
+            view.get(
+                "point_cloud_table_clip_tolerance_mm",
+                DEFAULT_TABLE_CLIP_TOLERANCE_MM,
+            )
+        ),
+        base_z_offset_mm=float(view.get("base_z_offset_mm", 0.0)),
+    )
+
+
+def _load_fused_point_cloud(
+    result: dict[str, Any], result_dir: Path
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load a fused cloud in metres after enforcing its table-height contract."""
+
+    fusion = result.get("depth_fusion", {})
+    artifacts = fusion.get("artifacts", {})
+    points_path = result_dir / str(artifacts.get("fused_points_base_mm", ""))
+    colors_path = result_dir / str(artifacts.get("fused_colors_rgb", ""))
+    if not points_path.is_file() or not colors_path.is_file():
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+    points_mm = np.asarray(np.load(points_path), dtype=np.float64)
+    colors = np.asarray(np.load(colors_path), dtype=np.uint8)
+    if points_mm.ndim != 2 or points_mm.shape[1] != 3:
+        raise PerceptionError("fused point artifact must have shape (N, 3)")
+    if colors.ndim != 2 or colors.shape[1] != 3 or len(colors) != len(points_mm):
+        raise PerceptionError("fused color artifact must match fused points")
+    tolerance_mm = float(
+        fusion.get("table_clip", {}).get(
+            "tolerance_mm", DEFAULT_TABLE_CLIP_TOLERANCE_MM
+        )
+    )
+    height_path = result_dir / str(
+        artifacts.get("fused_height_above_table_mm", "")
+    )
+    if height_path.is_file():
+        height_above_table = np.asarray(np.load(height_path), dtype=np.float64)
+        if height_above_table.shape != (len(points_mm),):
+            raise PerceptionError("fused height artifact must match fused points")
+        keep = (
+            np.all(np.isfinite(points_mm), axis=1)
+            & np.isfinite(height_above_table)
+            & (height_above_table >= -tolerance_mm)
+        )
+    else:
+        coefficient_record = fusion.get("table_plane", {}).get("coefficients", {})
+        coefficients = np.asarray(
+            [
+                coefficient_record.get("a"),
+                coefficient_record.get("b"),
+                coefficient_record.get("c_mm"),
+            ],
+            dtype=np.float64,
+        )
+        _, keep = table_height_and_clip_mask(
+            points_mm,
+            coefficients,
+            tolerance_mm=tolerance_mm,
+        )
+    return (
+        (points_mm[keep] / 1000.0).astype(np.float32),
+        colors[keep].astype(np.uint8),
+    )
+
+
+def _saved_table_plane(
+    result: dict[str, Any] | None,
+) -> tuple[np.ndarray | None, dict[str, float]]:
+    """Extract a validated shared table plane and camera Z corrections."""
+
+    if not isinstance(result, dict):
+        return None, {}
+    coefficients = (
+        result.get("depth_fusion", {})
+        .get("table_plane", {})
+        .get("coefficients", {})
+    )
+    if not isinstance(coefficients, dict):
+        return None, {}
+    try:
+        plane = np.asarray(
+            [coefficients["a"], coefficients["b"], coefficients["c_mm"]],
+            dtype=np.float64,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None, {}
+    if plane.shape != (3,) or not np.all(np.isfinite(plane)):
+        return None, {}
+    offsets = result.get("depth_fusion", {}).get("table_plane", {}).get(
+        "camera_z_bias_correction", {}
+    )
+    raw_offsets = offsets.get("offsets_mm", {}) if isinstance(offsets, dict) else {}
+    camera_offsets: dict[str, float] = {}
+    if isinstance(raw_offsets, dict):
+        for label, value in raw_offsets.items():
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(parsed):
+                camera_offsets[str(label).upper()] = parsed
+    return plane, camera_offsets
 
 
 def _latest_experiment(session: AgentSession, requested: str | None) -> str | None:
@@ -363,8 +501,33 @@ def run_viewer(
     def render_captured_frames(frames: list[RGBDFrame]) -> None:
         server.scene.remove_by_name("/perception")
         clear_gui_images()
+        if state.perception_config is None:
+            raise PerceptionError("captured point clouds require a perception config")
+        table_coefficients, camera_z_offsets = _saved_table_plane(
+            state.perception_result
+        )
         for frame in frames:
-            points, colors = _frame_point_cloud(frame)
+            if table_coefficients is None:
+                # Never show a misleading single-camera plane fit.  The RGB
+                # image remains available until a validated A/B plane exists.
+                image_handles.append(
+                    server.gui.add_image(
+                        frame.rgb,
+                        label=f"RealSense {frame.label} (height map pending A/B validation)",
+                    )
+                )
+                continue
+            height_map, _, _ = camera_height_map_mm(
+                frame,
+                state.perception_config,
+                table_coefficients,
+                base_z_offset_mm=camera_z_offsets.get(frame.label, 0.0),
+            )
+            points, colors = _frame_point_cloud(
+                frame,
+                height_above_table_mm=height_map,
+                base_z_offset_mm=camera_z_offsets.get(frame.label, 0.0),
+            )
             server.scene.add_point_cloud(
                 f"/perception/{frame.label}_rgbd",
                 points=points,
@@ -391,10 +554,17 @@ def run_viewer(
             annotated = result_path.parent / view.get(
                 "annotated_image", f"camera_{index}_{view['label']}_annotated.png"
             )
-            image_path = annotated if annotated.is_file() else result_path.parent / view["image"]
+            garment_rgb = result_path.parent / str(view.get("garment_rgb", ""))
+            image_path = (
+                garment_rgb
+                if garment_rgb.is_file()
+                else annotated
+                if annotated.is_file()
+                else result_path.parent / view["image"]
+            )
             role = view.get("role")
             image_label = (
-                f"Camera {view['label']} dense RGB-D fusion source"
+                f"Camera {view['label']} garment-only RGB-D fusion source"
                 if role == "rgbd_fusion_source"
                 else f"Camera {view['label']} perception"
             )
@@ -446,11 +616,8 @@ def run_viewer(
                     )
                 )
         artifacts = result.get("depth_fusion", {}).get("artifacts", {})
-        fused_points_path = result_path.parent / str(artifacts.get("fused_points_base_mm", ""))
-        fused_colors_path = result_path.parent / str(artifacts.get("fused_colors_rgb", ""))
-        if fused_points_path.is_file() and fused_colors_path.is_file():
-            fused_points = np.load(fused_points_path).astype(np.float32) / 1000.0
-            fused_colors = np.load(fused_colors_path).astype(np.uint8)
+        fused_points, fused_colors = _load_fused_point_cloud(result, result_path.parent)
+        if len(fused_points):
             server.scene.add_point_cloud(
                 "/perception/fused_AB",
                 points=fused_points,
@@ -980,6 +1147,7 @@ def run_viewer(
                 robot.init_joints_deg,
                 robot.orientation_roll_deg,
                 robot.orientation_pitch_deg,
+                yaw_offset_deg=robot.init_pose_mm_deg[5],
             )
             state.controller_validation = controller
             state.animation_frames = frames

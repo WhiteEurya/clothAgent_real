@@ -126,6 +126,7 @@ class XArm7Kinematics:
         fixed_pitch_deg: float,
         *,
         joint_targets_rad: dict[int, tuple[float, ...]] | None = None,
+        yaw_offset_deg: float = 0.0,
         arm_steps: int = 24,
         gripper_steps: int = 10,
     ) -> list[AnimationFrame]:
@@ -179,7 +180,8 @@ class XArm7Kinematics:
                     float(args["z"]),
                     fixed_roll_deg,
                     fixed_pitch_deg,
-                    float(args["yaw"]),
+                    (float(args["yaw"]) + float(yaw_offset_deg) + 180.0) % 360.0
+                    - 180.0,
                 ]
                 if joint_targets_rad is not None:
                     if action_index not in joint_targets_rad:

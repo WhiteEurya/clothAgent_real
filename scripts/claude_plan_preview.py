@@ -38,7 +38,11 @@ from cloth_agent.kinematics import XArm7Kinematics
 from cloth_agent.perception import PerceptionConfig, capture_two_view_rgbd
 from cloth_agent.robot_api import validate_controller_trajectory
 from cloth_agent.session import AgentSession
-from cloth_agent.viewer import _load_latest_perception, path_waypoints_mm
+from cloth_agent.viewer import (
+    _load_fused_point_cloud as _load_clipped_fused_point_cloud,
+    _load_latest_perception,
+    path_waypoints_mm,
+)
 
 
 def _json_default(value: Any) -> Any:
@@ -205,16 +209,8 @@ def _render_camera_plan(
 def _load_fused_cloud(
     result: dict[str, Any], result_dir: Path
 ) -> tuple[np.ndarray, np.ndarray]:
-    artifacts = result.get("depth_fusion", {}).get("artifacts", {})
-    points_path = result_dir / str(artifacts.get("fused_points_base_mm", ""))
-    colors_path = result_dir / str(artifacts.get("fused_colors_rgb", ""))
-    if not points_path.is_file() or not colors_path.is_file():
-        return np.empty((0, 3), dtype=np.float64), np.empty((0, 3), dtype=np.uint8)
-    points = np.asarray(np.load(points_path), dtype=np.float64)
-    colors = np.asarray(np.load(colors_path), dtype=np.uint8)
-    valid = points.ndim == 2 and points.shape[1] == 3 and len(points) == len(colors)
-    if not valid:
-        raise ValueError("invalid fused point/color artifacts")
+    points_m, colors = _load_clipped_fused_point_cloud(result, result_dir)
+    points = points_m.astype(np.float64) * 1000.0
     if len(points) > 120_000:
         stride = int(np.ceil(len(points) / 120_000))
         points = points[::stride]
