@@ -309,6 +309,35 @@ def test_action_scope_blocks_multiple_probe_moves_in_one_acquisition_cycle() -> 
         )
 
 
+def test_action_scope_requires_compression_probe_for_narrow_peak() -> None:
+    candidate = {
+        "base_xyz_mm": [500.0, 0.0, 25.0],
+        "surface_shape_diagnostic": {
+            "surface_shape": "NARROW_RIDGE_OR_SPIKE",
+            "compression_probe_recommended": True,
+            "recommended_press_below_surface_mm": 1.0,
+        },
+    }
+    actions = [
+        {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
+        {"name": "move", "args": {"x": 500, "y": 0, "z": 24, "yaw": 0}},
+        {"name": "close_gripper", "args": {}},
+        {"name": "move", "args": {"x": 500, "y": 0, "z": 40, "yaw": 0}},
+        {"name": "open_gripper", "args": {}},
+    ]
+    result = validate_action_scope(
+        actions, candidate=candidate, scope=ACTION_SCOPES["ACQUISITION_CHECK"]
+    )
+    assert result["compression_probe_required"] is True
+    assert result["compression_depth_mm"] == pytest.approx(1.0)
+
+    actions[1] = {"name": "move", "args": {"x": 500, "y": 0, "z": 26, "yaw": 0}}
+    with pytest.raises(SemanticPipelineError, match="at or slightly below"):
+        validate_action_scope(
+            actions, candidate=candidate, scope=ACTION_SCOPES["ACQUISITION_CHECK"]
+        )
+
+
 def test_semantic_evaluator_splits_engagement_from_opening_relevance() -> None:
     evaluation = validate_semantic_evaluation_payload(_evaluation_payload())
     assert evaluation.structure_engagement.status == "SUCCESS"

@@ -1600,6 +1600,7 @@ def run_keypoint_cli_loop(
                         probe_profile = validate_global_probe_profile(
                             proposal,
                             global_experiences,
+                            measurement=(grounding or {}).get("measurement"),
                         )
                         source = exploration_source(proposal)
                         source_path.write_text(source, encoding="utf-8")

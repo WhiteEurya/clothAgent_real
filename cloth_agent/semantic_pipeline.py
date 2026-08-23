@@ -892,6 +892,16 @@ class LocalGeometryGrounder:
                     shape in {"NARROW_RIDGE_OR_SPIKE", "MIXED_OR_OCCLUSION_EDGE"}
                     or not bool(boundary[y_px, x_px])
                 ),
+                "compression_probe_recommended": shape
+                in {"NARROW_RIDGE_OR_SPIKE", "MIXED_OR_OCCLUSION_EDGE"},
+                "recommended_press_below_surface_mm": 1.0,
+                "interpretation": (
+                    "A narrow ridge/spike or mixed edge may collapse under shallow "
+                    "compression without exposing a separable ply; test closure and "
+                    "a near-vertical hold before lateral probing."
+                    if shape in {"NARROW_RIDGE_OR_SPIKE", "MIXED_OR_OCCLUSION_EDGE"}
+                    else "Shape is a geometric triage hint; verify independent material motion."
+                ),
             }
 
         feature_priority = list(strategy.prefer) + [
@@ -1650,6 +1660,44 @@ def validate_action_scope(
     grasp_xyz = np.asarray(
         [float(args["x"]), float(args["y"]), float(args["z"])], dtype=np.float64
     )
+    shape_diagnostic = candidate.get("surface_shape_diagnostic")
+    compression_probe_required = bool(
+        isinstance(shape_diagnostic, Mapping)
+        and shape_diagnostic.get("compression_probe_recommended")
+    )
+    compression_depth_mm: float | None = None
+    if compression_probe_required:
+        raw_depth = (
+            shape_diagnostic.get("recommended_press_below_surface_mm", 1.0)
+            if isinstance(shape_diagnostic, Mapping)
+            else 1.0
+        )
+        if (
+            isinstance(raw_depth, bool)
+            or not isinstance(raw_depth, (int, float))
+            or not math.isfinite(float(raw_depth))
+            or float(raw_depth) <= 0.0
+        ):
+            raise SemanticPipelineError(
+                "candidate compression probe has an invalid press depth"
+            )
+        compression_depth_mm = float(raw_depth)
+        surface_z_mm = float(expected[2])
+        actual_depth_mm = surface_z_mm - float(grasp_xyz[2])
+        tolerance_mm = 0.25
+        max_depth_mm = max(3.0, compression_depth_mm + 1.0)
+        if actual_depth_mm < compression_depth_mm - tolerance_mm:
+            raise SemanticPipelineError(
+                "compression probe must close at or slightly below the candidate "
+                "surface: "
+                f"requested depth={actual_depth_mm:.1f} mm, "
+                f"recommended={compression_depth_mm:.1f} mm"
+            )
+        if actual_depth_mm > max_depth_mm + tolerance_mm:
+            raise SemanticPipelineError(
+                "compression probe press is too deep for a shallow wrinkle test: "
+                f"requested depth={actual_depth_mm:.1f} mm > {max_depth_mm:.1f} mm"
+            )
     post_grasp_moves: list[np.ndarray] = []
     release_index: int | None = None
     for action_index, action in enumerate(
@@ -1698,6 +1746,11 @@ def validate_action_scope(
             f"{scope.name} first post-grasp move must be a near-vertical hold; "
             f"lateral offset={first_lateral:.1f} mm"
         )
+    if compression_probe_required and first_lateral > 5.0 + 1e-6:
+        raise SemanticPipelineError(
+            "compression probe must lift nearly vertically before any lateral motion; "
+            f"first post-grasp lateral offset={first_lateral:.1f} mm > 5.0 mm"
+        )
     max_lateral = max(
         float(np.linalg.norm(point[:2] - grasp_xyz[:2])) for point in post_grasp_moves
     )
@@ -1718,6 +1771,8 @@ def validate_action_scope(
         "grasp_xy_error_mm": grasp_xy_error,
         "max_lateral_mm": max_lateral,
         "max_lift_mm": max_lift,
+        "compression_probe_required": compression_probe_required,
+        "compression_depth_mm": compression_depth_mm,
     }
 
 

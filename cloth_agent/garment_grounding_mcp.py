@@ -353,12 +353,19 @@ class GarmentGrounding:
                     "high_region_fraction": high_fraction,
                     "center_is_high": center_is_high,
                     "requires_structure_hold_check": True,
+                    "compression_probe_recommended": surface_shape
+                    in {"NARROW_RIDGE_OR_SPIKE", "MIXED_OR_OCCLUSION_EDGE"},
+                    "recommended_press_below_surface_mm": 1.0,
                     "surface_shape": surface_shape,
                     "interpretation": (
                         "A narrow ridge/spike may be a rolled wrinkle; height alone "
-                        "does not prove a separable free ply. Require a vertical "
-                        "lift/hold and short relative-motion check before transport."
+                        "does not prove a separable free ply. Use the shallow "
+                        "compression probe, then require a vertical lift/hold and "
+                        "short relative-motion check before transport."
                         if surface_shape == "NARROW_RIDGE_OR_SPIKE"
+                        else "A mixed/occlusion edge may collapse under shallow "
+                        "compression; verify independent motion before transport."
+                        if surface_shape == "MIXED_OR_OCCLUSION_EDGE"
                         else "Shape is only a geometric prior; verify independent "
                         "motion of the intended layer before a long pull."
                     ),
@@ -406,7 +413,11 @@ PIXEL_TOOLS: list[dict[str, Any]] = [
             "Measure robust calibrated robot-base XYZ and table-relative height around "
             "one final Camera A/B image pixel already selected by Claude from the full "
             "visual scene. Call exactly once, only after visual reasoning is complete. "
-            "This tool is not for scanning, comparing, ranking, or searching pixels."
+            "This tool is not for scanning, comparing, ranking, or searching pixels. "
+            "The result includes a triage-only surface_shape_diagnostic; when it sets "
+            "compression_probe_recommended=true, close at the recommended shallow depth "
+            "and inspect whether the peak collapses toward its neighbours before any "
+            "lateral transport."
         ),
         "inputSchema": {
             "type": "object",

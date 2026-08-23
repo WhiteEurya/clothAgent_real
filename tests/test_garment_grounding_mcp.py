@@ -89,6 +89,8 @@ def test_local_surface_marks_narrow_relief_as_roll_wrinkle_triage(tmp_path: Path
     diagnostic = local["surface_shape_diagnostic"]
     assert diagnostic["surface_shape"] == "NARROW_RIDGE_OR_SPIKE"
     assert diagnostic["requires_structure_hold_check"] is True
+    assert diagnostic["compression_probe_recommended"] is True
+    assert diagnostic["recommended_press_below_surface_mm"] == pytest.approx(1.0)
 
 
 def test_stdio_server_lists_and_calls_read_only_tools(tmp_path: Path):

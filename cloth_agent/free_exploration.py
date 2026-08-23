@@ -574,6 +574,7 @@ def validate_global_probe_profile(
     proposal: ExplorationProposal,
     history: Sequence[Mapping[str, Any]] = (),
     *,
+    measurement: Mapping[str, Any] | None = None,
     max_unvalidated_lateral_mm: float = 35.0,
 ) -> dict[str, Any]:
     """Require a short diagnostic probe until target-layer motion is supported.
@@ -581,12 +582,61 @@ def validate_global_probe_profile(
     A positive vertical lift is already required by the generic action validator.
     This second gate prevents a fresh/uncertain high-relief hypothesis from
     immediately turning into a long lateral pull that can tighten a rolled
-    wrinkle. Once a previous evaluation supports target-layer motion, the normal
-    transport authority is restored.
+    wrinkle. When ``measurement`` marks a narrow/mixed shape for compression,
+    it additionally requires a shallow press below the measured surface and a
+    near-vertical hold before any lateral motion. Once a previous evaluation
+    supports target-layer motion, the normal transport authority is restored.
     """
 
     if proposal.selected_grasp is None:
         raise ExplorationPlanningError("probe profile requires a selected grasp")
+
+    # A narrow/ambiguous relief can be a rolled wrinkle rather than a free ply.
+    # When the local geometry diagnostic recommends a compression probe, the
+    # grasp must close while pressing only slightly into the measured surface.
+    # This is deliberately a hard pre-execution gate: a high point must not be
+    # allowed to turn directly into a lateral pull without testing whether the
+    # peak collapses toward its neighbourhood under compression.
+    diagnostic: Mapping[str, Any] | None = None
+    compression_probe_required = False
+    compression_surface_z_mm: float | None = None
+    compression_depth_mm: float | None = None
+    if isinstance(measurement, Mapping):
+        raw_diagnostic = measurement.get("surface_shape_diagnostic")
+        if isinstance(raw_diagnostic, Mapping):
+            diagnostic = raw_diagnostic
+            compression_probe_required = bool(
+                raw_diagnostic.get("compression_probe_recommended")
+            )
+        if compression_probe_required:
+            raw_xyz = measurement.get("base_xyz_median_mm")
+            if (
+                not isinstance(raw_xyz, (list, tuple))
+                or len(raw_xyz) != 3
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    for value in raw_xyz
+                )
+            ):
+                raise ExplorationPlanningError(
+                    "compression probe requires a finite measured surface XYZ"
+                )
+            compression_surface_z_mm = float(raw_xyz[2])
+            raw_depth = raw_diagnostic.get(
+                "recommended_press_below_surface_mm", 1.0
+            )
+            if (
+                isinstance(raw_depth, bool)
+                or not isinstance(raw_depth, (int, float))
+                or not math.isfinite(float(raw_depth))
+                or float(raw_depth) <= 0.0
+            ):
+                raise ExplorationPlanningError(
+                    "compression probe diagnostic has an invalid press depth"
+                )
+            compression_depth_mm = float(raw_depth)
     latest_evaluation: Mapping[str, Any] | None = None
     for item in reversed(list(history)):
         if not isinstance(item, Mapping):
@@ -621,6 +671,31 @@ def validate_global_probe_profile(
     if grasp_move is None:
         raise ExplorationPlanningError("probe profile requires a grasp move")
     grasp_args = grasp_move["args"]
+    grasp_z = float(grasp_args["z"])
+    if compression_probe_required:
+        if compression_surface_z_mm is None or compression_depth_mm is None:
+            raise ExplorationPlanningError(
+                "compression probe requires a finite measured surface and press depth"
+            )
+        # Allow a small measurement/control tolerance, but keep the probe
+        # shallow enough to avoid driving the jaws into the table.  The default
+        # diagnostic asks for 1 mm below the local measured surface and caps
+        # the total compression depth at 3 mm.
+        tolerance_mm = 0.25
+        max_depth_mm = max(3.0, compression_depth_mm + 1.0)
+        actual_depth_mm = compression_surface_z_mm - grasp_z
+        if actual_depth_mm < compression_depth_mm - tolerance_mm:
+            raise ExplorationPlanningError(
+                "compression probe requires the gripper to close at or slightly "
+                "below the measured surface: "
+                f"requested depth={actual_depth_mm:.1f} mm, "
+                f"recommended={compression_depth_mm:.1f} mm"
+            )
+        if actual_depth_mm > max_depth_mm + tolerance_mm:
+            raise ExplorationPlanningError(
+                "compression probe press is too deep for a shallow wrinkle test: "
+                f"requested depth={actual_depth_mm:.1f} mm > {max_depth_mm:.1f} mm"
+            )
     release_index = next(
         (
             index
@@ -647,6 +722,17 @@ def validate_global_probe_profile(
         )
         for move in moves
     )
+    first_post = moves[0]
+    first_post_lateral = float(
+        np.linalg.norm(
+            np.asarray([float(first_post["x"]), float(first_post["y"])]) - grasp_xy
+        )
+    )
+    if compression_probe_required and first_post_lateral > 5.0 + 1e-6:
+        raise ExplorationPlanningError(
+            "compression probe must lift nearly vertically before any lateral motion; "
+            f"first post-grasp lateral offset={first_post_lateral:.1f} mm > 5.0 mm"
+        )
     if not previous_validated and lateral > float(max_unvalidated_lateral_mm) + 1e-6:
         raise ExplorationPlanningError(
             "uncertain target-layer hypothesis requires a short lateral probe; "
@@ -658,6 +744,17 @@ def validate_global_probe_profile(
         "max_lateral_mm": lateral,
         "max_unvalidated_lateral_mm": float(max_unvalidated_lateral_mm),
         "requires_hold_and_short_probe": not previous_validated,
+        "compression_probe_required": compression_probe_required,
+        "compression_probe_surface_shape": (
+            diagnostic.get("surface_shape") if diagnostic is not None else None
+        ),
+        "compression_surface_z_mm": compression_surface_z_mm,
+        "grasp_z_mm": grasp_z,
+        "compression_depth_mm": (
+            compression_surface_z_mm - grasp_z
+            if compression_surface_z_mm is not None
+            else None
+        ),
     }
 
 
@@ -940,7 +1037,10 @@ class ClaudeExplorationClient:
             "or highest point in a heatmap. A narrow ridge or isolated height spike may "
             "be a rolled wrinkle rather than a separable free ply; require a conservative "
             "vertical lift/hold check and a short relative-motion check before committing "
-            "to a long lateral pull."
+            "to a long lateral pull. If the local-surface diagnostic marks "
+            "`compression_probe_recommended`, close only after lowering the grasp TCP to "
+            "about the recommended shallow depth below the measured surface. This is a "
+            "controlled compression test, not permission to press deeply into the table."
         )
         full_prompt = (
             f"{prompt}\n\nGarment images to inspect:\n{image_text}\n\n"
@@ -961,7 +1061,12 @@ class ClaudeExplorationClient:
             "directly visible task change. If the selected structure is a narrow ridge, plan the "
             "first post-grasp move as a near-vertical hold and only then a short lateral probe; "
             "do not spend the whole action on a long pull before observing independent material "
-            "motion.\n\n"
+            "motion. If the returned diagnostic recommends compression, close at roughly "
+            "1 mm below the measured surface, then lift nearly vertically before any lateral "
+            "motion. During the hold, compare the peak with its neighbouring cloth: if the "
+            "height difference visibly collapses without an independent hanging patch, call "
+            "this a `COMPRESSIBLE_SINGLE_PEAK`/rolled wrinkle, lower grasp confidence, release, "
+            "and re-plan rather than pulling it farther.\n\n"
             "The supplied files cover both full Camera A/B RGB scenes, garment-only RGB, "
             "table-relative height maps, boundaries, and height gradients when available. "
             "Use the complete scene and history to summarize the current state and decide "
@@ -1564,6 +1669,13 @@ def exploration_prompt(
         "correspond to a meaningful covered region in RGB/reference should be rejected. A "
         "narrow ridge or isolated height spike is specifically ambiguous: it may be a free "
         "overlapping layer, or it may be a rolled wrinkle that will only curl upward when pulled. "
+        "If the selected-pixel local-surface diagnostic contains `compression_probe_recommended=true`, "
+        "treat that as a required shallow compression probe: close at approximately the returned "
+        "`recommended_press_below_surface_mm` below the measured surface, then lift nearly vertically "
+        "before any lateral motion. Compare the compressed peak with its neighbouring cloth in the "
+        "hold/rollout frames. If the peak-to-neighbour height difference collapses without a separate "
+        "hanging patch, classify it as `COMPRESSIBLE_SINGLE_PEAK` (likely rolled wrinkle), lower the "
+        "graspability confidence, release, and re-plan instead of pulling it farther. "
         "For an ambiguous ridge, the first post-grasp move must be a near-vertical lift/hold, "
         "followed by a very short lateral check only if the lifted material forms a visible "
         "tent/hanging patch while far garment landmarks stay put. If the ridge merely gets taller, "

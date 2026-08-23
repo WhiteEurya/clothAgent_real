@@ -244,6 +244,90 @@ def test_global_probe_profile_caps_unvalidated_lateral_pull(tmp_path: Path):
         validate_global_probe_profile(proposal)
 
 
+def _compression_probe_measurement(*, surface_z_mm: float = 25.0) -> dict:
+    return {
+        "base_xyz_median_mm": [500.0, 0.0, surface_z_mm],
+        "surface_shape_diagnostic": {
+            "surface_shape": "NARROW_RIDGE_OR_SPIKE",
+            "compression_probe_recommended": True,
+            "recommended_press_below_surface_mm": 1.0,
+        },
+    }
+
+
+def test_global_probe_profile_requires_shallow_compression_for_narrow_peak():
+    proposal = validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [2, 2],
+                "reason": "A narrow peak may be a separable layer or a rolled wrinkle.",
+            },
+            "garment_observation": "A narrow peak is visible.",
+            "reveal_strategy": "Press shallowly, lift vertically, and inspect the response.",
+            "confidence": 0.4,
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 24, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 44, "yaw": 0}},
+                {"name": "move", "args": {"x": 520, "y": 0, "z": 44, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The peak either hangs independently or compresses without separating.",
+            "safety_notes": ["Keep compression shallow and lift before probing laterally."],
+        }
+    )
+    result = validate_global_probe_profile(
+        proposal,
+        measurement=_compression_probe_measurement(),
+    )
+    assert result["compression_probe_required"] is True
+    assert result["compression_probe_surface_shape"] == "NARROW_RIDGE_OR_SPIKE"
+    assert result["compression_depth_mm"] == pytest.approx(1.0)
+
+
+def test_global_probe_profile_rejects_missing_or_deep_compression_press():
+    base_payload = {
+        "selected_grasp": {
+            "camera": "A",
+            "pixel_xy": [2, 2],
+            "reason": "A narrow peak needs a compression test.",
+        },
+        "garment_observation": "A narrow peak is visible.",
+        "reveal_strategy": "Press shallowly and lift.",
+        "confidence": 0.4,
+        "actions": [
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 25, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 44, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        "expected_observation": "The peak response is visible.",
+        "safety_notes": ["Do not press deeply."],
+    }
+    proposal = validate_global_exploration_payload(base_payload)
+    with pytest.raises(ExplorationPlanningError, match="at or slightly below"):
+        validate_global_probe_profile(
+            proposal,
+            measurement=_compression_probe_measurement(),
+        )
+
+    deep_payload = dict(base_payload)
+    deep_payload["actions"] = [dict(action) for action in base_payload["actions"]]
+    deep_payload["actions"][1] = {
+        "name": "move",
+        "args": {"x": 500, "y": 0, "z": 20, "yaw": 0},
+    }
+    deep_proposal = validate_global_exploration_payload(deep_payload)
+    with pytest.raises(ExplorationPlanningError, match="too deep"):
+        validate_global_probe_profile(
+            deep_proposal,
+            measurement=_compression_probe_measurement(),
+        )
+
+
 def test_global_proposal_rejects_camera_b_as_action_source() -> None:
     payload = {
         "selected_grasp": {
