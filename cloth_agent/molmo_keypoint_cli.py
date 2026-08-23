@@ -50,6 +50,7 @@ from .free_exploration import (
     global_perception_image_paths,
     ground_global_grasp_target,
     perception_image_paths,
+    validate_global_probe_profile,
 )
 from .molmo_keypoint_pipeline import (
     DEFAULT_SEMANTIC_ANCHORS,
@@ -1539,6 +1540,7 @@ def run_keypoint_cli_loop(
                 record["candidate_policy"] = "NONE_CLAUDE_SELECTS_ARBITRARY_PIXEL"
                 proposal: ExplorationProposal | None = None
                 grounding: dict[str, Any] | None = None
+                probe_profile: dict[str, Any] | None = None
                 source = ""
                 preflight = None
                 controller = None
@@ -1594,6 +1596,10 @@ def run_keypoint_cli_loop(
                         proposal, grounding = ground_global_grasp_target(
                             response.proposal,
                             session.workspace / "perception_views",
+                        )
+                        probe_profile = validate_global_probe_profile(
+                            proposal,
+                            global_experiences,
                         )
                         source = exploration_source(proposal)
                         source_path.write_text(source, encoding="utf-8")
@@ -1868,6 +1874,7 @@ def run_keypoint_cli_loop(
 
                 record["proposal"] = proposal.as_dict()
                 record["global_grounding"] = grounding
+                record["probe_profile"] = probe_profile
                 selected_pixel_overlay = _save_global_selected_pixel_overlay(
                     proposal,
                     saved,

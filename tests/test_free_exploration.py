@@ -18,6 +18,7 @@ from cloth_agent.free_exploration import (
     exploration_source,
     ground_global_grasp_target,
     _voxel_balance_cloud,
+    validate_global_probe_profile,
     validate_global_exploration_payload,
     validate_global_grasp_grounding,
     validate_exploration_payload,
@@ -215,6 +216,32 @@ def test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy(
     ] == [(520.0, -40.0), (520.0, -40.0), (520.0, -40.0)]
     assert offset.actions[1]["args"]["x"] == 530.0
     assert validate_global_grasp_grounding(grounded, perception_dir)["valid"] is True
+
+
+def test_global_probe_profile_caps_unvalidated_lateral_pull(tmp_path: Path):
+    proposal = validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [2, 2],
+                "reason": "The ridge is a possible free boundary.",
+            },
+            "garment_observation": "A narrow ridge may be a rolled wrinkle.",
+            "reveal_strategy": "Lift, hold, and make a short probe.",
+            "confidence": 0.5,
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 80, "yaw": 0}},
+                {"name": "move", "args": {"x": 550, "y": 0, "z": 80, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "A free layer should form a hanging patch.",
+            "safety_notes": ["Release if the ridge only curls upward."],
+        }
+    )
+    with pytest.raises(ExplorationPlanningError, match="short lateral probe"):
+        validate_global_probe_profile(proposal)
 
 
 def test_global_proposal_rejects_camera_b_as_action_source() -> None:

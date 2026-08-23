@@ -23,10 +23,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -567,6 +568,97 @@ def validate_global_exploration_payload(
             "reason": reason.strip(),
         },
     )
+
+
+def validate_global_probe_profile(
+    proposal: ExplorationProposal,
+    history: Sequence[Mapping[str, Any]] = (),
+    *,
+    max_unvalidated_lateral_mm: float = 35.0,
+) -> dict[str, Any]:
+    """Require a short diagnostic probe until target-layer motion is supported.
+
+    A positive vertical lift is already required by the generic action validator.
+    This second gate prevents a fresh/uncertain high-relief hypothesis from
+    immediately turning into a long lateral pull that can tighten a rolled
+    wrinkle. Once a previous evaluation supports target-layer motion, the normal
+    transport authority is restored.
+    """
+
+    if proposal.selected_grasp is None:
+        raise ExplorationPlanningError("probe profile requires a selected grasp")
+    latest_evaluation: Mapping[str, Any] | None = None
+    for item in reversed(list(history)):
+        if not isinstance(item, Mapping):
+            continue
+        evaluation = item.get("evaluation")
+        if isinstance(evaluation, Mapping):
+            latest_evaluation = evaluation
+            break
+    previous_validated = bool(
+        latest_evaluation is not None
+        and (latest_evaluation.get("target_selection") or {}).get("status")
+        == "SUPPORTED"
+        and (latest_evaluation.get("grasp_acquisition") or {}).get("status")
+        == "SUCCESS"
+        and (latest_evaluation.get("target_structure_acquired") or {}).get("status")
+        == "SUPPORTED"
+    )
+    close_index = next(
+        (index for index, action in enumerate(proposal.actions) if action["name"] == "close_gripper"),
+        None,
+    )
+    if close_index is None:
+        raise ExplorationPlanningError("probe profile requires close_gripper")
+    grasp_move = next(
+        (
+            action
+            for action in reversed(proposal.actions[:close_index])
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if grasp_move is None:
+        raise ExplorationPlanningError("probe profile requires a grasp move")
+    grasp_args = grasp_move["args"]
+    release_index = next(
+        (
+            index
+            for index, action in enumerate(proposal.actions[close_index + 1 :], start=close_index + 1)
+            if action["name"] == "open_gripper"
+        ),
+        None,
+    )
+    if release_index is None:
+        raise ExplorationPlanningError("probe profile requires an explicit release")
+    moves = [
+        action["args"]
+        for action in proposal.actions[close_index + 1 : release_index]
+        if action["name"] == "move"
+    ]
+    if not moves:
+        raise ExplorationPlanningError("probe profile requires a post-grasp move")
+    grasp_xy = np.asarray([float(grasp_args["x"]), float(grasp_args["y"])])
+    lateral = max(
+        float(
+            np.linalg.norm(
+                np.asarray([float(move["x"]), float(move["y"])]) - grasp_xy
+            )
+        )
+        for move in moves
+    )
+    if not previous_validated and lateral > float(max_unvalidated_lateral_mm) + 1e-6:
+        raise ExplorationPlanningError(
+            "uncertain target-layer hypothesis requires a short lateral probe; "
+            f"requested {lateral:.1f} mm > {float(max_unvalidated_lateral_mm):.1f} mm"
+        )
+    return {
+        "mode": "VALIDATED_TRANSPORT" if previous_validated else "STRUCTURE_PROBE",
+        "previous_target_layer_supported": previous_validated,
+        "max_lateral_mm": lateral,
+        "max_unvalidated_lateral_mm": float(max_unvalidated_lateral_mm),
+        "requires_hold_and_short_probe": not previous_validated,
+    }
 
 
 def _measure_global_selected_surface(
