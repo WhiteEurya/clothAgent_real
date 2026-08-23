@@ -847,6 +847,53 @@ class LocalGeometryGrounder:
             "discrete_height_step": roi & (height_step >= step_cut),
             "interior_ridge": roi & ~boundary & (height >= high_cut),
         }
+
+        def surface_shape_at(x_px: int, y_px: int) -> dict[str, Any]:
+            """Classify local relief as a triage hint, never as grasp proof."""
+
+            diagnostic_radius = max(6, strategy.radius_px // 2)
+            y0 = max(0, y_px - diagnostic_radius)
+            y1 = min(height.shape[0], y_px + diagnostic_radius + 1)
+            x0 = max(0, x_px - diagnostic_radius)
+            x1 = min(height.shape[1], x_px + diagnostic_radius + 1)
+            patch = np.asarray(height[y0:y1, x0:x1], dtype=np.float64)
+            finite = np.isfinite(patch)
+            values = patch[finite]
+            if values.size == 0:
+                return {
+                    "surface_shape": "UNKNOWN",
+                    "height_spread_mm": None,
+                    "high_region_fraction": 0.0,
+                    "requires_structure_hold_check": True,
+                }
+            p10 = float(np.percentile(values, 10.0))
+            p50 = float(np.percentile(values, 50.0))
+            p90 = float(np.percentile(values, 90.0))
+            spread = max(0.0, p90 - p10)
+            cut = p50 + max(4.0, 0.35 * spread)
+            high = finite & (patch >= cut)
+            high_fraction = float(np.count_nonzero(high)) / float(max(1, values.size))
+            center_y = min(max(y_px - y0, 0), patch.shape[0] - 1)
+            center_x = min(max(x_px - x0, 0), patch.shape[1] - 1)
+            center_high = bool(finite[center_y, center_x] and patch[center_y, center_x] >= cut)
+            if spread < 5.0:
+                shape = "LOW_RELIEF"
+            elif center_high and high_fraction <= 0.22:
+                shape = "NARROW_RIDGE_OR_SPIKE"
+            elif center_high:
+                shape = "BROAD_RELIEF"
+            else:
+                shape = "MIXED_OR_OCCLUSION_EDGE"
+            return {
+                "surface_shape": shape,
+                "height_spread_mm": spread,
+                "high_region_fraction": high_fraction,
+                "requires_structure_hold_check": (
+                    shape in {"NARROW_RIDGE_OR_SPIKE", "MIXED_OR_OCCLUSION_EDGE"}
+                    or not bool(boundary[y_px, x_px])
+                ),
+            }
+
         feature_priority = list(strategy.prefer) + [
             item
             for item in (
@@ -907,6 +954,7 @@ class LocalGeometryGrounder:
                 ):
                     continue
                 point = np.asarray(xyz[y_px, x_px], dtype=np.float64)
+                shape_diagnostic = surface_shape_at(int(x_px), int(y_px))
                 table_z = float(point[2] - height[y_px, x_px])
                 tangent_yaw = math.degrees(
                     math.atan2(float(grad_y[y_px, x_px]), float(grad_x[y_px, x_px]))
@@ -928,6 +976,7 @@ class LocalGeometryGrounder:
                             max(-180.0, min(180.0, tangent_yaw))
                         ),
                         "graspability_score": float(score),
+                        "surface_shape_diagnostic": shape_diagnostic,
                     }
                 )
                 seen_pixels.add(key)
@@ -1638,6 +1687,17 @@ def validate_action_scope(
         action.get("name") == "close_gripper" for action in actions[release_index + 1 :]
     ):
         raise SemanticPipelineError("action proposal cannot start a second grasp cycle")
+    first_post = post_grasp_moves[0]
+    first_lateral = float(np.linalg.norm(first_post[:2] - grasp_xyz[:2]))
+    if first_post[2] <= grasp_xyz[2] + 1e-6:
+        raise SemanticPipelineError(
+            f"{scope.name} must begin with a positive vertical lift/hold before lateral probing"
+        )
+    if scope.name in {"ACQUISITION_CHECK", "STRUCTURE_CHECK", "TRANSPORT_TEST"} and first_lateral > 5.0 + 1e-6:
+        raise SemanticPipelineError(
+            f"{scope.name} first post-grasp move must be a near-vertical hold; "
+            f"lateral offset={first_lateral:.1f} mm"
+        )
     max_lateral = max(
         float(np.linalg.norm(point[:2] - grasp_xyz[:2])) for point in post_grasp_moves
     )

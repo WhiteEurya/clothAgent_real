@@ -288,7 +288,7 @@ def test_acquisition_scope_blocks_claude_from_large_transport() -> None:
         {"name": "move", "args": {"x": 540, "y": 0, "z": 35, "yaw": 0}},
         {"name": "open_gripper", "args": {}},
     ]
-    with pytest.raises(SemanticPipelineError, match="lateral authority"):
+    with pytest.raises(SemanticPipelineError, match="near-vertical hold"):
         validate_action_scope(
             actions, candidate=candidate, scope=ACTION_SCOPES["ACQUISITION_CHECK"]
         )

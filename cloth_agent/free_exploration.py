@@ -470,6 +470,22 @@ def validate_exploration_payload(
             "at least one post-grasp move is required before release for an "
             "exploratory lift or maneuver"
         )
+    grasp_move = next(
+        (
+            action
+            for action in reversed(actions[:close_index])
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if grasp_move is None:
+        raise ExplorationPlanningError("a move immediately before close_gripper is required")
+    first_post = moves_before_release[0]["args"]
+    grasp_z = float(grasp_move["args"]["z"])
+    if float(first_post["z"]) <= grasp_z:
+        raise ExplorationPlanningError(
+            "the first post-grasp move must lift above the grasp height for a hold check"
+        )
     return ExplorationProposal(
         garment_observation=payload["garment_observation"].strip(),
         reveal_strategy=payload["reveal_strategy"].strip(),
@@ -829,7 +845,10 @@ class ClaudeExplorationClient:
             "covering which garment region; use current RGB to locate that structure "
             "now, and use height/depth maps only to verify relief, layer boundaries, "
             "and graspability. Do not choose a point solely because it is the brightest "
-            "or highest point in a heatmap."
+            "or highest point in a heatmap. A narrow ridge or isolated height spike may "
+            "be a rolled wrinkle rather than a separable free ply; require a conservative "
+            "vertical lift/hold check and a short relative-motion check before committing "
+            "to a long lateral pull."
         )
         full_prompt = (
             f"{prompt}\n\nGarment images to inspect:\n{image_text}\n\n"
@@ -844,9 +863,13 @@ class ClaudeExplorationClient:
             "4. Use height maps, gradients, and depth only as supporting geometry: they "
             "validate whether the hypothesized covering layer has a real boundary, relief, "
             "and locally graspable surface. A heatmap maximum is not, by itself, a grasp "
-            "recommendation. Before selecting a pixel, state the target-relevant reference "
-            "region, the currently covering layer when relevant, and the expected directly "
-            "visible task change.\n\n"
+            "recommendation. A high ridge can be either a peelable overlap or a rolled wrinkle; "
+            "keep those hypotheses separate. Before selecting a pixel, state the target-relevant "
+            "reference region, the currently covering layer when relevant, and the expected "
+            "directly visible task change. If the selected structure is a narrow ridge, plan the "
+            "first post-grasp move as a near-vertical hold and only then a short lateral probe; "
+            "do not spend the whole action on a long pull before observing independent material "
+            "motion.\n\n"
             "The supplied files cover both full Camera A/B RGB scenes, garment-only RGB, "
             "table-relative height maps, boundaries, and height gradients when available. "
             "Use the complete scene and history to summarize the current state and decide "
@@ -1382,7 +1405,9 @@ def exploration_prompt(
             "grounding. Use the flat-garment reference to identify the named target and its current "
             "correspondence, then use current RGB and height/depth evidence to verify a real boundary "
             "and graspable relief. Do not treat a generic high-relief or convenient region as an "
-            "acceptable replacement for the named target."
+            "acceptable replacement for the named target. A narrow height ridge or isolated peak "
+            "may be a rolled wrinkle caused by an earlier action rather than a separable layer. "
+            "Treat that as an unresolved hypothesis, not as a graspability proof."
         )
         expected_change = (
             "Before the final pixel choice, state how the chosen target and action advance the user "
@@ -1404,7 +1429,9 @@ def exploration_prompt(
             "Use the flat-garment reference first to identify garment topology, printed-pattern "
             "correspondence, the currently covered region, and the layer that should be moved. "
             "Then use current RGB to localize that region and height/depth evidence to verify a real "
-            "boundary and graspable relief."
+            "boundary and graspable relief. A narrow height ridge or isolated peak may be a rolled "
+            "wrinkle rather than a free flap; do not select it for a long pull without first "
+            "checking that a lifted patch hangs independently."
         )
         expected_change = (
             "Before the final pixel choice, state which reference region is occluded and what visible "
@@ -1442,7 +1469,14 @@ def exploration_prompt(
         "`height_gradient_overlay` highlights internal height-gradient/occlusion edges and "
         "the global height map is scene context. These geometric maps are supporting evidence, "
         "not the sole ranking or selection criterion; a high-relief point that does not "
-        "correspond to a meaningful covered region in RGB/reference should be rejected. In a "
+        "correspond to a meaningful covered region in RGB/reference should be rejected. A "
+        "narrow ridge or isolated height spike is specifically ambiguous: it may be a free "
+        "overlapping layer, or it may be a rolled wrinkle that will only curl upward when pulled. "
+        "For an ambiguous ridge, the first post-grasp move must be a near-vertical lift/hold, "
+        "followed by a very short lateral check only if the lifted material forms a visible "
+        "tent/hanging patch while far garment landmarks stay put. If the ridge merely gets taller, "
+        "narrows, or rotates without independent hanging material, release and re-plan instead of "
+        "continuing the pull. In a "
         "severely crumpled/OOD state, full garment topology may be unobservable and semantic "
         "keypoints may be unreliable. Semantic identity "
         "is uncertain when evidence is weak; prefer phrases such as possible boundary, "

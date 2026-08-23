@@ -304,6 +304,65 @@ class GarmentGrounding:
             local_table = local_table[np.isfinite(local_table)]
             if len(local_table):
                 result["table_z_median_mm"] = float(np.percentile(local_table, 50))
+        # A local height jump is only a candidate-structure signal.  A narrow
+        # ridge or isolated spike can be a rolled wrinkle rather than a free
+        # ply that the gripper can peel away.  Report a conservative shape
+        # diagnostic next to the robust surface statistics so the planner can
+        # require an active lift/hold check before committing to transport.
+        diagnostic_radius = max(6, radius * 2)
+        dy0 = max(0, y_value - diagnostic_radius)
+        dy1 = min(xyz.shape[0], y_value + diagnostic_radius + 1)
+        dx0 = max(0, x_value - diagnostic_radius)
+        dx1 = min(xyz.shape[1], x_value + diagnostic_radius + 1)
+        diagnostic = np.asarray(
+            height_map[dy0:dy1, dx0:dx1], dtype=np.float64
+        ) if height_map is not None else None
+        if diagnostic is not None:
+            finite_diagnostic = diagnostic[np.isfinite(diagnostic)]
+            if finite_diagnostic.size:
+                d50 = float(np.percentile(finite_diagnostic, 50.0))
+                d10 = float(np.percentile(finite_diagnostic, 10.0))
+                d90 = float(np.percentile(finite_diagnostic, 90.0))
+                dspread = max(0.0, d90 - d10)
+                high_cut = d50 + max(4.0, 0.35 * dspread)
+                high = np.isfinite(diagnostic) & (diagnostic >= high_cut)
+                high_fraction = float(np.count_nonzero(high)) / float(
+                    max(1, np.count_nonzero(np.isfinite(diagnostic)))
+                )
+                center_y = min(max(y_value - dy0, 0), diagnostic.shape[0] - 1)
+                center_x = min(max(x_value - dx0, 0), diagnostic.shape[1] - 1)
+                center_is_high = bool(
+                    np.isfinite(diagnostic[center_y, center_x])
+                    and diagnostic[center_y, center_x] >= high_cut
+                )
+                if dspread < 5.0:
+                    surface_shape = "LOW_RELIEF"
+                elif center_is_high and high_fraction <= 0.22:
+                    surface_shape = "NARROW_RIDGE_OR_SPIKE"
+                elif center_is_high:
+                    surface_shape = "BROAD_RELIEF"
+                else:
+                    surface_shape = "MIXED_OR_OCCLUSION_EDGE"
+                result["surface_shape_diagnostic"] = {
+                    "status": "TRIAGE_ONLY",
+                    "diagnostic_radius_px": diagnostic_radius,
+                    "height_p10_mm": d10,
+                    "height_p50_mm": d50,
+                    "height_p90_mm": d90,
+                    "height_spread_mm": dspread,
+                    "high_region_fraction": high_fraction,
+                    "center_is_high": center_is_high,
+                    "requires_structure_hold_check": True,
+                    "surface_shape": surface_shape,
+                    "interpretation": (
+                        "A narrow ridge/spike may be a rolled wrinkle; height alone "
+                        "does not prove a separable free ply. Require a vertical "
+                        "lift/hold and short relative-motion check before transport."
+                        if surface_shape == "NARROW_RIDGE_OR_SPIKE"
+                        else "Shape is only a geometric prior; verify independent "
+                        "motion of the intended layer before a long pull."
+                    ),
+                }
         if include_nearest_reference:
             nearest = self.nearest_reference(label, x_value, y_value)
             result["nearest_reference"] = {

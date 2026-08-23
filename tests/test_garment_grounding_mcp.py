@@ -70,6 +70,25 @@ def test_pixel_and_local_tools_use_full_resolution_maps(tmp_path: Path):
     assert local["sample_count"] == 9
     assert local["base_xyz_median_mm"] == pytest.approx([502.0, -199.0, 14.0])
     assert local["height_above_table_median_mm"] == pytest.approx(7.5)
+    assert local["surface_shape_diagnostic"]["surface_shape"] == "LOW_RELIEF"
+
+
+def test_local_surface_marks_narrow_relief_as_roll_wrinkle_triage(tmp_path: Path):
+    directory = _perception_dir(tmp_path)
+    height = np.full((20, 20), 7.5, dtype=np.float32)
+    height[7:12, 7:12] = 25.0
+    yy, xx = np.indices(height.shape)
+    xyz = np.stack((500.0 + xx, -200.0 + yy, 12.0 + height), axis=2).astype(
+        np.float32
+    )
+    np.save(directory / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(directory / "camera_A_height_above_table_mm.npy", height)
+    np.save(directory / "camera_A_table_z_mm.npy", xyz[:, :, 2] - height)
+
+    local = GarmentGrounding(directory).sample_local_surface("A", 9, 9, radius_px=1)
+    diagnostic = local["surface_shape_diagnostic"]
+    assert diagnostic["surface_shape"] == "NARROW_RIDGE_OR_SPIKE"
+    assert diagnostic["requires_structure_hold_check"] is True
 
 
 def test_stdio_server_lists_and_calls_read_only_tools(tmp_path: Path):

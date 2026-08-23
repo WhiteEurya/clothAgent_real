@@ -72,6 +72,24 @@ def test_free_exploration_payload_is_strict_and_compiles():
     assert "move(500.0, -20.0, 100.0, 0.0)" in source
 
 
+def test_exploration_requires_post_grasp_lift_before_probe():
+    payload = {
+        "garment_observation": "A narrow raised ridge may be a rolled wrinkle.",
+        "reveal_strategy": "Lift and hold before any short probe.",
+        "confidence": 0.5,
+        "actions": [
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 20, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 520, "y": 0, "z": 20, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        "expected_observation": "The ridge either forms a hanging patch or is released.",
+        "safety_notes": ["Do not commit to a long pull without a hold check."],
+    }
+    with pytest.raises(ExplorationPlanningError, match="first post-grasp move must lift"):
+        validate_exploration_payload(payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -281,6 +299,7 @@ def test_free_exploration_accepts_flatten_garment_system_skill():
             "actions": [
                 {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
                 {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 150, "yaw": 0}},
                 {"name": "move", "args": {"x": 400, "y": 0, "z": 30, "yaw": 0}},
                 {"name": "open_gripper", "args": {}},
             ],
