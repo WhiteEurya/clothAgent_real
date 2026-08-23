@@ -38,6 +38,7 @@ CONFIDENCE_DEFINITION = (
 DEFAULT_CONFIDENCE_THRESHOLD = 0.60
 DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD = 0.80
 RAW_IMAGE_PATTERN = re.compile(r"^camera_[0-9]+_([A-Za-z0-9_-]+)\.png$")
+FLAT_REFERENCE_DIR = Path("data/reference/flat_garment_reference")
 
 
 class MolmoKeypointPipelineError(RuntimeError):
@@ -59,16 +60,20 @@ class KeypointSpec:
 
 
 DEFAULT_KEYPOINTS: tuple[KeypointSpec, ...] = (
-    KeypointSpec("garment_center", "geometric center of the whole garment", (255, 40, 40)),
+    KeypointSpec(
+        "garment_center",
+        "center of the garment fabric body; do not point to its printed graphic, label, table, or robot",
+        (255, 40, 40),
+    ),
     KeypointSpec("neckline", "collar, neckline, or neck opening", (255, 170, 0)),
-    KeypointSpec("left_shoulder", "image-left shoulder or upper-left shoulder seam", (50, 180, 255)),
-    KeypointSpec("right_shoulder", "image-right shoulder or upper-right shoulder seam", (80, 220, 80)),
-    KeypointSpec("left_sleeve_tip", "outermost image-left sleeve tip or upper edge", (180, 80, 255)),
-    KeypointSpec("right_sleeve_tip", "outermost image-right sleeve tip or upper edge", (255, 80, 190)),
-    KeypointSpec("left_bottom_hem", "image-left end of the bottom hem", (80, 220, 220)),
-    KeypointSpec("right_bottom_hem", "image-right end of the bottom hem", (220, 220, 60)),
-    KeypointSpec("lower_left_half_center", "center of the lower image-left half of the garment", (120, 255, 120)),
-    KeypointSpec("lower_right_half_center", "center of the lower image-right half of the garment", (120, 180, 255)),
+    KeypointSpec("left_shoulder", "the garment's left shoulder as worn: sleeve-to-torso seam on the left side of its own centerline, not the sleeve tip", (50, 180, 255)),
+    KeypointSpec("right_shoulder", "the garment's right shoulder as worn: sleeve-to-torso seam on the right side of its own centerline, not the sleeve tip", (80, 220, 80)),
+    KeypointSpec("left_sleeve_tip", "outermost endpoint on the garment silhouette of the left sleeve as worn, on the left side of its own centerline", (180, 80, 255)),
+    KeypointSpec("right_sleeve_tip", "outermost endpoint on the garment silhouette of the right sleeve as worn, on the right side of its own centerline", (255, 80, 190)),
+    KeypointSpec("left_bottom_hem", "left endpoint of the actual lowest outer shirt hem boundary, not the printed graphic", (80, 220, 220)),
+    KeypointSpec("right_bottom_hem", "right endpoint of the actual lowest outer shirt hem boundary, not the printed graphic", (220, 220, 60)),
+    KeypointSpec("lower_left_half_center", "plain shirt fabric in the lower half between the centerline and the garment's left outer edge, avoiding the printed graphic", (120, 255, 120)),
+    KeypointSpec("lower_right_half_center", "plain shirt fabric in the lower half between the centerline and the garment's right outer edge, avoiding the printed graphic", (120, 180, 255)),
 )
 
 # Semantic mode intentionally asks for a small set of task-level garment
@@ -76,27 +81,27 @@ DEFAULT_KEYPOINTS: tuple[KeypointSpec, ...] = (
 DEFAULT_SEMANTIC_ANCHORS: tuple[KeypointSpec, ...] = (
     KeypointSpec(
         "collar",
-        "the visible collar, neckline, or neck opening; return no point when uncertain",
+        "the visible collar/neck opening; this is the top point of the current garment's own centerline; return no point when uncertain",
         (255, 170, 0),
     ),
     KeypointSpec(
         "left_sleeve_end",
-        "the garment's visible left sleeve endpoint; return no point when side identity is uncertain",
+        "the garment's visible left sleeve endpoint as worn, determined from its own centerline; point on the outer sleeve boundary and return no point when side identity is uncertain",
         (180, 80, 255),
     ),
     KeypointSpec(
         "right_sleeve_end",
-        "the garment's visible right sleeve endpoint; return no point when side identity is uncertain",
+        "the garment's visible right sleeve endpoint as worn, determined from its own centerline; point on the outer sleeve boundary and return no point when side identity is uncertain",
         (255, 80, 190),
     ),
     KeypointSpec(
         "left_hem_corner",
-        "the visible left corner/end of the garment hem; return no point when uncertain",
+        "the visible left endpoint of the actual lowest outer garment hem as worn, not the printed panel; return no point when uncertain",
         (80, 220, 220),
     ),
     KeypointSpec(
         "right_hem_corner",
-        "the visible right corner/end of the garment hem; return no point when uncertain",
+        "the visible right endpoint of the actual lowest outer garment hem as worn, not the printed panel; return no point when uncertain",
         (220, 220, 60),
     ),
 )
@@ -111,6 +116,169 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _load_flat_reference(project_root: Path) -> dict[str, Any] | None:
+    """Load the approved spread-garment reference without treating pixels as targets."""
+
+    root = Path(project_root).expanduser().resolve()
+    reference_dir = root / FLAT_REFERENCE_DIR
+    manifest_path = reference_dir / "reference_manifest.json"
+    anchors_path = reference_dir / "reference_anchors.json"
+    if not manifest_path.is_file() or not anchors_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        anchors = json.loads(anchors_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MolmoKeypointPipelineError(
+            f"flat garment reference is unreadable: {reference_dir}"
+        ) from exc
+    if not isinstance(manifest, dict) or not isinstance(anchors, dict):
+        raise MolmoKeypointPipelineError("flat garment reference artifacts must be JSON objects")
+    axis = anchors.get("axis_reference")
+    if not isinstance(axis, dict):
+        raise MolmoKeypointPipelineError("flat garment reference is missing axis_reference")
+    _validate_axis_reference(axis, image_size=None, context="flat garment reference")
+    anchor_records = anchors.get("anchors", [])
+    if not isinstance(anchor_records, list):
+        raise MolmoKeypointPipelineError("flat garment reference anchors must be a list")
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in anchor_records:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        pixel = item.get("selected_pixel_xy")
+        if name and isinstance(pixel, list) and len(pixel) == 2:
+            by_name[name] = item
+    return {
+        "directory": str(reference_dir),
+        "manifest_path": str(manifest_path),
+        "anchors_path": str(anchors_path),
+        "manifest": manifest,
+        "axis_reference": axis,
+        "anchors_by_name": by_name,
+        "raw_image": str(reference_dir / str(manifest.get("raw_image", "camera_A_flat_reference.png"))),
+        "annotated_image": str(reference_dir / str(manifest.get("annotated_image", "camera_A_flat_reference_anchors.png"))),
+    }
+
+
+def _validate_axis_reference(
+    axis: Any,
+    *,
+    image_size: Sequence[int] | None,
+    context: str,
+) -> dict[str, Any]:
+    if not isinstance(axis, dict):
+        raise MolmoKeypointPipelineError(f"{context} axis_reference must be an object")
+    normalized: dict[str, Any] = dict(axis)
+    for key in ("top_pixel_xy", "bottom_pixel_xy"):
+        point = axis.get(key)
+        if not isinstance(point, list) or len(point) != 2:
+            raise MolmoKeypointPipelineError(f"{context} axis_reference.{key} must be [x,y]")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in point
+        ):
+            raise MolmoKeypointPipelineError(f"{context} axis_reference.{key} must be finite")
+        if image_size is not None:
+            width, height = int(image_size[0]), int(image_size[1])
+            if not (0 <= float(point[0]) < width and 0 <= float(point[1]) < height):
+                raise MolmoKeypointPipelineError(
+                    f"{context} axis reference point is outside {width}x{height}"
+                )
+        normalized[key] = [float(point[0]), float(point[1])]
+    top = np.asarray(normalized["top_pixel_xy"], dtype=np.float64)
+    bottom = np.asarray(normalized["bottom_pixel_xy"], dtype=np.float64)
+    if float(np.linalg.norm(bottom - top)) < 1.0:
+        raise MolmoKeypointPipelineError(f"{context} axis reference has zero length")
+    return normalized
+
+
+def _axis_normalized_coordinates(
+    axis: dict[str, Any], pixel_xy: Sequence[float]
+) -> dict[str, float]:
+    top = np.asarray(axis["top_pixel_xy"], dtype=np.float64)
+    bottom = np.asarray(axis["bottom_pixel_xy"], dtype=np.float64)
+    point = np.asarray(pixel_xy, dtype=np.float64)
+    direction = bottom - top
+    length = float(np.linalg.norm(direction))
+    unit = direction / max(length, 1e-9)
+    delta = point - top
+    return {
+        "axis_u": float(np.dot(delta, direction) / max(length * length, 1e-9)),
+        "axis_v": float((direction[0] * delta[1] - direction[1] * delta[0]) / max(length, 1e-9)),
+    }
+
+
+def _reference_comparison(
+    reference: dict[str, Any] | None,
+    *,
+    camera: str,
+    axis_reference: dict[str, Any] | None,
+    name: str,
+    pixel_xy: Sequence[float],
+) -> dict[str, Any]:
+    """Compare current anchor layout to the flat reference without rejecting folds."""
+
+    result: dict[str, Any] = {
+        "available": False,
+        "comparison_camera": "A",
+        "fold_safe": True,
+        "use_reference_pixel_as_current_coordinate": False,
+    }
+    if reference is None:
+        result["reason"] = "no_flat_reference_configured"
+        return result
+    result["reference_manifest"] = reference["manifest_path"]
+    result["reference_anchor_name"] = name
+    reference_name = {
+        "collar": "neckline",
+        "left_sleeve_end": "left_sleeve_tip",
+        "right_sleeve_end": "right_sleeve_tip",
+        "left_hem_corner": "left_bottom_hem",
+        "right_hem_corner": "right_bottom_hem",
+    }.get(name, name)
+    result["reference_anchor_name"] = reference_name
+    ref_anchor = reference["anchors_by_name"].get(reference_name)
+    if not isinstance(ref_anchor, dict):
+        result["reason"] = "anchor_type_not_in_reference"
+        return result
+    if camera != "A":
+        result["reason"] = "reference_is_camera_A_semantic_prior"
+        return result
+    if axis_reference is None:
+        result["reason"] = "current_axis_unavailable"
+        return result
+    ref_axis = _validate_axis_reference(
+        reference["axis_reference"], image_size=None, context="flat reference"
+    )
+    ref_pixel = ref_anchor.get("selected_pixel_xy")
+    if not isinstance(ref_pixel, list) or len(ref_pixel) != 2:
+        result["reason"] = "reference_anchor_pixel_unavailable"
+        return result
+    current_coords = _axis_normalized_coordinates(axis_reference, pixel_xy)
+    reference_coords = _axis_normalized_coordinates(ref_axis, ref_pixel)
+    result.update(
+        {
+            "available": True,
+            "reference_pixel_xy": [float(ref_pixel[0]), float(ref_pixel[1])],
+            "current_pixel_xy": [float(pixel_xy[0]), float(pixel_xy[1])],
+            "reference_axis_coordinates": reference_coords,
+            "current_axis_coordinates": current_coords,
+            "axis_coordinate_delta": {
+                key: current_coords[key] - reference_coords[key]
+                for key in ("axis_u", "axis_v")
+            },
+            "interpretation": (
+                "layout deviation only; folding, occlusion, perspective, and cloth deformation "
+                "may move or hide this anchor. This comparison is not a grasp rejection gate."
+            ),
+        }
+    )
+    return result
 
 
 def _finite_confidence(value: Any, *, context: str) -> float:
@@ -184,9 +352,11 @@ def load_keypoint_specs(path: Path | None) -> tuple[KeypointSpec, ...]:
 
 
 def _raw_image_for_camera(perception_dir: Path, camera: str) -> Path:
-    garment_only = perception_dir / f"camera_{camera}_garment_only.png"
-    if garment_only.is_file():
-        return garment_only.resolve()
+    # Molmo should see the complete calibrated RGB view so sleeve/hem/shoulder
+    # anchors outside the dense mask are not silently cropped or greyed out.
+    # Geometry grounding still validates every returned point against the final
+    # garment mask, so the full image does not weaken the safety gate.  Fall
+    # back to garment-only only for older perception artifacts with no raw RGB.
     matches = [
         path
         for path in perception_dir.glob(f"camera_*_{camera}.png")
@@ -194,6 +364,9 @@ def _raw_image_for_camera(perception_dir: Path, camera: str) -> Path:
         and match.group(1).upper() == camera
     ]
     if len(matches) != 1:
+        garment_only = perception_dir / f"camera_{camera}_garment_only.png"
+        if garment_only.is_file() and not matches:
+            return garment_only.resolve()
         raise MolmoKeypointPipelineError(
             f"expected exactly one raw Camera {camera} image in {perception_dir}, "
             f"found {[path.name for path in matches]}"
@@ -336,6 +509,42 @@ def _validate_worker_payload(
     return views
 
 
+def _validated_axis_references(
+    payload: Any,
+    *,
+    cameras: Sequence[str],
+) -> dict[str, dict[str, Any] | None]:
+    """Validate optional axis-first metadata while keeping old payloads compatible."""
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("views"), list):
+        raise MolmoKeypointPipelineError("Molmo keypoint output needs a views list")
+    output: dict[str, dict[str, Any] | None] = {camera: None for camera in cameras}
+    for raw_view in payload["views"]:
+        if not isinstance(raw_view, dict):
+            continue
+        camera = str(raw_view.get("label", "")).strip().upper()
+        if camera not in output:
+            continue
+        axis = raw_view.get("axis_reference")
+        if axis is None:
+            continue
+        image_size = raw_view.get("image_size")
+        if (
+            not isinstance(image_size, list)
+            or len(image_size) != 2
+            or any(not isinstance(value, int) for value in image_size)
+        ):
+            raise MolmoKeypointPipelineError(
+                f"Camera {camera} axis-first payload has invalid image_size"
+            )
+        output[camera] = _validate_axis_reference(
+            axis,
+            image_size=image_size,
+            context=f"Camera {camera}",
+        )
+    return output
+
+
 def _local_geometry(
     perception_dir: Path,
     camera: str,
@@ -394,11 +603,22 @@ def _draw_overlays(
     camera: str,
     records: Sequence[dict[str, Any]],
     artifact_dir: Path,
+    axis_reference: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     accepted_image = Image.open(image_path).convert("RGB")
     diagnostic_image = accepted_image.copy()
     accepted_draw = ImageDraw.Draw(accepted_image)
     diagnostic_draw = ImageDraw.Draw(diagnostic_image)
+    if axis_reference is not None:
+        top = axis_reference.get("top_pixel_xy")
+        bottom = axis_reference.get("bottom_pixel_xy")
+        if isinstance(top, list) and isinstance(bottom, list):
+            for draw in (accepted_draw, diagnostic_draw):
+                draw.line(
+                    [(float(top[0]), float(top[1])), (float(bottom[0]), float(bottom[1]))],
+                    fill=(255, 235, 40),
+                    width=4,
+                )
     for record in records:
         pixel = record.get("source_pixel_xy")
         if pixel is None:
@@ -480,11 +700,22 @@ def _draw_semantic_anchor_overlays(
     camera: str,
     records: Sequence[dict[str, Any]],
     artifact_dir: Path,
+    axis_reference: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     accepted_image = Image.open(image_path).convert("RGB")
     diagnostic_image = accepted_image.copy()
     accepted_draw = ImageDraw.Draw(accepted_image)
     diagnostic_draw = ImageDraw.Draw(diagnostic_image)
+    if axis_reference is not None:
+        top = axis_reference.get("top_pixel_xy")
+        bottom = axis_reference.get("bottom_pixel_xy")
+        if isinstance(top, list) and isinstance(bottom, list):
+            for draw in (accepted_draw, diagnostic_draw):
+                draw.line(
+                    [(float(top[0]), float(top[1])), (float(bottom[0]), float(bottom[1]))],
+                    fill=(255, 235, 40),
+                    width=4,
+                )
     for record in records:
         pixel = record.get("source_pixel_xy")
         if pixel is None:
@@ -535,17 +766,29 @@ def build_semantic_anchor_manifest(
     specs: Sequence[KeypointSpec],
     confidence_threshold: float = DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
     local_radius_px: int = 3,
-    max_anchors: int = 4,
+    max_anchors: int | None = None,
     duplicate_radius_px: float = 10.0,
     cross_view_tolerance_mm: float = 80.0,
     install: bool = True,
+    reference: dict[str, Any] | None = None,
+    axis_references: dict[str, dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Return a small high-confidence Sxxx set, never an Rxxx grasp set."""
 
     threshold = validate_confidence_threshold(confidence_threshold)
-    if not 1 <= max_anchors <= 8:
+    # By default keep every semantic type that survives the confidence,
+    # geometry, duplicate, and cross-view consistency gates.  The previous
+    # hard-coded budget of four silently discarded valid anchor types (the
+    # default semantic spec contains five).  An explicit limit remains
+    # available for compatibility experiments.
+    anchor_budget = len(specs) if max_anchors is None else int(max_anchors)
+    if not 1 <= anchor_budget <= 8:
         raise MolmoKeypointPipelineError("max_anchors must be between 1 and 8")
     validated = _validate_worker_payload(worker_payload, cameras=cameras, specs=specs)
+    if axis_references is None:
+        axis_references = _validated_axis_references(
+            worker_payload, cameras=cameras
+        )
     by_camera: dict[str, list[dict[str, Any]]] = {}
     for camera in cameras:
         records: list[dict[str, Any]] = []
@@ -565,6 +808,8 @@ def build_semantic_anchor_manifest(
                 "point_token_probabilities": raw.get(
                     "point_token_probabilities", []
                 ),
+                "axis_reference": axis_references.get(camera),
+                "reference_comparison": None,
             }
             if raw["status"] != "point_returned":
                 record["rejection_reason"] = raw["status"]
@@ -586,6 +831,13 @@ def build_semantic_anchor_manifest(
                     record["rejection_reason"] = f"invalid_anchor_geometry: {exc}"
                 else:
                     record["preliminarily_accepted"] = True
+                    record["reference_comparison"] = _reference_comparison(
+                        reference,
+                        camera=camera,
+                        axis_reference=axis_references.get(camera),
+                        name=str(record["name"]),
+                        pixel_xy=raw["pixel_xy"],
+                    )
             records.append(record)
 
         # Molmo occasionally emits the same pixel for contradictory semantic
@@ -671,10 +923,10 @@ def build_semantic_anchor_manifest(
             )
         canonical.append(chosen)
     canonical.sort(key=lambda item: (-float(item["confidence"]), item["name"]))
-    for item in canonical[max_anchors:]:
+    for item in canonical[anchor_budget:]:
         item["preliminarily_accepted"] = False
-        item["rejection_reason"] = f"semantic_anchor_budget_max_{max_anchors}"
-    canonical = canonical[:max_anchors]
+        item["rejection_reason"] = f"semantic_anchor_budget_max_{anchor_budget}"
+    canonical = canonical[:anchor_budget]
     for index, item in enumerate(canonical, start=1):
         item["accepted"] = True
         item["anchor_id"] = f"S{index:03d}"
@@ -683,7 +935,11 @@ def build_semantic_anchor_manifest(
     for camera in cameras:
         records = by_camera[camera]
         accepted_overlay, diagnostic_overlay = _draw_semantic_anchor_overlays(
-            image_paths[camera], camera, records, artifact_dir
+            image_paths[camera],
+            camera,
+            records,
+            artifact_dir,
+            axis_reference=axis_references.get(camera),
         )
         views.append(
             {
@@ -694,6 +950,7 @@ def build_semantic_anchor_manifest(
                 "query_count": len(records),
                 "accepted_count": sum(bool(item["accepted"]) for item in records),
                 "records": records,
+                "axis_reference": axis_references.get(camera),
             }
         )
     anchors = [
@@ -712,6 +969,8 @@ def build_semantic_anchor_manifest(
             "corroborating_observations": item.get(
                 "corroborating_observations", []
             ),
+            "reference_comparison": item.get("reference_comparison"),
+            "axis_reference": item.get("axis_reference"),
             "role": "semantic_anchor_not_grasp_point",
         }
         for item in canonical
@@ -723,9 +982,24 @@ def build_semantic_anchor_manifest(
         "confidence_threshold": threshold,
         "confidence_policy": "confidence > threshold",
         "confidence_definition": CONFIDENCE_DEFINITION,
-        "max_anchors": max_anchors,
+        "max_anchors": anchor_budget,
+        "anchor_budget_policy": (
+            "all_semantic_types" if max_anchors is None else "explicit_limit"
+        ),
         "anchor_count": len(anchors),
         "anchors": anchors,
+        "axis_references": axis_references,
+        "flat_reference": (
+            {
+                "manifest": reference["manifest_path"],
+                "annotated_image": reference["annotated_image"],
+                "folded_observation_policy": reference["manifest"].get(
+                    "folded_observation_policy", {}
+                ),
+            }
+            if reference is not None
+            else None
+        ),
         "views": views,
         "semantic_contract": (
             "Sxxx observations define uncertain garment-part regions only. "
@@ -762,6 +1036,8 @@ def build_confidence_filtered_references(
     confidence_threshold: float,
     local_radius_px: int = 3,
     install: bool = True,
+    reference: dict[str, Any] | None = None,
+    axis_references: dict[str, dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Filter Molmo points and install accepted points as the only task Rxxx set."""
 
@@ -771,6 +1047,10 @@ def build_confidence_filtered_references(
     validated = _validate_worker_payload(
         worker_payload, cameras=cameras, specs=specs
     )
+    if axis_references is None:
+        axis_references = _validated_axis_references(
+            worker_payload, cameras=cameras
+        )
     output_views: list[dict[str, Any]] = []
     all_references: list[dict[str, Any]] = []
     for camera in cameras:
@@ -796,6 +1076,8 @@ def build_confidence_filtered_references(
                 "termination_point_token_probability": raw.get(
                     "termination_point_token_probability"
                 ),
+                "axis_reference": axis_references.get(camera),
+                "reference_comparison": None,
             }
             if raw["status"] != "point_returned":
                 candidate["rejection_reason"] = raw["status"]
@@ -817,6 +1099,13 @@ def build_confidence_filtered_references(
                     candidate["rejection_reason"] = f"invalid_geometry: {exc}"
                 else:
                     candidate["accepted"] = True
+                    candidate["reference_comparison"] = _reference_comparison(
+                        reference,
+                        camera=camera,
+                        axis_reference=axis_references.get(camera),
+                        name=str(candidate["name"]),
+                        pixel_xy=raw["pixel_xy"],
+                    )
             candidates.append(candidate)
 
         accepted = [candidate for candidate in candidates if candidate["accepted"]]
@@ -829,7 +1118,11 @@ def build_confidence_filtered_references(
                 candidate.update(accepted_by_name[candidate["name"]])
 
         accepted_overlay, diagnostic_overlay = _draw_overlays(
-            image_paths[camera], camera, candidates, artifact_dir
+            image_paths[camera],
+            camera,
+            candidates,
+            artifact_dir,
+            axis_reference=axis_references.get(camera),
         )
         samples = [
             {
@@ -851,6 +1144,8 @@ def build_confidence_filtered_references(
                     "local_base_xyz_p10_mm",
                     "local_base_xyz_p90_mm",
                     "local_base_z_spread_mm",
+                    "reference_comparison",
+                    "axis_reference",
                 )
             }
             for candidate in accepted
@@ -878,6 +1173,18 @@ def build_confidence_filtered_references(
                 "workspace, collision, preflight, controller IK, and operator gates remain authoritative."
             ),
             "samples": samples,
+            "axis_reference": axis_references.get(camera),
+            "flat_reference": (
+                {
+                    "manifest": reference["manifest_path"],
+                    "annotated_image": reference["annotated_image"],
+                    "folded_observation_policy": reference["manifest"].get(
+                        "folded_observation_policy", {}
+                    ),
+                }
+                if reference is not None
+                else None
+            ),
         }
         guide_artifact = artifact_dir / f"camera_{camera}_molmo_coordinate_guide.json"
         _write_json(guide_artifact, guide)
@@ -900,6 +1207,7 @@ def build_confidence_filtered_references(
             "rejected_count": len(candidates) - len(accepted),
             "candidates": candidates,
             "references": samples,
+            "axis_reference": axis_references.get(camera),
         }
         output_views.append(view_payload)
         all_references.extend(
@@ -948,6 +1256,18 @@ def build_confidence_filtered_references(
         "disabled_unqueried_cameras": disabled_unqueried_cameras,
         "accepted_reference_count": len(all_references),
         "references": all_references,
+        "axis_references": axis_references,
+        "flat_reference": (
+            {
+                "manifest": reference["manifest_path"],
+                "annotated_image": reference["annotated_image"],
+                "folded_observation_policy": reference["manifest"].get(
+                    "folded_observation_policy", {}
+                ),
+            }
+            if reference is not None
+            else None
+        ),
         "views": output_views,
         "safety_gate": (
             "planning must not start when status is NO_VALID_GRASP_REFERENCES"
@@ -1051,6 +1371,7 @@ def run_molmo_keypoint_pipeline(
     dtype: str = "bf16",
     max_crops: int = 1,
     max_new_tokens: int = 96,
+    query_batch_size: int = 2,
     timeout_s: int = 900,
     local_files_only: bool = True,
     keypoint_specs: Sequence[KeypointSpec] = DEFAULT_KEYPOINTS,
@@ -1058,7 +1379,7 @@ def run_molmo_keypoint_pipeline(
     local_radius_px: int = 3,
     install: bool = True,
     semantic_anchors: bool = False,
-    max_semantic_anchors: int = 4,
+    max_semantic_anchors: int | None = None,
     subprocess_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     worker_line_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -1074,7 +1395,35 @@ def run_molmo_keypoint_pipeline(
     if output.exists():
         raise MolmoKeypointPipelineError(f"artifact directory already exists: {output}")
     output.mkdir(parents=True, exist_ok=False)
+    flat_reference = _load_flat_reference(root)
+    if flat_reference is not None:
+        reference_copy_dir = output / "flat_reference"
+        reference_copy_dir.mkdir(parents=True, exist_ok=True)
+        for source_name in (
+            "raw_image",
+            "annotated_image",
+            "anchors_path",
+            "manifest_path",
+        ):
+            source = Path(str(flat_reference[source_name]))
+            if source.is_file():
+                shutil.copy2(source, reference_copy_dir / source.name)
+        _write_json(
+            output / "flat_reference_context.json",
+            {
+                "manifest": flat_reference["manifest_path"],
+                "raw_image": flat_reference["raw_image"],
+                "annotated_image": flat_reference["annotated_image"],
+                "anchors": flat_reference["anchors_path"],
+                "folded_observation_policy": flat_reference["manifest"].get(
+                    "folded_observation_policy", {}
+                ),
+                "artifact_copy_dir": str(reference_copy_dir),
+            },
+        )
     threshold = validate_confidence_threshold(confidence_threshold)
+    if int(query_batch_size) < 1:
+        raise MolmoKeypointPipelineError("query_batch_size must be positive")
     normalized_cameras = tuple(str(camera).strip().upper() for camera in cameras)
     if not normalized_cameras or len(set(normalized_cameras)) != len(normalized_cameras):
         raise MolmoKeypointPipelineError("camera labels must be non-empty and unique")
@@ -1108,6 +1457,8 @@ def run_molmo_keypoint_pipeline(
         str(max_crops),
         "--max-new-tokens",
         str(max_new_tokens),
+        "--query-batch-size",
+        str(query_batch_size),
     ]
     for camera in normalized_cameras:
         command.extend(["--image", str(image_paths[camera]), "--label", camera])
@@ -1149,6 +1500,9 @@ def run_molmo_keypoint_pipeline(
             "Molmo keypoint worker completed without its JSON output"
         )
     payload = json.loads(raw_output.read_text(encoding="utf-8"))
+    axis_references = _validated_axis_references(
+        payload, cameras=normalized_cameras
+    )
     if semantic_anchors:
         manifest = build_semantic_anchor_manifest(
             payload,
@@ -1161,6 +1515,8 @@ def run_molmo_keypoint_pipeline(
             local_radius_px=local_radius_px,
             max_anchors=max_semantic_anchors,
             install=install,
+            reference=flat_reference,
+            axis_references=axis_references,
         )
     else:
         manifest = build_confidence_filtered_references(
@@ -1173,6 +1529,8 @@ def run_molmo_keypoint_pipeline(
             confidence_threshold=threshold,
             local_radius_px=local_radius_px,
             install=install,
+            reference=flat_reference,
+            axis_references=axis_references,
         )
     manifest["worker"] = {
         "command": command,
@@ -1180,8 +1538,14 @@ def run_molmo_keypoint_pipeline(
         "dtype": dtype,
         "max_crops": max_crops,
         "max_new_tokens": max_new_tokens,
+        "query_batch_size": query_batch_size,
         "local_files_only": local_files_only,
+        "axis_first": True,
     }
+    if flat_reference is not None:
+        manifest.setdefault("flat_reference", {})["artifact_copy_dir"] = str(
+            output / "flat_reference"
+        )
     manifest_name = (
         "molmo_semantic_anchors.json"
         if semantic_anchors
@@ -1192,6 +1556,19 @@ def run_molmo_keypoint_pipeline(
         _write_json(
             perception / "molmo_keypoint_grasp_references.json", manifest
         )
+    if install and flat_reference:
+        observation_path = perception / "observation.json"
+        if observation_path.is_file():
+            observation = json.loads(observation_path.read_text(encoding="utf-8"))
+            if not isinstance(observation, dict):
+                raise MolmoKeypointPipelineError("observation.json must be an object")
+            observation["flat_garment_reference_manifest"] = str(
+                flat_reference["manifest_path"]
+            )
+            observation["flat_garment_reference_policy"] = flat_reference[
+                "manifest"
+            ].get("folded_observation_policy", {})
+            _write_json(observation_path, observation)
     return manifest
 
 
@@ -1206,12 +1583,13 @@ def run_molmo_semantic_anchor_pipeline(
     dtype: str = "bf16",
     max_crops: int = 1,
     max_new_tokens: int = 96,
+    query_batch_size: int = 2,
     timeout_s: int = 900,
     local_files_only: bool = True,
     keypoint_specs: Sequence[KeypointSpec] = DEFAULT_SEMANTIC_ANCHORS,
     cameras: Sequence[str] = ("A", "B"),
     local_radius_px: int = 3,
-    max_anchors: int = 4,
+    max_anchors: int | None = None,
     install: bool = True,
     subprocess_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     worker_line_callback: Callable[[str], None] | None = None,
@@ -1228,6 +1606,7 @@ def run_molmo_semantic_anchor_pipeline(
         dtype=dtype,
         max_crops=max_crops,
         max_new_tokens=max_new_tokens,
+        query_batch_size=query_batch_size,
         timeout_s=timeout_s,
         local_files_only=local_files_only,
         keypoint_specs=keypoint_specs,
@@ -1258,9 +1637,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     parser.add_argument("--max-crops", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=96)
+    parser.add_argument(
+        "--query-batch-size",
+        type=int,
+        default=2,
+        help="number of independent anchor prompts inferred together",
+    )
     parser.add_argument("--timeout-s", type=int, default=900)
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--local-radius-px", type=int, default=3)
+    parser.add_argument(
+        "--max-anchors",
+        type=int,
+        default=None,
+        help="optional semantic-anchor cap; default keeps every defined semantic type",
+    )
     parser.add_argument(
         "--no-install",
         action="store_true",
@@ -1297,11 +1688,17 @@ def main(argv: list[str] | None = None) -> int:
         dtype=args.dtype,
         max_crops=args.max_crops,
         max_new_tokens=args.max_new_tokens,
+        query_batch_size=args.query_batch_size,
         timeout_s=args.timeout_s,
         local_files_only=not args.allow_download,
         keypoint_specs=specs,
         cameras=tuple(args.camera or ("A", "B")),
         local_radius_px=args.local_radius_px,
+        **(
+            {"max_anchors": args.max_anchors}
+            if not args.legacy_grasp_references
+            else {}
+        ),
         install=not args.no_install,
     )
     print(

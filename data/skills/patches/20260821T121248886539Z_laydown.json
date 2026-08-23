@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "patch_type": "system-skill-guidance-patch",
+  "base_skill": "laydown",
+  "base_version": 1,
+  "created_at": "2026-08-21T12:12:48.886+00:00",
+  "proposal": {
+    "operation": "modify",
+    "name": "laydown",
+    "purpose": "Convert a garment held from a useful lifting anchor into a more spread tabletop configuration, and recognise when a release has re-piled the garment onto itself instead of opening it.",
+    "guidance": "Keep the quasi-static procedure: let the garment hang under gravity, retreat away from the hanging cloth while descending through intermediate heights, let the hanging face become the upward face, and release in a controlled way. Add two checks. First, before descending, require the retreat to carry the grasp point beyond the horizontal extent of the material still hanging below it, onto clear table, so the fabric unrolls onto bare surface rather than settling back over the area it came from; a retreat shorter than the hanging garment's own reach should be treated as not ready for release. Second, after release, compare footprints rather than only position: if the deposited outline sits inside the previous outline, if previously exposed features such as prints, collars or hems have become covered, and if new steep fold walls appear in depth, judge the laydown a regression caused by too short a retreat, and plan the next deposit farther out across clean table instead of repeating the same descent from the same anchor.",
+    "rationale": "This run completed a lift and a controlled release, yet the garment ended more compact, with the previously exposed print covered and new sharp ridges, because the retreat was much shorter than the garment's hanging extent. The existing skill warns against releasing a bundled garment but gives no rule for how far to retreat and no after-the-fact diagnostic, so the same regression can repeat while every safety instruction is still obeyed.",
+    "evidence": [
+      "AFTER Camera B garment span narrowed from roughly x185-920 to x250-810 and the broad right rolled lobe is gone.",
+      "AFTER Camera A span narrowed from roughly x300-770,y245-560 to x340-735,y235-495, entirely inside the old footprint.",
+      "The green print tile fully exposed in both BEFORE views is covered in AFTER except a small sliver in Camera B.",
+      "AFTER Camera B RGB and depth show new tall crumple ridges with steep occlusion dropouts, i.e. added relief after deposit.",
+      "No bare table was uncovered under the previous footprint in either camera."
+    ],
+    "base_skill": "laydown",
+    "confidence": 0.55
+  },
+  "apply_policy": "external_review_only",
+  "applied": false
+}

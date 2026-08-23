@@ -269,6 +269,31 @@ def test_free_exploration_accepts_laydown_skill_without_hidden_trajectory():
     assert "move(580.0, 0.0, 80.0, 0.0)" in source
 
 
+def test_free_exploration_accepts_flatten_garment_system_skill():
+    proposal = validate_exploration_payload(
+        {
+            "garment_observation": "A supported grasp is visible on raised cloth.",
+            "reveal_strategy": "Lift high, move to the far safe X, then retreat while descending.",
+            "confidence": 0.8,
+            "skill_invocations": [
+                {"name": "flatten-garment", "reason": "whole-garment spread is supported."}
+            ],
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 400, "y": 0, "z": 30, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The footprint should widen and relief should decrease.",
+            "safety_notes": ["Use validated workspace and release low."],
+        }
+    )
+
+    assert proposal.skill_invocations == (
+        {"name": "flatten-garment", "reason": "whole-garment spread is supported."},
+    )
+
+
 def test_global_payload_accepts_active_dynamic_skill_name():
     payload = {
         "selected_grasp": {
@@ -391,12 +416,21 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
         "mcp__garment_grounding__lookup_reference" in str(part)
         for part in seen["command"]
     )
-    assert any("`sample_local_surface` exactly once" in str(part) for part in seen["command"])
-    assert any("Camera B is observation-only secondary context" in str(part) for part in seen["command"])
-    assert any("runtime owns the precise grasp target" in str(part) for part in seen["command"])
-    assert any("as open and spread" in str(part) for part in seen["command"])
-    assert any("No system-generated grasp candidates" in str(part) for part in seen["command"])
-    assert any("Skill: laydown" in str(part) for part in seen["command"])
+    context_path = next(
+        (run_dir / "workspace" / "claude_planning_contexts").glob("*.md")
+    )
+    context_text = context_path.read_text(encoding="utf-8")
+    assert str(context_path.relative_to(run_dir)) in seen["input"]
+    assert "`sample_local_surface` exactly once" in context_text
+    assert any(
+        "Camera B is observation-only secondary context" in str(part)
+        for part in seen["command"]
+    )
+    assert "runtime owns the precise grasp target" in context_text
+    assert "as open and spread" in context_text
+    assert "No system-generated grasp candidates" in context_text
+    assert "Skill: laydown" in context_text
+    assert not any("`sample_local_surface` exactly once" in str(part) for part in seen["command"])
     assert list((run_dir / "results" / "claude_exploration").glob("*.json"))
 
 
@@ -443,12 +477,44 @@ def test_exploration_prompt_surfaces_capabilities():
         ExperimentConfig(500, -20, 40, 100, 200, 0), _robot_config()
     )
     assert "move(x,y,z,yaw)" in prompt
+
+
+def test_exploration_prompt_bounds_accumulated_history():
+    history = [
+        {"iteration": index, "evaluation": {"reason": "x" * 30_000}}
+        for index in range(8)
+    ]
+    prompt = exploration_prompt(
+        ExperimentConfig(500, -20, 40, 100, 200, 0),
+        _robot_config(),
+        history=history,
+    )
+
+    assert len(prompt) < 120_000
+    assert '"iteration": 7' in prompt
+    assert '"iteration": 0' not in prompt
+
+
+def test_exploration_prompt_references_persisted_history_instead_of_embedding_it():
+    prompt = exploration_prompt(
+        ExperimentConfig(500, -20, 40, 100, 200, 0),
+        _robot_config(),
+        history=[{"iteration": 7, "evaluation": {"reason": "x" * 30_000}}],
+        history_file="workspace/global_experience.jsonl",
+    )
+
+    assert "workspace/global_experience.jsonl" in prompt
+    assert "Use the Read tool" in prompt
+    assert "x" * 1_000 not in prompt
     assert "workspace bounds" in prompt
     assert "usable garment lifting anchor" in prompt
     assert "as open and spread" in prompt
     assert "semantic garment part" in prompt
     assert "center_is_reference_only" in prompt
     assert "Skill: laydown" in prompt
+    assert "flat-garment reference first" in prompt
+    assert "printed-pattern correspondence" in prompt
+    assert "heatmap pixel as the target" in prompt
 
 
 def test_exploration_prompt_makes_all_motion_heights_agent_decisions():

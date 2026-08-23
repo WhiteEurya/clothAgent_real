@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "patches": [
+    {
+      "base_skill": "laydown",
+      "patch_file": "20260821T121248886539Z_laydown.json",
+      "sha256": "bdded7f41875201374f5ac9800bb590a062c86d7119642e3c213c6c57616865c",
+      "approved_at": "2026-08-21T15:03:50.745+00:00",
+      "reviewer": "operator",
+      "note": "Approved after reviewing iteration 14 before/after evidence and the re-piling regression."
+    }
+  ],
+  "updated_at": "2026-08-21T15:03:50.745+00:00"
+}

@@ -92,6 +92,22 @@ def test_skill_and_claude_output_panels_include_audit_and_intermediates(tmp_path
         json.dumps({"skills": [{"name": "ridge-release", "version": 1}]}),
         encoding="utf-8",
     )
+    (skills / "approved_patches.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "patches": [
+                    {
+                        "base_skill": "laydown",
+                        "patch_file": "reviewed_laydown.json",
+                        "reviewer": "operator",
+                        "approved_at": "2026-08-20T00:01:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     record = {
         "objective": "open garment",
         "candidate_policy": "NONE",
@@ -121,13 +137,46 @@ def test_skill_and_claude_output_panels_include_audit_and_intermediates(tmp_path
         ],
         "global_grounding": {"measurement": {"valid": True}},
         "preflight": {"actions": [{"name": "move"}]},
+        "error_feedback_to_claude": {
+            "error": "controller IK code=10",
+            "feedback_target": "next Claude planning attempt",
+            "physical_command_sent": False,
+        },
+        "preexecution_error_recovery": {
+            "error_feedback": {"error": "controller IK code=10"},
+            "skill_proposal": {
+                "operation": "create",
+                "name": "controller-ik-recovery",
+                "guidance": "keep waypoints inside workspace and rerun IK before release",
+            },
+            "skill_review": {
+                "status": "APPROVED",
+                "approved": True,
+                "reason": "passed review",
+            },
+        },
+        "evaluation_error_recovery": {
+            "successful_attempt": 2,
+            "robot_command_repeated": False,
+            "camera_command_repeated": False,
+            "skill_proposal": {
+                "operation": "create",
+                "name": "evaluation-timeout-retry",
+            },
+            "skill_review": {"status": "APPROVED", "approved": True},
+        },
         "stage_timestamps": {"planning": "now"},
     }
     skill_text = _skill_markdown(record, iteration, skills)
     output_text = _claude_output_markdown(record, iteration, tmp_path)
 
     assert "ridge-release" in skill_text
+    assert "controller-ik-recovery" in skill_text
+    assert "evaluation-timeout-retry" in skill_text
     assert "APPROVED" in skill_text
+    assert "Approved system skill patches" in skill_text
+    assert "reviewed_laydown.json" in skill_text
     assert "stdout" in output_text
     assert "inspect scene" in output_text
     assert "grounding" in output_text
+    assert "controller IK code=10" in output_text

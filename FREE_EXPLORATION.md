@@ -76,11 +76,11 @@ python -m cloth_agent.auto_exploration \
   --run-id claude_auto_01 \
   --max-iterations 0 \
   --settle-s 2 \
-  --record-rollouts \
   --enable-real
 ```
 
-With `--record-rollouts`, the loop starts the standalone Camera A/B recorder
+Camera A/B rollout recording is enabled by default. The loop starts the
+standalone Camera A/B recorder
 only after perception, Claude planning, static preflight, and read-only
 controller IK have passed. It records the physical rollout plus mandatory
 return-home, closes both cameras, and only then starts the after-observation.
@@ -90,6 +90,33 @@ native `.db3` recordings under
 startup failure is a hard pre-execution failure and sends no robot command.
 The MP4 files are finalized as H.264/AVC with `yuv420p` and fast-start for
 compatibility with browsers, phones, and common desktop players.
+Use `--no-record-rollouts` only when recording must be explicitly disabled.
+
+The automatic loop also reads `garment_center_workspace_mm` from the perception
+configuration. The check uses the robust median XY center from dense Camera A/B
+fusion, avoiding a trigger from one noisy silhouette point. If that center is
+outside the configured rectangle, the next rollout is forced into
+`WORKSPACE_RECOVERY`: ordinary opening/probing goals are overridden, Stage 2
+receives an inward Base-frame XY translation, and deterministic validation
+rejects any grasp-to-release program that is too small, points outward, drifts
+too far sideways, or exceeds the configured recovery step. A fresh A/B
+perception is always run afterward; recovery repeats until the center is back
+inside the rectangle.
+
+The current calibrated values are in
+`config/perception.free_exploration.json`:
+
+```json
+"garment_center_workspace_mm": {
+  "x_min": 450.0,
+  "x_max": 750.0,
+  "y_min": -180.0,
+  "y_max": 80.0,
+  "reentry_margin_mm": 30.0,
+  "min_recovery_step_mm": 40.0,
+  "max_recovery_step_mm": 120.0
+}
+```
 
 After Claude proposes a plan, the dashboard defines each grasp target as the
 last finite `move(x,y,z,yaw)` immediately preceding `close_gripper()`. It shows
@@ -145,6 +172,13 @@ before/after evaluation results under
 Molmo/Sxxx/local-Rxxx flow is retained only as explicit
 `--planning-policy semantic_local`; only that compatibility mode loads Molmo or
 uses the `19000 MiB` GPU gate.
+
+If Claude times out during post-rollout evaluation, the CLI keeps the completed
+robot rollout and saved Camera A/B before/after evidence, then retries only the
+evaluation call. The default is unlimited retries with a two-second backoff;
+no robot or camera command is resent. Configure this with
+`--max-evaluation-retries` (`0` means unlimited) and
+`--evaluation-retry-backoff-s`.
 
 The legacy Viser console still shows a live `Claude stage timer` panel with the active stage, Stage-1
 reference-attempt count, elapsed time/timeout, and completed duration for each stage. The same values are saved

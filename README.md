@@ -177,13 +177,50 @@ and descent followed by controlled release, not a fling or high drop.
 After a completed before/after experiment, Claude may omit a skill update,
 propose a genuinely new skill (`create`), or propose a revision to an approved
 skill (`modify`). Proposals contain a purpose, high-level guidance, rationale,
-confidence, and visual before/after evidence. They are persisted under
-`data/skills/proposals.jsonl` and pass through the independent
-`SkillStore` reviewer before activation. The reviewer rejects low-confidence,
-duplicate, malformed, or low-level robot/API guidance; only approved versions
-are written to `data/skills/approved.json` and included in later prompts.
-Each iteration also saves `skill_review.json` when a proposal was made. Skills
-never contain coordinates, joint angles, SDK calls, or executable code.
+confidence, and visual before/after evidence. During a run, proposals and the
+complete before/after experience are kept under that run's workspace in
+`run_skill_lifecycle/`; they receive a provisional `RUN_LOCAL_PENDING` review
+and do not mutate the persistent library. The next iteration can use these
+run-local candidates as provisional evidence while later observations refine
+or contradict them.
+
+When the run ends, the ledger groups repeated candidates, combines their
+evidence and rationale, writes `run_skill_synthesis.json`, and only then passes
+the synthesized candidates through the independent `SkillStore` reviewer.
+Only resulting approved versions are written to `data/skills/approved.json` or
+emitted as external system-skill patches. Each iteration still saves
+`skill_review.json` when a proposal was made, but an iteration-level review is
+not global activation. Skills never contain coordinates, joint angles, SDK
+calls, or executable code.
+
+Built-in system skills remain immutable. A proposed modification to one is
+saved under `data/skills/patches/` but is not loaded merely because Claude or
+the automatic reviewer created it. After an independent evidence review, an
+operator explicitly approves the candidate with:
+
+```bash
+python scripts/approve_skill_patch.py \
+  data/skills/patches/<patch>.json \
+  --reviewer operator \
+  --note "Reviewed against the saved before/after evidence"
+```
+
+Approval writes `data/skills/approved_patches.json`; later prompts apply only
+the ordered patches listed there whose SHA-256 and base version still match.
+The candidate patch remains an immutable record with `applied: false`: it
+cannot approve itself, and the external approval manifest is the activation
+authority. A missing, reordered, stale, or modified approved patch fails
+closed instead of silently changing system guidance.
+
+Deterministic pre-execution errors participate in the same learning loop. The
+runtime checkpoints the exact error, rejected proposal/actions, and confirms
+that no physical command was sent; the next Claude attempt receives that
+payload verbatim. When Claude returns a materially different correction that
+passes grounding, static preflight, workspace, and controller IK, the
+error→correction pair is saved as `preexecution_error_recovery.json` and can
+create a reviewed recovery skill such as `controller-ik-recovery`. Errors that
+require a fresh iteration are also appended to global experience so the next
+Claude prompt does not lose the failure context.
 
 The xArm controller already defines its TCP at the installed gripper tool
 point. A read-only hardware check on 2026-08-11 reported
@@ -426,6 +463,13 @@ add:
   --recovery-backoff-s 2
 ```
 
+Claude evaluation timeouts are handled separately because the physical rollout,
+mandatory return-Home, and after-state capture have already completed. The CLI
+retries evaluation against the same saved before/after evidence until it
+succeeds or the operator presses `Ctrl+C`; no robot or camera command is
+repeated. Use `--max-evaluation-retries N` to impose a limit (`0` means
+unlimited) and `--evaluation-retry-backoff-s S` to change the retry delay.
+
 The CLI never exposes real motion without `--enable-real`. For a camera/Claude
 diagnostic that also avoids connecting to xArm for read-only IK,
 add `--skip-controller-ik` to a dry run.
@@ -434,6 +478,13 @@ Cartesian action `yaw` is interpreted as a wrist-yaw delta relative to the
 calibrated Home TCP orientation. Therefore `yaw=0` preserves the Home gripper
 orientation instead of rotating the wrist by the roughly 170-degree Euler yaw
 difference present in the xArm home joint report.
+
+The built-in procedural skill library now also includes `flatten-garment`: when
+the evidence supports a whole-garment opening maneuver, Claude may lift a
+supported grasp, move toward the farthest safe X boundary, and retreat while
+descending to a controlled low release. The skill supplies the sequence and
+safety constraints; Claude still chooses the measured anchor, exact boundary,
+waypoints, and release height, followed by the normal workspace/IK gates.
 
 To inspect the saved intermediate images while the CLI is running, start the
 separate lightweight artifact viewer in another terminal:
@@ -487,6 +538,12 @@ Claude CLI stdout/stderr, parsed proposal, evaluator output, grounding,
 preflight, controller-IK, and recovery checkpoints. These are recorded model
 outputs and runtime variables; hidden chain-of-thought is not synthesized.
 
+Evaluation-timeout retry is active in this launcher independently of
+`--no-recover`. Each retry is checkpointed under
+`evaluation_timeout_retries`, reuses the saved before/after images, and never
+repeats the completed physical rollout. Once a retry succeeds, the same
+error→recovery evidence is reviewed as the `evaluation-timeout-retry` skill.
+
 Every launch creates
 `runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/` with:
 
@@ -501,6 +558,7 @@ iteration_001/
   global_grounding.json             # selected pixel and measured local Base XYZ
   preflight.json
   controller_ik.json
+  preexecution_error_recovery.json  # when Claude corrected a rejected plan
   execution.json                    # real mode only
   mandatory_return_home.json        # real mode only
   evaluation.json                   # before/after keep/change result, real mode
@@ -515,13 +573,15 @@ The Viser-based `cloth_agent.auto_exploration --molmo-keypoints` entry point is
 still available for visual debugging, but is no longer required by this
 pipeline.
 
-Both automatic entry points support opt-in recovery for failures that happen
-before physical execution, or after a completed rollout has returned Home.
-Use `--continue-on-recoverable-errors` with
+Both automatic entry points support opt-in fresh-iteration recovery for
+failures that happen before physical execution. Use
+`--continue-on-recoverable-errors` with
 `--max-consecutive-recoverable-failures N` and `--recovery-backoff-s S` to save
-the failed iteration and begin a fresh perception/planning iteration. Unknown
-robot state, incomplete execution, and failed return-Home remain hard stops;
-the loop never blindly retries those conditions.
+the failed iteration and begin a fresh perception/planning iteration. A
+headless-CLI evaluation timeout after completed execution instead retries only
+the evaluator with its saved evidence. Unknown robot state, incomplete
+execution, and failed return-Home remain hard stops; the loop never blindly
+retries those conditions.
 
 In `--planning-policy semantic_local` only, use repeated
 `--keypoint-camera A|B` options to restrict CLI inference to a
@@ -631,15 +691,23 @@ Enable the same module as an execution-stage plugin with one command:
   --perception-config config/perception.free_exploration.json \
   --max-iterations 0 \
   --settle-s 2 \
-  --record-rollouts \
   --enable-real
 ```
 
-Recording begins only after perception/planning/preflight/IK and ends after
+Camera A/B recording is enabled by default. Recording begins only after
+perception/planning/preflight/IK and ends after
 the mandatory return-home. A recorder startup failure blocks physical
 execution. `--max-iterations 0` keeps opening the garment until the evaluator
 judges it reasonably maximally spread or safe continuation is no longer
-possible. Use `--recording-no-native` to omit the large `.db3` files.
+possible. Use `--no-record-rollouts` to disable recording, or
+`--recording-no-native` to omit the large `.db3` files.
+
+`config/perception.free_exploration.json` also defines a calibrated
+`garment_center_workspace_mm` rectangle. Every fused A/B perception checks the
+robust garment center against that rectangle. If it is outside, the next
+physical action is forced to be an inward workspace-recovery transport before
+normal garment opening resumes. The final grasp-to-release motion is checked
+against the requested inward vector before preflight/IK and execution.
 
 Visual planning defaults to a `400` second timeout; the final exact-Rxxx
 grounding/run-generation stage defaults to `120` seconds. Without the recovery

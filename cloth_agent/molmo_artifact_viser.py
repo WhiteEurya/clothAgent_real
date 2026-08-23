@@ -171,9 +171,45 @@ def _skill_markdown(
     else:
         lines.extend(["- independent skill review in this iteration: `not run`", ""])
 
+    error_recovery = record.get("preexecution_error_recovery")
+    if isinstance(error_recovery, dict):
+        recovery_proposal = error_recovery.get("skill_proposal", {})
+        recovery_review = error_recovery.get("skill_review", {})
+        lines.extend(
+            [
+                "**Error-recovery skill proposal**",
+                "",
+                f"- error: `{_short(error_recovery.get('error_feedback', {}), 1200)}`",
+                f"- operation/name: `{recovery_proposal.get('operation', '—') if isinstance(recovery_proposal, dict) else '—'}` / `{recovery_proposal.get('name', '—') if isinstance(recovery_proposal, dict) else '—'}`",
+                f"- guidance: {_short(recovery_proposal.get('guidance', '—') if isinstance(recovery_proposal, dict) else '—', 1200)}",
+                f"- review: `{recovery_review.get('status', '—') if isinstance(recovery_review, dict) else '—'}`",
+                f"- activated: `{recovery_review.get('approved', '—') if isinstance(recovery_review, dict) else '—'}`",
+                f"- reason: {_short(recovery_review.get('reason', '—') if isinstance(recovery_review, dict) else '—', 1000)}",
+                "",
+            ]
+        )
+
+    evaluation_recovery = record.get("evaluation_error_recovery")
+    if isinstance(evaluation_recovery, dict):
+        recovery_proposal = evaluation_recovery.get("skill_proposal", {})
+        recovery_review = evaluation_recovery.get("skill_review", {})
+        lines.extend(
+            [
+                "**Evaluation-timeout recovery skill**",
+                "",
+                f"- attempts: `{evaluation_recovery.get('successful_attempt', '—')}`",
+                f"- operation/name: `{recovery_proposal.get('operation', '—') if isinstance(recovery_proposal, dict) else '—'}` / `{recovery_proposal.get('name', '—') if isinstance(recovery_proposal, dict) else '—'}`",
+                f"- review: `{recovery_review.get('status', '—') if isinstance(recovery_review, dict) else '—'}`",
+                f"- activated: `{recovery_review.get('approved', '—') if isinstance(recovery_review, dict) else '—'}`",
+                f"- no robot/camera repeat: `{not evaluation_recovery.get('robot_command_repeated', True) and not evaluation_recovery.get('camera_command_repeated', True)}`",
+                "",
+            ]
+        )
+
     if skills_root is not None:
         reviews = _jsonl_tail(skills_root / "reviews.jsonl", limit=8)
         approved = _load_json(skills_root / "approved.json")
+        approved_patches = _load_json(skills_root / "approved_patches.json")
         if reviews:
             lines.extend(["**Recent skill audit log**", ""])
             for entry in reviews:
@@ -199,6 +235,19 @@ def _skill_markdown(
                         if isinstance(item, dict)
                     )
                 )
+        if isinstance(approved_patches, dict):
+            patches = approved_patches.get("patches", [])
+            if isinstance(patches, list) and patches:
+                lines.extend(["", "**Approved system skill patches**", ""])
+                for item in patches:
+                    if not isinstance(item, dict):
+                        continue
+                    lines.append(
+                        f"- `{item.get('base_skill', '?')}` from "
+                        f"`{item.get('patch_file', '?')}`; reviewer "
+                        f"`{item.get('reviewer', '?')}` at "
+                        f"`{item.get('approved_at', '?')}`"
+                    )
     return "\n".join(lines)
 
 
@@ -250,7 +299,9 @@ def _claude_output_markdown(
         for item in rejections:
             if isinstance(item, dict):
                 lines.append(
-                    f"- attempt `{item.get('attempt', '?')}`: {_short(item.get('error'), 1200)}"
+                    f"- attempt `{item.get('attempt', '?')}`: {_short(item.get('error'), 1200)}; "
+                    f"feedback target=`{item.get('feedback_target', '—')}`; "
+                    f"physical command sent=`{item.get('physical_command_sent', '—')}`"
                 )
         lines.append("")
 
@@ -265,6 +316,9 @@ def _claude_output_markdown(
             f"- grounding: `{_short(record.get('global_grounding', {}), 2200)}`",
             f"- preflight: `{_short(record.get('preflight', {}), 2200)}`",
             f"- controller IK: `{_short(record.get('controller_ik', {}), 1800)}`",
+            f"- error feedback to Claude: `{_short(record.get('error_feedback_to_claude', {}), 2200)}`",
+            f"- pre-execution error recovery: `{_short(record.get('preexecution_error_recovery', {}), 2600)}`",
+            f"- evaluation error recovery: `{_short(record.get('evaluation_error_recovery', {}), 2200)}`",
             f"- stage timestamps: `{_short(record.get('stage_timestamps', {}), 1600)}`",
             "",
         ]
@@ -394,6 +448,9 @@ def _claude_markdown(
         f"- completed stage: `{record.get('last_completed_stage', '—')}`\n"
         f"- error: `{_short(error, 900) if error else 'none'}`\n"
         f"- recovery: `{_short(recovery, 900) if recovery else 'not active'}`\n"
+        f"- error feedback to Claude: `{_short(record.get('error_feedback_to_claude', {}), 1200)}`\n"
+        f"- recovery skill review: `{_short(record.get('recovery_skill_review', {}), 1000)}`\n"
+        f"- evaluation recovery skill review: `{_short(record.get('evaluation_recovery_skill_review', {}), 1000)}`\n"
         f"- latest planning rejection: `{_short(latest_rejection.get('error', 'none'), 900) if isinstance(latest_rejection, dict) else 'none'}`"
         f"{execution_lines}"
     )

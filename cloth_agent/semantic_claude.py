@@ -147,7 +147,10 @@ SEMANTIC_ACTION_JSON_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "name": {"type": "string", "enum": ["laydown"]},
+                    "name": {
+                        "type": "string",
+                        "enum": ["laydown", "flatten-garment"],
+                    },
                     "reason": {"type": "string", "minLength": 1},
                 },
                 "required": ["name", "reason"],
@@ -187,9 +190,9 @@ class SemanticClaudeClient:
         self,
         binary: str = "claude",
         *,
-        strategy_timeout_s: int = 400,
+        strategy_timeout_s: int = 900,
         action_timeout_s: int = 180,
-        evaluation_timeout_s: int = 400,
+        evaluation_timeout_s: int = 900,
     ):
         self.binary = binary
         self.strategy_timeout_s = int(strategy_timeout_s)

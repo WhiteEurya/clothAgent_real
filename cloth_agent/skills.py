@@ -47,7 +47,47 @@ LAYDOWN_SKILL = SkillSpec(
 )
 
 
-SKILL_REGISTRY: dict[str, SkillSpec] = {LAYDOWN_SKILL.name: LAYDOWN_SKILL}
+FLATTEN_SKILL = SkillSpec(
+    name="flatten-garment",
+    purpose=(
+        "Progressively open and flatten a garment by validating the grasped "
+        "structure, establishing a useful hanging configuration, transporting "
+        "in a verified opening direction, and laying down only while the scene "
+        "shows measurable improvement."
+    ),
+    guidance=(
+        "Follow this staged workflow:\n"
+        "1. Acquire a validated garment structure: choose a visible, liftable "
+        "anchor whose local RGB-D measurement, height, and depth consistency "
+        "support a real garment grasp; do not proceed from an unsupported or "
+        "table-only point.\n"
+        "2. Establish a hanging configuration if useful: lift to a validated "
+        "safe height and confirm that the grasped fabric is supported and can "
+        "hang without dragging or colliding. If the lift does not reveal a "
+        "supported structure, stop and re-plan.\n"
+        "3. Transport toward a verified opening direction: infer the direction "
+        "from the current garment geometry and before/after evidence, then use "
+        "validated intermediate waypoints with stable orientation and workspace "
+        "margin. The farthest safe X direction is allowed only when the scene "
+        "verifies that it opens the garment; do not assume it is always correct.\n"
+        "4. Continue only while overlap decreases or coverage increases: after "
+        "each meaningful transport segment, compare the garment footprint, "
+        "visible area, layer overlap, and height relief. Stop, release, or "
+        "re-plan when the move is not improving those measures; never continue "
+        "a blind pull.\n"
+        "5. Lay down progressively: retreat while descending through validated "
+        "intermediate heights, release quasi-statically on a clean surface, and "
+        "avoid dropping, flinging, twisting, or dragging the loaded gripper. "
+        "The skill supplies this decision sequence, never fixed coordinates or "
+        "robot API calls."
+    ),
+)
+
+
+SKILL_REGISTRY: dict[str, SkillSpec] = {
+    LAYDOWN_SKILL.name: LAYDOWN_SKILL,
+    FLATTEN_SKILL.name: FLATTEN_SKILL,
+}
 
 
 def available_skill_names() -> tuple[str, ...]:

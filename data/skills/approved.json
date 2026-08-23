@@ -1,0 +1,68 @@
+{
+  "updated_at": "2026-08-22T14:54:48.306+00:00",
+  "skills": [
+    {
+      "name": "controller-ik-recovery",
+      "purpose": "Recover safely when controller IK rejects a garment manipulation path before physical execution.",
+      "guidance": "When controller IK rejects a pose or interpolated segment, preserve the supported visual objective but shorten extreme reach, lift, or transport; keep every waypoint inside the workspace, include a controlled release, and rerun preflight and controller IK before execution.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "flatten-garment",
+      "purpose": "Progressively open and flatten a garment by validating the grasped structure, establishing a useful hanging configuration, transporting in a verified opening direction, and laying down only while the scene shows measurable improvement.",
+      "guidance": "Follow this staged workflow:\n1. Acquire a validated garment structure: choose a visible, liftable anchor whose local RGB-D measurement, height, and depth consistency support a real garment grasp; do not proceed from an unsupported or table-only point.\n2. Establish a hanging configuration if useful: lift to a validated safe height and confirm that the grasped fabric is supported and can hang without dragging or colliding. If the lift does not reveal a supported structure, stop and re-plan.\n3. Transport toward a verified opening direction: infer the direction from the current garment geometry and before/after evidence, then use validated intermediate waypoints with stable orientation and workspace margin. The farthest safe X direction is allowed only when the scene verifies that it opens the garment; do not assume it is always correct.\n4. Continue only while overlap decreases or coverage increases: after each meaningful transport segment, compare the garment footprint, visible area, layer overlap, and height relief. Stop, release, or re-plan when the move is not improving those measures; never continue a blind pull.\n5. Lay down progressively: retreat while descending through validated intermediate heights, release quasi-statically on a clean surface, and avoid dropping, flinging, twisting, or dragging the loaded gripper. The skill supplies this decision sequence, never fixed coordinates or robot API calls.",
+      "version": 1,
+      "source": "builtin"
+    },
+    {
+      "name": "grounding-plan-recovery",
+      "purpose": "Recover from an invalid or inconsistent grounded garment proposal before motion.",
+      "guidance": "When grounding validation rejects a selected point or its use in the plan, reinspect the current evidence, choose a newly grounded visible fabric point, keep the path inside the workspace, include a controlled release, and rerun preflight and IK before execution.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "laydown",
+      "purpose": "Convert a garment held from a useful lifting anchor into a more spread tabletop configuration, and recognise when a release has re-piled the garment onto itself instead of opening it.",
+      "guidance": "Keep the quasi-static procedure: let the garment hang under gravity, retreat away from the hanging cloth while descending through intermediate heights, let the hanging face become the upward face, and release in a controlled way. Add two checks. First, before descending, require the retreat to carry the grasp point beyond the horizontal extent of the material still hanging below it, onto clear table, so the fabric unrolls onto bare surface rather than settling back over the area it came from; a retreat shorter than the hanging garment's own reach should be treated as not ready for release. Second, after release, compare footprints rather than only position: if the deposited outline sits inside the previous outline, if previously exposed features such as prints, collars or hems have become covered, and if new steep fold walls appear in depth, judge the laydown a regression caused by too short a retreat, and plan the next deposit farther out across clean table instead of repeating the same descent from the same anchor.",
+      "version": 2,
+      "source": "external-patch:20260821T121248886539Z_laydown.json"
+    },
+    {
+      "name": "molmo-annotation-retry",
+      "purpose": "Recover from an auxiliary Molmo annotation worker failure before motion.",
+      "guidance": "When auxiliary Molmo annotation fails before execution, preserve the saved perception evidence, retry the annotation on a fresh iteration, and never treat a missing semantic anchor as garment-state evidence; keep workspace, release, preflight, and IK validation mandatory before any later motion.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "null-change-missed-grasp-recovery",
+      "purpose": "Recognise a near-null garment action and separate a clean miss from a contact-without-hold on a compressible pile, then pick the recovery that the visual signature supports.",
+      "guidance": "Extend the existing null-change checks with a contact-without-hold signature. When the garment outline and all its extremes are unchanged but the height of the structure at the chosen contact point has visibly slumped in one or both depth views, read this as the jaws having pressed and compressed the pile rather than having missed it entirely or held it. In that case do not treat the anchor region as disproved and do not lengthen the pull: instead engage clearly deeper than the surface height measured before contact, because a soft roll sinks under the closing jaws and a shallow bite referenced to the pre-contact surface only skims it, and prefer a thin free boundary of the same raised structure such as a rim, hem or fold edge where the jaws can enclose one or two layers instead of a broad compressible flank. Require the lift to include an observable hold check before any transport, so the next observation distinguishes held cloth from a slipped bite, while the deposit area, approach clearance and quasi-static release choices already validated stay unchanged.",
+      "version": 5,
+      "source": "reviewed"
+    },
+    {
+      "name": "planning-timeout-recovery",
+      "purpose": "Recover from a Claude planning timeout before any garment motion starts.",
+      "guidance": "When planning times out before execution, retain the exact failure context, start a fresh planning attempt from saved perception, keep all waypoints inside the workspace, include a controlled release, and rerun preflight and IK before execution.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "preflight-contract-recovery",
+      "purpose": "Recover from a rejected action schema or unsafe action sequence before motion.",
+      "guidance": "When static preflight rejects a plan, keep only the high-level garment objective, correct the reported action contract or sequence, keep all waypoints inside the workspace, include an explicit release, and rerun preflight and IK before execution.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "translation-only-reanchor",
+      "purpose": "Recognize when repeated congruent relocations mean the single-anchor peel strategy itself is disproved for a garment, and switch to requiring verifiable opposition and resolvable openings instead of hunting for better anchor geometry.",
+      "guidance": "Add a strategy-level stop rule and tighten boundary verification. Count outcomes across attempts on the same garment: when three or more attempts end with the outline relocated as a near copy of itself, landmarks in the same relative order, and the origin left bare, stop treating the individual anchor as the fault and treat single-anchor pulling as disproved for this configuration. Record explicitly that a rounded termination with bare surface beneath, or a shadowed undercut, or even two edges that appear separately traceable, are not sufficient proof of a free ply when a soft fold of the body can present the same appearance. Require instead that the opening itself be resolvable and followable: a cuff or hem mouth where the interior passage is visible, a collar edge where both faces are separately identifiable, or a corner already lifted with confirmed visible gap and light between plies. Then make the low hold a mandatory abort gate: before any lateral motion, check that landmarks well away from the grasp (opposite sleeve, print features, collar, hem) stay pressed on the surface; if they rise, slide, or rotate with the jaws, release quasi-statically and re-anchor at a newly verified opening. Also consider whether the garment needs material immobilized away from the grasp to supply opposition, since repeated whole-body drags prove nothing on the table is anchoring the pull. Keep the already validated bite depth, approach orientation, reach envelope, framed deposit placement beyond the reach of hanging material, and quasi-static release, since a whole-body relocation neither supports nor disproves those mechanical choices.",
+      "version": 20,
+      "source": "reviewed"
+    }
+  ]
+}

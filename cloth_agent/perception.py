@@ -44,6 +44,22 @@ DEFAULT_FUSED_VOXEL_SIZE_MM = 6.0
 TABLE_APPEARANCE_LUMA_PERCENTILE = 95.0
 MIN_CONFIDENT_TABLE_LUMA = 90.0
 MAX_CONFIDENT_TABLE_COLOR_NOISE = 45.0
+# A blue-lit tabletop can be far from the bright table RGB reference while
+# remaining nearly neutral in appearance.  Use the stricter threshold for both
+# the fused cloud and per-camera projection masks; dark fabric remains allowed
+# through the luma exception below.
+CAMERA_TABLE_CHROMATICITY_THRESHOLD = 0.12
+FUSED_TABLE_CHROMATICITY_THRESHOLD = 0.12
+DARK_GARMENT_LUMA_CUT = 80.0
+# When the tabletop reference is genuinely saturated white, RGB magnitude is
+# reliable again: a pale/patterned fabric pixel can be far from the table in
+# RGB while still having similar chromaticity.  This rescue is deliberately
+# limited to a bright, nearly neutral table so the shadowed-table safeguard
+# above remains active for coloured or underexposed tabletops.
+BRIGHT_NEUTRAL_TABLE_LUMA_CUT = 248.0
+BRIGHT_NEUTRAL_TABLE_NEAR_LUMA_CUT = 220.0
+BRIGHT_NEUTRAL_TABLE_CHANNEL_SPREAD = 16.0
+BRIGHT_NEUTRAL_RESCUE_CHROMATICITY_THRESHOLD = 0.04
 MIN_PROJECTED_GARMENT_COVERAGE = 0.35
 EDGE_FIXTURE_HEIGHT_MM = 20.0
 MIN_EDGE_FIXTURE_MEDIAN_HEIGHT_MM = 35.0
@@ -86,6 +102,82 @@ class MolmoConfig:
 
 
 @dataclass(frozen=True)
+class GarmentCenterWorkspace:
+    """Allowed robust garment-center rectangle in robot-base XY millimetres."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    reentry_margin_mm: float = 30.0
+    min_recovery_step_mm: float = 40.0
+    max_recovery_step_mm: float = 120.0
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, Any]) -> "GarmentCenterWorkspace":
+        required = ("x_min", "x_max", "y_min", "y_max")
+        missing = [name for name in required if name not in values]
+        if missing:
+            raise PerceptionError(
+                "garment_center_workspace_mm is missing fields: "
+                f"{missing}"
+            )
+
+        def number(name: str, default: float | None = None) -> float:
+            value = values.get(name, default)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise PerceptionError(
+                    f"garment_center_workspace_mm.{name} must be a number"
+                )
+            return float(value)
+
+        workspace = cls(
+            x_min=number("x_min"),
+            x_max=number("x_max"),
+            y_min=number("y_min"),
+            y_max=number("y_max"),
+            reentry_margin_mm=number("reentry_margin_mm", 30.0),
+            min_recovery_step_mm=number("min_recovery_step_mm", 40.0),
+            max_recovery_step_mm=number("max_recovery_step_mm", 120.0),
+        )
+        workspace.validate()
+        return workspace
+
+    def validate(self) -> None:
+        values = (
+            self.x_min,
+            self.x_max,
+            self.y_min,
+            self.y_max,
+            self.reentry_margin_mm,
+            self.min_recovery_step_mm,
+            self.max_recovery_step_mm,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise PerceptionError(
+                "garment center workspace values must all be finite"
+            )
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise PerceptionError(
+                "garment center workspace min values must be below max values"
+            )
+        if self.reentry_margin_mm < 0:
+            raise PerceptionError("garment reentry margin must be non-negative")
+        if self.reentry_margin_mm * 2 >= min(
+            self.x_max - self.x_min, self.y_max - self.y_min
+        ):
+            raise PerceptionError(
+                "garment reentry margin leaves no interior target region"
+            )
+        if self.min_recovery_step_mm <= 0:
+            raise PerceptionError("minimum garment recovery step must be positive")
+        if self.max_recovery_step_mm < self.min_recovery_step_mm:
+            raise PerceptionError(
+                "maximum garment recovery step must be at least the minimum step"
+            )
+
+
+@dataclass(frozen=True)
 class PerceptionConfig:
     """Calibration/capture settings for dense A+B RGB-D observation.
 
@@ -109,6 +201,7 @@ class PerceptionConfig:
     grasp_contact_clearance_mm: float = 0.0
     approach_clearance_mm: float = 80.0
     lift_clearance_mm: float = 160.0
+    garment_center_workspace: GarmentCenterWorkspace | None = None
 
     @classmethod
     def load(cls, project_root: Path, path: Path) -> "PerceptionConfig":
@@ -152,6 +245,13 @@ class PerceptionConfig:
             str(label).strip().upper()
             for label in raw.get("active_cameras", [camera.label for camera in cameras])
         )
+        garment_workspace_raw = raw.get("garment_center_workspace_mm")
+        if garment_workspace_raw is not None and not isinstance(
+            garment_workspace_raw, dict
+        ):
+            raise PerceptionError(
+                "garment_center_workspace_mm must be a JSON object"
+            )
         config = cls(
             cameras=(cameras[0], cameras[1]),
             molmo=None,
@@ -168,6 +268,11 @@ class PerceptionConfig:
             grasp_contact_clearance_mm=float(raw.get("grasp_contact_clearance_mm", 0.0)),
             approach_clearance_mm=float(raw.get("approach_clearance_mm", 80.0)),
             lift_clearance_mm=float(raw.get("lift_clearance_mm", 160.0)),
+            garment_center_workspace=(
+                GarmentCenterWorkspace.from_mapping(garment_workspace_raw)
+                if garment_workspace_raw is not None
+                else None
+            ),
         )
         config.validate()
         return config
@@ -333,8 +438,13 @@ class RealSenseRGBD:
                         f"camera {self.spec.label} color exposure {exposure} is outside "
                         f"[{exposure_range.min}, {exposure_range.max}]"
                     )
-                color_sensor.set_option(rs.option.enable_auto_exposure, 0.0)
-                color_sensor.set_option(rs.option.exposure, exposure)
+                try:
+                    color_sensor.set_option(rs.option.enable_auto_exposure, 0.0)
+                    color_sensor.set_option(rs.option.exposure, exposure)
+                except RuntimeError as exc:
+                    raise PerceptionError(
+                        f"camera {self.spec.label} RGB exposure control failed: {exc}"
+                    ) from exc
             if self.spec.color_white_balance is not None:
                 if not color_sensor.supports(rs.option.enable_auto_white_balance) or not color_sensor.supports(rs.option.white_balance):
                     raise PerceptionError(
@@ -347,8 +457,13 @@ class RealSenseRGBD:
                         f"camera {self.spec.label} color white balance {white_balance} is outside "
                         f"[{white_balance_range.min}, {white_balance_range.max}]"
                     )
-                color_sensor.set_option(rs.option.enable_auto_white_balance, 0.0)
-                color_sensor.set_option(rs.option.white_balance, white_balance)
+                try:
+                    color_sensor.set_option(rs.option.enable_auto_white_balance, 0.0)
+                    color_sensor.set_option(rs.option.white_balance, white_balance)
+                except RuntimeError as exc:
+                    raise PerceptionError(
+                        f"camera {self.spec.label} RGB white-balance control failed: {exc}"
+                    ) from exc
         color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         intr = color_profile.get_intrinsics()
         self.intrinsics = numpy.asarray(
@@ -1039,6 +1154,7 @@ def _save_fused_height_map(
         "heatmap_color_normalization": "garment_height_global_softmax",
         "heatmap_softmax_temperature_mm": HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM,
         "heatmap_softmax_physical_blend": HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND,
+        "heatmap_softmax_contrast_gamma": HEIGHT_MAP_SOFTMAX_CONTRAST_GAMMA,
         "heatmap_display_min_mm": DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
         "heatmap_display_max_mm": display_max_mm,
         "heatmap_normalization": "fixed_physical_-5_to_40mm",
@@ -1147,6 +1263,13 @@ def _scalar_heatmap_rgb(
         weights = numpy.exp(logits)
         weights /= max(float(weights.sum()), 1e-12)
         softmax_activation = weights / max(float(weights.max()), 1e-12)
+        # Keep the operation a true global softmax, but use a sub-linear
+        # display transform so ordinary folds do not collapse into one color
+        # while only the single highest pixel is visible as hot.
+        softmax_activation = numpy.power(
+            numpy.clip(softmax_activation, 0.0, 1.0),
+            HEIGHT_MAP_SOFTMAX_CONTRAST_GAMMA,
+        )
         physical_activation = normalized[render_mask].astype(numpy.float64, copy=False)
         normalized = normalized.copy()
         normalized[render_mask] = (
@@ -1526,22 +1649,47 @@ def _camera_table_appearance_mask(
     # fabric.  Chromaticity is largely invariant to illumination magnitude and
     # preserves the color cast that separates the blue/black garment from the
     # same table under a camera-bracket shadow.
-    chromaticity_threshold = 0.07
-    dark_garment_luma_cut = 80.0
+    chromaticity_threshold = CAMERA_TABLE_CHROMATICITY_THRESHOLD
+    dark_garment_luma_cut = DARK_GARMENT_LUMA_CUT
     luma = (
         0.2126 * rgb_float[..., 0]
         + 0.7152 * rgb_float[..., 1]
         + 0.0722 * rgb_float[..., 2]
     )
+    table_luma = float(
+        0.2126 * table_rgb[0]
+        + 0.7152 * table_rgb[1]
+        + 0.0722 * table_rgb[2]
+    )
+    near_table_luma = float(
+        diagnostics.get("near_table_luma_p50", table_luma)
+    )
+    bright_neutral_table_rescue = bool(
+        table_luma >= BRIGHT_NEUTRAL_TABLE_LUMA_CUT
+        and near_table_luma >= BRIGHT_NEUTRAL_TABLE_NEAR_LUMA_CUT
+        and float(numpy.max(table_rgb) - numpy.min(table_rgb))
+        <= BRIGHT_NEUTRAL_TABLE_CHANNEL_SPREAD
+    )
     appearance_mask = (
         (color_distance >= threshold)
         & (
             (chromaticity_distance >= chromaticity_threshold)
+            | (
+                bright_neutral_table_rescue
+                & (chromaticity_distance >= BRIGHT_NEUTRAL_RESCUE_CHROMATICITY_THRESHOLD)
+            )
             | (luma < dark_garment_luma_cut)
         )
     )
     diagnostics["applied"] = True
     diagnostics["applied_chromaticity_distance"] = chromaticity_threshold
+    diagnostics["bright_neutral_table_rescue"] = bright_neutral_table_rescue
+    diagnostics["near_table_luma_rescue_cut"] = BRIGHT_NEUTRAL_TABLE_NEAR_LUMA_CUT
+    diagnostics["rescue_chromaticity_distance"] = (
+        BRIGHT_NEUTRAL_RESCUE_CHROMATICITY_THRESHOLD
+        if bright_neutral_table_rescue
+        else None
+    )
     diagnostics["dark_garment_luma_cut"] = dark_garment_luma_cut
     diagnostics["appearance_pixel_count"] = int(
         numpy.count_nonzero(appearance_mask)
@@ -1601,12 +1749,64 @@ def _fused_source_appearance_mask(
         )
         color_distance[selected] = distances
         applied_threshold[selected] = threshold
-        distinct[selected] = distances >= threshold
+        # RGB distance alone treats a blue-lit/underexposed tabletop as cloth.
+        # Apply the same illumination-aware chromaticity idea used by the
+        # camera projection mask, with a stricter threshold for the fused cloud
+        # where a false tabletop component can become connected to the garment.
+        expected_chromaticity = expected_rgb / max(float(numpy.sum(expected_rgb)), 1.0)
+        pixel_rgb = colors[selected].astype(numpy.float64)
+        pixel_chromaticity = pixel_rgb / numpy.maximum(
+            numpy.sum(pixel_rgb, axis=1, keepdims=True), 1.0
+        )
+        chromaticity_distance = numpy.linalg.norm(
+            pixel_chromaticity - expected_chromaticity[None, :],
+            axis=1,
+        )
+        luma = (
+            0.2126 * pixel_rgb[:, 0]
+            + 0.7152 * pixel_rgb[:, 1]
+            + 0.0722 * pixel_rgb[:, 2]
+        )
+        expected_luma = float(
+            0.2126 * expected_rgb[0]
+            + 0.7152 * expected_rgb[1]
+            + 0.0722 * expected_rgb[2]
+        )
+        near_table_luma_values = [
+            float(appearance.get("near_table_luma_p50", expected_luma))
+            for appearance in appearances
+        ]
+        bright_neutral_table_rescue = bool(
+            expected_luma >= BRIGHT_NEUTRAL_TABLE_LUMA_CUT
+            and min(near_table_luma_values) >= BRIGHT_NEUTRAL_TABLE_NEAR_LUMA_CUT
+            and float(numpy.max(expected_rgb) - numpy.min(expected_rgb))
+            <= BRIGHT_NEUTRAL_TABLE_CHANNEL_SPREAD
+        )
+        distinct[selected] = (distances >= threshold) & (
+            (chromaticity_distance >= FUSED_TABLE_CHROMATICITY_THRESHOLD)
+            | (
+                bright_neutral_table_rescue
+                & (
+                    chromaticity_distance
+                    >= BRIGHT_NEUTRAL_RESCUE_CHROMATICITY_THRESHOLD
+                )
+            )
+            | (luma < DARK_GARMENT_LUMA_CUT)
+        )
         source_diagnostics["".join(labels)] = {
             "source_bits": source_bits,
             "point_count": int(numpy.count_nonzero(selected)),
             "table_rgb_expected": [float(value) for value in expected_rgb],
             "applied_color_distance": threshold,
+            "applied_chromaticity_distance": FUSED_TABLE_CHROMATICITY_THRESHOLD,
+            "bright_neutral_table_rescue": bright_neutral_table_rescue,
+            "near_table_luma_rescue_cut": BRIGHT_NEUTRAL_TABLE_NEAR_LUMA_CUT,
+            "rescue_chromaticity_distance": (
+                BRIGHT_NEUTRAL_RESCUE_CHROMATICITY_THRESHOLD
+                if bright_neutral_table_rescue
+                else None
+            ),
+            "dark_garment_luma_cut": DARK_GARMENT_LUMA_CUT,
             "appearance_distinct_point_count": int(numpy.count_nonzero(distinct[selected])),
         }
     return distinct, color_distance, applied_threshold, {
@@ -1767,6 +1967,7 @@ def _occlusion_aware_garment_mask(
     *,
     minimum_table_color_distance: float | None = None,
     table_appearance: dict[str, Any] | None = None,
+    cross_view_support_points_base_mm: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Rasterize garment points without coloring nearer robot/fixture pixels.
 
@@ -1844,6 +2045,92 @@ def _occlusion_aware_garment_mask(
             minimum_color_distance=float(minimum_table_color_distance),
             table_appearance=table_appearance,
         )
+    # Camera A is the action/semantic view.  When Camera B has a different
+    # illumination cast, its independent RGB appearance test can erase a
+    # printed panel even though the panel is geometrically supported by A.
+    # Reproject the final A garment surface into B and use B's own depth as a
+    # gate before allowing those pixels back into the mask.  This is a
+    # cross-view geometry rescue, not a global relaxation of B's table filter.
+    cross_view_depth_consistent = numpy.zeros(depth.shape, dtype=bool)
+    cross_view_diagnostics: dict[str, Any] = {
+        "applied": False,
+        "support_point_count": 0,
+        "projected_pixel_count": 0,
+        "depth_consistent_pixel_count": 0,
+        "recovered_appearance_pixel_count": 0,
+    }
+    if cross_view_support_points_base_mm is not None:
+        support_points = numpy.asarray(
+            cross_view_support_points_base_mm, dtype=numpy.float64
+        )
+        if support_points.ndim != 2 or support_points.shape[1] != 3:
+            raise PerceptionError(
+                "cross-view garment support points must have shape (N, 3)"
+            )
+        support_finite = numpy.all(numpy.isfinite(support_points), axis=1)
+        support_points = support_points[support_finite]
+        if len(support_points):
+            sx, sy, support_z_m, support_visible = (
+                _project_base_points_with_camera_depth(support_points, frame)
+            )
+            support_visible &= numpy.isfinite(support_z_m)
+            cross_sparse = numpy.zeros(depth.shape, dtype=bool)
+            cross_expected = numpy.full(depth.shape, numpy.inf, dtype=numpy.float64)
+            if support_visible.any():
+                numpy.minimum.at(
+                    cross_expected,
+                    (sy[support_visible], sx[support_visible]),
+                    support_z_m[support_visible],
+                )
+                cross_sparse[sy[support_visible], sx[support_visible]] = True
+                cross_radius = _projected_voxel_support_radius_px(
+                    frame,
+                    support_z_m,
+                    support_visible,
+                )
+                cross_silhouette = _solidify_largest_mask(
+                    cross_sparse,
+                    dilation_iterations=max(1, cross_radius),
+                    closing_iterations=1,
+                    fill_holes=False,
+                )
+                try:
+                    from scipy.ndimage import distance_transform_edt
+
+                    _, nearest = distance_transform_edt(
+                        ~cross_sparse,
+                        return_distances=True,
+                        return_indices=True,
+                    )
+                    nearest_y, nearest_x = nearest
+                    cross_expected = cross_expected[nearest_y, nearest_x]
+                except ImportError:
+                    pass
+                cross_view_depth_consistent = (
+                    cross_silhouette
+                    & valid_depth
+                    & numpy.isfinite(observed)
+                    & numpy.isfinite(cross_expected)
+                    & (numpy.abs(observed - cross_expected) <= 0.025)
+                )
+                cross_view_diagnostics.update(
+                    {
+                        "applied": True,
+                        "support_point_count": int(len(support_points)),
+                        "projected_pixel_count": int(
+                            numpy.count_nonzero(cross_sparse)
+                        ),
+                        "depth_consistent_pixel_count": int(
+                            numpy.count_nonzero(cross_view_depth_consistent)
+                        ),
+                        "projection_support_radius_px": int(cross_radius),
+                    }
+                )
+    recovered_appearance = cross_view_depth_consistent & ~appearance_mask
+    appearance_mask = appearance_mask | cross_view_depth_consistent
+    cross_view_diagnostics["recovered_appearance_pixel_count"] = int(
+        numpy.count_nonzero(recovered_appearance)
+    )
     unconnected_mask = (
         silhouette & depth_consistent & plausible_height & appearance_mask
     )
@@ -1870,6 +2157,7 @@ def _occlusion_aware_garment_mask(
         "depth_consistency_tolerance_mm": 25.0,
         "height_interval_mm": [-15.0, 160.0],
         "appearance_filter": appearance_diagnostics,
+        "cross_view_geometry_rescue": cross_view_diagnostics,
     }
     return garment_mask, sparse_mask, diagnostics
 
@@ -2063,6 +2351,10 @@ DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM = -5.0
 DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM = 40.0
 HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM = 8.0
 HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND = 0.25
+# A raw softmax probability is extremely concentrated when it is computed
+# over tens of thousands of garment pixels. Expand that probability for
+# visualization only; the saved millimetre height map remains unchanged.
+HEIGHT_MAP_SOFTMAX_CONTRAST_GAMMA = 0.35
 
 
 def _aggregate_grid_height_percentile(
@@ -2228,6 +2520,7 @@ def _save_camera_height_heatmap(
     minimum_table_color_distance: float | None = None,
     table_appearance: dict[str, Any] | None = None,
     base_z_offset_mm: float = 0.0,
+    cross_view_support_points_base_mm: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Save camera-pixel height-above-table maps and heatmaps.
 
@@ -2255,6 +2548,7 @@ def _save_camera_height_heatmap(
             valid,
             minimum_table_color_distance=minimum_table_color_distance,
             table_appearance=table_appearance,
+            cross_view_support_points_base_mm=cross_view_support_points_base_mm,
         )
     )
     garment_mask_pixels_before_fixture_filter = int(
@@ -2425,6 +2719,7 @@ def _save_camera_height_heatmap(
         "heatmap_color_normalization": "garment_height_global_softmax",
         "heatmap_softmax_temperature_mm": HEIGHT_MAP_SOFTMAX_TEMPERATURE_MM,
         "heatmap_softmax_physical_blend": HEIGHT_MAP_SOFTMAX_PHYSICAL_BLEND,
+        "heatmap_softmax_contrast_gamma": HEIGHT_MAP_SOFTMAX_CONTRAST_GAMMA,
         "heatmap_display_min_mm": DEFAULT_HEIGHT_MAP_DISPLAY_MIN_MM,
         "heatmap_display_max_mm": display_max_mm,
         "heatmap_normalization": "fixed_physical_-5_to_40mm",
@@ -3219,6 +3514,7 @@ class ClothCenterPerception:
             display_max_mm=heatmap_display_max_mm,
         )
         camera_heatmaps: dict[str, dict[str, Any]] = {}
+        camera_a_support_points: numpy.ndarray | None = None
         for frame, view in zip(frames, views):
             artifacts = _save_camera_height_heatmap(
                 output_dir,
@@ -3232,6 +3528,9 @@ class ClothCenterPerception:
                 ),
                 table_appearance=table_appearances[frame.label],
                 base_z_offset_mm=camera_z_offsets_mm.get(frame.label, 0.0),
+                cross_view_support_points_base_mm=(
+                    camera_a_support_points if frame.label == "B" else None
+                ),
             )
             camera_heatmaps[frame.label] = artifacts
             view.update(_camera_height_view_artifacts(artifacts))
@@ -3239,6 +3538,21 @@ class ClothCenterPerception:
                 point_cloud_clip_tolerance_mm
             )
             view["base_z_offset_mm"] = camera_z_offsets_mm.get(frame.label, 0.0)
+            if frame.label == "A":
+                # The saved Camera A mask is the authoritative semantic view.
+                # Reuse its calibrated base-frame surface samples for a
+                # geometry-gated recovery of appearance pixels in Camera B.
+                support_xyz = numpy.load(
+                    output_dir / str(artifacts["base_xyz_map"])
+                ).astype(numpy.float64, copy=False)
+                support_mask = numpy.load(
+                    output_dir / str(artifacts["garment_mask"])
+                ).astype(bool, copy=False)
+                support_valid = (
+                    support_mask
+                    & numpy.all(numpy.isfinite(support_xyz), axis=2)
+                )
+                camera_a_support_points = support_xyz[support_valid]
 
         perception_validation = _require_projected_garment_validation(
             camera_heatmaps,

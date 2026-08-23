@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "ACTIVE_FLAT_GARMENT_REFERENCE",
+  "camera": "A",
+  "raw_image": "camera_A_flat_reference.png",
+  "annotated_image": "camera_A_flat_reference_anchors.png",
+  "anchors_json": "reference_anchors.json",
+  "axis_first": true,
+  "anchor_method": "Molmo identifies collar-to-hem centerline first; left/right are garment-side semantics relative to that centerline; boundary anchors use focused edge queries.",
+  "folded_observation_policy": {
+    "use_reference_pixels_as_current_coordinates": false,
+    "redetect_axis_each_observation": true,
+    "allow_anchor_visibility_rejection": true,
+    "allow_fold_deformation": true,
+    "hard_reject_on_pixel_displacement": false,
+    "compare_normalized_axis_coordinates": true,
+    "compare_local_geometry_when_visible": true
+  }
+}

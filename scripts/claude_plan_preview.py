@@ -440,7 +440,7 @@ def main() -> int:
         "--perception-config", default="config/perception.free_exploration.json"
     )
     parser.add_argument("--claude-binary", default="claude")
-    parser.add_argument("--claude-timeout-s", type=int, default=400)
+    parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument(
         "--objective",
         default=(

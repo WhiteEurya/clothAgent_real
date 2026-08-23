@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "patch_type": "system-skill-guidance-patch",
+  "base_skill": "laydown",
+  "base_version": 2,
+  "created_at": "2026-08-21T17:22:44.744+00:00",
+  "proposal": {
+    "operation": "modify",
+    "name": "laydown",
+    "purpose": "Convert a garment held from a useful lifting anchor into a more spread tabletop configuration while keeping the deposited result fully measurable in the available camera coverage.",
+    "guidance": "Keep the existing quasi-static procedure and the two footprint checks. Add an observability bound on the retreat: the release point must be chosen so the entire deposited garment, including the material that will unroll beyond the grasp point, still falls inside the observed table region of every evaluation viewpoint and clear of the table edge. When the retreat needed to clear the hanging fabric would carry the garment past the imaged area, do not simply pull farther; instead re-anchor or rotate the transport direction so the same opening intent is served across clean table that remains in view. Treat a deposit clipped by the frame edge as an unmeasurable outcome that blocks the next decision, even when the release itself was smooth.",
+    "rationale": "This run executed a mechanically correct long retreat and controlled release, yet the after images cannot support a footprint or visible-area comparison because the garment is cut off by the bottom and left frame edges in both cameras. The existing skill optimises retreat length against the hanging fabric only and has no rule tying the deposit to camera coverage, which is what left the next step without grounded evidence.",
+    "evidence": [
+      "After Camera A: the garment runs off the bottom edge of the frame, so its full outline is not contained in the view",
+      "After Camera B: the garment is clipped at the lower-left frame edge, preventing footprint measurement",
+      "Before images show the entire garment well inside both views, so coverage was lost by the transport and deposit choice",
+      "visible_area_delta had to be scored UNKNOWN purely because of this truncation"
+    ],
+    "base_skill": "laydown",
+    "confidence": 0.55
+  },
+  "apply_policy": "external_review_only",
+  "applied": false
+}

@@ -162,7 +162,7 @@ def main() -> int:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--claude-timeout-s", type=int, default=600)
+    parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument("--output-dir")
     args = parser.parse_args()
 

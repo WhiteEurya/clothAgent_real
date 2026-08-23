@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "patch_type": "system-skill-guidance-patch",
+  "base_skill": "flatten-garment",
+  "base_version": 1,
+  "created_at": "2026-08-21T07:48:20.485+00:00",
+  "proposal": {
+    "operation": "modify",
+    "name": "flatten-garment",
+    "purpose": "Add an explicit coupled-bite test so a whole-garment slide is detected and stopped instead of being completed as if it were an opening pull.",
+    "guidance": "Strengthen the structure-validation and continuation steps: treat local height relief alone as insufficient evidence of a free layer edge, and prefer anchors where a layer boundary is traceable as an outline in more than one view. During the first small lift, compare the grasped region against the rest of the footprint; if the untouched part of the garment moves with the grasp, treat the bite as coupled through layers, release or re-plan, and do not proceed to lateral motion. After the action, read a translation of the whole footprint with unchanged internal fold pattern, unchanged occlusion of printed regions, and unchanged standing folds as a coupled-bite outcome rather than a transport-distance shortfall, so the next attempt revises anchor and bite geometry instead of pull length. Also keep the final resting position inside all evaluation views so openness stays measurable.",
+    "rationale": "The existing skill says to stop when a lift reveals no supported structure, but not how to recognise the specific coupled-bite signature seen here, which let a validated-expansion plan spend its whole pull budget dragging an unchanged bundle and misread the earlier shortfall as insufficient transport.",
+    "evidence": [
+      "Camera A landmarks (collar with white label, left sleeve tip, green print block, pink square row) all shifted down-frame by a similar offset with unchanged relative geometry.",
+      "Print occlusion by the folded sleeve and diagonal roll is identical before and after in both views.",
+      "Camera B depth still shows the same standing crest with missing-depth speckle at its tip and the same shadow crevice beneath it.",
+      "The garment now clips the bottom edge of both Camera A and Camera B, leaving part of the outcome unmeasurable."
+    ],
+    "base_skill": "flatten-garment",
+    "confidence": 0.55
+  },
+  "apply_policy": "external_review_only",
+  "applied": false
+}

@@ -31,6 +31,7 @@ def annotate_molmo_all_parts(
     legend_path: Path,
     *,
     camera_label: str = "A",
+    axis_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Draw exact Molmo points and explicit UNKNOWN entries without redrawing RGB."""
 
@@ -39,6 +40,38 @@ def annotate_molmo_all_parts(
     draw = ImageDraw.Draw(overlay)
     point_font = _font(14, bold=True)
     returned = 0
+    axis_top = (axis_reference or {}).get("top_pixel_xy")
+    axis_bottom = (axis_reference or {}).get("bottom_pixel_xy")
+    if (
+        isinstance(axis_top, list)
+        and len(axis_top) == 2
+        and isinstance(axis_bottom, list)
+        and len(axis_bottom) == 2
+    ):
+        draw.line(
+            [
+                (float(axis_top[0]), float(axis_top[1])),
+                (float(axis_bottom[0]), float(axis_bottom[1])),
+            ],
+            fill=(255, 235, 40),
+            width=4,
+        )
+        for point in (axis_top, axis_bottom):
+            x_px, y_px = float(point[0]), float(point[1])
+            draw.ellipse(
+                (x_px - 8, y_px - 8, x_px + 8, y_px + 8),
+                fill=(255, 235, 40),
+                outline=(0, 0, 0),
+                width=2,
+            )
+        draw.text(
+            (float(axis_top[0]) + 10, float(axis_top[1]) - 20),
+            "garment centerline",
+            fill=(255, 235, 40),
+            font=_font(13, bold=True),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
     for index, record in enumerate(records, start=1):
         if record.get("status") != "point_returned":
             continue
@@ -96,11 +129,22 @@ def annotate_molmo_all_parts(
     )
     panel.text(
         (image.width + 14, 39),
-        "Zero-shot observation: one point or UNKNOWN",
+        "Axis-first observation: one point or UNKNOWN",
         fill=(255, 200, 80),
         font=_font(13),
     )
-    y = 70
+    if isinstance(axis_top, list) and isinstance(axis_bottom, list):
+        panel.text(
+            (image.width + 14, 57),
+            f"centerline: ({float(axis_top[0]):.1f},{float(axis_top[1]):.1f}) -> "
+            f"({float(axis_bottom[0]):.1f},{float(axis_bottom[1]):.1f})",
+            fill=(255, 235, 40),
+            font=_font(11),
+        )
+        legend_y = 88
+    else:
+        legend_y = 70
+    y = legend_y
     for index, record in enumerate(records, start=1):
         color = tuple(int(value) for value in record.get("color", [255, 255, 255]))
         panel.ellipse((image.width + 14, y + 2, image.width + 26, y + 14), fill=color)
@@ -126,6 +170,7 @@ def annotate_molmo_all_parts(
         "unknown_count": len(records) - returned,
         "overlay_image": str(overlay_path),
         "legend_image": str(legend_path),
+        "axis_reference": axis_reference,
         "records": records,
     }
 
@@ -142,6 +187,7 @@ def run_molmo_all_parts_report(
     dtype: str = "bf16",
     max_crops: int = 1,
     max_new_tokens: int = 96,
+    query_batch_size: int = 2,
     local_files_only: bool = True,
 ) -> dict[str, Any]:
     """Invoke one report-only Molmo process, then draw its saved point records."""
@@ -174,6 +220,8 @@ def run_molmo_all_parts_report(
         str(max_crops),
         "--max-new-tokens",
         str(max_new_tokens),
+        "--query-batch-size",
+        str(query_batch_size),
     ]
     if local_files_only:
         command.append("--local-files-only")
@@ -217,14 +265,18 @@ def run_molmo_all_parts_report(
         overlay_path,
         legend_path,
         camera_label=camera_label,
+        axis_reference=views[0].get("axis_reference"),
     )
     manifest = {
         "model": payload.get("model", model),
         "query_mode": payload.get("query_mode"),
+        "query_batch_size": payload.get("query_batch_size", query_batch_size),
+        "parallel_fallback": payload.get("parallel_fallback", False),
         "duration_s": duration_s,
         "input_image": str(image),
         "result_json": str(result_path),
         "stdout_log": str(log_path),
+        "axis_reference": views[0].get("axis_reference"),
         **annotation,
     }
     (output / "molmo_all_parts_manifest.json").write_text(

@@ -34,17 +34,22 @@ import numpy as np
 
 from .config import SafetyError
 from .experiment import ExperimentValidationError
+from .evidence_ledger import build_evidence_record, persist_evidence_record
 from .free_exploration import (
     ClaudeExplorationClient,
+    DEFAULT_EXPLORATION_OBJECTIVE,
     ExplorationPlanningError,
     ExplorationTimeoutError,
     ClaudeExplorationResult,
     ExplorationProposal,
+    evaluation_depth_ranges,
+    evaluation_perception_image_paths,
     _json_from_claude_text,
     _proposal_markdown,
     _voxel_balance_cloud,
     exploration_source,
     grounding_mcp_config,
+    is_default_exploration_objective,
     GROUNDING_MCP_TOOLS,
     perception_image_paths,
     validate_exploration_payload,
@@ -59,6 +64,7 @@ from .molmo_keypoint_pipeline import (
 )
 from .perception import (
     CameraSpec,
+    GarmentCenterWorkspace,
     PerceptionConfig,
     RGBDFrame,
     RealSenseRGBD,
@@ -71,7 +77,8 @@ from .robot_api import RobotExecutionError, validate_controller_trajectory
 from .rollout_recorder import DualRealSenseRolloutRecorder
 from .report_figure import compose_camera_perception_report
 from .session import AgentSession
-from .skill_lifecycle import SkillProposal, SkillStore
+from .skill_lifecycle import RunSkillLedger, SkillProposal, SkillStore
+from .skills import available_skill_names
 from .viewer import (
     _frame_point_cloud,
     _load_fused_point_cloud,
@@ -261,6 +268,7 @@ VISUAL_PLAN_REQUIRED_FIELDS = frozenset(
 )
 VISUAL_PLAN_OPTIONAL_FIELDS = frozenset({"skill_invocations"})
 VISUAL_PLAN_FIELDS = VISUAL_PLAN_REQUIRED_FIELDS | VISUAL_PLAN_OPTIONAL_FIELDS
+DEFAULT_AUTO_OBJECTIVE = DEFAULT_EXPLORATION_OBJECTIVE
 
 
 def _now() -> str:
@@ -332,6 +340,231 @@ class ReferenceReselectionExhaustedError(ExplorationPlanningError):
     """Raised after bounded Stage-1 reference reselection is exhausted."""
 
 
+@dataclass(frozen=True)
+class GarmentWorkspaceRecovery:
+    """Deterministic recovery request derived from the robust garment center."""
+
+    center_xy_mm: tuple[float, float]
+    bounds_mm: dict[str, float]
+    violations: tuple[str, ...]
+    full_reentry_target_xy_mm: tuple[float, float]
+    requested_target_xy_mm: tuple[float, float]
+    requested_translation_xy_mm: tuple[float, float]
+    requested_distance_mm: float
+    required_min_progress_mm: float
+
+    @property
+    def required(self) -> bool:
+        return bool(self.violations)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": "RECOVERY_REQUIRED" if self.required else "IN_BOUNDS",
+            "center_xy_mm": list(self.center_xy_mm),
+            "bounds_mm": dict(self.bounds_mm),
+            "violations": list(self.violations),
+            "full_reentry_target_xy_mm": list(self.full_reentry_target_xy_mm),
+            "requested_target_xy_mm": list(self.requested_target_xy_mm),
+            "requested_translation_xy_mm": list(
+                self.requested_translation_xy_mm
+            ),
+            "requested_distance_mm": self.requested_distance_mm,
+            "required_min_progress_mm": self.required_min_progress_mm,
+            "center_definition": "dense A/B fused garment robust median XY",
+        }
+
+
+def assess_garment_workspace(
+    center_base_mm: Sequence[float],
+    workspace: GarmentCenterWorkspace,
+) -> GarmentWorkspaceRecovery:
+    """Return an inward, step-limited recovery request for an out-of-range center."""
+
+    center = np.asarray(center_base_mm, dtype=np.float64)
+    if center.shape != (3,) or not np.all(np.isfinite(center)):
+        raise AutoExplorationError(
+            "garment workspace check requires a finite center_base_mm XYZ"
+        )
+    x_mm, y_mm = float(center[0]), float(center[1])
+    violations: list[str] = []
+    if x_mm < workspace.x_min:
+        violations.append("x_below_min")
+    elif x_mm > workspace.x_max:
+        violations.append("x_above_max")
+    if y_mm < workspace.y_min:
+        violations.append("y_below_min")
+    elif y_mm > workspace.y_max:
+        violations.append("y_above_max")
+
+    if not violations:
+        target = np.asarray([x_mm, y_mm], dtype=np.float64)
+        requested = np.zeros(2, dtype=np.float64)
+        requested_target = target.copy()
+        requested_distance = 0.0
+        required_progress = 0.0
+    else:
+        target = np.asarray(
+            [
+                np.clip(
+                    x_mm,
+                    workspace.x_min + workspace.reentry_margin_mm,
+                    workspace.x_max - workspace.reentry_margin_mm,
+                ),
+                np.clip(
+                    y_mm,
+                    workspace.y_min + workspace.reentry_margin_mm,
+                    workspace.y_max - workspace.reentry_margin_mm,
+                ),
+            ],
+            dtype=np.float64,
+        )
+        full_translation = target - np.asarray([x_mm, y_mm], dtype=np.float64)
+        full_distance = float(np.linalg.norm(full_translation))
+        step_distance = min(full_distance, workspace.max_recovery_step_mm)
+        requested = full_translation / full_distance * step_distance
+        requested_target = np.asarray([x_mm, y_mm], dtype=np.float64) + requested
+        requested_distance = float(step_distance)
+        required_progress = 0.75 * min(
+            requested_distance, workspace.min_recovery_step_mm
+        )
+
+    return GarmentWorkspaceRecovery(
+        center_xy_mm=(x_mm, y_mm),
+        bounds_mm={
+            "x_min": workspace.x_min,
+            "x_max": workspace.x_max,
+            "y_min": workspace.y_min,
+            "y_max": workspace.y_max,
+            "reentry_margin_mm": workspace.reentry_margin_mm,
+        },
+        violations=tuple(violations),
+        full_reentry_target_xy_mm=(float(target[0]), float(target[1])),
+        requested_target_xy_mm=(
+            float(requested_target[0]),
+            float(requested_target[1]),
+        ),
+        requested_translation_xy_mm=(
+            float(requested[0]),
+            float(requested[1]),
+        ),
+        requested_distance_mm=requested_distance,
+        required_min_progress_mm=float(required_progress),
+    )
+
+
+def validate_garment_recovery_actions(
+    actions: Sequence[dict[str, Any]],
+    recovery: GarmentWorkspaceRecovery,
+) -> dict[str, Any]:
+    """Require the first grasp-to-release transport to move materially inward."""
+
+    if not recovery.required:
+        return {"status": "NOT_REQUIRED"}
+    close_index = next(
+        (
+            index
+            for index, action in enumerate(actions)
+            if action.get("name") == "close_gripper"
+        ),
+        None,
+    )
+    if close_index is None:
+        raise ExplorationPlanningError(
+            "workspace recovery plan has no close_gripper action"
+        )
+    grasp_move = next(
+        (
+            action
+            for action in reversed(actions[:close_index])
+            if action.get("name") == "move"
+        ),
+        None,
+    )
+    release_index = next(
+        (
+            index
+            for index, action in enumerate(
+                actions[close_index + 1 :], start=close_index + 1
+            )
+            if action.get("name") == "open_gripper"
+        ),
+        None,
+    )
+    if grasp_move is None or release_index is None:
+        raise ExplorationPlanningError(
+            "workspace recovery requires a grounded grasp and later release"
+        )
+    if any(
+        action.get("name") == "home"
+        for action in actions[close_index + 1 : release_index]
+    ):
+        raise ExplorationPlanningError(
+            "workspace recovery cannot return Home while holding the garment"
+        )
+    release_move = next(
+        (
+            action
+            for action in reversed(actions[close_index + 1 : release_index])
+            if action.get("name") == "move"
+        ),
+        None,
+    )
+    if release_move is None:
+        raise ExplorationPlanningError(
+            "workspace recovery requires a post-grasp move before release"
+        )
+    grasp_xy = np.asarray(
+        [grasp_move["args"]["x"], grasp_move["args"]["y"]],
+        dtype=np.float64,
+    )
+    release_xy = np.asarray(
+        [release_move["args"]["x"], release_move["args"]["y"]],
+        dtype=np.float64,
+    )
+    actual = release_xy - grasp_xy
+    requested = np.asarray(
+        recovery.requested_translation_xy_mm, dtype=np.float64
+    )
+    requested_distance = float(np.linalg.norm(requested))
+    actual_distance = float(np.linalg.norm(actual))
+    if requested_distance <= 0:
+        raise ExplorationPlanningError(
+            "workspace recovery request has no inward translation"
+        )
+    direction = requested / requested_distance
+    inward_progress = float(np.dot(actual, direction))
+    lateral_error = float(
+        np.linalg.norm(actual - inward_progress * direction)
+    )
+    if inward_progress < recovery.required_min_progress_mm:
+        raise ExplorationPlanningError(
+            "workspace recovery transport is too small or points outward: "
+            f"inward_progress={inward_progress:.1f} mm, required>="
+            f"{recovery.required_min_progress_mm:.1f} mm"
+        )
+    if actual_distance > requested_distance + max(30.0, 0.25 * requested_distance):
+        raise ExplorationPlanningError(
+            "workspace recovery transport exceeds the requested safe step: "
+            f"actual={actual_distance:.1f} mm, requested={requested_distance:.1f} mm"
+        )
+    if lateral_error > max(25.0, 0.75 * inward_progress):
+        raise ExplorationPlanningError(
+            "workspace recovery transport has excessive lateral drift: "
+            f"inward={inward_progress:.1f} mm, lateral={lateral_error:.1f} mm"
+        )
+    predicted_center = np.asarray(recovery.center_xy_mm) + actual
+    return {
+        "status": "VALIDATED_INWARD_TRANSPORT",
+        "grasp_xy_mm": grasp_xy.tolist(),
+        "release_xy_mm": release_xy.tolist(),
+        "actual_translation_xy_mm": actual.tolist(),
+        "actual_distance_mm": actual_distance,
+        "inward_progress_mm": inward_progress,
+        "lateral_error_mm": lateral_error,
+        "predicted_center_xy_mm": predicted_center.tolist(),
+    }
+
+
 def _planning_mode_from_history(
     history: Sequence[dict[str, Any]] | None,
 ) -> tuple[str, str]:
@@ -339,6 +572,11 @@ def _planning_mode_from_history(
 
     last_evaluation: dict[str, Any] | None = None
     for item in reversed(list(history or [])):
+        if (
+            isinstance(item, dict)
+            and item.get("iteration_mode") == "workspace_recovery"
+        ):
+            continue
         candidate = item.get("evaluation") if isinstance(item, dict) else None
         if isinstance(candidate, dict) and candidate:
             last_evaluation = candidate
@@ -1040,7 +1278,7 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
 def validate_visual_plan_payload(
     payload: Any,
     *,
-    allowed_skill_names: Sequence[str] = ("laydown",),
+    allowed_skill_names: Sequence[str] | None = None,
 ) -> VisualPlanDecision:
     """Validate stage-one output before exact Rxx grounding is permitted."""
 
@@ -1110,6 +1348,7 @@ def validate_visual_plan_payload(
             "every visual plan safety note must be non-empty"
         )
     raw_skills = payload.get("skill_invocations", [])
+    approved_skill_names = set(allowed_skill_names or available_skill_names())
     if not isinstance(raw_skills, list):
         raise ExplorationPlanningError("visual plan skill_invocations must be a list")
     skills: list[dict[str, str]] = []
@@ -1121,7 +1360,7 @@ def validate_visual_plan_payload(
         name, skill_reason = item["name"], item["reason"]
         if (
             not isinstance(name, str)
-            or name.strip().lower() not in set(allowed_skill_names)
+            or name.strip().lower() not in approved_skill_names
             or not isinstance(skill_reason, str)
             or not skill_reason.strip()
         ):
@@ -1165,7 +1404,7 @@ class ClaudeAutoClient:
         self.grounding_timeout_s = grounding_timeout_s
         self.max_reference_reselections = max_reference_reselections
         self.skill_guidance = skill_guidance
-        self.skill_names = tuple(skill_names or ("laydown",))
+        self.skill_names = tuple(skill_names or available_skill_names())
         self.planner = ClaudeExplorationClient(binary=binary, timeout_s=timeout_s)
         self.last_plan_result: ClaudeExplorationResult | None = None
         self.last_visual_plan_result: ClaudeVisualPlanResult | None = None
@@ -1220,7 +1459,17 @@ class ClaudeAutoClient:
     ) -> ClaudeVisualPlanResult:
         root = run_dir.resolve()
         safe_images = self._safe_images(image_paths, root)
-        image_text = "\n".join(f"- {path}" for path in safe_images)
+        def image_label(path: Path) -> str:
+            name = path.name.lower()
+            if name == "camera_a_flat_reference.png":
+                return "REFERENCE | FLAT GARMENT | RAW RGB"
+            if name == "camera_a_flat_reference_anchors.png":
+                return "REFERENCE | FLAT GARMENT | ANNOTATED ANCHORS"
+            return "CURRENT SCENE | RGB/GEOMETRY"
+
+        image_text = "\n".join(
+            f"- {image_label(path)}: {path}" for path in safe_images
+        )
         prompt = (
             f"{base_prompt}\n\n"
             "STAGE 1 — VISUAL PLANNING ONLY. Preserve the original image-reasoning "
@@ -1234,12 +1483,20 @@ class ClaudeAutoClient:
             "probe-versus-expansion MODE supplied below: exploration may be a small reversible "
             "probe, while a validated hypothesis should be expanded into meaningful transport.\n\n"
             f"Garment images to inspect:\n{image_text}\n\n"
+            "Visual evidence priority: inspect the raw flat-garment reference first to "
+            "establish topology, printed-pattern correspondence, and which current layer "
+            "is covering which region. Use current RGB to localize that structure and use "
+            "height/depth/gradient images only to verify relief, boundaries, and graspability. "
+            "Do not select an Rxxx reference solely because it is the brightest or highest "
+            "heatmap region; explain the corresponding reference pattern/region and the "
+            "expected newly exposed garment area first.\n\n"
             "Return exactly one JSON object with these fields and no others: "
             "garment_observation (string), opening_strategy (string), confidence "
             "(number 0..1), selected_reference ({camera: A|B, reference_id: Rxxx, "
             "reason: string}), motion_intent (string), expected_observation (string), "
             "safety_notes (non-empty list of strings), and optional skill_invocations "
-            "(list containing only {name: laydown, reason: string}). Do not return "
+            "(list containing approved skill names such as laydown or flatten-garment, "
+            "with a reason). Do not return "
             "actions, XYZ coordinates, Python, or a run function in this stage."
         )
         command = [
@@ -1260,7 +1517,7 @@ class ClaudeAutoClient:
             "--no-session-persistence",
             "--system-prompt",
             (
-                "You are the visual-planning stage of a cautious garment-opening "
+                "You are the visual-planning stage of a cautious garment-task "
                 "robotics agent. Read only the supplied run images. Select one final "
                 "Camera/Rxxx reference and return the requested JSON decision. Do not "
                 "write files, execute commands, call MCP tools, or control a robot."
@@ -1419,10 +1676,22 @@ class ClaudeAutoClient:
         session: AgentSession,
         objective: str,
         history: Sequence[dict[str, Any]] | None = None,
+        workspace_recovery: GarmentWorkspaceRecovery | None = None,
     ) -> ClaudeExplorationResult:
         root = session.run_dir.resolve()
         selected = visual.selected_reference
         planning_mode, planning_mode_instruction = _planning_mode_from_history(history)
+        if workspace_recovery is not None and workspace_recovery.required:
+            planning_mode = "WORKSPACE_RECOVERY"
+            planning_mode_instruction = (
+                "MODE = WORKSPACE_RECOVERY: the robust garment center is outside the "
+                "configured operating rectangle. This safety-priority iteration must "
+                "move the grasped garment inward by the requested Base-frame XY "
+                "translation before release. Do not spend this action on opening, "
+                "probing, or outward expansion. Use a safe lift/transfer/laydown path, "
+                "keep the net grasp-to-release transport aligned with the requested "
+                "translation, and do not exceed the requested step."
+            )
         context = {
             "objective": objective,
             "visual_plan": visual.as_dict(),
@@ -1440,6 +1709,27 @@ class ClaudeAutoClient:
                 "pitch": session.robot_config.orientation_pitch_deg,
             },
         }
+        if workspace_recovery is not None:
+            context["garment_workspace_recovery"] = workspace_recovery.as_dict()
+        if is_default_exploration_objective(objective):
+            mode_action_instruction = (
+                "Follow the planning mode in the context: in EXPLORATION, use a small "
+                "reversible probe sufficient to distinguish the layer response; in "
+                "VALIDATED_EXPANSION, preserve the validated grasp anchor/depth and complete "
+                "a meaningful outward transport, normally covering most of the visible safe "
+                "distance and at least about 40 mm when scale and workspace permit; in "
+                "VALIDATED_TRANSPORT_CORRECTION, preserve acquisition and change only the "
+                "proven transport direction/profile with a deliberate correction."
+            )
+        else:
+            mode_action_instruction = (
+                "Follow the user objective and the planning mode in the context. In the initial "
+                "task-directed exploration, use only the smallest reversible action needed to "
+                "resolve a concrete uncertainty about the named target or its safe manipulation. "
+                "After the target is validated, preserve that target and make meaningful progress "
+                "toward the requested state. Do not turn the user task into a generic garment "
+                "opening, spreading, or outward-transport objective."
+            )
         prompt = (
             "STAGE 2 — FINAL RXX GROUNDING AND RUN GENERATION. The visual-planning "
             "stage below has already selected the final grasp reference. Do not revisit "
@@ -1453,24 +1743,25 @@ class ClaudeAutoClient:
             "safety margin. Do not call another tool. Always release before the action "
             "list ends and keep at most 12 actions.\n\n"
             f"Two-stage planning context:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+            "The `objective` in this context is authoritative. Execute that user task; do not "
+            "silently add or substitute a generic garment-opening or spreading goal. If the "
+            "objective names a garment part or region, keep the selected reference and all "
+            "waypoints tied to that target.\n\n"
             "Return exactly these fields and no others: garment_observation (string), "
             "reveal_strategy (string), confidence (number 0..1), actions (non-empty "
             "list of {name,args}), expected_observation (string), safety_notes "
             "(non-empty list of strings), and optional skill_invocations (list of "
-            "{name,reason}; only laydown). For move, args must contain exactly numeric "
+            "{name,reason}; use an approved skill such as laydown or flatten-garment). "
+            "For move, args must contain exactly numeric "
             "x,y,z,yaw in millimetres/degrees; yaw is relative to the calibrated Home "
             "TCP orientation, so yaw=0 keeps the gripper orientation without an "
             "unnecessary wrist turn. The action contract permits only move, "
-            "open_gripper, close_gripper, and home. Follow the planning mode in the context: "
-            "in EXPLORATION, use a small reversible probe sufficient to distinguish the layer "
-            "response; in VALIDATED_EXPANSION, preserve the validated grasp anchor/depth and "
-            "complete a meaningful outward transport, normally covering most of the visible "
-            "safe distance and at least about 40 mm when scale and workspace permit; in "
-            "VALIDATED_TRANSPORT_CORRECTION, preserve acquisition and change only the proven "
-            "transport direction/profile with a deliberate correction. Do not turn an "
-            "exploration probe into a long pull, and do not turn a validated hypothesis into "
-            "a few-millimetre re-probe. Use multiple waypoints to shape the path, not to "
-            "silently change the intended net displacement."
+            "open_gripper, close_gripper, and home. "
+            f"{mode_action_instruction} Do not turn an exploration probe into a long pull, "
+            "and do not turn a validated hypothesis into a few-millimetre re-probe. Use multiple waypoints to shape the path, not to "
+            "silently change the intended net displacement. In WORKSPACE_RECOVERY, the "
+            "garment_workspace_recovery requested_translation_xy_mm is authoritative for "
+            "the net move from the grounded grasp XY to the final move XY before release."
         )
         mcp_config = grounding_mcp_config(root)
         command = [
@@ -1494,7 +1785,7 @@ class ClaudeAutoClient:
             str(root),
             "--system-prompt",
             (
-                "You are the final grounding/compiler stage of a garment-opening "
+                "You are the final grounding/compiler stage of a garment-task "
                 "robotics agent. The visual decision is fixed. Call the single exact "
                 "Rxxx lookup once, then return only the final JSON proposal. Do not "
                 "read images, write files, execute commands, or control a robot."
@@ -1583,6 +1874,13 @@ class ClaudeAutoClient:
                     f"expected_xy={expected_xy.tolist()} actual_xy={actual_xy.tolist()} "
                     f"error={grounding_error_mm:.1f} mm"
                 )
+            recovery_validation = (
+                validate_garment_recovery_actions(
+                    proposal.actions, workspace_recovery
+                )
+                if workspace_recovery is not None
+                else None
+            )
         except BaseException as exc:
             self.planner._save_invocation_log(
                 root,
@@ -1626,6 +1924,8 @@ class ClaudeAutoClient:
             },
             "proposal": proposal.as_dict(),
         }
+        if recovery_validation is not None:
+            payload["garment_workspace_recovery_validation"] = recovery_validation
         self.planner._save_invocation_log(root, payload)
         return result
 
@@ -1638,6 +1938,7 @@ class ClaudeAutoClient:
         history: list[dict[str, Any]] | None = None,
         phase_callback: Callable[[str, str, float], None] | None = None,
         reference_policy: str = "uniform",
+        workspace_recovery: GarmentWorkspaceRecovery | None = None,
     ) -> ExplorationProposal:
         previous_visual_result = self.last_visual_plan_result
         self.last_plan_result = None
@@ -1655,6 +1956,20 @@ class ClaudeAutoClient:
             )
         history_items = list(history or [])[-8:]
         planning_mode, planning_mode_instruction = _planning_mode_from_history(history_items)
+        if not is_default_exploration_objective(objective):
+            if planning_mode == "VALIDATED_EXPANSION":
+                planning_mode_instruction = (
+                    "MODE = VALIDATED_TASK_PROGRESS: preserve the validated named target and "
+                    "make a meaningful next move toward the user objective. Do not substitute "
+                    "a generic outward-spreading action."
+                )
+            else:
+                planning_mode_instruction = (
+                    "MODE = TASK_DIRECTED_EXPLORATION: use only the smallest reversible action "
+                    "needed to resolve a concrete uncertainty about the named target or its "
+                    "safe manipulation, then continue toward the user objective. Do not spend "
+                    "the iteration on an unrelated generic garment-opening probe."
+                )
         if reference_policy == "uniform":
             reference_instruction = (
                 "Rxxx markers are uniform coordinate references, not ranked candidates. "
@@ -1672,10 +1987,24 @@ class ClaudeAutoClient:
             )
         else:
             raise ValueError(f"unknown reference_policy: {reference_policy}")
+        if is_default_exploration_objective(objective):
+            objective_instruction = (
+                "The built-in fallback task is to make the garment as open and spread on the "
+                "table as safely possible. Prefer a reference that supports separating overlap "
+                "and a controlled laydown."
+            )
+        else:
+            objective_instruction = (
+                f"The sole user task objective is: {objective}\n"
+                "Plan specifically for this objective. Do not replace it with a generic garment "
+                "opening or spreading objective. If it names a garment part or region, select a "
+                "reference that corresponds to that named target; do not treat an unrelated "
+                "convenient fold as an acceptable substitute."
+            )
         visual_prompt = (
             "Observe only the current garment shown in the supplied Camera A/B "
-            "images. The goal is to make this garment as open and spread on the "
-            "table as safely possible. Use the visible RGB, garment boundary, "
+            "images. "
+            f"{objective_instruction} Use the visible RGB, garment boundary, "
             "height-above-table, height-gradient/occlusion, and Rxxx overlay evidence "
             "without assuming a garment category beyond the named observations. "
             f"{reference_instruction} and state the intended transport direction and "
@@ -1688,6 +2017,17 @@ class ClaudeAutoClient:
             "Approved procedural skill library:\n"
             f"{self.skill_guidance or 'No dynamic skill updates are active.'}"
         )
+        if workspace_recovery is not None and workspace_recovery.required:
+            recovery_payload = workspace_recovery.as_dict()
+            visual_prompt += (
+                "\n\nWORKSPACE RECOVERY OVERRIDE. The fused robust garment center is "
+                "outside its configured operating rectangle. This iteration must move "
+                "the garment back inward; do not choose an opening/probing action. Select "
+                "one visible, executable current Rxxx cloth reference that can support "
+                "the inward transport. Stage 2 will receive and enforce the exact "
+                "Base-frame recovery vector. Recovery request:\n"
+                f"{json.dumps(recovery_payload, ensure_ascii=False, indent=2)}"
+            )
         rejected_keys: set[tuple[str, str]] = set()
         if feedback and previous_visual_result is not None:
             previous = previous_visual_result.decision.selected_reference
@@ -1840,11 +2180,15 @@ class ClaudeAutoClient:
                 float(self.grounding_timeout_s),
             )
         try:
+            ground_kwargs: dict[str, Any] = {}
+            if workspace_recovery is not None:
+                ground_kwargs["workspace_recovery"] = workspace_recovery
             response = self._ground_final_plan(
                 visual_result.decision,
                 session,
                 prompt_objective,
                 history_items,
+                **ground_kwargs,
             )
         except BaseException:
             grounding_failed_duration = time.monotonic() - grounding_started
@@ -1875,9 +2219,11 @@ class ClaudeAutoClient:
         after_images: list[Path],
         *,
         proposal: ExplorationProposal,
+        objective: str | None = None,
         run_dir: Path,
         rollout_recording_dir: Path | None = None,
         skill_guidance: str | None = None,
+        workspace_recovery: GarmentWorkspaceRecovery | None = None,
     ) -> ExplorationEvaluation:
         self.last_evaluation_result = None
         root = run_dir.resolve()
@@ -1893,34 +2239,67 @@ class ClaudeAutoClient:
                 ) = prepare_rollout_video_evidence(rollout_recording_dir)
             except Exception as exc:
                 video_evidence_errors.append(f"{type(exc).__name__}: {exc}")
-        image_lines = ["Before images:"]
+        if is_default_exploration_objective(objective):
+            task_evaluation_instruction = (
+                "Judge task progress toward making the garment open and spread: more visible "
+                "area, less overlap, lower relief, and a useful tabletop laydown."
+            )
+        else:
+            task_evaluation_instruction = (
+                f"Judge progress toward the exact user objective: {objective}. "
+                "Treat that objective as authoritative. Do not declare progress merely because "
+                "the garment became more open or spread unless that change directly advances the "
+                "named task. Use the target-selection, target-structure, transport, and laydown "
+                "fields to record whether the named target was actually manipulated and reached "
+                "the requested state."
+            )
+        image_lines = [
+            "The visual evidence is intentionally restricted to the following labelled files.",
+            "Read only these files. Do not search for or read any other JSON, NumPy, image, or video file.",
+            "Before RGB/depth images:",
+        ]
         image_lines.extend(f"- {path.resolve()}" for path in before_images)
-        image_lines.append("After images:")
+        image_lines.append("After RGB/depth images:")
         image_lines.extend(f"- {path.resolve()}" for path in after_images)
         if video_evidence_images:
             image_lines.append(
-                "Rollout temporal contact sheets (chronological left-to-right, top-to-bottom):"
+                "Rollout video contact sheets (chronological left-to-right, top-to-bottom; these are the only video evidence):"
             )
             image_lines.extend(f"- {path.resolve()}" for path in video_evidence_images)
-        if video_references:
+        elif rollout_recording_dir is not None:
             image_lines.append(
-                "Original rollout MP4 references (provenance only; use the extracted contact "
-                "sheets as visual evidence):"
+                "Rollout video contact sheets: unavailable; mark temporal acquisition/transport/laydown UNKNOWN."
             )
-            image_lines.extend(f"- {path.resolve()}" for path in video_references)
         if video_evidence_errors:
             image_lines.append("Video evidence extraction caveats:")
             image_lines.extend(f"- {message}" for message in video_evidence_errors)
+        evaluation_mode_instruction = (
+            ""
+            if workspace_recovery is None or not workspace_recovery.required
+            else (
+                "This rollout was a safety-priority WORKSPACE_RECOVERY action, not a "
+                "garment-opening experiment. Judge transport primarily by whether the "
+                "visible garment moved along the requested inward Base-frame direction; "
+                "do not penalize reduced opening progress when it was necessary to "
+                "recenter the garment. A fresh fused perception is required to confirm "
+                "re-entry, so do not recommend stopping merely because no further "
+                "opening action is obvious in these after images. Recovery request: "
+                f"{json.dumps(workspace_recovery.as_dict(), ensure_ascii=False)}\n\n"
+            )
+        )
         prompt = (
-            "Compare the before and after garment images after one robot opening action. "
+            evaluation_mode_instruction
+            + "Compare the before and after garment images after one robot handling action. "
             "Evaluate the action stage by stage instead of collapsing it into one useful flag. "
-            "Use only directly visible evidence. The before/after views are static. When "
+            "Use only directly visible evidence from the labelled RGB/depth files and the "
+            "rollout video contact sheets listed at the end. Do not use or search for any "
+            "other files, including perception JSON, metrics JSON, NumPy arrays, heatmaps, "
+            "overlays, or MP4 files. The before/after views are static. When "
             "chronological rollout contact sheets are supplied, use them to assess acquisition, "
             "transport, and laydown over time; otherwise mark those stages UNKNOWN when jaw "
             "motion or layer identity cannot actually be established. Never infer success "
-            "only because the commanded action should have produced it. Judge task progress "
-            "toward making the garment open and spread: more visible area, less overlap, lower "
-            "relief, and a useful tabletop laydown. Do not invent numeric measurements. For "
+            "only because the commanded action should have produced it. "
+            f"{task_evaluation_instruction} Do not invent numeric measurements. For "
             "visible_area_delta, overlap_delta, and relief_delta, use INCREASED, DECREASED, "
             "UNCHANGED, or UNKNOWN unless an exact numeric measurement is explicitly supplied.\n\n"
             "The keep/change decision is mandatory and causal. Put every parameter or strategy "
@@ -2343,22 +2722,23 @@ def prepare_rollout_video_evidence(
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     candidates: list[tuple[str, Path]] = []
-    for camera in manifest.get("cameras", []):
-        if not isinstance(camera, dict):
-            continue
-        label = str(camera.get("label", "")).upper()
-        relative = camera.get("rgb_video")
-        if label and isinstance(relative, str) and relative.strip():
-            candidates.append((label, recording_dir / relative))
-    if not candidates:
-        candidates = [
-            (label, recording_dir / f"camera_{label}_rgb.mp4") for label in ("A", "B")
-        ]
     composite_relative = manifest.get("composite_video")
     if isinstance(composite_relative, str) and composite_relative.strip():
         candidates.append(("AB_DEPTH", recording_dir / composite_relative))
     elif (recording_dir / "composite_AB_depth.mp4").is_file():
         candidates.append(("AB_DEPTH", recording_dir / "composite_AB_depth.mp4"))
+    if not candidates:
+        for camera in manifest.get("cameras", []):
+            if not isinstance(camera, dict):
+                continue
+            label = str(camera.get("label", "")).upper()
+            relative = camera.get("rgb_video")
+            if label and isinstance(relative, str) and relative.strip():
+                candidates.append((label, recording_dir / relative))
+    if not candidates:
+        candidates = [
+            (label, recording_dir / f"camera_{label}_rgb.mp4") for label in ("A", "B")
+        ]
 
     output_dir = recording_dir / "evaluator_video_evidence"
     contact_sheets: list[Path] = []
@@ -2397,9 +2777,7 @@ class _AutoState:
     running: bool = False
     stop_requested: bool = False
     iteration: int = 0
-    objective: str = (
-        "Take one planning-mode-appropriate action that makes the current garment as open and spread as safely possible."
-    )
+    objective: str = DEFAULT_AUTO_OBJECTIVE
     proposal: ExplorationProposal | None = None
     evaluation: ExplorationEvaluation | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -2415,10 +2793,10 @@ def run_auto_exploration_viewer(
     enable_real: bool = False,
     perception_config_path: Path | None = None,
     claude_binary: str = "claude",
-    claude_timeout_s: int = 400,
+    claude_timeout_s: int = 900,
     claude_grounding_timeout_s: int = 120,
     max_replans: int = 2,
-    record_rollouts: bool = False,
+    record_rollouts: bool = True,
     recording_native: bool = True,
     recording_codec: str = "mp4v",
     recording_warmup_frames: int | None = None,
@@ -2507,6 +2885,24 @@ def run_auto_exploration_viewer(
         or root / "config" / "perception.free_exploration.json"
     ).expanduser().resolve()
     config = PerceptionConfig.load(root, perception_path)
+    garment_workspace = config.garment_center_workspace
+    if garment_workspace is not None:
+        robot_margin = float(robot.workspace_margin_mm)
+        for axis in ("x", "y"):
+            allowed_low = float(getattr(garment_workspace, f"{axis}_min"))
+            allowed_high = float(getattr(garment_workspace, f"{axis}_max"))
+            robot_low = getattr(robot.boundaries, f"{axis}_min")
+            robot_high = getattr(robot.boundaries, f"{axis}_max")
+            if robot_low is not None and allowed_low < float(robot_low) + robot_margin:
+                raise ValueError(
+                    f"garment center {axis}_min={allowed_low:g} is below the robot "
+                    f"safe lower bound {float(robot_low) + robot_margin:g}"
+                )
+            if robot_high is not None and allowed_high > float(robot_high) - robot_margin:
+                raise ValueError(
+                    f"garment center {axis}_max={allowed_high:g} is above the robot "
+                    f"safe upper bound {float(robot_high) - robot_margin:g}"
+                )
     camera_a_spec = next(
         camera for camera in config.cameras if camera.label == config.active_camera_labels[0]
     )
@@ -2533,6 +2929,28 @@ def run_auto_exploration_viewer(
         section_size=0.25,
         position=(grid_x, grid_y, 0.0),
     )
+    if garment_workspace is not None:
+        x0 = garment_workspace.x_min / 1000.0
+        x1 = garment_workspace.x_max / 1000.0
+        y0 = garment_workspace.y_min / 1000.0
+        y1 = garment_workspace.y_max / 1000.0
+        workspace_edges = np.asarray(
+            [
+                [[x0, y0, 0.005], [x1, y0, 0.005]],
+                [[x1, y0, 0.005], [x1, y1, 0.005]],
+                [[x1, y1, 0.005], [x0, y1, 0.005]],
+                [[x0, y1, 0.005], [x0, y0, 0.005]],
+            ],
+            dtype=np.float32,
+        )
+        server.scene.add_line_segments(
+            "/workspace/garment_center_bounds",
+            points=workspace_edges,
+            colors=np.tile(
+                np.asarray([255, 145, 20], dtype=np.uint8), (4, 2, 1)
+            ),
+            line_width=5.0,
+        )
     server.scene.add_frame("/robot_base", axes_length=0.15, axes_radius=0.006)
     server.scene.add_frame("/xarm", show_axes=False)
     robot_model = ViserUrdf(
@@ -2564,6 +2982,16 @@ def run_auto_exploration_viewer(
         else "- grasp-reference policy: `uniform calibrated Rxxx` "
         "(Molmo keypoint mode disabled)"
     )
+    garment_workspace_line = (
+        "- garment-center workspace: disabled"
+        if garment_workspace is None
+        else (
+            "- garment-center workspace: "
+            f"`x=[{garment_workspace.x_min:g}, {garment_workspace.x_max:g}] mm`, "
+            f"`y=[{garment_workspace.y_min:g}, {garment_workspace.y_max:g}] mm`; "
+            "out-of-range perception forces the next rollout into WORKSPACE_RECOVERY"
+        )
+    )
     controls = server.gui.add_markdown(
         f"### Loop contract\n\n- max iterations: `{'continuous' if max_iterations is None else max_iterations}`\n"
         f"- settle time after motion: `{settle_s:.1f}s`\n"
@@ -2574,6 +3002,7 @@ def run_auto_exploration_viewer(
         "- Claude grounding: choose one Rxxx visually, then perform exactly one final exact-coordinate lookup\n"
         f"{reference_policy_line}\n"
         "- grasp target visualization: Base XYZ/yaw, Viser 3-D marker, and Camera A/B projection overlays\n"
+        f"{garment_workspace_line}\n"
         f"- rollout A/B RGB-D recording: `{'enabled' if record_rollouts else 'disabled'}`\n"
         "- stop takes effect between phases; it cannot interrupt a command already sent"
     )
@@ -3242,12 +3671,18 @@ def run_auto_exploration_viewer(
 
     def run_loop(iterations: int | None) -> None:
         skill_store = SkillStore(session.project_root / "data" / "skills")
+        run_skill_ledger = RunSkillLedger(session.workspace)
+
+        def run_skill_prompt() -> str:
+            appendix = run_skill_ledger.prompt_appendix()
+            return skill_store.prompt() + (("\n\n" + appendix) if appendix else "")
+
         client = ClaudeAutoClient(
             binary=claude_binary,
             timeout_s=claude_timeout_s,
             grounding_timeout_s=claude_grounding_timeout_s,
             max_reference_reselections=max_replans,
-            skill_guidance=skill_store.prompt(),
+            skill_guidance=run_skill_prompt(),
             skill_names=tuple(skill.name for skill in skill_store.approved()),
         )
         try:
@@ -3256,6 +3691,10 @@ def run_auto_exploration_viewer(
             consecutive_recoverable_failures = 0
             while iterations is None or iteration < iterations:
                 iteration += 1
+                client.skill_guidance = run_skill_prompt()
+                client.skill_names = tuple(
+                    skill.name for skill in skill_store.approved()
+                )
                 if stopped():
                     break
                 with state_lock:
@@ -3265,6 +3704,8 @@ def run_auto_exploration_viewer(
                     "started_at": _now(),
                     "objective": objective,
                 }
+                workspace_recovery: GarmentWorkspaceRecovery | None = None
+                planning_objective = objective
                 record_saved = False
                 try:
                     limit_label = "continuous" if iterations is None else str(iterations)
@@ -3279,6 +3720,28 @@ def run_auto_exploration_viewer(
                     saved, saved_path = _load_latest_perception(session)
                     if saved is None or saved_path is None:
                         raise AutoExplorationError("perception completed without saved result")
+                    if garment_workspace is not None:
+                        workspace_recovery = assess_garment_workspace(
+                            saved.get("center_base_mm", []), garment_workspace
+                        )
+                        record["garment_workspace"] = workspace_recovery.as_dict()
+                        if workspace_recovery.required:
+                            dx_mm, dy_mm = (
+                                workspace_recovery.requested_translation_xy_mm
+                            )
+                            planning_objective = (
+                                "Safety-priority workspace recovery: move the garment "
+                                "inward before any further opening action. Use the "
+                                "configured recovery request and produce a safe "
+                                f"grasp-to-release translation of approximately "
+                                f"dx={dx_mm:.1f} mm, dy={dy_mm:.1f} mm."
+                            )
+                            record["iteration_mode"] = "workspace_recovery"
+                        else:
+                            record["iteration_mode"] = "garment_opening"
+                    else:
+                        record["iteration_mode"] = "garment_opening"
+                    record["planner_objective"] = planning_objective
                     render_perception_diagnostics(saved, saved_path)
                     fused_points, fused_colors = _load_fused_point_cloud(
                         saved, saved_path.parent
@@ -3291,11 +3754,26 @@ def run_auto_exploration_viewer(
                         fused_cloud_handle.visible = False
                     record["perception"] = perception
                     before_images = perception_image_paths(saved, saved_path)
+                    flat_reference_image = (
+                        root
+                        / "data"
+                        / "reference"
+                        / "flat_garment_reference"
+                        / "camera_A_flat_reference_anchors.png"
+                    ).resolve()
+                    if flat_reference_image.is_file():
+                        # This is a semantic/layout reference only. Folded
+                        # observations must re-detect their own axis and
+                        # anchors; reference pixels are never current targets.
+                        before_images.append(flat_reference_image)
+                        record.setdefault("artifacts", {})[
+                            "flat_garment_reference"
+                        ] = _run_relative(flat_reference_image, session.run_dir)
                     reference_policy = "uniform"
                     if molmo_keypoints:
                         set_status(
                             f"### Iteration {iteration}/{limit_label}: Molmo keypoints\n\n"
-                            f"Querying {len(keypoint_specs)} keypoints on "
+                            f"Axis-first labeling, then querying {len(keypoint_specs)} keypoints on "
                             f"Camera {','.join(keypoint_cameras)} and keeping only "
                             f"confidence > {keypoint_threshold:.3f}."
                         )
@@ -3369,10 +3847,19 @@ def run_auto_exploration_viewer(
                     if stopped():
                         break
 
-                    set_status(
-                        f"### Iteration {iteration}/{iterations}: Claude thinking\n\n"
-                        "Planning one restricted action to open and spread the current garment."
-                    )
+                    if workspace_recovery is not None and workspace_recovery.required:
+                        dx_mm, dy_mm = workspace_recovery.requested_translation_xy_mm
+                        set_status(
+                            f"### Iteration {iteration}/{limit_label}: workspace recovery\n\n"
+                            "The garment center is outside the configured range. "
+                            f"Planning the mandatory inward move `dx={dx_mm:.1f} mm`, "
+                            f"`dy={dy_mm:.1f} mm` before any opening action."
+                        )
+                    else:
+                        set_status(
+                            f"### Iteration {iteration}/{limit_label}: Claude thinking\n\n"
+                            "Planning one restricted action to open and spread the current garment."
+                        )
                     proposal_feedback: str | None = None
                     proposal: ExplorationProposal | None = None
                     max_plan_attempts = max_replans + 1
@@ -3382,11 +3869,12 @@ def run_auto_exploration_viewer(
                             proposal = client.plan(
                                 before_images,
                                 session,
-                                objective,
+                                planning_objective,
                                 feedback=proposal_feedback,
                                 history=state.history,
                                 phase_callback=planning_phase_callback,
                                 reference_policy=reference_policy,
+                                workspace_recovery=workspace_recovery,
                             )
                             break
                         except (ExplorationTimeoutError, ReferenceReselectionExhaustedError):
@@ -3500,11 +3988,12 @@ def run_auto_exploration_viewer(
                                 proposal = client.plan(
                                     before_images,
                                     session,
-                                    objective,
+                                    planning_objective,
                                     feedback=validation_feedback,
                                     history=state.history,
                                     phase_callback=planning_phase_callback,
                                     reference_policy=reference_policy,
+                                    workspace_recovery=workspace_recovery,
                                 )
                                 replanned_result = client.last_plan_result
                                 replanned_visual_result = client.last_visual_plan_result
@@ -3560,6 +4049,19 @@ def run_auto_exploration_viewer(
                                 )
                         if controller is None:
                             raise AutoExplorationError("controller validation returned no result")
+                        if workspace_recovery is not None and workspace_recovery.required:
+                            recovery_validation = validate_garment_recovery_actions(
+                                preflight.actions, workspace_recovery
+                            )
+                            record["garment_workspace_recovery_validation"] = (
+                                recovery_validation
+                            )
+                            save_agent_artifact(
+                                iteration,
+                                record,
+                                phase="garment_workspace_recovery_validation",
+                                payload=recovery_validation,
+                            )
                         animation_frames = kinematics.build_animation(
                             preflight.actions,
                             robot.init_joints_deg,
@@ -3805,9 +4307,42 @@ def run_auto_exploration_viewer(
                         / f"iteration_{iteration:03d}_after"
                     )
                     after_images = _save_frame_images(after_frames, after_dir)
+                    after_perception = session.locate_cloth_center(
+                        config, frames=after_frames
+                    )
+                    after_saved, after_saved_path = _load_latest_perception(session)
+                    if after_saved is None or after_saved_path is None:
+                        raise AutoExplorationError(
+                            "post-action perception completed without saved result"
+                        )
+                    evaluation_depth_scale = evaluation_depth_ranges(
+                        (saved, saved_path),
+                        (after_saved, after_saved_path),
+                    )
+                    evaluation_before_images = evaluation_perception_image_paths(
+                        saved,
+                        saved_path,
+                        stage="BEFORE",
+                        depth_ranges=evaluation_depth_scale,
+                    )
+                    evaluation_after_images = evaluation_perception_image_paths(
+                        after_saved,
+                        after_saved_path,
+                        stage="AFTER",
+                        depth_ranges=evaluation_depth_scale,
+                    )
                     record["after_images"] = [
                         _run_relative(path, session.run_dir) for path in after_images
                     ]
+                    record["evaluation_before_images"] = [
+                        _run_relative(path, session.run_dir)
+                        for path in evaluation_before_images
+                    ]
+                    record["evaluation_after_images"] = [
+                        _run_relative(path, session.run_dir)
+                        for path in evaluation_after_images
+                    ]
+                    record["after_perception"] = after_perception
                     save_agent_artifact(
                         iteration,
                         record,
@@ -3818,9 +4353,10 @@ def run_auto_exploration_viewer(
                         },
                     )
                     evaluation = client.evaluate(
-                        before_images,
-                        after_images,
+                        evaluation_before_images,
+                        evaluation_after_images,
                         proposal=proposal,
+                        objective=objective,
                         run_dir=session.run_dir,
                         rollout_recording_dir=(
                             recording_dir
@@ -3829,7 +4365,8 @@ def run_auto_exploration_viewer(
                             == "completed"
                             else None
                         ),
-                        skill_guidance=skill_store.prompt(),
+                        skill_guidance=run_skill_prompt(),
+                        workspace_recovery=workspace_recovery,
                     )
                     evaluation_result = client.last_evaluation_result
                     if evaluation_result is None:
@@ -3845,7 +4382,11 @@ def run_auto_exploration_viewer(
                     # Older evaluator adapters may return an evaluation-shaped
                     # object without the optional skill_update field.
                     skill_update = getattr(evaluation, "skill_update", None)
-                    skill_review = skill_store.review_and_apply(skill_update)
+                    skill_review = run_skill_ledger.stage_skill_update(
+                        skill_update,
+                        iteration=iteration,
+                        source="evaluation",
+                    )
                     if skill_review is not None:
                         record["skill_review"] = skill_review.as_dict()
                         save_agent_artifact(
@@ -3854,16 +4395,46 @@ def run_auto_exploration_viewer(
                             phase="skill_review",
                             payload=skill_review.as_dict(),
                         )
-                        client.skill_guidance = skill_store.prompt()
+                        client.skill_guidance = run_skill_prompt()
                         client.skill_names = tuple(
                             skill.name for skill in skill_store.approved()
                         )
+                    evidence = build_evidence_record(
+                        record,
+                        iteration=iteration,
+                        run_dir=session.run_dir,
+                    )
+                    evidence_paths = persist_evidence_record(
+                        session.run_dir,
+                        evidence,
+                        iteration_dir=auto_results_dir / f"iteration_{iteration:03d}",
+                    )
+                    record["evidence"] = evidence
+                    record["evidence_artifacts"] = evidence_paths
+                    run_skill_ledger.append_experience(
+                        {
+                            "created_at": _now(),
+                            "iteration": iteration,
+                            "objective": objective,
+                            "proposal": proposal.as_dict(),
+                            "evaluation": evaluation.as_dict(),
+                            "skill_review": (
+                                skill_review.as_dict()
+                                if skill_review is not None
+                                else None
+                            ),
+                            "evidence": evidence,
+                        }
+                    )
                     with state_lock:
                         state.evaluation = evaluation
                         state.history.append(
                             {
                                 "iteration": iteration,
                                 "plan_status": "executed",
+                                "iteration_mode": record.get(
+                                    "iteration_mode", "garment_opening"
+                                ),
                                 "proposal": proposal.as_dict(),
                                 "execution_completed": bool(
                                     record.get("execution", {}).get("execution_completed")
@@ -3931,14 +4502,22 @@ def run_auto_exploration_viewer(
                     )
                     record_saved = True
                     consecutive_recoverable_failures = 0
-                    if evaluation.stop:
+                    if evaluation.stop and not (
+                        workspace_recovery is not None
+                        and workspace_recovery.required
+                    ):
                         set_status(
                             f"### Automatic exploration stopped after iteration {iteration}\n\n"
                             "Claude judged that safe grounded continuation is not currently "
                             f"possible: {evaluation.reason}"
                         )
                         break
-                    objective = evaluation.next_objective
+                    objective = (
+                        DEFAULT_AUTO_OBJECTIVE
+                        if workspace_recovery is not None
+                        and workspace_recovery.required
+                        else evaluation.next_objective
+                    )
                     with state_lock:
                         state.objective = objective
                 except ExplorationTimeoutError as exc:
@@ -4023,6 +4602,21 @@ def run_auto_exploration_viewer(
                             client.last_rejected_visual_references
                         )
                     record["error"] = f"{type(exc).__name__}: {exc}"
+                    if record.get("execution") is not None and "evidence_artifacts" not in record:
+                        try:
+                            evidence = build_evidence_record(
+                                record,
+                                iteration=iteration,
+                                run_dir=session.run_dir,
+                            )
+                            record["evidence"] = evidence
+                            record["evidence_artifacts"] = persist_evidence_record(
+                                session.run_dir,
+                                evidence,
+                                iteration_dir=auto_results_dir / f"iteration_{iteration:03d}",
+                            )
+                        except BaseException as evidence_exc:
+                            record["evidence_persistence_error"] = str(evidence_exc)
                     if (
                         continue_on_recoverable_errors
                         and _is_recoverable_viewer_error(exc, record)
@@ -4111,6 +4705,25 @@ def run_auto_exploration_viewer(
                     "Review the CamA stream and saved before/after records."
                 )
         finally:
+            try:
+                run_skill_synthesis = run_skill_ledger.finalize(skill_store)
+                save_agent_artifact(
+                    iteration,
+                    {"run_skill_synthesis": run_skill_synthesis},
+                    phase="run_skill_synthesis",
+                    payload=run_skill_synthesis,
+                )
+                set_status(
+                    "### Run skill synthesis completed\n\n"
+                    f"Synthesized {run_skill_synthesis['skill_group_count']} "
+                    "run-local skill group(s); global persistence was deferred "
+                    "until this run ended."
+                )
+            except Exception as exc:
+                set_status(
+                    "### Run skill synthesis failed\n\n"
+                    f"`{type(exc).__name__}: {exc}`"
+                )
             stop_robot_animation()
             set_running(False)
 
@@ -4122,9 +4735,7 @@ def run_auto_exploration_viewer(
                 return
             state.stop_requested = False
             state.history = []
-        state.objective = (
-                "Take one planning-mode-appropriate action that makes the current garment as open and spread as safely possible."
-            )
+        state.objective = DEFAULT_AUTO_OBJECTIVE
         selected_iterations = int(iteration_slider.value)
         iterations = None if selected_iterations == 0 else selected_iterations
         set_running(True)
@@ -4143,9 +4754,7 @@ def run_auto_exploration_viewer(
         with state_lock:
             state.stop_requested = False
             state.history = []
-            state.objective = (
-                "Take one planning-mode-appropriate action that makes the current garment as open and spread as safely possible."
-            )
+            state.objective = DEFAULT_AUTO_OBJECTIVE
         selected_iterations = int(iteration_slider.value)
         initial_iterations = None if selected_iterations == 0 else selected_iterations
         set_running(True)
@@ -4191,7 +4800,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--robot-config")
     parser.add_argument("--perception-config")
     parser.add_argument("--claude-binary", default="claude")
-    parser.add_argument("--claude-timeout-s", type=int, default=400)
+    parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument("--claude-grounding-timeout-s", type=int, default=120)
     parser.add_argument(
         "--max-replans",
@@ -4206,10 +4815,19 @@ def main(argv: list[str] | None = None) -> int:
         help="number of automatic iterations; 0 means continuous until stop/hard failure",
     )
     parser.add_argument("--settle-s", type=float, default=2.0)
-    parser.add_argument(
+    recording_group = parser.add_mutually_exclusive_group()
+    recording_group.add_argument(
         "--record-rollouts",
+        dest="record_rollouts",
         action="store_true",
-        help="record Camera A/B RGB, depth, composite video, timestamps, and native data during each physical rollout",
+        default=True,
+        help="record Camera A/B RGB, depth, composite video, timestamps, and native data during each physical rollout (default)",
+    )
+    recording_group.add_argument(
+        "--no-record-rollouts",
+        dest="record_rollouts",
+        action="store_false",
+        help="disable Camera A/B rollout recording",
     )
     parser.add_argument(
         "--recording-no-native",

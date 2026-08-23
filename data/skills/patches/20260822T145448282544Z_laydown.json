@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "patch_type": "system-skill-guidance-patch",
+  "base_skill": "laydown",
+  "base_version": 2,
+  "created_at": "2026-08-22T14:54:48.282+00:00",
+  "proposal": {
+    "operation": "modify",
+    "name": "laydown",
+    "purpose": "Convert a garment held from a useful lifting anchor into a more spread tabletop configuration, and recognise when a release has re-piled the garment onto itself instead of opening it.",
+    "guidance": "Keep the quasi-static procedure: let the garment hang under gravity, retreat away from the hanging cloth while descending through intermediate heights, let the hanging face become the upward face, and release in a controlled way. Add three checks. First, before descending, require the retreat to carry the grasp point beyond the horizontal extent of the material still hanging below it, onto clear table, so the fabric unrolls onto bare surface rather than settling back over the area it came from; a retreat shorter than the hanging garment's own reach should be treated as not ready for release. Second, when the transported material is a covering layer that has been peeled off another part of the garment, judge the deposit against the newly uncovered region, not only against the garment's previous outline: require the grasp to have retreated far enough that the whole length of ply trailing behind the jaws will land beyond the edge of the freshly exposed area on clear surface, because a long peeled band keeps its tail near the origin and will drape back over the uncovered feature as it lowers if the retreat is measured only against the old footprint. Third, after release, compare footprints and check uncovered features specifically: if the deposited outline sits inside the previous outline, if previously exposed features such as prints, collars or hems have become covered, if the trailing end of a peeled layer has settled back across the region it was pulled off, and if new steep fold walls appear in depth, judge the laydown a regression caused by too short a retreat, and plan the next deposit farther out across clean table instead of repeating the same descent from the same anchor.",
+    "rationale": "Run-level synthesis from 3 provisional observation(s). This run produced its first confirmed hold and a real layer separation, but the release put the garment against the bottom edge of one view and the right edge of the other, so the top-down footprint could no longer be compared even though the action clearly opened the garment. Existing laydown guidance covers retreat length and footprint comparison but says nothing about preserving observability of the deposit, which is what limited this evaluation. This run's peel succeeded in uncovering several previously hidden print tiles, yet the trailing end of the deposited layer still lies across the right edge of that newly exposed print in both camera views. The existing laydown guidance only requires the deposit to leave the previous outline, which this release satisfied while still partially undoing the peel, so the release criterion needs to reference the uncovered feature and the length of the carried material. This iteration provides direct evidence that retreat distance must account for peeled layer length plus newly uncovered feature extent, not just the original garment footprint. The grasp, target structure, and transport were all validated: jaws held the thin ply lip, distant landmarks stayed pinned proving layer separation, and the dark covering ply peeled ~200mm away from the print in the correct direction (frames 06-14 show progressive uncovering). However, the after images show the deposited ply's trailing end draped back over the center print area that had been uncovered during transport, with Camera B RGB clearly showing dark fabric lying across the print and Camera B depth showing new elevated relief over that region. The retreat (~200mm) exceeded the garment's old outline but not the combined reach of the carried band plus the print block it had peeled off. This failure signature—successful peel followed by re-covering during laydown—proves that v2 guidance needs a second distance test specifically for peeled layers, and that both the hanging material's reach and the uncovered feature's extent must be cleared.",
+    "evidence": [
+      "AFTER camera A shows the garment outline truncated by the bottom frame edge, so its lower extent is unmeasurable while BEFORE camera A showed the full outline within the frame",
+      "AFTER camera B shows the garment reaching the right frame edge at about x 1280",
+      "AFTER camera B shows a panel re-draped diagonally over the lower body with a steep depth fold wall, despite a controlled staged release in rollout tiles #14-#16",
+      "Newly exposed print interior and neck rib confirm the grasp and depth were sound, isolating deposit distance and placement as the weak choices",
+      "AFTER Camera A shows dark fabric still crossing the right portion of the newly exposed print block near (640-700, 300-400).",
+      "AFTER Camera B shows a dark band lying across the lower-right of the exposed print near (620-700, 300-380) while the rest of the print is open.",
+      "The deposited band extends to about x=965 in AFTER Camera B versus a BEFORE garment edge near x=850, showing the carried layer is long enough for its tail to remain near the origin.",
+      "Previously hidden tiles did become visible, so the peel itself worked and only the deposit placement limited the gain."
+    ],
+    "base_skill": "laydown",
+    "confidence": 0.85
+  },
+  "apply_policy": "external_review_only",
+  "applied": false
+}

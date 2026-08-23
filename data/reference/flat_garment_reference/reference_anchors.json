@@ -1,0 +1,443 @@
+{
+  "status": "MOLMO_AXIS_FIRST_REFERENCE",
+  "camera": "A",
+  "source_image": "runs/flat_reference_axis_20260820T134500Z_escalated/pipeline/camera_0_A.png",
+  "capture_run": "runs/flat_reference_axis_20260820T134500Z_escalated",
+  "axis_reference": {
+    "top_name": "axis_top",
+    "bottom_name": "axis_bottom",
+    "top_pixel_xy": [
+      597.7037037037037,
+      212.02314814814815
+    ],
+    "bottom_pixel_xy": [
+      653.1703703703704,
+      629.2509259259259
+    ],
+    "top_status": "point_returned",
+    "bottom_status": "point_returned",
+    "axis_context": "Molmo first identified the collar-to-hem centerline; left/right anchors are interpreted relative to this garment centerline."
+  },
+  "anchors": [
+    {
+      "name": "garment_center",
+      "description": "center of the shirt fabric body halfway between the collar and the bottom hem; do not point to the printed graphic, label, or table",
+      "color": [
+        255,
+        40,
+        40
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's center of the shirt fabric body halfway between the collar and the bottom hem; do not point to the printed graphic, label, or table. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_287><POINT_393><POINT_402>1<POINT_392>\">center of shirt fabric body</point><|im_end|>",
+      "raw_points": [
+        [
+          343.58518518518514,
+          258.875
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        613.5851851851851,
+        413.875
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "neckline",
+      "description": "collar, neckline, or neck opening",
+      "color": [
+        255,
+        170,
+        0
+      ],
+      "prompt": "Point to this garment's the center of the collar/neck opening; this is the top reference point of the garment's own longitudinal centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_216><POINT_394><POINT_405>1<POINT_392>\">top center of neck opening</point><|im_end|>",
+      "raw_points": [
+        [
+          327.70370370370364,
+          57.02314814814815
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        597.7037037037037,
+        212.02314814814815
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "left_shoulder",
+      "description": "the garment's left shoulder as worn: the sleeve-to-torso seam on the left side of its own centerline, not the sleeve tip",
+      "color": [
+        50,
+        180,
+        255
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the garment's left shoulder as worn: the sleeve-to-torso seam on the left side of its own centerline, not the sleeve tip. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_227><POINT_393><POINT_404>1<POINT_392>\">the garment's left shoulder as worn</point><|im_end|>",
+      "raw_points": [
+        [
+          161.77777777777777,
+          90.73240740740741
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        431.77777777777777,
+        245.7324074074074
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "right_shoulder",
+      "description": "the garment's right shoulder as worn: the sleeve-to-torso seam on the right side of its own centerline, not the sleeve tip",
+      "color": [
+        80,
+        220,
+        80
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the garment's right shoulder as worn: the sleeve-to-torso seam on the right side of its own centerline, not the sleeve tip. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_233><POINT_394><POINT_405>1<POINT_392>\">the garment's right shoulder as worn</point><|im_end|>",
+      "raw_points": [
+        [
+          469.9259259259259,
+          97.39351851851852
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        739.9259259259259,
+        252.39351851851853
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "left_sleeve_tip",
+      "description": "the outermost endpoint on the garment silhouette of the left sleeve as worn, on the left side of its own centerline",
+      "color": [
+        180,
+        80,
+        255
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the outermost endpoint on the garment silhouette of the left sleeve as worn, on the left side of its own centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_238><POINT_394><POINT_403>1<POINT_392>\">left sleeve endpoint</point><|im_end|>",
+      "raw_points": [
+        [
+          43.25925925925926,
+          124.44166666666666
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        313.25925925925924,
+        279.44166666666666
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "right_sleeve_tip",
+      "description": "the outermost endpoint on the garment silhouette of the right sleeve as worn, on the right side of its own centerline",
+      "color": [
+        255,
+        80,
+        190
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the outermost endpoint on the garment silhouette of the right sleeve as worn, on the right side of its own centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_236><POINT_393><POINT_403>1<POINT_392>\">right sleeve endpoint</point><|im_end|>",
+      "raw_points": [
+        [
+          588.4444444444445,
+          84.0712962962963
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        858.4444444444445,
+        239.07129629629628
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "left_bottom_hem",
+      "description": "the left endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic",
+      "color": [
+        80,
+        220,
+        220
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the left endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_367><POINT_394><POINT_398>1<POINT_392>\">left endpoint of bottom hem</point><|im_end|>",
+      "raw_points": [
+        [
+          169.83703703703702,
+          494.43611111111113
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        439.837037037037,
+        649.4361111111111
+      ],
+      "pixel_source": "Molmo crop mapped to full Camera A image"
+    },
+    {
+      "name": "right_bottom_hem",
+      "description": "the right endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic",
+      "color": [
+        220,
+        220,
+        60
+      ],
+      "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the right endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+      "generated_text": "<points coords=\"<POINT_304><POINT_394><POINT_402>1<POINT_392>\">right endpoint of bottom hem</point><|im_end|>",
+      "raw_points": [
+        [
+          509.5111111111111,
+          299.2453703703704
+        ]
+      ],
+      "raw_point_count": 1,
+      "status": "point_returned",
+      "selected_pixel_xy": [
+        795.3925925925926,
+        614.95
+      ],
+      "pixel_source": "Focused Molmo lower-hem crop mapped to full Camera A image"
+    }
+  ],
+  "focused_query": {
+    "name": "right_bottom_hem",
+    "source": "runs/flat_reference_axis_20260820T134500Z_escalated/molmo_anchor_crops/right_bottom_hem_query.json",
+    "selected_pixel_xy": [
+      795.3925925925926,
+      614.95
+    ]
+  },
+  "excluded_unreliable_records": [
+    "lower_left_half_center",
+    "lower_right_half_center"
+  ],
+  "annotation": {
+    "camera": "A",
+    "point_count": 8,
+    "unknown_count": 0,
+    "overlay_image": "runs/flat_reference_axis_20260820T134500Z_escalated/reference_anchors/camera_A_reference_anchors.png",
+    "legend_image": "runs/flat_reference_axis_20260820T134500Z_escalated/reference_anchors/camera_A_reference_anchors_with_legend.png",
+    "axis_reference": {
+      "top_name": "axis_top",
+      "bottom_name": "axis_bottom",
+      "top_pixel_xy": [
+        597.7037037037037,
+        212.02314814814815
+      ],
+      "bottom_pixel_xy": [
+        653.1703703703704,
+        629.2509259259259
+      ],
+      "top_status": "point_returned",
+      "bottom_status": "point_returned",
+      "axis_context": "Molmo first identified the collar-to-hem centerline; left/right anchors are interpreted relative to this garment centerline."
+    },
+    "records": [
+      {
+        "name": "garment_center",
+        "description": "center of the shirt fabric body halfway between the collar and the bottom hem; do not point to the printed graphic, label, or table",
+        "color": [
+          255,
+          40,
+          40
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's center of the shirt fabric body halfway between the collar and the bottom hem; do not point to the printed graphic, label, or table. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_287><POINT_393><POINT_402>1<POINT_392>\">center of shirt fabric body</point><|im_end|>",
+        "raw_points": [
+          [
+            343.58518518518514,
+            258.875
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          613.5851851851851,
+          413.875
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "neckline",
+        "description": "collar, neckline, or neck opening",
+        "color": [
+          255,
+          170,
+          0
+        ],
+        "prompt": "Point to this garment's the center of the collar/neck opening; this is the top reference point of the garment's own longitudinal centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_216><POINT_394><POINT_405>1<POINT_392>\">top center of neck opening</point><|im_end|>",
+        "raw_points": [
+          [
+            327.70370370370364,
+            57.02314814814815
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          597.7037037037037,
+          212.02314814814815
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "left_shoulder",
+        "description": "the garment's left shoulder as worn: the sleeve-to-torso seam on the left side of its own centerline, not the sleeve tip",
+        "color": [
+          50,
+          180,
+          255
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the garment's left shoulder as worn: the sleeve-to-torso seam on the left side of its own centerline, not the sleeve tip. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_227><POINT_393><POINT_404>1<POINT_392>\">the garment's left shoulder as worn</point><|im_end|>",
+        "raw_points": [
+          [
+            161.77777777777777,
+            90.73240740740741
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          431.77777777777777,
+          245.7324074074074
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "right_shoulder",
+        "description": "the garment's right shoulder as worn: the sleeve-to-torso seam on the right side of its own centerline, not the sleeve tip",
+        "color": [
+          80,
+          220,
+          80
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the garment's right shoulder as worn: the sleeve-to-torso seam on the right side of its own centerline, not the sleeve tip. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_233><POINT_394><POINT_405>1<POINT_392>\">the garment's right shoulder as worn</point><|im_end|>",
+        "raw_points": [
+          [
+            469.9259259259259,
+            97.39351851851852
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          739.9259259259259,
+          252.39351851851853
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "left_sleeve_tip",
+        "description": "the outermost endpoint on the garment silhouette of the left sleeve as worn, on the left side of its own centerline",
+        "color": [
+          180,
+          80,
+          255
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the outermost endpoint on the garment silhouette of the left sleeve as worn, on the left side of its own centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_238><POINT_394><POINT_403>1<POINT_392>\">left sleeve endpoint</point><|im_end|>",
+        "raw_points": [
+          [
+            43.25925925925926,
+            124.44166666666666
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          313.25925925925924,
+          279.44166666666666
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "right_sleeve_tip",
+        "description": "the outermost endpoint on the garment silhouette of the right sleeve as worn, on the right side of its own centerline",
+        "color": [
+          255,
+          80,
+          190
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the outermost endpoint on the garment silhouette of the right sleeve as worn, on the right side of its own centerline. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_236><POINT_393><POINT_403>1<POINT_392>\">right sleeve endpoint</point><|im_end|>",
+        "raw_points": [
+          [
+            588.4444444444445,
+            84.0712962962963
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          858.4444444444445,
+          239.07129629629628
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "left_bottom_hem",
+        "description": "the left endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic",
+        "color": [
+          80,
+          220,
+          220
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the left endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_367><POINT_394><POINT_398>1<POINT_392>\">left endpoint of bottom hem</point><|im_end|>",
+        "raw_points": [
+          [
+            169.83703703703702,
+            494.43611111111113
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          439.837037037037,
+          649.4361111111111
+        ],
+        "pixel_source": "Molmo crop mapped to full Camera A image"
+      },
+      {
+        "name": "right_bottom_hem",
+        "description": "the right endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic",
+        "color": [
+          220,
+          220,
+          60
+        ],
+        "prompt": "Garment centerline reference: collar-top=(327.7,57.0), bottom=(383.2,474.3), direction=(55.5,417.2). Use this garment centerline, not image axes. Left/right means the garment's left/right as worn.\nPoint to this garment's the right endpoint of the shirt's actual bottom outer hem boundary, on the garment silhouette and not on the printed graphic. If this part cannot be identified with confidence in the current image, answer UNKNOWN. The point must be on visible shirt fabric or its outer silhouette; never point to the printed graphic, clothing label, table, robot, or image border. For an edge landmark, point exactly on the garment boundary. Return at most one point.",
+        "generated_text": "<points coords=\"<POINT_304><POINT_394><POINT_402>1<POINT_392>\">right endpoint of bottom hem</point><|im_end|>",
+        "raw_points": [
+          [
+            509.5111111111111,
+            299.2453703703704
+          ]
+        ],
+        "raw_point_count": 1,
+        "status": "point_returned",
+        "selected_pixel_xy": [
+          795.3925925925926,
+          614.95
+        ],
+        "pixel_source": "Focused Molmo lower-hem crop mapped to full Camera A image"
+      }
+    ]
+  }
+}

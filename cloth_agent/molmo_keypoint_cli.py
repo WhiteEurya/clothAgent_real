@@ -2,10 +2,11 @@
 
 The default loop gives Claude complete synchronized A/B perception and prior
 physical outcomes, lets it choose one arbitrary image pixel and action, then
-applies grounding, preflight, workspace, and controller safety gates. Molmo
-semantic anchors and local Rxxx candidates remain available only through the
-explicit ``semantic_local`` compatibility policy. Every phase is printed to
-stdout and checkpointed under a separate iteration directory.
+applies grounding, preflight, workspace, and controller safety gates. The
+real dashboard launcher also runs an axis-first Molmo annotation pass and
+shows those overlays to Claude as auxiliary evidence; Molmo never selects the
+final grasp point in ``claude_global`` mode. Every phase is printed to stdout
+and checkpointed under a separate iteration directory.
 """
 
 from __future__ import annotations
@@ -36,12 +37,16 @@ from .auto_exploration import (
 )
 from .config import SafetyError
 from .experiment import ExperimentValidationError
+from .evidence_ledger import build_evidence_record, persist_evidence_record
 from .free_exploration import (
     ClaudeExplorationClient,
+    DEFAULT_EXPLORATION_OBJECTIVE,
     ExplorationPlanningError,
     ExplorationTimeoutError,
     exploration_prompt,
     exploration_source,
+    evaluation_depth_ranges,
+    evaluation_perception_image_paths,
     global_perception_image_paths,
     ground_global_grasp_target,
     perception_image_paths,
@@ -50,12 +55,19 @@ from .molmo_keypoint_pipeline import (
     DEFAULT_SEMANTIC_ANCHORS,
     DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
     KeypointSpec,
+    MolmoKeypointPipelineError,
     load_keypoint_specs,
     run_molmo_semantic_anchor_pipeline,
     validate_confidence_threshold,
 )
-from .perception import PerceptionConfig, capture_two_view_rgbd
+from .perception import PerceptionConfig, PerceptionError, capture_two_view_rgbd
 from .robot_api import move_robot_to_perception_position, validate_controller_trajectory
+from .rollout_recorder import (
+    DualRealSenseRolloutRecorder,
+    append_mp4_to_cumulative,
+    prune_rollout_video_files,
+    speed_up_mp4,
+)
 from .semantic_claude import SemanticActionResult, SemanticClaudeClient
 from .semantic_pipeline import (
     LocalGeometryGrounder,
@@ -69,7 +81,7 @@ from .semantic_pipeline import (
     semantic_hypothesis_budget,
 )
 from .session import AgentSession
-from .skill_lifecycle import SkillStore
+from .skill_lifecycle import RunSkillLedger, SkillProposal, SkillStore
 from .viewer import _load_latest_perception
 
 
@@ -451,6 +463,10 @@ class CliReporter:
 @dataclass(frozen=True)
 class KeypointCliOptions:
     planning_policy: str = "claude_global"
+    # Optional visual annotation pass for Claude-global.  It is opt-in here so
+    # lightweight library/test callers keep the historical no-Molmo behavior;
+    # the real dashboard launcher enables it explicitly.
+    global_molmo_annotations: bool = False
     max_iterations: int | None = 1
     settle_s: float = 2.0
     enable_real: bool = False
@@ -466,16 +482,23 @@ class KeypointCliOptions:
     heartbeat_s: float = 10.0
     color: bool | None = None
     claude_binary: str = "claude"
-    claude_timeout_s: int = 400
+    claude_timeout_s: int = 900
     claude_grounding_timeout_s: int = 120
     max_replans: int = 1
     continue_on_recoverable_errors: bool = False
     max_consecutive_recoverable_failures: int = 3
     recovery_backoff_s: float = 2.0
-    objective: str = (
-        "Take one planning-mode-appropriate action that makes the current garment "
-        "as open and spread as safely possible."
-    )
+    max_evaluation_retries: int = 0
+    evaluation_retry_backoff_s: float = 2.0
+    # Library/test callers stay side-effect free by default.  The executable
+    # CLI opts into recording unless --no-record-rollouts is supplied.
+    record_rollouts: bool = False
+    recording_native: bool = True
+    recording_codec: str = "mp4v"
+    recording_warmup_frames: int | None = None
+    objective: str = DEFAULT_EXPLORATION_OBJECTIVE
+    rgb_only_comparison: bool = False
+    combined_video_speed: float = 4.0
 
 
 def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
@@ -500,6 +523,14 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError("max_consecutive_recoverable_failures must be between 1 and 20")
     if not 0 <= options.recovery_backoff_s <= 300:
         raise ValueError("recovery_backoff_s must be between 0 and 300 seconds")
+    if not 0 <= options.max_evaluation_retries <= 100:
+        raise ValueError("max_evaluation_retries must be between 0 and 100")
+    if not 0 <= options.evaluation_retry_backoff_s <= 300:
+        raise ValueError(
+            "evaluation_retry_backoff_s must be between 0 and 300 seconds"
+        )
+    if not math.isfinite(options.combined_video_speed) or options.combined_video_speed <= 0:
+        raise ValueError("combined_video_speed must be finite and positive")
     if not 30 <= options.claude_timeout_s <= 1200:
         raise ValueError("claude_timeout_s must be between 30 and 1200 seconds")
     if not 15 <= options.claude_grounding_timeout_s <= 400:
@@ -510,6 +541,10 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError("min_gpu_free_mib must be between 0 and 24564")
     if not 0 <= options.heartbeat_s <= 300:
         raise ValueError("heartbeat_s must be between 0 and 300 seconds")
+    if len(options.recording_codec) != 4:
+        raise ValueError("recording_codec must be a four-character code")
+    if options.recording_warmup_frames is not None and not 0 <= options.recording_warmup_frames <= 300:
+        raise ValueError("recording_warmup_frames must be between 0 and 300")
     if options.planning_policy == "semantic_local" and not options.keypoint_specs:
         raise ValueError("at least one keypoint spec is required")
     if options.planning_policy == "semantic_local" and (
@@ -524,11 +559,9 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
 
 
 def _is_recoverable_loop_error(exc: BaseException, record: dict[str, Any]) -> bool:
-    """Allow a fresh perception/replan only before any physical rollout starts."""
+    """Allow a fresh perception/replan whenever no physical rollout started."""
 
     if record.get("execution") is not None:
-        return False
-    if record.get("last_completed_stage") not in {None, "PERCEPTION_COMPLETED"}:
         return False
     if isinstance(
         exc,
@@ -537,6 +570,8 @@ def _is_recoverable_loop_error(exc: BaseException, record: dict[str, Any]) -> bo
             ExplorationPlanningError,
             ExperimentValidationError,
             SafetyError,
+            MolmoKeypointPipelineError,
+            PerceptionError,
         ),
     ):
         return True
@@ -547,6 +582,114 @@ def _is_recoverable_loop_error(exc: BaseException, record: dict[str, Any]) -> bo
             for token in ("robot", "xarm", "set_position", "set_servo_angle", "physical rollout", "perception_position")
         )
     return False
+
+
+def _recovery_skill_proposal(
+    rejection: dict[str, Any],
+    *,
+    corrected_attempt: int,
+) -> SkillProposal:
+    """Turn a deterministically corrected pre-execution error into skill guidance."""
+
+    error_type = str(rejection.get("error_type") or "PreexecutionError")
+    error = str(rejection.get("error") or "unknown pre-execution error")
+    normalized = f"{error_type} {error}".lower()
+    if "controller ik" in normalized:
+        name = "controller-ik-recovery"
+        purpose = (
+            "Recover safely when controller IK rejects a garment manipulation path "
+            "before physical execution."
+        )
+        guidance = (
+            "When controller IK rejects a pose or interpolated segment, preserve the "
+            "supported visual objective but shorten extreme reach, lift, or transport; "
+            "keep every waypoint inside the workspace, include a controlled release, "
+            "and rerun preflight and controller IK before execution."
+        )
+    elif error_type == "ExperimentValidationError":
+        name = "preflight-contract-recovery"
+        purpose = (
+            "Recover from a rejected action schema or unsafe action sequence before motion."
+        )
+        guidance = (
+            "When static preflight rejects a plan, keep only the high-level garment "
+            "objective, correct the reported action contract or sequence, keep all "
+            "waypoints inside the workspace, include an explicit release, and rerun "
+            "preflight and IK before execution."
+        )
+    elif error_type == "ExplorationPlanningError":
+        name = "grounding-plan-recovery"
+        purpose = (
+            "Recover from an invalid or inconsistent grounded garment proposal before motion."
+        )
+        guidance = (
+            "When grounding validation rejects a selected point or its use in the plan, "
+            "reinspect the current evidence, choose a newly grounded visible fabric point, "
+            "keep the path inside the workspace, include a controlled release, and rerun "
+            "preflight and IK before execution."
+        )
+    elif error_type == "MolmoKeypointPipelineError":
+        name = "molmo-annotation-retry"
+        purpose = (
+            "Recover from an auxiliary Molmo annotation worker failure before motion."
+        )
+        guidance = (
+            "When auxiliary Molmo annotation fails before execution, preserve the saved "
+            "perception evidence, retry the annotation on a fresh iteration, and never "
+            "treat a missing semantic anchor as garment-state evidence; keep workspace, "
+            "release, preflight, and IK validation mandatory before any later motion."
+        )
+    elif error_type == "PerceptionError":
+        name = "perception-recapture-recovery"
+        purpose = (
+            "Recover from an invalid Camera A/B garment perception before planning motion."
+        )
+        guidance = (
+            "When perception validation fails, send no motion, recapture the scene, and "
+            "require a fresh validated garment state before planning; keep workspace, "
+            "release, preflight, and IK checks mandatory after perception recovers."
+        )
+    elif error_type == "ExplorationTimeoutError":
+        name = "planning-timeout-recovery"
+        purpose = (
+            "Recover from a Claude planning timeout before any garment motion starts."
+        )
+        guidance = (
+            "When planning times out before execution, retain the exact failure context, "
+            "start a fresh planning attempt from saved perception, keep all waypoints "
+            "inside the workspace, include a controlled release, and rerun preflight "
+            "and IK before execution."
+        )
+    else:
+        name = "preexecution-safety-recovery"
+        purpose = (
+            "Recover from a deterministic safety rejection before garment motion starts."
+        )
+        guidance = (
+            "When a deterministic safety gate rejects a proposal, feed the exact error "
+            "and rejected plan back to the planner, make a materially different correction, "
+            "keep all motion inside the workspace, include a controlled release, and rerun "
+            "preflight and IK before execution."
+        )
+    return SkillProposal(
+        operation="create",
+        name=name,
+        purpose=purpose,
+        guidance=guidance,
+        rationale=(
+            "A Claude proposal failed a deterministic pre-execution gate, and a later "
+            "Claude correction passed grounding, static preflight, and controller IK "
+            "without sending the rejected motion to the robot."
+        ),
+        evidence=(
+            f"Rejected attempt {rejection.get('attempt')}: {error_type}: {error}",
+            (
+                f"Corrected attempt {corrected_attempt} passed all pre-execution "
+                "validation gates before any physical command."
+            ),
+        ),
+        confidence=0.8,
+    )
 
 
 def probe_gpu_free_mib() -> int:
@@ -645,6 +788,7 @@ def _planning_images(
     saved: dict[str, Any],
     saved_path: Path,
     keypoint_manifest: dict[str, Any],
+    project_root: Path | None = None,
 ) -> list[Path]:
     uniform_overlays = {
         "camera_A_coordinate_overlay.png",
@@ -655,11 +799,75 @@ def _planning_images(
         for path in perception_image_paths(saved, saved_path)
         if path.name not in uniform_overlays
     ]
+    annotation_dir: Path | None = None
     for view in keypoint_manifest.get("views", []):
         overlay = Path(str(view.get("accepted_overlay", ""))).resolve()
         if overlay.is_file() and overlay not in paths:
             paths.append(overlay)
-    return paths
+            annotation_dir = overlay.parent
+    # The Molmo pipeline copies both the raw flat RGB reference and its
+    # annotated anchor overlay into the current run.  Put both before the
+    # current heatmaps so Claude first builds a topology/pattern hypothesis,
+    # then uses geometry to verify a graspable instance of that structure.
+    reference_paths: list[Path] = []
+    if annotation_dir is not None:
+        reference_dir = annotation_dir / "flat_reference"
+        for name in (
+            "camera_A_flat_reference.png",
+            "camera_A_flat_reference_anchors.png",
+        ):
+            reference_image = reference_dir / name
+            if reference_image.is_file() and reference_image not in reference_paths:
+                reference_paths.append(reference_image.resolve())
+    elif project_root is not None:
+        # Global Claude may run without the optional Molmo pass.  Copy the
+        # project reference into the current run so the CLI sandbox can still
+        # use the same topology/pattern prior without granting access to files
+        # outside the run directory.
+        source_dir = (
+            Path(project_root).resolve()
+            / "data"
+            / "reference"
+            / "flat_garment_reference"
+        )
+        run_reference_dir = saved_path.parent / "flat_reference"
+        for name in (
+            "camera_A_flat_reference.png",
+            "camera_A_flat_reference_anchors.png",
+        ):
+            source = source_dir / name
+            destination = run_reference_dir / name
+            if source.is_file():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.is_file():
+                    shutil.copy2(source, destination)
+                reference_paths.append(destination.resolve())
+    return reference_paths + [path for path in paths if path not in reference_paths]
+
+
+def _rgb_only_comparison_images(image_paths: Sequence[Path]) -> list[Path]:
+    """Keep only RGB/reference files for the no-height-map ablation."""
+
+    allowed_names = {
+        "camera_0_A.png",
+        "camera_1_B.png",
+        "camera_A.png",
+        "camera_B.png",
+        "camera_A_garment_only.png",
+        "camera_B_garment_only.png",
+        "camera_A_flat_reference.png",
+        "camera_A_flat_reference_anchors.png",
+    }
+    selected: list[Path] = []
+    for path in image_paths:
+        resolved = Path(path).resolve()
+        if resolved.name in allowed_names and resolved.is_file() and resolved not in selected:
+            selected.append(resolved)
+    if not selected:
+        raise FileNotFoundError(
+            "RGB-only comparison found no RGB/reference images in the planning bundle"
+        )
+    return selected
 
 
 def _print_semantic_action(
@@ -741,6 +949,7 @@ def run_keypoint_cli_loop(
     if output.exists():
         raise FileExistsError(f"CLI output directory already exists: {output}")
     output.mkdir(parents=True, exist_ok=False)
+    combined_video_path = output / "combined_rollout.mp4"
     reporter = CliReporter(
         output / "events.jsonl",
         stream=stream,
@@ -772,8 +981,18 @@ def run_keypoint_cli_loop(
         "output_dir": str(output),
         "enable_real": options.enable_real,
         "planning_policy": options.planning_policy,
+        "rgb_only_comparison": options.rgb_only_comparison,
+        "combined_rollout_video": str(combined_video_path),
+        "combined_video_speed": options.combined_video_speed,
         "confidence_threshold": options.confidence_threshold,
         "max_iterations": options.max_iterations,
+        "evaluation_retry": {
+            "max_retries": options.max_evaluation_retries or "unlimited",
+            "backoff_s": options.evaluation_retry_backoff_s,
+            "timeout_only": True,
+            "reuses_saved_before_after": True,
+            "sends_robot_commands": False,
+        },
         "perception_position": {
             "sequence": ["home", "perception_position"],
             "target_joint_angles_deg": (
@@ -799,7 +1018,10 @@ def run_keypoint_cli_loop(
             "Planning policy": options.planning_policy,
             "Iterations": options.max_iterations or "continuous",
             "Visual input": (
-                "complete A/B scene; no candidates"
+                "complete A/B scene + Molmo annotations; no candidates"
+                if options.planning_policy == "claude_global"
+                and options.global_molmo_annotations
+                else "complete A/B scene; no candidates"
                 if options.planning_policy == "claude_global"
                 else f"{','.join(options.keypoint_cameras)} / {len(options.keypoint_specs)} anchors"
             ),
@@ -816,7 +1038,14 @@ def run_keypoint_cli_loop(
             "Heartbeat": (
                 f"every {options.heartbeat_s:g}s" if options.heartbeat_s else "disabled"
             ),
+            "Evaluation timeout": (
+                "retry forever with saved before/after evidence"
+                if options.max_evaluation_retries == 0
+                else f"retry up to {options.max_evaluation_retries} time(s)"
+            ),
             "Results": output,
+            "Combined rollout video": combined_video_path,
+            "Combined video speed": f"{options.combined_video_speed:g}x",
         }
     )
     reporter.emit(
@@ -838,12 +1067,102 @@ def run_keypoint_cli_loop(
     )
     reporter.start_heartbeat(options.heartbeat_s)
 
+    def append_recording_to_cumulative_video(
+        iteration_number: int,
+        iteration_record: dict[str, Any],
+        recording_directory: Path,
+    ) -> None:
+        """Append the completed composite segment without affecting execution."""
+
+        source_video = recording_directory / "composite_AB_depth.mp4"
+        if not source_video.is_file():
+            return
+        speed_segment = recording_directory / ".composite_AB_depth.speed.mp4"
+        try:
+            speed_info = speed_up_mp4(
+                source_video,
+                speed_segment,
+                speed=options.combined_video_speed,
+            )
+            append_info = append_mp4_to_cumulative(
+                speed_segment,
+                combined_video_path,
+            )
+            append_info["playback_speed"] = options.combined_video_speed
+            append_info["speed_up"] = speed_info
+        except Exception as exc:
+            iteration_record.setdefault("rollout_recording", {})[
+                "cumulative_video_error"
+            ] = f"{type(exc).__name__}: {exc}"
+            reporter.emit(
+                "combined-video",
+                f"failed to append rollout video; keeping source segment: {exc}",
+                iteration=iteration_number,
+                level="WARNING",
+            )
+            return
+        finally:
+            speed_segment.unlink(missing_ok=True)
+        iteration_record.setdefault("rollout_recording", {})[
+            "cumulative_video"
+        ] = str(combined_video_path)
+        iteration_record.setdefault("rollout_recording", {})[
+            "cumulative_video_append"
+        ] = append_info
+        iteration_record.setdefault("artifacts", {})[
+            "combined_rollout_video"
+        ] = str(combined_video_path)
+        reporter.emit(
+            "combined-video",
+            f"appended rollout composite to {combined_video_path}",
+            iteration=iteration_number,
+            level="PASS",
+            payload=append_info,
+        )
+
+    def prune_completed_recording(
+        iteration_number: int,
+        iteration_record: dict[str, Any],
+        recording_directory: Path | None,
+    ) -> None:
+        """Remove per-iteration video/native files after evaluator completion."""
+
+        if recording_directory is None:
+            return
+        removed = prune_rollout_video_files(recording_directory)
+        if not removed:
+            return
+        iteration_record.setdefault("rollout_recording", {})[
+            "pruned_video_files"
+        ] = removed
+        reporter.emit(
+            "combined-video",
+            f"removed {len(removed)} old per-iteration video/native file(s); cumulative video retained",
+            iteration=iteration_number,
+            level="INFO",
+            payload={"removed": removed, "cumulative_video": str(combined_video_path)},
+        )
+
     def prepare_real_perception_position(
         iteration_number: int,
         iteration_record: dict[str, Any],
         record_key: str,
     ) -> None:
+        nonlocal perception_position_ready
         if not options.enable_real:
+            return
+        if perception_position_ready:
+            iteration_record[record_key] = {
+                "name": "perception_position",
+                "skipped": True,
+                "reason": "already at verified perception_position from previous capture",
+            }
+            reporter.emit(
+                "robot-positioning",
+                "already at verified perception_position; skipping redundant Home → perception_position",
+                iteration=iteration_number,
+                level="PASS",
+            )
             return
         reporter.start_phase(
             "robot-positioning",
@@ -853,6 +1172,7 @@ def run_keypoint_cli_loop(
         outcome = perception_positioner(session.robot_config)
         iteration_record[record_key] = _jsonable(outcome)
         actual_pose = outcome.get("actual_tcp_pose_mm_deg")
+        perception_position_ready = True
         reporter.finish_phase(
             f"reached perception_position; actual TCP={actual_pose}",
             payload=outcome,
@@ -869,17 +1189,209 @@ def run_keypoint_cli_loop(
             sleep(options.settle_s)
             reporter.finish_phase("camera stabilization interval complete")
 
+    def evaluate_with_timeout_retry(
+        iteration_number: int,
+        iteration_directory: Path,
+        iteration_record: dict[str, Any],
+        evaluate_once: Callable[[], Any],
+    ) -> Any:
+        """Retry only Claude evaluation timeouts without repeating robot work."""
+
+        attempt = 0
+        while True:
+            attempt += 1
+            iteration_record["evaluation_attempt_count"] = attempt
+            try:
+                evaluation_result = evaluate_once()
+            except ExplorationTimeoutError as exc:
+                retry_count = attempt
+                retry_limit = options.max_evaluation_retries
+                exhausted = retry_limit > 0 and retry_count > retry_limit
+                retry_record = {
+                    "attempt": attempt,
+                    "created_at": _now(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "same_saved_before_after": True,
+                    "robot_command_sent": False,
+                    "retry_scheduled": not exhausted,
+                }
+                iteration_record.setdefault(
+                    "evaluation_timeout_retries", []
+                ).append(retry_record)
+                iteration_record["evaluation_retry_count"] = retry_count
+                iteration_record["status"] = (
+                    "EVALUATION_RETRY_EXHAUSTED"
+                    if exhausted
+                    else "EVALUATION_RETRYING"
+                )
+                iteration_record["evaluation_retry"] = {
+                    "max_retries": retry_limit or "unlimited",
+                    "backoff_s": options.evaluation_retry_backoff_s,
+                    "next_attempt": None if exhausted else attempt + 1,
+                    "evidence_policy": "reuse saved before/after images",
+                    "robot_policy": "no robot or camera command during retry",
+                }
+                _iteration_checkpoint(
+                    output,
+                    iteration_directory,
+                    iteration_number,
+                    iteration_record,
+                )
+                if exhausted:
+                    reporter.emit(
+                        "evaluation-retry",
+                        (
+                            "Claude evaluation timeout retry limit exhausted; "
+                            "no robot command was repeated"
+                        ),
+                        iteration=iteration_number,
+                        level="ERROR",
+                        payload=iteration_record["evaluation_retry"],
+                    )
+                    raise
+                limit_text = (
+                    "unlimited"
+                    if retry_limit == 0
+                    else str(retry_limit)
+                )
+                reporter.emit(
+                    "evaluation-retry",
+                    (
+                        f"Claude evaluation timed out on attempt {attempt}; "
+                        f"retrying the same saved before/after evidence "
+                        f"(retry {retry_count}/{limit_text}); no robot or camera command"
+                    ),
+                    iteration=iteration_number,
+                    level="WARNING",
+                    payload=retry_record,
+                )
+                if options.evaluation_retry_backoff_s > 0:
+                    sleep(options.evaluation_retry_backoff_s)
+                continue
+            iteration_record["evaluation_attempt_count"] = attempt
+            iteration_record["evaluation_retry_count"] = attempt - 1
+            iteration_record["status"] = "RUNNING"
+            if attempt > 1:
+                timeout_entries = iteration_record.get(
+                    "evaluation_timeout_retries", []
+                )
+                timeout_evidence = tuple(
+                    str(item.get("error"))
+                    for item in timeout_entries
+                    if isinstance(item, dict) and item.get("error")
+                )
+                recovery_skill = SkillProposal(
+                    operation="create",
+                    name="evaluation-timeout-retry",
+                    purpose=(
+                        "Recover from a Claude evaluation timeout after a completed "
+                        "garment rollout without repeating physical work."
+                    ),
+                    guidance=(
+                        "When evaluation times out after execution and return-Home, "
+                        "reuse the saved before/after evidence, do not resend robot or "
+                        "camera commands or repeat the release, retain the completed "
+                        "workspace and IK results as provenance, and retry only the "
+                        "evaluation call."
+                    ),
+                    rationale=(
+                        "The evaluator timed out after physical execution was already "
+                        "complete, and retrying only the same saved evidence later "
+                        "returned a valid evaluation."
+                    ),
+                    evidence=(
+                        *timeout_evidence[:7],
+                        (
+                            f"Evaluation attempt {attempt} succeeded using the same saved "
+                            "before/after evidence with no robot or camera command."
+                        ),
+                    ),
+                    confidence=0.9,
+                )
+                approved_names = {
+                    skill.name for skill in skill_store.approved()
+                }
+                if recovery_skill.name in approved_names:
+                    skill_review = {
+                        "status": "ALREADY_APPROVED",
+                        "approved": True,
+                        "reason": f"skill {recovery_skill.name} is already active",
+                    }
+                else:
+                    reviewed = run_skill_ledger.stage_skill_update(
+                        recovery_skill,
+                        iteration=iteration_number,
+                        source="evaluation_timeout_recovery",
+                    )
+                    skill_review = (
+                        reviewed.as_dict()
+                        if reviewed is not None
+                        else {
+                            "status": "NOT_PROPOSED",
+                            "approved": False,
+                            "reason": "skill review returned no result",
+                        }
+                    )
+                recovery_experience = {
+                    "created_at": _now(),
+                    "type": "evaluation_timeout_recovery",
+                    "iteration": iteration_number,
+                    "timeout_attempts": list(timeout_entries),
+                    "successful_attempt": attempt,
+                    "same_saved_before_after": True,
+                    "robot_command_repeated": False,
+                    "camera_command_repeated": False,
+                    "skill_proposal": recovery_skill.as_dict(),
+                    "skill_review": skill_review,
+                }
+                iteration_record["evaluation_error_recovery"] = (
+                    recovery_experience
+                )
+                iteration_record["evaluation_recovery_skill_review"] = (
+                    skill_review
+                )
+                _write_json(
+                    iteration_directory / "evaluation_error_recovery.json",
+                    recovery_experience,
+                )
+                if options.planning_policy == "claude_global":
+                    _append_jsonl(global_experience_path, recovery_experience)
+                    global_experiences.append(recovery_experience)
+                run_skill_ledger.append_experience(recovery_experience)
+                if global_client is not None:
+                    global_client.skill_names = tuple(
+                        skill.name for skill in skill_store.approved()
+                    )
+                reporter.emit(
+                    "evaluation-recovery",
+                    (
+                        f"evaluation retry succeeded; skill={recovery_skill.name} "
+                        f"review={skill_review.get('status')}; no robot or camera command"
+                    ),
+                    iteration=iteration_number,
+                    level="PASS" if skill_review.get("approved") else "WARNING",
+                    payload=recovery_experience,
+                )
+            return evaluation_result
+
     experience_path = session.workspace / "structured_experience.jsonl"
     experiences = load_structured_experiences(experience_path)
     global_experience_path = session.workspace / "global_experience.jsonl"
     global_experiences = _load_jsonl(global_experience_path)
     skill_store = SkillStore(session.project_root / "data" / "skills")
+    run_skill_ledger = RunSkillLedger(session.workspace)
+
+    def run_skill_prompt() -> str:
+        appendix = run_skill_ledger.prompt_appendix()
+        return skill_store.prompt() + (("\n\n" + appendix) if appendix else "")
     if global_client is not None:
         global_client.skill_names = tuple(
             skill.name for skill in skill_store.approved()
         )
     iteration = 0
     consecutive_recoverable_failures = 0
+    pending_recoverable_error: dict[str, Any] | None = None
+    perception_position_ready = False
     exit_code = 0
     while options.max_iterations is None or iteration < options.max_iterations:
         iteration += 1
@@ -933,12 +1445,96 @@ def run_keypoint_cli_loop(
                 },
             )
 
+            global_molmo_manifest: dict[str, Any] | None = None
+            if options.planning_policy == "claude_global" and options.global_molmo_annotations:
+                if options.min_gpu_free_mib:
+                    reporter.start_phase(
+                        "gpu-preflight",
+                        "checking GPU 0 free memory before loading Molmo annotations",
+                        iteration=iteration,
+                    )
+                    free_mib = int(gpu_memory_probe())
+                    record["gpu_memory_preflight"] = {
+                        "gpu": 0,
+                        "free_mib": free_mib,
+                        "required_free_mib": options.min_gpu_free_mib,
+                        "valid": free_mib >= options.min_gpu_free_mib,
+                    }
+                    reporter.finish_phase(
+                        f"free={free_mib} MiB required>={options.min_gpu_free_mib} MiB",
+                        success=free_mib >= options.min_gpu_free_mib,
+                        level="PASS" if free_mib >= options.min_gpu_free_mib else "ERROR",
+                    )
+                    if free_mib < options.min_gpu_free_mib:
+                        raise AutoExplorationError(
+                            "insufficient free GPU memory before global Molmo annotation: "
+                            f"{free_mib} MiB available, at least {options.min_gpu_free_mib} MiB required"
+                        )
+                    _record_stage(
+                        output,
+                        iteration_dir,
+                        iteration,
+                        record,
+                        "GPU_PREFLIGHT_COMPLETED",
+                    )
+                reporter.start_phase(
+                    "molmo",
+                    (
+                        "axis-first Molmo semantic annotation for Claude-global; "
+                        f"Camera {','.join(options.keypoint_cameras)}"
+                    ),
+                    iteration=iteration,
+                )
+                keypoint_dir = iteration_dir / "semantic_anchors"
+                global_molmo_manifest = keypoint_runner(
+                    project_root=session.project_root,
+                    perception_dir=session.workspace / "perception_views",
+                    artifact_dir=keypoint_dir,
+                    confidence_threshold=options.confidence_threshold,
+                    molmo_python=options.molmo_python,
+                    model=options.molmo_model,
+                    timeout_s=options.molmo_timeout_s,
+                    local_files_only=not options.molmo_allow_download,
+                    keypoint_specs=(options.keypoint_specs or DEFAULT_SEMANTIC_ANCHORS),
+                    cameras=options.keypoint_cameras,
+                    install=True,
+                    worker_line_callback=reporter.worker_line,
+                )
+                record["semantic_anchors"] = global_molmo_manifest
+                record["artifacts"]["semantic_anchors"] = str(
+                    keypoint_dir / "molmo_semantic_anchors.json"
+                )
+                _print_semantic_anchors(reporter, iteration, global_molmo_manifest)
+                _record_stage(
+                    output,
+                    iteration_dir,
+                    iteration,
+                    record,
+                    "SEMANTIC_ANNOTATIONS_COMPLETED",
+                )
+                reporter.finish_phase(
+                    (
+                        f"annotated {global_molmo_manifest.get('anchor_count', 0)} "
+                        f"semantic region(s); artifacts saved in {keypoint_dir}"
+                    ),
+                    success=True,
+                )
+
             if options.planning_policy == "claude_global":
                 if global_client is None or global_evaluator is None:
                     raise AutoExplorationError(
                         "claude_global clients were not initialized"
                     )
-                before_images = global_perception_image_paths(saved, saved_path)
+                before_images = (
+                    _planning_images(
+                        saved,
+                        saved_path,
+                        global_molmo_manifest or {},
+                        session.project_root,
+                    )
+                    if global_molmo_manifest is not None
+                    else global_perception_image_paths(saved, saved_path)
+                )
                 record["before_images"] = [str(path) for path in before_images]
                 record["candidate_policy"] = "NONE_CLAUDE_SELECTS_ARBITRARY_PIXEL"
                 proposal: ExplorationProposal | None = None
@@ -963,8 +1559,24 @@ def run_keypoint_cli_loop(
                         session.robot_config,
                         objective=options.objective,
                         history=global_experiences,
-                        skill_guidance=skill_store.prompt(),
+                        history_file=(
+                            global_experience_path.relative_to(session.run_dir)
+                            if global_experiences
+                            else None
+                        ),
+                        skill_guidance=run_skill_prompt(),
                     )
+                    if global_molmo_manifest is not None:
+                        prompt += (
+                            "\n\nAn axis-first Molmo semantic annotation pass was run for "
+                            "visual assistance. Its accepted semantic anchors are auxiliary "
+                            "evidence, not a candidate list or mandatory grasp target; choose "
+                            "the final arbitrary Camera A pixel yourself. See the annotated "
+                            "overlay images and manifest at: "
+                            f"{iteration_dir / 'semantic_anchors' / 'molmo_semantic_anchors.json'}\n"
+                            f"Molmo status={global_molmo_manifest.get('status')} "
+                            f"anchor_count={global_molmo_manifest.get('anchor_count', 0)}."
+                        )
                     if validation_feedback:
                         prompt += (
                             "\n\nThe previous proposal was rejected before motion by a hard "
@@ -998,15 +1610,37 @@ def run_keypoint_cli_loop(
                         reporter.fail_current_phase(
                             f"{type(exc).__name__}: {exc}"
                         )
-                        validation_feedback = f"{type(exc).__name__}: {exc}"
+                        rejected_proposal = (
+                            proposal.as_dict() if proposal is not None else None
+                        )
+                        feedback_payload = {
+                            "attempt": attempt,
+                            "phase": "global_preexecution_validation",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "rejected_proposal": rejected_proposal,
+                            "rejected_actions": (
+                                rejected_proposal.get("actions")
+                                if isinstance(rejected_proposal, dict)
+                                else None
+                            ),
+                            "feedback_target": "next Claude planning attempt",
+                            "required_response": (
+                                "materially change the rejected pixel, waypoint geometry, "
+                                "or action sequence as required by the exact error; pass all "
+                                "grounding, preflight, workspace, and controller IK gates"
+                            ),
+                            "physical_command_sent": False,
+                        }
+                        validation_feedback = json.dumps(
+                            feedback_payload, ensure_ascii=False, indent=2
+                        )
                         record.setdefault("global_planning_rejections", []).append(
-                            {
-                                "attempt": attempt,
-                                "error": validation_feedback,
-                                "proposal": (
-                                    proposal.as_dict() if proposal is not None else None
-                                ),
-                            }
+                            feedback_payload
+                        )
+                        record["error_feedback_to_claude"] = feedback_payload
+                        _iteration_checkpoint(
+                            output, iteration_dir, iteration, record
                         )
                         if (
                             attempt >= options.max_replans + 1
@@ -1027,6 +1661,109 @@ def run_keypoint_cli_loop(
                             "proposal": proposal.as_dict(),
                         }
                     )
+                    rejections = record.get("global_planning_rejections") or []
+                    if rejections:
+                        last_rejection = dict(rejections[-1])
+                        corrected_proposal = proposal.as_dict()
+                        materially_changed = (
+                            last_rejection.get("rejected_proposal")
+                            != corrected_proposal
+                        )
+                        recovery_experience = {
+                            "created_at": _now(),
+                            "type": "preexecution_error_recovery",
+                            "iteration": iteration,
+                            "error_feedback": last_rejection,
+                            "corrected_attempt": attempt,
+                            "corrected_proposal": corrected_proposal,
+                            "validation_result": {
+                                "grounding": "PASSED",
+                                "static_preflight": "PASSED",
+                                "controller_ik": (
+                                    "SKIPPED_DRY_RUN"
+                                    if options.skip_controller_ik
+                                    else "PASSED"
+                                ),
+                                "physical_command_sent_during_correction": False,
+                                "materially_changed": materially_changed,
+                            },
+                        }
+                        recovery_skill = _recovery_skill_proposal(
+                            last_rejection,
+                            corrected_attempt=attempt,
+                        )
+                        approved_names = {
+                            skill.name for skill in skill_store.approved()
+                        }
+                        if not materially_changed:
+                            recovery_skill_review = {
+                                "status": "NOT_PROPOSED",
+                                "approved": False,
+                                "reason": (
+                                    "corrected proposal is identical to the rejected "
+                                    "proposal, so no reusable correction was evidenced"
+                                ),
+                            }
+                        elif recovery_skill.name in approved_names:
+                            recovery_skill_review = {
+                                "status": "ALREADY_APPROVED",
+                                "approved": True,
+                                "reason": (
+                                    f"skill {recovery_skill.name} is already active"
+                                ),
+                            }
+                        else:
+                            reviewed = run_skill_ledger.stage_skill_update(
+                                recovery_skill,
+                                iteration=iteration,
+                                source="preexecution_error_recovery",
+                            )
+                            recovery_skill_review = (
+                                reviewed.as_dict()
+                                if reviewed is not None
+                                else {
+                                    "status": "NOT_PROPOSED",
+                                    "approved": False,
+                                    "reason": "skill review returned no result",
+                                }
+                            )
+                        recovery_experience["skill_proposal"] = (
+                            recovery_skill.as_dict()
+                        )
+                        recovery_experience["skill_review"] = (
+                            recovery_skill_review
+                        )
+                        record["preexecution_error_recovery"] = recovery_experience
+                        record["recovery_skill_review"] = recovery_skill_review
+                        _write_json(
+                            iteration_dir / "preexecution_error_recovery.json",
+                            recovery_experience,
+                        )
+                        _append_jsonl(
+                            global_experience_path, recovery_experience
+                        )
+                        run_skill_ledger.append_experience(recovery_experience)
+                        global_experiences.append(recovery_experience)
+                        if global_client is not None:
+                            global_client.skill_names = tuple(
+                                skill.name for skill in skill_store.approved()
+                            )
+                        reporter.emit(
+                            "error-recovery",
+                            (
+                                f"Claude correction passed pre-execution gates; "
+                                f"recovery skill={recovery_skill.name} "
+                                f"review={recovery_skill_review.get('status')}"
+                            ),
+                            iteration=iteration,
+                            level=(
+                                "PASS"
+                                if recovery_skill_review.get("approved")
+                                else "WARNING"
+                            ),
+                            payload=recovery_experience,
+                        )
+                        pending_recoverable_error = None
                     reporter.finish_phase(
                         (
                             f"selected pixel={proposal.selected_grasp['camera']}/"
@@ -1049,6 +1786,86 @@ def run_keypoint_cli_loop(
                         "global planning ended without a validated proposal"
                     )
 
+                if pending_recoverable_error is not None and not record.get(
+                    "global_planning_rejections"
+                ):
+                    recovery_skill = _recovery_skill_proposal(
+                        pending_recoverable_error,
+                        corrected_attempt=1,
+                    )
+                    approved_names = {
+                        skill.name for skill in skill_store.approved()
+                    }
+                    if recovery_skill.name in approved_names:
+                        recovery_skill_review = {
+                            "status": "ALREADY_APPROVED",
+                            "approved": True,
+                            "reason": f"skill {recovery_skill.name} is already active",
+                        }
+                    else:
+                        reviewed = run_skill_ledger.stage_skill_update(
+                            recovery_skill,
+                            iteration=iteration,
+                            source="fresh_iteration_error_recovery",
+                        )
+                        recovery_skill_review = (
+                            reviewed.as_dict()
+                            if reviewed is not None
+                            else {
+                                "status": "NOT_PROPOSED",
+                                "approved": False,
+                                "reason": "skill review returned no result",
+                            }
+                        )
+                    recovery_experience = {
+                        "created_at": _now(),
+                        "type": "fresh_iteration_error_recovery",
+                        "iteration": iteration,
+                        "error_feedback": pending_recoverable_error,
+                        "corrected_attempt": 1,
+                        "corrected_proposal": proposal.as_dict(),
+                        "validation_result": {
+                            "grounding": "PASSED",
+                            "static_preflight": "PASSED",
+                            "controller_ik": (
+                                "SKIPPED_DRY_RUN"
+                                if options.skip_controller_ik
+                                else "PASSED"
+                            ),
+                            "physical_command_sent_during_correction": False,
+                        },
+                        "skill_proposal": recovery_skill.as_dict(),
+                        "skill_review": recovery_skill_review,
+                    }
+                    record["preexecution_error_recovery"] = recovery_experience
+                    record["recovery_skill_review"] = recovery_skill_review
+                    _write_json(
+                        iteration_dir / "preexecution_error_recovery.json",
+                        recovery_experience,
+                    )
+                    _append_jsonl(global_experience_path, recovery_experience)
+                    run_skill_ledger.append_experience(recovery_experience)
+                    global_experiences.append(recovery_experience)
+                    global_client.skill_names = tuple(
+                        skill.name for skill in skill_store.approved()
+                    )
+                    reporter.emit(
+                        "error-recovery",
+                        (
+                            "fresh iteration passed pre-execution gates after the "
+                            f"previous error; recovery skill={recovery_skill.name} "
+                            f"review={recovery_skill_review.get('status')}"
+                        ),
+                        iteration=iteration,
+                        level=(
+                            "PASS"
+                            if recovery_skill_review.get("approved")
+                            else "WARNING"
+                        ),
+                        payload=recovery_experience,
+                    )
+                    pending_recoverable_error = None
+
                 record["proposal"] = proposal.as_dict()
                 record["global_grounding"] = grounding
                 selected_pixel_overlay = _save_global_selected_pixel_overlay(
@@ -1068,6 +1885,79 @@ def run_keypoint_cli_loop(
                 _write_json(iteration_dir / "global_grounding.json", grounding)
                 _write_json(iteration_dir / "preflight.json", preflight)
                 _write_json(iteration_dir / "controller_ik.json", controller)
+                if options.rgb_only_comparison:
+                    reporter.start_phase(
+                        "rgb-only-comparison",
+                        "running a non-executing Claude thought with RGB/reference only",
+                        iteration=iteration,
+                    )
+                    comparison_images: list[Path] = []
+                    try:
+                        comparison_images = _rgb_only_comparison_images(before_images)
+                        comparison = global_client.invoke_rgb_only_comparison(
+                            comparison_images,
+                            objective=options.objective,
+                            run_dir=session.run_dir,
+                        )
+                        comparison["status"] = (
+                            "COMPLETED" if comparison.get("parse_error") is None else "PARSE_ERROR"
+                        )
+                    except Exception as exc:
+                        comparison = {
+                            "mode": "rgb_only_no_height_map",
+                            "objective": options.objective,
+                            "image_paths": [str(path) for path in comparison_images],
+                            "status": "FAILED",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "grasp_trajectory": [],
+                            "physical_command_sent": False,
+                        }
+                        reporter.emit(
+                            "rgb-only-comparison",
+                            f"comparison thought failed; primary rollout is unaffected: {comparison['error']}",
+                            iteration=iteration,
+                            level="WARNING",
+                            payload=comparison,
+                        )
+                    record["rgb_only_comparison"] = comparison
+                    comparison_path = iteration_dir / "rgb_only_comparison.json"
+                    trajectory_path = iteration_dir / "rgb_only_comparison_trajectory.json"
+                    _write_json(comparison_path, comparison)
+                    _write_json(
+                        trajectory_path,
+                        {
+                            "mode": comparison.get("mode"),
+                            "objective": comparison.get("objective"),
+                            "selected_grasp": (
+                                (comparison.get("parsed_output") or {}).get("selected_grasp")
+                                if isinstance(comparison.get("parsed_output"), dict)
+                                else None
+                            ),
+                            "grasp_trajectory": comparison.get("grasp_trajectory", []),
+                            "physical_command_sent": False,
+                        },
+                    )
+                    record["artifacts"]["rgb_only_comparison"] = str(comparison_path)
+                    record["artifacts"]["rgb_only_comparison_trajectory"] = str(
+                        trajectory_path
+                    )
+                    reporter.finish_phase(
+                        (
+                            f"saved RGB-only comparison output and trajectory; "
+                            f"status={comparison.get('status')}"
+                        ),
+                        success=comparison.get("status") == "COMPLETED",
+                        level=(
+                            "PASS"
+                            if comparison.get("status") == "COMPLETED"
+                            else "WARNING"
+                        ),
+                        payload={
+                            "comparison_output": str(comparison_path),
+                            "comparison_trajectory": str(trajectory_path),
+                            "physical_command_sent": False,
+                        },
+                    )
                 _record_stage(
                     output,
                     iteration_dir,
@@ -1104,15 +1994,125 @@ def run_keypoint_cli_loop(
 
                 reporter.start_phase(
                     "execution",
-                    "sending one validated physical rollout; pre-run and post-run Home remain mandatory",
+                    (
+                        "sending one validated physical rollout; pre-run and post-run Home remain mandatory"
+                        + (
+                            "; Camera A/B RGB-D video recording is active"
+                            if options.record_rollouts
+                            else ""
+                        )
+                    ),
                     iteration=iteration,
                 )
-                execution = session.run_experiment(
-                    source_path.name,
-                    real=True,
-                    confirmed=True,
-                    notes=f"Claude global CLI iteration {iteration}.",
+                perception_position_ready = False
+                rollout_recorder: DualRealSenseRolloutRecorder | None = None
+                recording_thread: threading.Thread | None = None
+                recording_result: dict[str, Any] = {}
+                recording_errors: list[str] = []
+                recording_dir = (
+                    iteration_dir
+                    / (
+                        "rollout_recording_"
+                        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                    )
                 )
+                if options.record_rollouts:
+                    rollout_recorder = DualRealSenseRolloutRecorder(
+                        perception_config,
+                        recording_dir,
+                        record_bag=options.recording_native,
+                        record_depth_video=True,
+                        record_composite=True,
+                        codec=options.recording_codec,
+                        warmup_frames=options.recording_warmup_frames,
+                    )
+                    try:
+                        rollout_recorder.start()
+                    except BaseException as exc:
+                        raise AutoExplorationError(
+                            "rollout recording failed before physical execution; "
+                            "no robot command was sent: "
+                            f"{type(exc).__name__}: {exc}"
+                        ) from exc
+
+                    def _record_global_rollout() -> None:
+                        try:
+                            recording_result["manifest"] = rollout_recorder.record()  # type: ignore[union-attr]
+                        except BaseException as exc:
+                            recording_errors.append(f"{type(exc).__name__}: {exc}")
+
+                    recording_thread = threading.Thread(
+                        target=_record_global_rollout,
+                        daemon=True,
+                        name=f"global-rollout-recorder-iteration-{iteration}",
+                    )
+                    recording_thread.start()
+                    time.sleep(0.25)
+                    if recording_errors:
+                        rollout_recorder.request_stop(
+                            "recording_failed_before_execution"
+                        )
+                        recording_thread.join(timeout=5.0)
+                        raise AutoExplorationError(
+                            "rollout recording failed before physical execution; "
+                            "no robot command was sent: "
+                            f"{recording_errors[-1]}"
+                        )
+                    record["rollout_recording"] = {
+                        "status": "recording",
+                        "directory": str(recording_dir),
+                    }
+                execution: dict[str, Any] | None = None
+                try:
+                    execution = session.run_experiment(
+                        source_path.name,
+                        real=True,
+                        confirmed=True,
+                        notes=f"Claude global CLI iteration {iteration}.",
+                    )
+                finally:
+                    if rollout_recorder is not None:
+                        rollout_recorder.request_stop(
+                            "rollout_and_return_home_completed"
+                        )
+                    if recording_thread is not None:
+                        recording_thread.join(timeout=300.0)
+                        if recording_thread.is_alive():
+                            recording_errors.append(
+                                "recording thread did not stop within 300 seconds"
+                            )
+                            rollout_recorder.close()  # type: ignore[union-attr]
+                            recording_thread.join(timeout=3.0)
+                    if rollout_recorder is not None:
+                        manifest = recording_result.get("manifest")
+                        manifest_path = recording_dir / "recording_manifest.json"
+                        if manifest is None and manifest_path.is_file():
+                            manifest = json.loads(
+                                manifest_path.read_text(encoding="utf-8")
+                            )
+                        record["rollout_recording"] = {
+                            "status": "failed" if recording_errors else "completed",
+                            "directory": str(recording_dir),
+                            "manifest": manifest,
+                            "errors": list(recording_errors),
+                        }
+                        _write_json(
+                            iteration_dir / "rollout_recording.json",
+                            record["rollout_recording"],
+                        )
+                        append_recording_to_cumulative_video(
+                            iteration,
+                            record,
+                            recording_dir,
+                        )
+                        _write_json(
+                            iteration_dir / "rollout_recording.json",
+                            record["rollout_recording"],
+                        )
+                if execution is None:
+                    raise AutoExplorationError(
+                        "physical rollout returned no result"
+                    )
                 record["execution"] = execution
                 record["mandatory_return_home"] = session.last_return_home_outcome
                 _write_json(iteration_dir / "execution.json", execution)
@@ -1130,6 +2130,13 @@ def run_keypoint_cli_loop(
                         "physical rollout did not complete: "
                         f"{execution.get('robot_errors', [])}"
                     )
+                _record_stage(
+                    output,
+                    iteration_dir,
+                    iteration,
+                    record,
+                    "EXECUTION_COMPLETED",
+                )
 
                 prepare_real_perception_position(
                     iteration,
@@ -1153,10 +2160,43 @@ def run_keypoint_cli_loop(
                 after_images = global_perception_image_paths(
                     after_saved, after_saved_path
                 )
+                # Planning deliberately uses the richer A/B geometry bundle.  The
+                # post-action judge receives a compact, explicitly labelled pair:
+                # raw RGB plus metric depth for each camera, with one fixed depth
+                # color scale shared by before and after.
+                evaluation_depth_scale = evaluation_depth_ranges(
+                    (saved, saved_path),
+                    (after_saved, after_saved_path),
+                )
+                evaluation_before_images = evaluation_perception_image_paths(
+                    saved,
+                    saved_path,
+                    stage="BEFORE",
+                    depth_ranges=evaluation_depth_scale,
+                )
+                evaluation_after_images = evaluation_perception_image_paths(
+                    after_saved,
+                    after_saved_path,
+                    stage="AFTER",
+                    depth_ranges=evaluation_depth_scale,
+                )
                 record["after_perception"] = after_perception
                 record["after_images"] = [str(path) for path in after_images]
+                record["evaluation_before_images"] = [
+                    str(path) for path in evaluation_before_images
+                ]
+                record["evaluation_after_images"] = [
+                    str(path) for path in evaluation_after_images
+                ]
                 reporter.finish_phase(
-                    f"saved {len(after_images)} complete after-state image(s)"
+                    f"saved {len(evaluation_after_images)} labelled RGB/depth after-state image(s)"
+                )
+                _record_stage(
+                    output,
+                    iteration_dir,
+                    iteration,
+                    record,
+                    "AFTER_PERCEPTION_COMPLETED",
                 )
 
                 reporter.start_phase(
@@ -1164,20 +2204,43 @@ def run_keypoint_cli_loop(
                     "Claude comparing complete before/after state and choosing keep/change",
                     iteration=iteration,
                 )
-                evaluation = global_evaluator.evaluate(
-                    before_images,
-                    after_images,
-                    proposal=proposal,
-                    run_dir=session.run_dir,
-                    skill_guidance=skill_store.prompt(),
+                evaluation = evaluate_with_timeout_retry(
+                    iteration,
+                    iteration_dir,
+                    record,
+                    lambda: global_evaluator.evaluate(
+                        evaluation_before_images,
+                        evaluation_after_images,
+                        proposal=proposal,
+                        objective=options.objective,
+                        run_dir=session.run_dir,
+                        skill_guidance=run_skill_prompt(),
+                        rollout_recording_dir=(
+                            recording_dir
+                            if options.record_rollouts
+                            and record.get("rollout_recording", {}).get("status") == "completed"
+                            else None
+                        ),
+                    ),
                 )
                 evaluation_dict = evaluation.as_dict()
                 record["evaluation"] = evaluation_dict
                 _write_json(iteration_dir / "evaluation.json", evaluation_dict)
+                _record_stage(
+                    output,
+                    iteration_dir,
+                    iteration,
+                    record,
+                    "EVALUATION_COMPLETED",
+                )
                 # Keep compatibility with lightweight/fake evaluators used by
                 # integrations and older callers that predate skill proposals.
                 skill_update = getattr(evaluation, "skill_update", None)
-                skill_review = skill_store.review_and_apply(skill_update)
+                skill_review = run_skill_ledger.stage_skill_update(
+                    skill_update,
+                    iteration=iteration,
+                    source="evaluation",
+                )
                 if skill_review is not None:
                     record["skill_review"] = skill_review.as_dict()
                     _write_json(iteration_dir / "skill_review.json", skill_review.as_dict())
@@ -1185,6 +2248,27 @@ def run_keypoint_cli_loop(
                         global_client.skill_names = tuple(
                             skill.name for skill in skill_store.approved()
                         )
+                prune_completed_recording(
+                    iteration,
+                    record,
+                    recording_dir if options.record_rollouts else None,
+                )
+                _write_json(
+                    iteration_dir / "rollout_recording.json",
+                    record.get("rollout_recording", {}),
+                )
+                evidence = build_evidence_record(
+                    record,
+                    iteration=iteration,
+                    run_dir=session.run_dir,
+                )
+                evidence_paths = persist_evidence_record(
+                    session.run_dir,
+                    evidence,
+                    iteration_dir=iteration_dir,
+                )
+                record["evidence"] = evidence
+                record["evidence_artifacts"] = evidence_paths
                 experience = {
                     "created_at": _now(),
                     "iteration": iteration,
@@ -1196,8 +2280,10 @@ def run_keypoint_cli_loop(
                     "proposal": proposal.as_dict(),
                     "evaluation": evaluation_dict,
                     "skill_review": skill_review.as_dict() if skill_review is not None else None,
+                    "evidence": evidence,
                 }
                 _append_jsonl(global_experience_path, experience)
+                run_skill_ledger.append_experience(experience)
                 global_experiences.append(experience)
                 record["global_experience"] = experience
                 record["status"] = "COMPLETED"
@@ -1280,8 +2366,8 @@ def run_keypoint_cli_loop(
             reporter.start_phase(
                 "molmo",
                 (
-                    f"loading/inferencing {len(options.keypoint_specs)} semantic-anchor "
-                    f"query/queries on Camera {','.join(options.keypoint_cameras)}; "
+                    f"axis-first Molmo pass, then {len(options.keypoint_specs)} "
+                    f"semantic-anchor query/queries on Camera {','.join(options.keypoint_cameras)}; "
                     f"strict confidence > {options.confidence_threshold:.3f}"
                 ),
                 iteration=iteration,
@@ -1324,7 +2410,9 @@ def run_keypoint_cli_loop(
                     f"artifacts saved in {keypoint_dir}"
                 )
             )
-            before_images = _planning_images(saved, saved_path, manifest)
+            before_images = _planning_images(
+                saved, saved_path, manifest, session.project_root
+            )
             record["before_images"] = [str(path) for path in before_images]
 
             reporter.start_phase(
@@ -1790,15 +2878,101 @@ def run_keypoint_cli_loop(
 
             reporter.start_phase(
                 "execution",
-                "sending one validated physical rollout; mandatory Home remains active",
+                (
+                    "sending one validated physical rollout; mandatory Home remains active"
+                    + ("; Camera A/B RGB-D video recording is active" if options.record_rollouts else "")
+                ),
                 iteration=iteration,
             )
-            execution = session.run_experiment(
-                source_path.name,
-                real=True,
-                confirmed=True,
-                notes=f"Molmo keypoint CLI iteration {iteration}.",
+            perception_position_ready = False
+            rollout_recorder: DualRealSenseRolloutRecorder | None = None
+            recording_thread: threading.Thread | None = None
+            recording_result: dict[str, Any] = {}
+            recording_errors: list[str] = []
+            recording_dir = (
+                iteration_dir
+                / ("rollout_recording_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
             )
+            if options.record_rollouts:
+                rollout_recorder = DualRealSenseRolloutRecorder(
+                    perception_config,
+                    recording_dir,
+                    record_bag=options.recording_native,
+                    record_depth_video=True,
+                    record_composite=True,
+                    codec=options.recording_codec,
+                    warmup_frames=options.recording_warmup_frames,
+                )
+                try:
+                    rollout_recorder.start()
+                except BaseException as exc:
+                    raise AutoExplorationError(
+                        "rollout recording failed before physical execution; no robot command was sent: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+
+                def _record_rollout() -> None:
+                    try:
+                        recording_result["manifest"] = rollout_recorder.record()  # type: ignore[union-attr]
+                    except BaseException as exc:
+                        recording_errors.append(f"{type(exc).__name__}: {exc}")
+
+                recording_thread = threading.Thread(
+                    target=_record_rollout,
+                    daemon=True,
+                    name=f"rollout-recorder-iteration-{iteration}",
+                )
+                recording_thread.start()
+                time.sleep(0.25)
+                if recording_errors:
+                    rollout_recorder.request_stop("recording_failed_before_execution")
+                    recording_thread.join(timeout=5.0)
+                    raise AutoExplorationError(
+                        "rollout recording failed before physical execution; no robot command was sent: "
+                        f"{recording_errors[-1]}"
+                    )
+                record["rollout_recording"] = {
+                    "status": "recording",
+                    "directory": str(recording_dir),
+                }
+            execution: dict[str, Any] | None = None
+            try:
+                execution = session.run_experiment(
+                    source_path.name,
+                    real=True,
+                    confirmed=True,
+                    notes=f"Molmo keypoint CLI iteration {iteration}.",
+                )
+            finally:
+                home_outcome = session.last_return_home_outcome
+                if rollout_recorder is not None:
+                    rollout_recorder.request_stop("rollout_and_return_home_completed")
+                if recording_thread is not None:
+                    recording_thread.join(timeout=300.0)
+                    if recording_thread.is_alive():
+                        recording_errors.append("recording thread did not stop within 300 seconds")
+                        rollout_recorder.close()  # type: ignore[union-attr]
+                        recording_thread.join(timeout=3.0)
+                if rollout_recorder is not None:
+                    manifest = recording_result.get("manifest")
+                    manifest_path = recording_dir / "recording_manifest.json"
+                    if manifest is None and manifest_path.is_file():
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    record["rollout_recording"] = {
+                        "status": "failed" if recording_errors else "completed",
+                        "directory": str(recording_dir),
+                        "manifest": manifest,
+                        "errors": list(recording_errors),
+                    }
+                    _write_json(iteration_dir / "rollout_recording.json", record["rollout_recording"])
+                    append_recording_to_cumulative_video(
+                        iteration,
+                        record,
+                        recording_dir,
+                    )
+                    _write_json(iteration_dir / "rollout_recording.json", record["rollout_recording"])
+            if execution is None:
+                raise AutoExplorationError("physical rollout returned no result")
             record["execution"] = execution
             record["mandatory_return_home"] = session.last_return_home_outcome
             _write_json(iteration_dir / "execution.json", execution)
@@ -1845,14 +3019,19 @@ def run_keypoint_cli_loop(
                 ),
                 iteration=iteration,
             )
-            evaluation = client.evaluate(
-                before_images=before_images,
-                after_images=after_images,
-                run_dir=session.run_dir,
-                semantic_state=semantic_state,
-                strategy=strategy,
-                candidate=selected_candidate,
-                action_result=action_result,
+            evaluation = evaluate_with_timeout_retry(
+                iteration,
+                iteration_dir,
+                record,
+                lambda: client.evaluate(
+                    before_images=before_images,
+                    after_images=after_images,
+                    run_dir=session.run_dir,
+                    semantic_state=semantic_state,
+                    strategy=strategy,
+                    candidate=selected_candidate,
+                    action_result=action_result,
+                ),
             )
             record["evaluation"] = evaluation.as_dict()
             record["claude_semantic_evaluation"] = _jsonable(
@@ -1862,6 +3041,22 @@ def run_keypoint_cli_loop(
             _write_json(
                 iteration_dir / "claude_semantic_evaluation_log.json",
                 client.last_evaluation_log,
+            )
+            _record_stage(
+                output,
+                iteration_dir,
+                iteration,
+                record,
+                "EVALUATION_COMPLETED",
+            )
+            prune_completed_recording(
+                iteration,
+                record,
+                recording_dir if options.record_rollouts else None,
+            )
+            _write_json(
+                iteration_dir / "rollout_recording.json",
+                record.get("rollout_recording", {}),
             )
             experience = build_structured_experience(
                 iteration=iteration,
@@ -1911,6 +3106,18 @@ def run_keypoint_cli_loop(
                 break
         except KeyboardInterrupt:
             reporter.fail_current_phase("operator interrupted the active phase")
+            if record.get("execution") is not None and "evidence_artifacts" not in record:
+                evidence = build_evidence_record(
+                    record,
+                    iteration=iteration,
+                    run_dir=session.run_dir,
+                )
+                record["evidence"] = evidence
+                record["evidence_artifacts"] = persist_evidence_record(
+                    session.run_dir,
+                    evidence,
+                    iteration_dir=iteration_dir,
+                )
             record["status"] = "INTERRUPTED"
             record["error"] = "KeyboardInterrupt"
             record["completed_at"] = _now()
@@ -1929,12 +3136,72 @@ def run_keypoint_cli_loop(
             break
         except BaseException as exc:
             reporter.fail_current_phase(f"{type(exc).__name__}: {exc}")
+            # A physical rollout may fail before evaluator completion.  Persist
+            # its partial evidence immediately so an unattended supervisor and
+            # the next Claude iteration can distinguish an execution failure
+            # from a pre-execution planning failure.
+            if record.get("execution") is not None and "evidence_artifacts" not in record:
+                try:
+                    evidence = build_evidence_record(
+                        record,
+                        iteration=iteration,
+                        run_dir=session.run_dir,
+                    )
+                    record["evidence"] = evidence
+                    record["evidence_artifacts"] = persist_evidence_record(
+                        session.run_dir,
+                        evidence,
+                        iteration_dir=iteration_dir,
+                    )
+                except BaseException as evidence_exc:
+                    reporter.emit(
+                        "evidence",
+                        f"failed to persist partial operation evidence: {evidence_exc}",
+                        iteration=iteration,
+                        level="ERROR",
+                    )
             if (
                 options.continue_on_recoverable_errors
                 and _is_recoverable_loop_error(exc, record)
                 and consecutive_recoverable_failures < options.max_consecutive_recoverable_failures
             ):
                 consecutive_recoverable_failures += 1
+                feedback_payload = record.get("error_feedback_to_claude")
+                if not isinstance(feedback_payload, dict):
+                    feedback_payload = {
+                        "attempt": None,
+                        "phase": record.get("last_completed_stage") or "startup",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "rejected_proposal": record.get("proposal"),
+                        "rejected_actions": (
+                            (record.get("proposal") or {}).get("actions")
+                            if isinstance(record.get("proposal"), dict)
+                            else None
+                        ),
+                        "feedback_target": "next fresh Claude planning iteration",
+                        "required_response": (
+                            "use this exact failure context; do not repeat the rejected "
+                            "operation; pass perception, grounding, preflight, workspace, "
+                            "and controller IK validation before motion"
+                        ),
+                        "physical_command_sent": False,
+                    }
+                record["error_feedback_to_claude"] = feedback_payload
+                pending_recoverable_error = feedback_payload
+                error_experience = {
+                    "created_at": _now(),
+                    "type": "recoverable_preexecution_error",
+                    "iteration": iteration,
+                    "error_feedback": feedback_payload,
+                    "recovery_policy": "fresh perception and Claude planning iteration",
+                    "physical_command_sent": False,
+                }
+                record["error_feedback_experience"] = error_experience
+                if options.planning_policy == "claude_global":
+                    _append_jsonl(global_experience_path, error_experience)
+                    global_experiences.append(error_experience)
+                run_skill_ledger.append_experience(error_experience)
                 record["status"] = "RECOVERABLE_ERROR"
                 record["error"] = f"{type(exc).__name__}: {exc}"
                 record["traceback"] = traceback.format_exc()
@@ -2004,18 +3271,56 @@ def run_keypoint_cli_loop(
             if source_path.is_file():
                 source_path.unlink()
 
+    try:
+        run_skill_synthesis = run_skill_ledger.finalize(skill_store)
+        _write_json(output / "run_skill_synthesis.json", run_skill_synthesis)
+        summary["run_skill_synthesis"] = str(output / "run_skill_synthesis.json")
+        reporter.emit(
+            "run-skill-finalize",
+            (
+                f"synthesized {run_skill_synthesis['skill_group_count']} run-local skill group(s); "
+                "global skill persistence was deferred until run completion"
+            ),
+            payload=run_skill_synthesis,
+        )
+    except Exception as exc:
+        reporter.emit(
+            "run-skill-finalize",
+            f"run-local skill synthesis failed: {type(exc).__name__}: {exc}",
+            level="ERROR",
+        )
     if summary.get("status") == "RUNNING":
         summary["status"] = "COMPLETED" if exit_code == 0 else "FAILED"
     summary["completed_at"] = _now()
     summary["iteration_count"] = len(summary["iterations"])
+    if combined_video_path.is_file():
+        summary["combined_rollout_video"] = str(combined_video_path)
+    else:
+        summary["combined_rollout_video"] = None
     _write_json(output / "summary.json", summary)
     reporter.stop_heartbeat()
     reporter.emit(
         "shutdown",
         f"status={summary['status']} iterations={summary['iteration_count']}",
-        payload={"summary": str(output / "summary.json")},
+        payload={
+            "summary": str(output / "summary.json"),
+            "combined_rollout_video": summary["combined_rollout_video"],
+            "combined_video_speed": options.combined_video_speed,
+        },
         level="INFO" if exit_code == 0 else "ERROR",
     )
+    if summary["combined_rollout_video"]:
+        print(
+            f"Combined rollout video: {summary['combined_rollout_video']}",
+            file=stream,
+            flush=True,
+        )
+    else:
+        print(
+            "Combined rollout video: unavailable (no completed rollout recording)",
+            file=stream,
+            flush=True,
+        )
     return exit_code
 
 
@@ -2044,6 +3349,14 @@ def main(argv: list[str] | None = None) -> int:
             "claude_global lets Claude choose any Camera A pixel while using Camera B as "
             "an observation-only second view; "
             "semantic_local enables the legacy Molmo Sxxx/local Rxxx pipeline"
+        ),
+    )
+    parser.add_argument(
+        "--global-molmo-annotations",
+        action="store_true",
+        help=(
+            "run the axis-first Molmo semantic annotation pass before Claude-global "
+            "planning and include its overlays as visual evidence"
         ),
     )
     parser.add_argument(
@@ -2091,8 +3404,29 @@ def main(argv: list[str] | None = None) -> int:
         help="disable ANSI colors even when stdout is an interactive terminal",
     )
     parser.add_argument("--claude-binary", default="claude")
-    parser.add_argument("--claude-timeout-s", type=int, default=400)
+    parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument("--claude-grounding-timeout-s", type=int, default=120)
+    recording_group = parser.add_mutually_exclusive_group()
+    recording_group.add_argument(
+        "--record-rollouts",
+        dest="record_rollouts",
+        action="store_true",
+        default=True,
+        help="record Camera A/B RGB, depth, and composite rollout video for Claude evaluation (default)",
+    )
+    recording_group.add_argument(
+        "--no-record-rollouts",
+        dest="record_rollouts",
+        action="store_false",
+        help="disable rollout video recording; temporal acquisition/transport/laydown evidence becomes UNKNOWN",
+    )
+    parser.add_argument(
+        "--recording-no-native",
+        action="store_true",
+        help="disable native RealSense recordings while retaining MP4 RGB/depth/composite videos",
+    )
+    parser.add_argument("--recording-codec", default="mp4v")
+    parser.add_argument("--recording-warmup-frames", type=int)
     parser.add_argument(
         "--max-replans",
         type=int,
@@ -2120,11 +3454,48 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds to wait before starting the next recovered iteration",
     )
     parser.add_argument(
-        "--objective",
-        default=(
-            "Take one planning-mode-appropriate action that makes the current garment "
-            "as open and spread as safely possible."
+        "--max-evaluation-retries",
+        type=int,
+        default=0,
+        help=(
+            "Claude evaluation timeout retry count using the same saved before/after "
+            "evidence; 0 means retry until success or operator interrupt"
         ),
+    )
+    parser.add_argument(
+        "--evaluation-retry-backoff-s",
+        type=float,
+        default=2.0,
+        help=(
+            "seconds between Claude evaluation timeout retries; retries never resend "
+            "robot or camera commands"
+        ),
+    )
+    parser.add_argument(
+        "--objective",
+        default=DEFAULT_EXPLORATION_OBJECTIVE,
+    )
+    comparison_group = parser.add_mutually_exclusive_group()
+    comparison_group.add_argument(
+        "--rgb-only-comparison",
+        dest="rgb_only_comparison",
+        action="store_true",
+        help=(
+            "after each accepted Claude-global decision, run one non-executing RGB-only "
+            "comparison thought and save its raw output and provisional grasp trajectory"
+        ),
+    )
+    comparison_group.add_argument(
+        "--no-rgb-only-comparison",
+        dest="rgb_only_comparison",
+        action="store_false",
+    )
+    parser.set_defaults(rgb_only_comparison=False)
+    parser.add_argument(
+        "--combined-video-speed",
+        type=float,
+        default=4.0,
+        help="playback speed multiplier for the cumulative combined rollout video (default: 4x)",
     )
     parser.add_argument(
         "--enable-real",
@@ -2168,6 +3539,7 @@ def main(argv: list[str] | None = None) -> int:
     max_iterations = None if args.max_iterations == 0 else args.max_iterations
     options = KeypointCliOptions(
         planning_policy=args.planning_policy,
+        global_molmo_annotations=args.global_molmo_annotations,
         max_iterations=max_iterations,
         settle_s=args.settle_s,
         enable_real=args.enable_real,
@@ -2195,7 +3567,15 @@ def main(argv: list[str] | None = None) -> int:
         continue_on_recoverable_errors=args.continue_on_recoverable_errors,
         max_consecutive_recoverable_failures=args.max_consecutive_recoverable_failures,
         recovery_backoff_s=args.recovery_backoff_s,
+        max_evaluation_retries=args.max_evaluation_retries,
+        evaluation_retry_backoff_s=args.evaluation_retry_backoff_s,
+        record_rollouts=args.record_rollouts,
+        recording_native=not args.recording_no_native,
+        recording_codec=args.recording_codec,
+        recording_warmup_frames=args.recording_warmup_frames,
         objective=args.objective,
+        rgb_only_comparison=args.rgb_only_comparison,
+        combined_video_speed=args.combined_video_speed,
     )
     return run_keypoint_cli_loop(
         session,

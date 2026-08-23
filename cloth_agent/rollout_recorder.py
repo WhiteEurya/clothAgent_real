@@ -14,6 +14,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import signal
 import shutil
@@ -202,6 +203,258 @@ def finalize_mp4_h264(
         }
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def append_mp4_to_cumulative(
+    source: Path,
+    cumulative: Path,
+    *,
+    ffmpeg_binary: str = "ffmpeg",
+) -> dict[str, Any]:
+    """Append one finalized MP4 segment to a run-level cumulative MP4.
+
+    The source is never modified.  The destination is replaced atomically only
+    after FFmpeg has produced a valid combined file.  Segments are expected to
+    come from the same recorder configuration (resolution, frame rate, and
+    codec), which permits a fast stream-copy concat; a re-encode fallback keeps
+    the append operation usable when codec metadata differs.
+    """
+
+    source_path = Path(source).expanduser().resolve()
+    cumulative_path = Path(cumulative).expanduser().resolve()
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        raise RolloutRecorderError(f"video segment is missing or empty: {source_path}")
+    binary = (
+        shutil.which(ffmpeg_binary)
+        if Path(ffmpeg_binary).name == ffmpeg_binary
+        else ffmpeg_binary
+    )
+    if binary is None:
+        raise RolloutRecorderError(
+            f"FFmpeg executable not found: {ffmpeg_binary}; cannot append MP4"
+        )
+    cumulative_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cumulative_path.exists():
+        shutil.copy2(source_path, cumulative_path)
+        return {
+            "status": "completed",
+            "mode": "initial_segment",
+            "source": str(source_path),
+            "cumulative": str(cumulative_path),
+            "segments_added": 1,
+        }
+
+    temporary = cumulative_path.with_name(
+        f".{cumulative_path.stem}.append.{os.getpid()}.tmp.mp4"
+    )
+    concat_list = cumulative_path.with_name(
+        f".{cumulative_path.stem}.append.{os.getpid()}.txt"
+    )
+
+    def _concat_entry(path: Path) -> str:
+        # FFmpeg concat files use single-quoted paths; escape backslashes and
+        # apostrophes so run directories with unusual names remain valid.
+        escaped = str(path).replace("\\", "\\\\").replace("'", "'\\''")
+        return f"file '{escaped}'\n"
+
+    concat_list.write_text(
+        _concat_entry(cumulative_path) + _concat_entry(source_path),
+        encoding="utf-8",
+    )
+    temporary.unlink(missing_ok=True)
+    stream_copy_command = [
+        str(binary),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(temporary),
+    ]
+    completed = subprocess.run(
+        stream_copy_command,
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
+    mode = "stream_copy"
+    if completed.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+        temporary.unlink(missing_ok=True)
+        reencode_command = [
+            str(binary),
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(temporary),
+        ]
+        completed = subprocess.run(
+            reencode_command,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        mode = "reencode"
+    try:
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RolloutRecorderError(
+                f"FFmpeg cumulative append failed: {detail or 'unknown error'}"
+            )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RolloutRecorderError("FFmpeg produced no usable cumulative MP4")
+        temporary.replace(cumulative_path)
+        return {
+            "status": "completed",
+            "mode": mode,
+            "source": str(source_path),
+            "cumulative": str(cumulative_path),
+            "segments_added": 1,
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
+        concat_list.unlink(missing_ok=True)
+
+
+def speed_up_mp4(
+    source: Path,
+    output: Path,
+    *,
+    speed: float = 4.0,
+    ffmpeg_binary: str = "ffmpeg",
+) -> dict[str, Any]:
+    """Encode a video at a faster playback rate without dropping source frames."""
+
+    source_path = Path(source).expanduser().resolve()
+    output_path = Path(output).expanduser().resolve()
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        raise RolloutRecorderError(f"video is missing or empty: {source_path}")
+    if source_path == output_path:
+        raise RolloutRecorderError("speed-up output must differ from the source")
+    if not np.isfinite(float(speed)) or float(speed) <= 0:
+        raise RolloutRecorderError("video playback speed must be finite and positive")
+    binary = (
+        shutil.which(ffmpeg_binary)
+        if Path(ffmpeg_binary).name == ffmpeg_binary
+        else ffmpeg_binary
+    )
+    if binary is None:
+        raise RolloutRecorderError(
+            f"FFmpeg executable not found: {ffmpeg_binary}; cannot speed up MP4"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f".{output_path.stem}.speed.tmp.mp4")
+    temporary.unlink(missing_ok=True)
+    command = [
+        str(binary),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        f"setpts=PTS/{float(speed):.8g}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(temporary),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RolloutRecorderError(
+                f"FFmpeg speed-up failed for {source_path.name}: {detail or 'unknown error'}"
+            )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RolloutRecorderError("FFmpeg produced no usable speed-up MP4")
+        temporary.replace(output_path)
+        return {
+            "status": "completed",
+            "speed": float(speed),
+            "source": str(source_path),
+            "output": str(output_path),
+            "output_size_bytes": output_path.stat().st_size,
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def prune_rollout_video_files(recording_dir: Path) -> list[str]:
+    """Delete per-rollout video/native-recording files after evaluation.
+
+    Manifests, timestamp CSVs, and evaluator contact sheets remain available as
+    lightweight evidence; the run-level cumulative MP4 is the retained video.
+    """
+
+    root = Path(recording_dir).expanduser().resolve()
+    if not root.is_dir():
+        return []
+    removed: list[str] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in {".mp4", ".db3", ".bag"}:
+            continue
+        try:
+            path.unlink()
+            removed.append(str(path))
+        except OSError:
+            continue
+    return removed
 
 
 def _configure_color_exposure(device: Any, spec: CameraSpec, rs: Any) -> None:

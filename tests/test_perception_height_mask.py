@@ -298,7 +298,7 @@ def test_appearance_mask_rejects_shadowed_table_with_same_chromaticity() -> None
 
     assert mask[12, 10]
     assert not mask[12, 20]
-    assert diagnostics["appearance_filter"]["applied_chromaticity_distance"] == pytest.approx(0.07)
+    assert diagnostics["appearance_filter"]["applied_chromaticity_distance"] == pytest.approx(0.12)
 
 
 def test_outer_boundary_does_not_outline_internal_mask_holes() -> None:

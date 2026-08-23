@@ -20,9 +20,11 @@ from cloth_agent.auto_exploration import (
     _is_recoverable_viewer_error,
     _json_default,
     _planning_mode_from_history,
+    assess_garment_workspace,
     grasp_targets_from_actions,
     prepare_rollout_video_evidence,
     target_overlay_image,
+    validate_garment_recovery_actions,
     validate_evaluation_payload,
     validate_visual_plan_payload,
 )
@@ -31,8 +33,11 @@ from cloth_agent.free_exploration import (
     ClaudeExplorationResult,
     ExplorationPlanningError,
     ExplorationTimeoutError,
+    evaluation_depth_ranges,
+    evaluation_perception_image_paths,
     validate_exploration_payload,
 )
+from cloth_agent.perception import GarmentCenterWorkspace
 
 
 def _stage_evaluation_payload() -> dict:
@@ -92,6 +97,63 @@ def test_evaluation_contract_is_strict():
     assert evaluation.task_progress.confidence == pytest.approx(0.8)
     assert evaluation.next_experiment.keep == ("grasp_anchor", "grasp_depth")
     assert "useful" not in evaluation.as_dict()
+
+
+def test_garment_workspace_in_bounds_needs_no_recovery():
+    workspace = GarmentCenterWorkspace(450, 750, -180, 80)
+
+    recovery = assess_garment_workspace([575, -40, 20], workspace)
+
+    assert recovery.required is False
+    assert recovery.requested_translation_xy_mm == pytest.approx((0, 0))
+    assert recovery.as_dict()["status"] == "IN_BOUNDS"
+
+
+def test_garment_workspace_recovery_is_inward_and_step_limited():
+    workspace = GarmentCenterWorkspace(
+        450,
+        750,
+        -180,
+        80,
+        reentry_margin_mm=30,
+        min_recovery_step_mm=40,
+        max_recovery_step_mm=120,
+    )
+
+    recovery = assess_garment_workspace([1000, -40, 20], workspace)
+
+    assert recovery.required is True
+    assert recovery.violations == ("x_above_max",)
+    assert recovery.full_reentry_target_xy_mm == pytest.approx((720, -40))
+    assert recovery.requested_translation_xy_mm == pytest.approx((-120, 0))
+    assert recovery.requested_target_xy_mm == pytest.approx((880, -40))
+    assert recovery.required_min_progress_mm == pytest.approx(30)
+
+
+def test_garment_recovery_action_validation_requires_inward_transport():
+    recovery = assess_garment_workspace(
+        [800, 0, 20], GarmentCenterWorkspace(450, 750, -180, 80)
+    )
+    inward_actions = [
+        {"name": "move", "args": {"x": 700, "y": 0, "z": 20, "yaw": 0}},
+        {"name": "close_gripper", "args": {}},
+        {"name": "move", "args": {"x": 640, "y": 0, "z": 80, "yaw": 0}},
+        {"name": "open_gripper", "args": {}},
+    ]
+
+    result = validate_garment_recovery_actions(inward_actions, recovery)
+
+    assert result["status"] == "VALIDATED_INWARD_TRANSPORT"
+    assert result["inward_progress_mm"] == pytest.approx(60)
+
+    outward_actions = [
+        {"name": "move", "args": {"x": 700, "y": 0, "z": 20, "yaw": 0}},
+        {"name": "close_gripper", "args": {}},
+        {"name": "move", "args": {"x": 730, "y": 0, "z": 80, "yaw": 0}},
+        {"name": "open_gripper", "args": {}},
+    ]
+    with pytest.raises(ExplorationPlanningError, match="points outward"):
+        validate_garment_recovery_actions(outward_actions, recovery)
 
 
 def test_evaluation_accepts_optional_skill_update_without_leaking_none():
@@ -154,6 +216,19 @@ def test_planning_mode_corrects_transport_without_reprobing():
     mode, instruction = _planning_mode_from_history([{"evaluation": evaluation}])
     assert mode == "VALIDATED_TRANSPORT_CORRECTION"
     assert "do not repeat the same short motion" in instruction
+
+
+def test_planning_mode_ignores_workspace_recovery_evaluation():
+    mode, _ = _planning_mode_from_history(
+        [
+            {
+                "iteration_mode": "workspace_recovery",
+                "evaluation": _stage_evaluation_payload(),
+            }
+        ]
+    )
+
+    assert mode == "EXPLORATION"
 
 
 def test_visual_plan_contract_selects_one_camera_reference():
@@ -713,6 +788,54 @@ def test_evaluator_uses_native_json_schema_and_structured_output(
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(payload)
     assert evaluation.transport.status == "INSUFFICIENT"
+    assert "Do not use or search for any other files" in client.last_evaluation_result.prompt
+
+
+def test_evaluation_perception_images_are_only_labelled_rgb_and_depth(tmp_path: Path):
+    import numpy as np
+    from PIL import Image
+
+    result_dir = tmp_path / "perception"
+    result_dir.mkdir()
+    views = []
+    for label, offset in (("A", 0.0), ("B", 0.2)):
+        Image.new("RGB", (32, 24), (20 + int(offset * 100), 40, 80)).save(
+            result_dir / f"camera_{label}.png"
+        )
+        np.save(
+            result_dir / f"camera_{label}_depth.npy",
+            np.full((24, 32), 0.6 + offset, dtype=np.float32),
+        )
+        views.append(
+            {
+                "label": label,
+                "image": f"camera_{label}.png",
+                "depth_m": f"camera_{label}_depth.npy",
+            }
+        )
+    before = {"views": views}
+    after = {"views": views}
+    before_path = result_dir / "before_result.json"
+    after_path = result_dir / "after_result.json"
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    after_path.write_text(json.dumps(after), encoding="utf-8")
+
+    ranges = evaluation_depth_ranges((before, before_path), (after, after_path))
+    before_images = evaluation_perception_image_paths(
+        before, before_path, stage="BEFORE", depth_ranges=ranges
+    )
+    after_images = evaluation_perception_image_paths(
+        after, after_path, stage="AFTER", depth_ranges=ranges
+    )
+
+    assert len(before_images) == 4
+    assert len(after_images) == 4
+    assert all("BEFORE" in path.name for path in before_images)
+    assert all("AFTER" in path.name for path in after_images)
+    assert all(path.suffix == ".png" for path in [*before_images, *after_images])
+    assert not list((result_dir / "evaluation_evidence").glob("*_raw.png"))
+    assert (result_dir / "evaluation_evidence" / "before_manifest.json").is_file()
+    assert (result_dir / "evaluation_evidence" / "after_manifest.json").is_file()
 
 
 def test_rollout_video_evidence_extracts_camera_contact_sheets(tmp_path: Path):
@@ -758,6 +881,27 @@ def test_auto_module_requires_explicit_real_flag(tmp_path: Path):
             None,
             enable_real=False,
         )
+
+
+def test_auto_cli_enables_rollout_recording_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import cloth_agent.auto_exploration as auto_module
+
+    seen = {}
+    monkeypatch.setattr(auto_module, "_load_session", lambda *args: object())
+
+    def fake_viewer(session, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(auto_module, "run_auto_exploration_viewer", fake_viewer)
+
+    assert auto_module.main(["--enable-real"]) == 0
+    assert seen["record_rollouts"] is True
+
+    assert auto_module.main(["--enable-real", "--no-record-rollouts"]) == 0
+    assert seen["record_rollouts"] is False
 
 
 def test_web_camera_monitor_uses_dedicated_viser_label():

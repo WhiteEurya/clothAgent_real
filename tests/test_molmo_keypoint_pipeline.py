@@ -13,11 +13,14 @@ from cloth_agent.molmo_keypoint_pipeline import (
     CONFIDENCE_DEFINITION,
     KeypointSpec,
     MolmoKeypointPipelineError,
+    _reference_comparison,
+    _validated_axis_references,
     build_confidence_filtered_references,
     build_semantic_anchor_manifest,
     run_molmo_keypoint_pipeline,
 )
 from cloth_agent.molmo_keypoint_worker import (
+    _extract_batch_points,
     geometric_mean_probability,
     point_location_probabilities,
 )
@@ -109,6 +112,45 @@ def _payload(
             },
         ],
     }
+
+
+def test_axis_first_metadata_and_folded_reference_comparison_are_nonblocking() -> None:
+    payload = {
+        "views": [
+            {
+                "label": "A",
+                "image_size": [100, 100],
+                "axis_reference": {
+                    "top_pixel_xy": [50.0, 10.0],
+                    "bottom_pixel_xy": [55.0, 90.0],
+                },
+            }
+        ]
+    }
+    axes = _validated_axis_references(payload, cameras=("A",))
+    assert axes["A"]["top_pixel_xy"] == [50.0, 10.0]
+    reference = {
+        "manifest_path": "reference_manifest.json",
+        "annotated_image": "reference.png",
+        "axis_reference": {
+            "top_pixel_xy": [50.0, 10.0],
+            "bottom_pixel_xy": [55.0, 90.0],
+        },
+        "anchors_by_name": {
+            "left_sleeve_tip": {"selected_pixel_xy": [20.0, 30.0]}
+        },
+        "manifest": {"folded_observation_policy": {"allow_fold_deformation": True}},
+    }
+    comparison = _reference_comparison(
+        reference,
+        camera="A",
+        axis_reference=axes["A"],
+        name="left_sleeve_tip",
+        pixel_xy=[25.0, 35.0],
+    )
+    assert comparison["available"] is True
+    assert comparison["fold_safe"] is True
+    assert comparison["use_reference_pixel_as_current_coordinate"] is False
 
 
 def test_filters_strictly_above_threshold_and_installs_only_valid_references(
@@ -385,3 +427,23 @@ def test_point_location_confidence_excludes_no_more_points_token() -> None:
     assert point_location_probabilities(dynamic, 1) == [0.9, 0.5, 0.7]
     assert point_location_probabilities(dynamic, 0) == []
     assert point_location_probabilities(dynamic, 2) == []
+
+
+def test_parallel_point_decoder_keeps_each_prompt_on_its_own_image_index() -> None:
+    raw = [
+        [0, 0, 10.0, 11.0],
+        [1, 1, 20.0, 21.0],
+        [2, 0, 30.0, 31.0],
+    ]
+    assert _extract_batch_points(
+        raw,
+        batch_index=0,
+        image_width=40,
+        image_height=40,
+    ) == [[10.0, 11.0], [30.0, 31.0]]
+    assert _extract_batch_points(
+        raw,
+        batch_index=1,
+        image_width=40,
+        image_height=40,
+    ) == [[20.0, 21.0]]
