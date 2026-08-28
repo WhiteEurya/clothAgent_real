@@ -42,6 +42,13 @@ DEFAULT_TABLE_CLIP_TOLERANCE_MM = 12.0
 MAX_TABLE_CLIP_TOLERANCE_MM = 30.0
 DEFAULT_FUSED_VOXEL_SIZE_MM = 6.0
 TABLE_APPEARANCE_LUMA_PERCENTILE = 95.0
+# RealSense depth on the current Camera-A setup is biased on saturated white
+# pixels.  Those pixels are still useful for appearance classification, but
+# must not be the only samples used to estimate the camera's Z bias.  Prefer
+# bright, unsaturated tabletop pixels for geometric calibration and retain a
+# saturated-tail fallback for genuinely underexposed/fully saturated scenes.
+TABLE_OFFSET_SATURATION_LUMA_CUT = 252.0
+TABLE_OFFSET_MIN_LUMA = 90.0
 MIN_CONFIDENT_TABLE_LUMA = 90.0
 MAX_CONFIDENT_TABLE_COLOR_NOISE = 45.0
 # A blue-lit tabletop can be far from the bright table RGB reference while
@@ -2289,8 +2296,31 @@ def _estimate_camera_table_z_offset_mm(
             "reason": "fewer than 500 near-table pixels",
             "near_table_pixel_count": near_count,
         }
-    bright_cut = float(numpy.percentile(luma[near], TABLE_APPEARANCE_LUMA_PERCENTILE))
-    samples = near & (luma >= bright_cut)
+    near_luma = luma[near]
+    # The previous implementation calibrated from only the 95th-luma tail.
+    # On Camera A that tail is saturated (usually luma=254) and its depth is
+    # several millimetres farther than the same table under unsaturated light.
+    # Use a dynamic lower cut so this remains useful with different exposure:
+    # at least a normal table brightness, and at least the near-table median,
+    # while explicitly excluding the saturated tail when enough samples exist.
+    unsaturated_luma_floor = max(
+        TABLE_OFFSET_MIN_LUMA,
+        float(numpy.percentile(near_luma, 50.0)),
+    )
+    samples = near & (
+        (luma >= unsaturated_luma_floor)
+        & (luma < TABLE_OFFSET_SATURATION_LUMA_CUT)
+    )
+    calibration_method = "unsaturated_near_table_median_residual"
+    bright_cut = float(
+        numpy.percentile(near_luma, TABLE_APPEARANCE_LUMA_PERCENTILE)
+    )
+    # If the table is genuinely saturated or the unsaturated band is too
+    # small, preserve a bounded fallback rather than silently disabling camera
+    # calibration.  The diagnostic records which path was used.
+    if int(numpy.count_nonzero(samples)) < 500:
+        samples = near & (luma >= bright_cut)
+        calibration_method = "saturated_near_table_median_residual_fallback"
     sample_count = int(numpy.count_nonzero(samples))
     if sample_count < 500:
         return 0.0, {
@@ -2299,6 +2329,9 @@ def _estimate_camera_table_z_offset_mm(
             "near_table_pixel_count": near_count,
             "table_sample_count": sample_count,
             "bright_luma_cut": bright_cut,
+            "unsaturated_luma_floor": float(unsaturated_luma_floor),
+            "saturation_luma_cut": float(TABLE_OFFSET_SATURATION_LUMA_CUT),
+            "calibration_method": calibration_method,
         }
     sample_heights = heights[samples]
     median_height = float(numpy.median(sample_heights))
@@ -2316,10 +2349,12 @@ def _estimate_camera_table_z_offset_mm(
         }
     return offset_mm, {
         "applied": abs(offset_mm) >= 0.5,
-        "method": "bright_near_table_median_residual",
+        "method": calibration_method,
         "near_table_pixel_count": near_count,
         "table_sample_count": sample_count,
         "bright_luma_cut": bright_cut,
+        "unsaturated_luma_floor": float(unsaturated_luma_floor),
+        "saturation_luma_cut": float(TABLE_OFFSET_SATURATION_LUMA_CUT),
         "sample_height_median_mm": median_height,
         "sample_height_mad_mm": mad_mm,
         "sample_height_p05_p95_mm": [
@@ -3317,13 +3352,21 @@ class ClothCenterPerception:
         camera_z_offsets_mm: dict[str, float] = {}
         camera_z_offset_diagnostics: dict[str, dict[str, Any]] = {}
         for frame in frames:
-            offset_mm, offset_diagnostics = _estimate_camera_table_z_offset_mm(
-                frame,
-                self.config,
-                initial_table_coefficients,
-            )
-            camera_z_offsets_mm[frame.label] = float(offset_mm)
-            camera_z_offset_diagnostics[frame.label] = offset_diagnostics
+            if bool(getattr(self.robot_config, "online_camera_z_bias_correction", True)):
+                offset_mm, offset_diagnostics = _estimate_camera_table_z_offset_mm(
+                    frame,
+                    self.config,
+                    initial_table_coefficients,
+                )
+                camera_z_offsets_mm[frame.label] = float(offset_mm)
+                camera_z_offset_diagnostics[frame.label] = offset_diagnostics
+            else:
+                camera_z_offsets_mm[frame.label] = 0.0
+                camera_z_offset_diagnostics[frame.label] = {
+                    "applied": False,
+                    "method": "disabled_static_camera_calibration",
+                    "reason": "online camera Z bias correction disabled by robot configuration",
+                }
         if any(abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()):
             fused_points, fused_colors, source_mask, fusion_stats = (
                 _voxel_fuse_base_points(
@@ -3337,6 +3380,9 @@ class ClothCenterPerception:
         table_stats["camera_z_bias_correction"] = {
             "applied": any(
                 abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()
+            ),
+            "enabled": bool(
+                getattr(self.robot_config, "online_camera_z_bias_correction", True)
             ),
             "initial_coefficients": {
                 "a": float(initial_table_coefficients[0]),

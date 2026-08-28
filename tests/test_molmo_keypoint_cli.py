@@ -348,7 +348,7 @@ def _global_proposal():
                 {"name": "move", "args": {"x": 520, "y": -40, "z": 60, "yaw": 0}},
                 {"name": "move", "args": {"x": 520, "y": -40, "z": 20, "yaw": 0}},
                 {"name": "close_gripper", "args": {}},
-                {"name": "move", "args": {"x": 530, "y": -40, "z": 35, "yaw": 0}},
+                {"name": "move", "args": {"x": 520, "y": -40, "z": 65, "yaw": 0}},
                 {"name": "open_gripper", "args": {}},
             ],
             "expected_observation": "The selected layer moves independently.",
@@ -580,12 +580,17 @@ def test_global_cli_skips_molmo_and_local_candidates(tmp_path: Path, monkeypatch
     assert result["proposal"]["actions"][1]["args"]["y"] == -40.0
     assert result["proposal"]["actions"][2]["args"]["x"] == 520.0
     assert result["proposal"]["actions"][2]["args"]["y"] == -40.0
+    assert result["proposal"]["actions"][2]["args"]["z"] == 15.5
     assert result["global_grounding"]["grounding_policy"] == (
-        "runtime_authoritative_selected_pixel_xy"
+        "runtime_authoritative_selected_pixel_xyz"
     )
     assert result["global_grounding"]["claude_requested_grasp_xy_mm"] == [535.0, -30.0]
     assert result["global_grounding"]["commanded_grasp_xy_mm"] == [520.0, -40.0]
+    assert result["global_grounding"]["commanded_grasp_z_mm"] == 15.5
     assert result["global_grounding"]["grounded_action_numbers"] == [2, 3]
+    assert result["probe_profile"]["hold_lift_mm"] == 49.5
+    assert result["probe_profile"]["first_post_lateral_mm"] == 0.0
+    assert result["probe_profile"]["hold_settle_s"] == 0.75
     assert "semantic_anchors" not in result
     assert "local_geometry" not in result
     assert "no Sxxx/Rxxx candidate generation" in stream.getvalue()
@@ -606,6 +611,10 @@ def test_global_cli_feeds_before_after_learning_into_next_iteration(
     xyz = np.zeros((6, 8, 3), dtype=np.float32)
     xyz[:, :, :] = [520.0, -40.0, 18.0]
     np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(
+        perception_dir / "camera_A_height_above_table_mm.npy",
+        np.full((6, 8), 8.0, dtype=np.float32),
+    )
     (perception_dir / "camera_A_coordinate_guide.json").write_text(
         json.dumps(
             {
@@ -673,6 +682,10 @@ def test_global_evaluation_timeout_retries_without_repeating_robot(
     xyz = np.zeros((6, 8, 3), dtype=np.float32)
     xyz[:, :, :] = [520.0, -40.0, 18.0]
     np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(
+        perception_dir / "camera_A_height_above_table_mm.npy",
+        np.full((6, 8), 8.0, dtype=np.float32),
+    )
     (perception_dir / "camera_A_coordinate_guide.json").write_text(
         json.dumps(
             {
@@ -759,6 +772,10 @@ def test_global_validation_error_is_fed_back_and_forms_recovery_skill(
     xyz = np.zeros((6, 8, 3), dtype=np.float32)
     xyz[:, :, :] = [520.0, -40.0, 18.0]
     np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(
+        perception_dir / "camera_A_height_above_table_mm.npy",
+        np.full((6, 8), 8.0, dtype=np.float32),
+    )
     (perception_dir / "camera_A_coordinate_guide.json").write_text(
         json.dumps(
             {
@@ -805,7 +822,9 @@ def test_global_validation_error_is_fed_back_and_forms_recovery_skill(
     )
 
     assert code == 0
-    assert controller_calls == 2
+    # First proposal fails continuation IK. The corrected proposal then passes
+    # both the continuation and independent abort-path IK gates.
+    assert controller_calls == 3
     assert session.execution_calls == 0
     assert "controller IK rejected action 7" in client.prompts[1]
     assert '"rejected_actions"' in client.prompts[1]

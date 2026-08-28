@@ -74,7 +74,9 @@ def discover_output_dir(source: Path) -> Path | None:
 
     search_roots = [
         source / "results" / "molmo_keypoint_cli",
+        source / "results" / "neat_fold",
         source / "molmo_keypoint_cli",
+        source / "neat_fold",
         source,
     ]
     candidates: list[Path] = []

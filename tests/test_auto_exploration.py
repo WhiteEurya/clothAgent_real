@@ -6,7 +6,9 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from PIL import Image
 
 from cloth_agent.auto_exploration import (
     AutoExplorationError,
@@ -14,11 +16,16 @@ from cloth_agent.auto_exploration import (
     ClaudeAutoClient,
     ClaudeVisualPlanResult,
     ExplorationEvaluation,
+    ReferenceReselectionExhaustedError,
     VisualPlanDecision,
     _depth_preview,
+    _fold_sleeve_reference_geometry,
+    _validate_fold_grasp_anchor_offset,
+    _write_final_grounding_context,
     _is_preexecution_replan_error,
     _is_recoverable_viewer_error,
     _json_default,
+    _normalize_final_grounding_payload,
     _planning_mode_from_history,
     assess_garment_workspace,
     grasp_targets_from_actions,
@@ -38,6 +45,297 @@ from cloth_agent.free_exploration import (
     validate_exploration_payload,
 )
 from cloth_agent.perception import GarmentCenterWorkspace
+
+
+def test_fold_sleeve_semantic_gate_rejects_torso_interior() -> None:
+    mask = np.zeros((120, 180), dtype=bool)
+    # Raw Camera A is sideways. After clockwise rotation, the torso occupies
+    # the centre and a sleeve protrudes toward upright image-left.
+    upright = np.zeros((180, 120), dtype=bool)
+    upright[35:150, 35:85] = True
+    upright[65:105, 5:35] = True
+    mask = np.rot90(upright, k=1)
+
+    # Raw pixel corresponding to upright [60, 90] is torso interior.
+    torso_raw = [90, mask.shape[0] - 1 - 60]
+    with pytest.raises(ValueError, match="outer left_sleeve side band|free-edge band"):
+        _fold_sleeve_reference_geometry(mask, torso_raw, step="left_sleeve")
+
+    # Upright [10, 85] lies inside the protruding left sleeve near its cuff.
+    sleeve_raw = [85, mask.shape[0] - 1 - 10]
+    diagnostic = _fold_sleeve_reference_geometry(
+        mask,
+        sleeve_raw,
+        step="left_sleeve",
+    )
+    assert diagnostic["requested_side_ok"] is True
+    assert diagnostic["free_edge_band_ok"] is True
+
+
+def test_fold_sleeve_semantic_gate_matches_uniform_grid_stride() -> None:
+    upright = np.zeros((180, 180), dtype=bool)
+    upright[35:150, 60:120] = True
+    upright[65:115, 0:60] = True
+    upright[65:115, 120:180] = True
+    mask = np.rot90(upright, k=1)
+    # This is a legitimate outer-left sleeve sample from a 48 px uniform grid,
+    # but it lies about 25 px inside the silhouette and therefore cannot satisfy
+    # the old boundary-specialized 14 px threshold.
+    uniform_raw = [90, mask.shape[0] - 1 - 24]
+    with pytest.raises(ValueError, match="14.0px sleeve free-edge band"):
+        _fold_sleeve_reference_geometry(
+            mask,
+            uniform_raw,
+            step="left_sleeve",
+        )
+
+    diagnostic = _fold_sleeve_reference_geometry(
+        mask,
+        uniform_raw,
+        step="left_sleeve",
+        max_interior_distance_px=28.8,
+    )
+    assert diagnostic["requested_side_ok"] is True
+    assert diagnostic["sleeve_height_ok"] is True
+    assert diagnostic["free_edge_band_ok"] is True
+    assert diagnostic["max_interior_distance_px"] == pytest.approx(28.8)
+
+
+def test_fold_reference_prevalidation_filters_before_claude(tmp_path: Path) -> None:
+    upright = np.full((180, 120, 3), 240, dtype=np.uint8)
+    upright_mask = np.zeros((180, 120), dtype=bool)
+    upright_mask[35:150, 35:85] = True
+    upright_mask[65:105, 5:35] = True
+    upright[upright_mask] = (20, 25, 45)
+    raw = np.rot90(upright, k=1)
+    raw_mask = np.rot90(upright_mask, k=1)
+    raw_height = raw_mask.shape[0]
+    perception = tmp_path / "workspace" / "perception_views"
+    perception.mkdir(parents=True)
+    Image.fromarray(raw).save(perception / "camera_0_A.png")
+    np.save(perception / "camera_A_garment_mask.npy", raw_mask)
+    edge_raw = [85, raw_height - 1 - 10]
+    (perception / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(
+            {
+                "camera_label": "A",
+                "sample_stride_px": 48,
+                "samples": [
+                    {
+                        "reference_id": "R001",
+                        "pixel_xy": edge_raw,
+                        "base_xyz_mm": [500.0, 0.0, 10.0],
+                        "height_above_table_mm": 2.0,
+                    },
+                    {
+                        "reference_id": "R002",
+                        "pixel_xy": edge_raw,
+                        "base_xyz_mm": [500.0, 220.0, 10.0],
+                        "height_above_table_mm": 2.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    robot = RobotConfig(
+        robot_ip="127.0.0.1",
+        boundaries=WorkspaceBounds(
+            x_min=363.595,
+            x_max=779.595,
+            y_min=-303.571,
+            y_max=171.087,
+            z_min=-5,
+            z_max=500,
+        ),
+        init_joints_deg=(0, 0, 0, 0, 0, 0, 0),
+        init_pose_mm_deg=(500, 0, 280, 180, 0, 0),
+        orientation_roll_deg=180,
+        orientation_pitch_deg=0,
+    )
+    session = SimpleNamespace(run_dir=tmp_path, robot_config=robot)
+    objective = "The supervisor says the next incomplete step is left_sleeve."
+
+    report = ClaudeAutoClient._fold_reference_candidate_report(
+        session,  # type: ignore[arg-type]
+        objective,
+    )
+
+    assert report is not None
+    assert report["executable_reference_ids"] == ["R001"]
+    assert report["executable_reference_count"] == 1
+    assert report["rejected"][0]["reference_id"] == "R002"
+    assert "safe upper bound" in report["rejected"][0]["reason"]
+
+
+def test_fold_reference_prevalidation_zero_candidates_skips_claude(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upright = np.full((180, 120, 3), 240, dtype=np.uint8)
+    upright_mask = np.zeros((180, 120), dtype=bool)
+    upright_mask[35:150, 35:85] = True
+    upright_mask[65:105, 5:35] = True
+    upright[upright_mask] = (20, 25, 45)
+    raw = np.rot90(upright, k=1)
+    raw_mask = np.rot90(upright_mask, k=1)
+    raw_height = raw_mask.shape[0]
+    perception = tmp_path / "workspace" / "perception_views"
+    perception.mkdir(parents=True)
+    Image.fromarray(raw).save(perception / "camera_0_A.png")
+    np.save(perception / "camera_A_garment_mask.npy", raw_mask)
+    (perception / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(
+            {
+                "camera_label": "A",
+                "sample_stride_px": 48,
+                "samples": [
+                    {
+                        "reference_id": "R001",
+                        "pixel_xy": [85, raw_height - 1 - 10],
+                        "base_xyz_mm": [500.0, 220.0, 10.0],
+                        "height_above_table_mm": 2.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    robot = RobotConfig(
+        robot_ip="127.0.0.1",
+        boundaries=WorkspaceBounds(
+            x_min=363.595,
+            x_max=779.595,
+            y_min=-303.571,
+            y_max=171.087,
+            z_min=-5,
+            z_max=500,
+        ),
+        init_joints_deg=(0, 0, 0, 0, 0, 0, 0),
+        init_pose_mm_deg=(500, 0, 280, 180, 0, 0),
+        orientation_roll_deg=180,
+        orientation_pitch_deg=0,
+    )
+    session = SimpleNamespace(run_dir=tmp_path, robot_config=robot)
+    client = ClaudeAutoClient(binary="claude")
+    monkeypatch.setattr(
+        client,
+        "_visual_plan",
+        lambda *args, **kwargs: pytest.fail("Claude visual planning must not run"),
+    )
+
+    with pytest.raises(
+        ReferenceReselectionExhaustedError,
+        match="Claude was not called",
+    ):
+        client.plan(
+            [],
+            session,  # type: ignore[arg-type]
+            "The supervisor says the next incomplete step is left_sleeve.",
+        )
+
+
+def test_fold_grasp_anchor_allows_small_inboard_offset(tmp_path: Path) -> None:
+    perception = tmp_path / "workspace" / "perception_views"
+    perception.mkdir(parents=True)
+    height, width = 100, 100
+    yy, xx = np.indices((height, width), dtype=np.float64)
+    xyz = np.zeros((height, width, 3), dtype=np.float64)
+    xyz[..., 0] = xx
+    xyz[..., 1] = -yy
+    mask = np.zeros((height, width), dtype=bool)
+    mask[70:90, 40:61] = True
+    np.save(perception / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(perception / "camera_A_garment_mask.npy", mask)
+    session = SimpleNamespace(run_dir=tmp_path)
+    measurement = {
+        "reference_id": "R105",
+        "pixel_xy": [50, 80],
+        "base_xyz_mm": [50.0, -80.0, 5.0],
+    }
+
+    result = _validate_fold_grasp_anchor_offset(
+        session,  # type: ignore[arg-type]
+        measurement,
+        [50.0, -75.0],
+        step="left_sleeve",
+    )
+
+    assert result["mode"] == "bounded_inboard_anchor_offset"
+    assert result["offset_distance_mm"] == pytest.approx(5.0)
+    assert result["closure_raw_pixel_xy"] == [50, 75]
+    assert result["inboard_delta_upright_px"] == pytest.approx(5.0)
+    assert result["closure_inside_garment_mask"] is True
+
+
+def test_fold_grasp_anchor_rejects_outward_or_excessive_offset(tmp_path: Path) -> None:
+    perception = tmp_path / "workspace" / "perception_views"
+    perception.mkdir(parents=True)
+    height, width = 100, 100
+    yy, xx = np.indices((height, width), dtype=np.float64)
+    xyz = np.zeros((height, width, 3), dtype=np.float64)
+    xyz[..., 0] = xx
+    xyz[..., 1] = -yy
+    mask = np.zeros((height, width), dtype=bool)
+    mask[65:95, 35:66] = True
+    np.save(perception / "camera_A_base_xyz_mm.npy", xyz)
+    np.save(perception / "camera_A_garment_mask.npy", mask)
+    session = SimpleNamespace(run_dir=tmp_path)
+    measurement = {
+        "reference_id": "R105",
+        "pixel_xy": [50, 80],
+        "base_xyz_mm": [50.0, -80.0, 5.0],
+    }
+
+    with pytest.raises(ValueError, match="moves outward"):
+        _validate_fold_grasp_anchor_offset(
+            session,  # type: ignore[arg-type]
+            measurement,
+            [50.0, -85.0],
+            step="left_sleeve",
+        )
+    with pytest.raises(ValueError, match="exceeds the 10.0 mm"):
+        _validate_fold_grasp_anchor_offset(
+            session,  # type: ignore[arg-type]
+            measurement,
+            [50.0, -68.0],
+            step="left_sleeve",
+        )
+
+
+def test_fold_grounding_contract_exposes_bounded_anchor_offset(tmp_path: Path) -> None:
+    bundle = _write_final_grounding_context(
+        tmp_path,
+        context={
+            "objective": "The supervisor says the next incomplete step is left_sleeve.",
+            "visual_plan": {},
+            "previous_physical_outcomes": [],
+        },
+        selected_reference={"camera": "A", "reference_id": "R105"},
+        mode_action_instruction="Use one cautious fold action.",
+    )
+    manifest = json.loads(Path(bundle["manifest"]).read_text(encoding="utf-8"))
+    contract_path = tmp_path / manifest["read_order"][4]
+    contract = contract_path.read_text(encoding="utf-8")
+
+    assert "calibrated semantic anchor, not a mandatory closure center" in contract
+    assert "offset up to 10.0 mm" in contract
+    assert "only inward toward garment fabric" in contract
+
+
+def test_final_grounding_normalizes_only_safety_note_overflow() -> None:
+    payload = {"safety_notes": [f"note {index}" for index in range(11)]}
+
+    normalized, changes = _normalize_final_grounding_payload(payload)
+
+    assert normalized is not payload
+    assert normalized["safety_notes"] == payload["safety_notes"][:10]
+    assert changes == ["truncated safety_notes to the schema maximum of 10"]
+
+    malformed = {"safety_notes": ["valid"] * 10 + [{"not": "a string"}]}
+    unchanged, changes = _normalize_final_grounding_payload(malformed)
+    assert unchanged is malformed
+    assert changes == []
 
 
 def _stage_evaluation_payload() -> dict:
@@ -249,6 +547,33 @@ def test_visual_plan_contract_selects_one_camera_reference():
     )
     assert decision.selected_reference["camera"] == "A"
     assert decision.selected_reference["reference_id"] == "R026"
+
+
+def test_visual_plan_normalizes_harmless_reference_context_and_skill_alias():
+    decision = validate_visual_plan_payload(
+        {
+            "garment_observation": "One sleeve cuff is visible.",
+            "opening_strategy": "Fold the sleeve inward.",
+            "confidence": 0.7,
+            "selected_reference": {
+                "camera": "A",
+                "reference_id": "R026",
+                "reason": "It lies on the sleeve cuff.",
+                "reference_pattern_context": "Plain dark cuff fabric.",
+            },
+            "motion_intent": "Lift and lay the sleeve onto the torso.",
+            "expected_observation": "The sleeve lies over the chest.",
+            "safety_notes": ["Keep the lift low."],
+            "skill_invocations": [
+                {"skill": "laydown", "reason": "Set the sleeve down flat."}
+            ],
+        },
+        allowed_skill_names=("laydown",),
+    )
+    assert set(decision.selected_reference) == {"camera", "reference_id", "reason"}
+    assert decision.skill_invocations == (
+        {"name": "laydown", "reason": "Set the sleeve down flat."},
+    )
 
 
 def test_visual_plan_accepts_only_active_dynamic_skills():
@@ -684,7 +1009,10 @@ def test_final_stage_uses_one_lookup_and_short_timeout(
         run_dir=tmp_path,
     )
     result = client._ground_final_plan(
-        decision, session, "open garment"  # type: ignore[arg-type]
+        decision,
+        session,  # type: ignore[arg-type]
+        "open garment",
+        history=[{"iteration": 1, "large_experience": "x" * 200_000}],
     )
     assert result.proposal.actions[2]["args"]["x"] == pytest.approx(522.1)
     assert "--mcp-config" in seen["command"]
@@ -692,8 +1020,16 @@ def test_final_stage_uses_one_lookup_and_short_timeout(
     assert seen["command"][seen["command"].index("--permission-mode") + 1] == "dontAsk"
     assert seen["timeout"] == 120
     allowed = seen["command"][seen["command"].index("--allowedTools") + 1]
-    assert allowed == "mcp__garment_grounding__lookup_reference"
-    assert seen["command"][seen["command"].index("--tools") + 1] == ""
+    assert allowed == "Read,mcp__garment_grounding__lookup_reference"
+    assert seen["command"][seen["command"].index("--tools") + 1] == "Read"
+    bootstrap = seen["command"][seen["command"].index("--print") + 1]
+    assert len(bootstrap.encode("utf-8")) < 2_000
+    assert "manifest.json" in bootstrap
+    manifests = list((tmp_path / "results" / "claude_context").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    history_path = tmp_path / manifest["read_order"][2]
+    assert history_path.stat().st_size > 200_000
 
 
 def test_evaluation_empty_change_list_means_stop():
@@ -778,7 +1114,17 @@ def test_evaluator_uses_native_json_schema_and_structured_output(
     client = ClaudeAutoClient(binary="/usr/bin/claude")
 
     evaluation = client.evaluate(
-        [before], [after], proposal=proposal, run_dir=tmp_path
+        [before],
+        [after],
+        proposal=proposal,
+        run_dir=tmp_path,
+        hold_checkpoint={
+            "classification": "COMPRESSIBLE_SINGLE_PEAK",
+            "continue_transport": False,
+            "runtime_decision": "ABORT_RELEASE",
+            "executed_branch": "ABORT_RELEASE",
+            "evidence": ["The peak collapsed without an independent hanging patch."],
+        },
     )
 
     command = seen["command"]
@@ -789,6 +1135,24 @@ def test_evaluator_uses_native_json_schema_and_structured_output(
     assert set(schema["required"]) == set(payload)
     assert evaluation.transport.status == "INSUFFICIENT"
     assert "Do not use or search for any other files" in client.last_evaluation_result.prompt
+    assert "planned continuation transport was NOT executed" in client.last_evaluation_result.prompt
+
+    client.evaluate(
+        [before],
+        [after],
+        proposal=proposal,
+        run_dir=tmp_path,
+        hold_checkpoint={
+            "classification": "INDEPENDENT_LAYER_SUPPORTED",
+            "continue_transport": True,
+            "runtime_decision": "CONTINUE_TRANSPORT",
+            "executed_branch": "CONTINUATION",
+            "evidence": ["A held corner rose while distant garment landmarks stayed seated."],
+        },
+    )
+    assert "Treat grasp acquisition and target-structure support at the hold as established" in (
+        client.last_evaluation_result.prompt
+    )
 
 
 def test_evaluation_perception_images_are_only_labelled_rgb_and_depth(tmp_path: Path):

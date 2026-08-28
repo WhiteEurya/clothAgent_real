@@ -113,6 +113,21 @@ def test_flatten_garment_is_a_builtin_system_skill() -> None:
     assert "farthest safe X" in skill_prompt()
 
 
+def test_shake_skills_are_builtin_and_available_to_auto_exploration(tmp_path: Path) -> None:
+    names = available_skill_names()
+    assert "collar-full-shake" in names
+    assert "direct-shake" in names
+    prompt = skill_prompt()
+    assert "### Skill: collar-full-shake" in prompt
+    assert "### Skill: direct-shake" in prompt
+
+    store = SkillStore(tmp_path / "skills")
+    assert {skill.name for skill in store.approved()} >= {
+        "collar-full-shake",
+        "direct-shake",
+    }
+
+
 def test_builtin_skill_modify_writes_external_patch_only(tmp_path: Path) -> None:
     store = SkillStore(tmp_path / "skills")
     proposal = _proposal(

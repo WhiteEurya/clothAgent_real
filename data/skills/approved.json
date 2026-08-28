@@ -1,12 +1,26 @@
 {
-  "updated_at": "2026-08-22T14:54:48.306+00:00",
+  "updated_at": "2026-08-25T18:25:45.355+00:00",
   "skills": [
+    {
+      "name": "collar-full-shake",
+      "purpose": "Use a validated shirt-collar grasp to lift, shake open, transport, and lay the garment down so the collar structure can reveal the garment.",
+      "guidance": "Use only after the visual collar decision and grounded Camera A grasp are validated. Keep the collar grasp orientation fixed and perpendicular to the collar. Lift to a controller-reachable high pose, center at Y=0, perform the host-owned shake-open maneuver, then move toward a useful +X location before retreating toward -X while descending through several waypoints. Keep descent and retreat balanced rather than making either one dominate, release only near the table after the garment has had room to spread, and retract/home afterward. Use current measured geometry and controller IK; never copy fixed coordinates, release in mid-air, or replace the collar with a shoulder or sleeve.",
+      "version": 1,
+      "source": "builtin"
+    },
     {
       "name": "controller-ik-recovery",
       "purpose": "Recover safely when controller IK rejects a garment manipulation path before physical execution.",
       "guidance": "When controller IK rejects a pose or interpolated segment, preserve the supported visual objective but shorten extreme reach, lift, or transport; keep every waypoint inside the workspace, include a controlled release, and rerun preflight and controller IK before execution.",
       "version": 1,
       "source": "reviewed"
+    },
+    {
+      "name": "direct-shake",
+      "purpose": "Test whether a validated garment grasp can open the cloth by lifting and shaking it without running the collar-specific transport and laydown routine.",
+      "guidance": "Use after any grounded fabric grasp when the immediate experiment is only a shake response test. Lift to a controller-reachable high pose, keep the held fabric clear of the table, center if useful, run the host-owned shake maneuver, observe whether the garment separates or reveals structure, then lower and release in a controlled way. Do not add a long +X retreat or pretend that a shake-only result proves collar identity; preserve workspace, grounding, preflight, and IK checks and never use fixed coordinates.",
+      "version": 1,
+      "source": "builtin"
     },
     {
       "name": "flatten-garment",
@@ -19,6 +33,13 @@
       "name": "grounding-plan-recovery",
       "purpose": "Recover from an invalid or inconsistent grounded garment proposal before motion.",
       "guidance": "When grounding validation rejects a selected point or its use in the plan, reinspect the current evidence, choose a newly grounded visible fabric point, keep the path inside the workspace, include a controlled release, and rerun preflight and IK before execution.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "hold-checkpoint-timeout-recovery",
+      "purpose": "Interpret and recover from a garment run whose post-grasp hold verification could not be classified in time and therefore forced a local release, and recognize when 15 consecutive acquisition failures across diverse anchor classes with adequate depth definitively disprove single-anchor separation for a configuration and require infrastructure escalation.",
+      "guidance": "Keep the existing rules: a failed-closed or timed-out hold check makes the observation evidence about the grasp only, the unexecuted transport must never be recorded as wrong in direction or distance, and the validated approach clearance, deposit region and quasi-static release carry over to the retry. Add this definitive escalation threshold with infrastructure acknowledgment: when a configuration has produced 15 or more consecutive acquisition failures across at least 5 geometrically distinct anchor classes (peaks, boundary bands, low-relief structures, raised rims, corners, raised edges, claimed free boundary lips) where adequate engagement depth was achieved (closure commanded at or below measured surface height, including compression-probe-recommended depths for high-relief structures and manual calculation for low-relief structures) and every attempt confirms no independent hanging material with all far landmarks remaining seated and hold checkpoint returning FAILED_CLOSED or timeout, treat this as definitive evidence that the garment configuration does not provide separable single-anchor structure. At that threshold, escalate to a two-contact strategy where one contact immobilizes a region through weight, pinning, or clamping while the second contact attempts separation, or target a mechanically verified free edge where the gripper can wrap around a confirmed fabric boundary with visible interior passage or light between plies on both sides. The critical insight: when high-relief structures (17+mm raised edges), medium-relief ridges (10+mm), low-relief corners (sub-4mm and 7mm range), raised plateau tents, compressed peaks, and claimed free boundary lips with adequate depth and varied entry axes (vertical, oblique, side) all produce identical empty-jaws outcomes, the anchor class variety itself and the entry axis variety have both been exhausted. State the infrastructure limitation explicitly when available primitives cannot execute true two-contact opposition: acknowledge that continuing single-anchor attempts is unsafe and ungrounded, and that no further safe grounded experiment is possible within current primitive constraints rather than attempting a 16th single-anchor variant. Preserve validated approach clearance, deposit region, planned pull direction and quasi-static release across the strategy change, since unexecuted transport carries no evidence about those choices.",
       "version": 1,
       "source": "reviewed"
     },
@@ -38,9 +59,9 @@
     },
     {
       "name": "null-change-missed-grasp-recovery",
-      "purpose": "Recognise a near-null garment action and separate a clean miss from a contact-without-hold on a compressible pile, then pick the recovery that the visual signature supports.",
-      "guidance": "Extend the existing null-change checks with a contact-without-hold signature. When the garment outline and all its extremes are unchanged but the height of the structure at the chosen contact point has visibly slumped in one or both depth views, read this as the jaws having pressed and compressed the pile rather than having missed it entirely or held it. In that case do not treat the anchor region as disproved and do not lengthen the pull: instead engage clearly deeper than the surface height measured before contact, because a soft roll sinks under the closing jaws and a shallow bite referenced to the pre-contact surface only skims it, and prefer a thin free boundary of the same raised structure such as a rim, hem or fold edge where the jaws can enclose one or two layers instead of a broad compressible flank. Require the lift to include an observable hold check before any transport, so the next observation distinguishes held cloth from a slipped bite, while the deposit area, approach clearance and quasi-static release choices already validated stay unchanged.",
-      "version": 5,
+      "purpose": "Recognise a near-null garment action, separate a clean miss from a contact-without-hold on a compressible pile, and additionally reject a closure whose resolved anchor or engaged height is inconsistent with the visually chosen structure.",
+      "guidance": "Keep the existing null-change and contact-without-hold checks and the escalation rule. Add a pre-closure consistency gate. Before the jaws close, confirm that the anchor the controller actually resolved corresponds to the structure that was chosen in the images, and that the engaged height falls inside the measured relief of that structure rather than collapsing onto the table plane. If the resolved contact point sits far from the visually selected feature, or if the engaged height is indistinguishable from the surrounding tabletop, treat the planned bite as ungrounded and re-ground before descending instead of executing it. Likewise, a local surface measurement taken at a different location, outside the working region, or on bare table is not grounding for the anchor and must not be used to justify a closure. When the resulting observation is a complete null change with every far landmark seated, record it as evidence about the anchor and the engagement geometry only, leave the untested pull direction, pull distance, deposit region and release choices intact, and make the next attempt at a differently structured opening rather than repeating the same descent.",
+      "version": 7,
       "source": "reviewed"
     },
     {
@@ -59,9 +80,9 @@
     },
     {
       "name": "translation-only-reanchor",
-      "purpose": "Recognize when repeated congruent relocations mean the single-anchor peel strategy itself is disproved for a garment, and switch to requiring verifiable opposition and resolvable openings instead of hunting for better anchor geometry.",
-      "guidance": "Add a strategy-level stop rule and tighten boundary verification. Count outcomes across attempts on the same garment: when three or more attempts end with the outline relocated as a near copy of itself, landmarks in the same relative order, and the origin left bare, stop treating the individual anchor as the fault and treat single-anchor pulling as disproved for this configuration. Record explicitly that a rounded termination with bare surface beneath, or a shadowed undercut, or even two edges that appear separately traceable, are not sufficient proof of a free ply when a soft fold of the body can present the same appearance. Require instead that the opening itself be resolvable and followable: a cuff or hem mouth where the interior passage is visible, a collar edge where both faces are separately identifiable, or a corner already lifted with confirmed visible gap and light between plies. Then make the low hold a mandatory abort gate: before any lateral motion, check that landmarks well away from the grasp (opposite sleeve, print features, collar, hem) stay pressed on the surface; if they rise, slide, or rotate with the jaws, release quasi-statically and re-anchor at a newly verified opening. Also consider whether the garment needs material immobilized away from the grasp to supply opposition, since repeated whole-body drags prove nothing on the table is anchoring the pull. Keep the already validated bite depth, approach orientation, reach envelope, framed deposit placement beyond the reach of hanging material, and quasi-static release, since a whole-body relocation neither supports nor disproves those mechanical choices.",
-      "version": 20,
+      "purpose": "Recognize when repeated congruent relocations disprove single-anchor peeling for a garment, and additionally retire the terminal end-cap of a rolled bundle as a ply anchor once a perpendicular carry only relocates the whole bundle.",
+      "guidance": "Keep the existing stop rule, the free-boundary verification requirement, and the mandatory lift-phase abort. Add this appearance lesson: the rounded end of an elongated cloth roll, even when it presents solid measurable relief above the table and reads as an end-of-structure boundary with a visible tuck, is not evidence of a separable ply. A roll end is continuous with the body, so carrying it across the table perpendicular to the roll axis relocates the whole bundle instead of paying wound fabric out, and the distal lobe travels with the gripper rather than staying seated. Treat such an outcome as two separate findings: the grounding, engagement depth, approach clearance, fixed wrist orientation and quasi-static release are validated because cloth was held and carried and must be reused unchanged, while the terminal end-cap joins the retired anchor classes alongside the high-relief core, the planar raised shelf, the flat perimeter lip and the steep fold wall. Do not re-tune pull direction or pull distance after such a result, since no layer was isolated and the carry tested nothing. Require either a mechanically verified free fabric boundary with visible interior passage between plies, or opposition supplied by immobilizing material well away from the separation point, before the next lift. Also treat a deposit that lands back over a feature the previous view had exposed as an unhelpful laydown, and place the next deposit farther out on clear surface.",
+      "version": 22,
       "source": "reviewed"
     }
   ]

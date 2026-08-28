@@ -5,8 +5,16 @@
   "perception_pose_file": "data/robot/xarm_perception_pose.json",
   "workspace_margin_mm": 0.0,
   "lower_z_margin_mm": 0.0,
+  "online_camera_z_bias_correction": false,
   "expected_tcp_offset_mm_deg": [0, 0, 172, 0, 0, 0],
   "tcp_offset_tolerance": 1.0,
+  "grasp_height": {
+    "surface_compression_mm": 3.0,
+    "min_compression_mm": 0.75,
+    "max_compression_mm": 3.0,
+    "table_clearance_mm": 0.0,
+    "use_table_clearance_floor": false
+  },
   "motion": {
     "speed_mm_s": 15.0,
     "acceleration_mm_s2": 30.0,

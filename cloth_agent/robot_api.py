@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import math
 import time
@@ -23,6 +23,7 @@ class ControllerTrajectoryValidation:
     controller_warning_code: int
     tcp_offset_mm_deg: tuple[float, ...]
     validated_sample_count: int
+    shake_open_diagonal_scales: dict[int, float] = field(default_factory=dict)
 
 
 def _timestamp() -> str:
@@ -119,24 +120,16 @@ def _controller_trajectory_with_arm(
     home_pose = _controller_home_pose(arm, config)
     current_pose = list(home_pose)
     validated_sample_count = 0
-    for action_index, action in enumerate(actions):
-        name = action.get("name")
-        if name == "home":
-            targets[action_index] = tuple(math.radians(value) for value in config.init_joints_deg)
-            reference_deg = [float(value) for value in config.init_joints_deg]
-            current_pose = list(home_pose)
-            continue
-        if name != "move":
-            continue
-        args = action.get("args", {})
-        pose = [
-            float(args["x"]),
-            float(args["y"]),
-            float(args["z"]),
-            config.orientation_roll_deg,
-            config.orientation_pitch_deg,
-            config.command_yaw_deg(float(args["yaw"])),
-        ]
+    shake_open_diagonal_scales: dict[int, float] = {}
+
+    def validate_pose_segment(
+        pose: list[float],
+        *,
+        action_index: int,
+        substep_label: str | None = None,
+    ) -> None:
+        nonlocal current_pose, reference_deg, validated_sample_count
+
         cartesian_distance_mm = math.dist(current_pose[:3], pose[:3])
         angular_deltas = [
             _shortest_angle_delta_deg(current_pose[index], pose[index])
@@ -149,15 +142,17 @@ def _controller_trajectory_with_arm(
             int(math.ceil(angular_distance_deg / 10.0)),
         )
         if cartesian_distance_mm < 1e-9 and angular_distance_deg < 1e-9:
-            targets[action_index] = tuple(
-                math.radians(value) for value in reference_deg
-            )
-            continue
+            current_pose = list(pose)
+            return
         segment_start = list(current_pose)
+        action_description = f"action {action_index + 1}"
+        if substep_label is not None:
+            action_description += f" ({substep_label})"
         for sample_index in range(1, sample_count + 1):
             fraction = sample_index / sample_count
             sample_pose = [
-                segment_start[index] + fraction * (pose[index] - segment_start[index])
+                segment_start[index]
+                + fraction * (pose[index] - segment_start[index])
                 for index in range(6)
             ]
             for index, delta in zip(range(3, 6), angular_deltas):
@@ -177,25 +172,116 @@ def _controller_trajectory_with_arm(
                 or len(angles_deg) != 7
             ):
                 raise SafetyError(
-                    f"controller IK rejected action {action_index + 1} "
+                    f"controller IK rejected {action_description} "
                     f"segment sample {sample_index}/{sample_count} "
                     f"pose={sample_pose}, code={code}"
                 )
             next_reference = [float(value) for value in angles_deg]
             if not all(math.isfinite(value) for value in next_reference):
                 raise RobotExecutionError(
-                    "controller IK returned non-finite joints for action "
-                    f"{action_index + 1} segment sample {sample_index}/{sample_count}"
+                    "controller IK returned non-finite joints for "
+                    f"{action_description} segment sample "
+                    f"{sample_index}/{sample_count}"
                 )
             reference_deg = next_reference
             validated_sample_count += 1
+        current_pose = list(pose)
+
+    for action_index, action in enumerate(actions):
+        name = action.get("name")
+        if name == "home":
+            targets[action_index] = tuple(math.radians(value) for value in config.init_joints_deg)
+            reference_deg = [float(value) for value in config.init_joints_deg]
+            current_pose = list(home_pose)
+            continue
+        if name == "shake_open":
+            from .shake_open_test import (
+                DIAGONAL_SCALE_CANDIDATES,
+                build_shake_open_plan,
+            )
+
+            start_pose = list(current_pose)
+            start_reference = list(reference_deg)
+            start_sample_count = validated_sample_count
+            last_error: SafetyError | None = None
+            selected_plan = None
+            for scale in DIAGONAL_SCALE_CANDIDATES:
+                current_pose = list(start_pose)
+                reference_deg = list(start_reference)
+                validated_sample_count = start_sample_count
+                plan = build_shake_open_plan(
+                    current_pose,
+                    config,
+                    diagonal_scale=scale,
+                )
+                try:
+                    for step in plan.steps:
+                        validate_pose_segment(
+                            list(step.target_pose_mm_deg),
+                            action_index=action_index,
+                            substep_label=f"shake_open:{step.name}",
+                        )
+                except SafetyError as exc:
+                    last_error = exc
+                    continue
+                selected_plan = plan
+                shake_open_diagonal_scales[action_index] = scale
+                break
+            if selected_plan is None:
+                current_pose = start_pose
+                reference_deg = start_reference
+                validated_sample_count = start_sample_count
+                assert last_error is not None
+                raise SafetyError(
+                    "controller IK rejected every shake_open diagonal scale "
+                    f"{list(DIAGONAL_SCALE_CANDIDATES)}; last error: {last_error}"
+                ) from last_error
+            targets[action_index] = tuple(
+                math.radians(value) for value in reference_deg
+            )
+            continue
+        poses: list[tuple[str | None, list[float]]] = []
+        if name == "move":
+            args = action.get("args", {})
+            poses.append(
+                (
+                    None,
+                    [
+                        float(args["x"]),
+                        float(args["y"]),
+                        float(args["z"]),
+                        config.orientation_roll_deg,
+                        config.orientation_pitch_deg,
+                        config.command_yaw_deg(float(args["yaw"])),
+                    ],
+                )
+            )
+        elif name == "shake":
+            from .shake_once import build_shake_plan
+
+            plan = build_shake_plan(current_pose, config)
+            poses.extend(
+                (
+                    f"shake:{step.name}",
+                    list(step.target_pose_mm_deg),
+                )
+                for step in plan.steps
+            )
+        else:
+            continue
+        for substep_label, pose in poses:
+            validate_pose_segment(
+                pose,
+                action_index=action_index,
+                substep_label=substep_label,
+            )
         targets[action_index] = tuple(math.radians(value) for value in reference_deg)
-        current_pose = pose
     return ControllerTrajectoryValidation(
         joint_targets_rad=targets,
         controller_warning_code=warning_code,
         tcp_offset_mm_deg=live_tcp_offset,
         validated_sample_count=validated_sample_count,
+        shake_open_diagonal_scales=shake_open_diagonal_scales,
     )
 
 
@@ -236,6 +322,8 @@ class Backend(Protocol):
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def open_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
     def close_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
+    def shake(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
+    def shake_open(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def home(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def perception_position(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def close(self) -> None: ...
@@ -268,6 +356,20 @@ class SimulatedBackend:
     def close_gripper(self, config: RobotConfig):
         self.gripper = config.gripper_close
         return {"position": self.gripper, "simulated": True}, (list(self.pose), self.state)
+
+    def shake(self, config: RobotConfig):
+        from .shake_once import build_shake_plan
+
+        plan = build_shake_plan(self.pose, config)
+        self.pose = list(plan.steps[-1].target_pose_mm_deg)
+        return list(self.pose), {"state": self.state, "shake": plan.as_dict()}
+
+    def shake_open(self, config: RobotConfig):
+        from .shake_open_test import build_shake_open_plan
+
+        plan = build_shake_open_plan(self.pose, config)
+        self.pose = list(plan.steps[-1].target_pose_mm_deg)
+        return list(self.pose), {"state": self.state, "shake_open": plan.as_dict()}
 
     def home(self, config: RobotConfig):
         self.pose = list(config.init_pose_mm_deg)
@@ -378,6 +480,24 @@ class XArmBackend:
         position = self.arm.get_gripper_position()
         return {"command_result": result, "position_result": position}, self._state()
 
+    def shake(self, config: RobotConfig):
+        from .shake_once import shake
+
+        shake_result = shake(self.arm, config)
+        pose, state = self._state()
+        if isinstance(state, dict):
+            state["shake"] = shake_result
+        return pose, state
+
+    def shake_open(self, config: RobotConfig):
+        from .shake_open_test import shake_open
+
+        shake_open_result = shake_open(self.arm, config)
+        pose, state = self._state()
+        if isinstance(state, dict):
+            state["shake_open"] = shake_open_result
+        return pose, state
+
     def home(self, config: RobotConfig):
         code = self.arm.set_servo_angle(
             angle=list(config.init_joints_deg),
@@ -475,12 +595,14 @@ def move_robot_to_perception_position(
 class RobotAPI:
     """Safety-checked facade injected into generated experiment code.
 
-    Generated code never receives ``XArmAPI`` or a backend.  It can only call
-    the four methods below.  Every command is recorded, and the first failure
+    Generated code never receives ``XArmAPI`` or a backend. It can only call
+    the six methods below. Every command is recorded, and the first failure
     permanently halts the run so a script cannot continue after an error.
     """
 
-    ALLOWED_METHODS = frozenset({"move", "open_gripper", "close_gripper", "home"})
+    ALLOWED_METHODS = frozenset(
+        {"move", "open_gripper", "close_gripper", "shake", "shake_open", "home"}
+    )
 
     def __init__(self, config: RobotConfig, backend: Backend):
         self.config = config
@@ -537,6 +659,22 @@ class RobotAPI:
         try:
             gripper, actual = self.backend.close_gripper(self.config)
             self._finish(record, actual=actual, gripper=gripper)
+        except BaseException as exc:
+            self._fail(record, exc)
+            raise
+
+    def shake(self) -> None:
+        record = self._begin("shake", {})
+        try:
+            self._finish(record, actual=self.backend.shake(self.config))
+        except BaseException as exc:
+            self._fail(record, exc)
+            raise
+
+    def shake_open(self) -> None:
+        record = self._begin("shake_open", {})
+        try:
+            self._finish(record, actual=self.backend.shake_open(self.config))
         except BaseException as exc:
             self._fail(record, exc)
             raise

@@ -21,6 +21,8 @@ from cloth_agent.molmo_keypoint_pipeline import (
 )
 from cloth_agent.molmo_keypoint_worker import (
     _extract_batch_points,
+    _partition_specs_for_axis_reuse,
+    _prompt,
     geometric_mean_probability,
     point_location_probabilities,
 )
@@ -30,6 +32,63 @@ SPECS = (
     KeypointSpec("center", "garment center", (255, 0, 0)),
     KeypointSpec("corner", "visible garment corner", (0, 255, 0)),
 )
+
+
+def test_collar_is_independent_from_axis_top() -> None:
+    axis_records = [
+        {
+            "name": "axis_top",
+            "description": "collar center",
+            "prompt": "axis top prompt",
+            "status": "point_returned",
+            "pixel_xy": [371.0, 475.0],
+            "confidence": 0.7,
+            "confidence_definition": CONFIDENCE_DEFINITION,
+            "point_token_probabilities": [0.7, 0.7, 0.7],
+            "generated_text": "axis top point",
+        },
+        {
+            "name": "axis_bottom",
+            "description": "hem center",
+            "prompt": "axis bottom prompt",
+            "status": "point_returned",
+            "pixel_xy": [355.0, 600.0],
+            "confidence": 0.9,
+            "confidence_definition": CONFIDENCE_DEFINITION,
+            "point_token_probabilities": [0.9, 0.9, 0.9],
+            "generated_text": "axis bottom point",
+        },
+    ]
+    specs = [
+        {"name": "collar", "description": "visible collar"},
+        {"name": "left_shoulder", "description": "left shoulder"},
+    ]
+
+    independent, reused = _partition_specs_for_axis_reuse(specs, axis_records)
+
+    assert [item["name"] for item in independent] == ["collar", "left_shoulder"]
+    assert reused == {}
+
+
+def test_worker_prompt_does_not_duplicate_garment_possessive() -> None:
+    prompt = _prompt(
+        "the center of the garment's collar or neck opening",
+        "Use the current garment centerline.",
+    )
+
+    assert "Point to this keypoint on the garment" in prompt
+    assert "garment's the center" not in prompt
+
+
+def test_neck_label_prompt_allows_only_the_dedicated_label_query() -> None:
+    label_prompt = _prompt(
+        "the small sewn neck label",
+        allow_clothing_label=True,
+    )
+    collar_prompt = _prompt("collar fabric beside the neck label")
+
+    assert "point directly to the small sewn neck/size label" in label_prompt
+    assert "Do not point to a clothing label or tag" in collar_prompt
 
 
 def _perception_dir(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
@@ -153,6 +212,25 @@ def test_axis_first_metadata_and_folded_reference_comparison_are_nonblocking() -
     assert comparison["use_reference_pixel_as_current_coordinate"] is False
 
 
+def test_degenerate_axis_is_nonblocking_for_independent_semantic_anchors() -> None:
+    payload = {
+        "views": [
+            {
+                "label": "A",
+                "image_size": [100, 100],
+                "axis_reference": {
+                    "top_pixel_xy": [50.0, 50.0],
+                    "bottom_pixel_xy": [50.0, 50.0],
+                },
+            }
+        ]
+    }
+
+    axes = _validated_axis_references(payload, cameras=("A",))
+
+    assert axes == {"A": None}
+
+
 def test_filters_strictly_above_threshold_and_installs_only_valid_references(
     tmp_path: Path,
 ) -> None:
@@ -269,6 +347,13 @@ def test_semantic_mode_emits_few_sxxx_anchors_and_never_installs_grasp_rxxx(
             _record("corner", status="not_found", confidence=0.0, pixel=None),
         ],
     )
+    payload["views"][0]["records"][0].update(  # type: ignore[index]
+        {
+            "query_mode": "axis_alias_reuse_no_second_model_call",
+            "reused_axis_record": True,
+            "source_axis_name": "axis_top",
+        }
+    )
     manifest = build_semantic_anchor_manifest(
         payload,
         perception_dir=perception_dir,
@@ -284,6 +369,13 @@ def test_semantic_mode_emits_few_sxxx_anchors_and_never_installs_grasp_rxxx(
     assert manifest["anchor_count"] == 1
     assert manifest["anchors"][0]["anchor_id"] == "S001"
     assert manifest["anchors"][0]["role"] == "semantic_anchor_not_grasp_point"
+    assert manifest["anchors"][0]["reused_axis_record"] is True
+    assert manifest["anchors"][0]["source_axis_name"] == "axis_top"
+    assert manifest["anchors"][0]["query_mode"] == (
+        "axis_alias_reuse_no_second_model_call"
+    )
+    assert manifest["views"][0]["model_query_count"] == 1
+    assert manifest["views"][0]["reused_axis_record_count"] == 1
     assert "reference_id" not in manifest["anchors"][0]
     assert (
         perception_dir / "camera_A_coordinate_guide.json"
@@ -294,6 +386,76 @@ def test_semantic_mode_emits_few_sxxx_anchors_and_never_installs_grasp_rxxx(
     assert observation["grasp_reference_policy"] == (
         "not_available_until_local_geometry_grounding"
     )
+
+
+def test_neck_label_is_preserved_as_topology_guide_not_action_anchor(
+    tmp_path: Path,
+) -> None:
+    perception_dir, image_paths = _perception_dir(tmp_path)
+    artifact_dir = tmp_path / "collar_artifacts"
+    artifact_dir.mkdir()
+    specs = (
+        KeypointSpec("neck_label", "sewn neck label", (40, 220, 255)),
+        KeypointSpec("collar", "collar fabric beside label", (255, 170, 0)),
+    )
+    def collar_record(name: str, description: str, confidence: float, pixel: list[float]):
+        return {
+            "name": name,
+            "description": description,
+            "status": "point_returned",
+            "pixel_xy": pixel,
+            "confidence": confidence,
+            "confidence_definition": CONFIDENCE_DEFINITION,
+            "point_token_probabilities": [confidence] * 3,
+            "generated_text": "point",
+        }
+
+    label = collar_record("neck_label", "sewn neck label", 0.95, [1.0, 1.0])
+    label.update(
+        {
+            "query_mode": "independent_neck_label_topology_query",
+            "topology_guide": True,
+        }
+    )
+    collar = collar_record(
+        "collar", "collar fabric beside label", 0.92, [3.0, 2.0]
+    )
+    collar.update(
+        {
+            "query_mode": "neck_label_guided_independent_collar_query",
+            "topology_guide_name": "neck_label",
+            "topology_guide_pixel_xy": [1.0, 1.0],
+        }
+    )
+    payload = {
+        "views": [
+            {
+                "label": "A",
+                "image_size": [5, 4],
+                "records": [label, collar],
+            }
+        ]
+    }
+
+    manifest = build_semantic_anchor_manifest(
+        payload,
+        perception_dir=perception_dir,
+        artifact_dir=artifact_dir,
+        image_paths={"A": image_paths["A"]},
+        cameras=("A",),
+        specs=specs,
+        confidence_threshold=0.80,
+        install=False,
+    )
+
+    assert [item["type"] for item in manifest["anchors"]] == ["collar"]
+    assert manifest["anchors"][0]["topology_guide_name"] == "neck_label"
+    assert manifest["topology_guide_count"] == 1
+    assert manifest["topology_guides"][0]["type"] == "neck_label"
+    assert manifest["topology_guides"][0]["role"] == (
+        "topology_guide_not_grasp_anchor"
+    )
+    assert (artifact_dir / "camera_A_semantic_anchors.png").is_file()
 
 
 def test_restricting_queries_to_one_camera_disables_other_camera_references(
@@ -401,6 +563,10 @@ def test_runner_invokes_worker_then_builds_installed_task_references(
         confidence_threshold=0.6,
         molmo_python=Path("/bin/true"),
         keypoint_specs=SPECS,
+        gpu_max_memory_gib=17.0,
+        allow_cpu_offload=True,
+        load_in_8bit=True,
+        direct_keypoints=True,
         subprocess_run=fake_run,
     )
 
@@ -410,6 +576,11 @@ def test_runner_invokes_worker_then_builds_installed_task_references(
     assert isinstance(command, list)
     assert command.count("--image") == 2
     assert command.count("--label") == 2
+    assert command[command.index("--gpu-max-memory-gib") + 1] == "17.0"
+    assert "--allow-cpu-offload" in command
+    assert "--load-in-8bit" in command
+    assert "--direct-keypoints" in command
+    assert manifest["worker"]["axis_first"] is False
     assert captured["kwargs"]["shell"] is False  # type: ignore[index]
     assert (artifact_dir / "molmo_keypoint_grasp_references.json").is_file()
 

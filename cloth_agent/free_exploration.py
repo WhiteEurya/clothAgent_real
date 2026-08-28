@@ -15,6 +15,8 @@ run directory created by the regular CLI).
 from __future__ import annotations
 
 import argparse
+import copy
+import inspect
 import json
 import math
 import re
@@ -34,6 +36,7 @@ import numpy as np
 from .config import ExperimentConfig, RobotConfig
 from .experiment import ExperimentValidationError, Preflight
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
+from .grasp_height import GraspHeightError, resolve_grasp_height
 from .kinematics import AnimationFrame, XArm7Kinematics
 from .perception import PerceptionConfig, capture_two_view_rgbd
 from .robot_api import ControllerTrajectoryValidation, validate_controller_trajectory
@@ -53,7 +56,6 @@ DEFAULT_EXPLORATION_OBJECTIVE = (
     "Take one planning-mode-appropriate agent-chosen action that makes the current "
     "garment as open and spread as safely possible."
 )
-
 
 def is_default_exploration_objective(objective: str | None) -> bool:
     """Return whether ``objective`` is the built-in generic fallback task."""
@@ -126,6 +128,9 @@ EXPLORATION_FIELDS = frozenset(
     }
 )
 EXPLORATION_OPTIONAL_FIELDS = frozenset({"skill_invocations"})
+EXPLORATION_OPTIONAL_FIELDS = EXPLORATION_OPTIONAL_FIELDS | frozenset(
+    {"requires_lift_checkpoint"}
+)
 GLOBAL_EXPLORATION_REQUIRED_FIELDS = EXPLORATION_FIELDS | frozenset(
     {"selected_grasp"}
 )
@@ -146,6 +151,10 @@ GLOBAL_EXPLORATION_JSON_SCHEMA: dict[str, Any] = {
                     "minItems": 2,
                     "maxItems": 2,
                     "items": {"type": "integer", "minimum": 0},
+                },
+                "reference_id": {
+                    "type": "string",
+                    "pattern": "^R[0-9]{3,}$",
                 },
                 "reason": {"type": "string", "minLength": 1},
             },
@@ -172,6 +181,7 @@ GLOBAL_EXPLORATION_JSON_SCHEMA: dict[str, Any] = {
             },
         },
         "expected_observation": {"type": "string", "minLength": 1},
+        "requires_lift_checkpoint": {"type": "boolean"},
         "safety_notes": {
             "type": "array",
             "minItems": 1,
@@ -192,7 +202,9 @@ GLOBAL_EXPLORATION_JSON_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": sorted(GLOBAL_EXPLORATION_REQUIRED_FIELDS),
+    # Claude must make the checkpoint decision explicitly. The Python
+    # validator still accepts legacy test/integration payloads that omit it.
+    "required": sorted(GLOBAL_EXPLORATION_REQUIRED_FIELDS | {"requires_lift_checkpoint"}),
 }
 
 
@@ -297,6 +309,9 @@ class ExplorationProposal:
     safety_notes: tuple[str, ...]
     skill_invocations: tuple[dict[str, str], ...] = ()
     selected_grasp: dict[str, Any] | None = None
+    # Legacy callers that predate the explicit decision default to the safer
+    # checkpointed path; Claude-global JSON now supplies this field explicitly.
+    requires_lift_checkpoint: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         payload = {
@@ -307,10 +322,58 @@ class ExplorationProposal:
             "expected_observation": self.expected_observation,
             "safety_notes": list(self.safety_notes),
             "skill_invocations": [dict(skill) for skill in self.skill_invocations],
+            "requires_lift_checkpoint": bool(self.requires_lift_checkpoint),
         }
         if self.selected_grasp is not None:
             payload["selected_grasp"] = dict(self.selected_grasp)
         return payload
+
+
+@dataclass(frozen=True)
+class GlobalCheckpointPlan:
+    """Validated branch point immediately after the first post-grasp hold."""
+
+    checkpoint_action_index: int
+    acquisition_actions: tuple[dict[str, Any], ...]
+    continuation_actions: tuple[dict[str, Any], ...]
+    abort_actions: tuple[dict[str, Any], ...]
+
+    @property
+    def continuation_path(self) -> tuple[dict[str, Any], ...]:
+        return self.acquisition_actions + self.continuation_actions
+
+    @property
+    def abort_path(self) -> tuple[dict[str, Any], ...]:
+        return self.acquisition_actions + self.abort_actions
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "checkpoint_action_index": self.checkpoint_action_index,
+            "acquisition_actions": [dict(action) for action in self.acquisition_actions],
+            "continuation_actions": [dict(action) for action in self.continuation_actions],
+            "abort_actions": [dict(action) for action in self.abort_actions],
+        }
+
+
+@dataclass(frozen=True)
+class GlobalLiftCheckpointPlan:
+    """A lift-only experiment with several image checkpoints and a reverse laydown."""
+
+    actions: tuple[dict[str, Any], ...]
+    checkpoint_action_indices: tuple[int, ...]
+    checkpoint_poses: tuple[dict[str, float], ...]
+    acquisition_actions: tuple[dict[str, Any], ...]
+    return_actions: tuple[dict[str, Any], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": "LIFT_CHECKPOINT_EXPERIMENT",
+            "actions": [dict(action) for action in self.actions],
+            "checkpoint_action_indices": list(self.checkpoint_action_indices),
+            "checkpoint_poses": [dict(pose) for pose in self.checkpoint_poses],
+            "acquisition_actions": [dict(action) for action in self.acquisition_actions],
+            "return_actions": [dict(action) for action in self.return_actions],
+        }
 
 
 @dataclass(frozen=True)
@@ -337,10 +400,37 @@ def _finite_number(value: Any, name: str) -> float:
     return number
 
 
+def _normalize_preview_action_args(payload: Any) -> Any:
+    """Normalize harmless gripper/home arguments in planning-only previews.
+
+    Claude occasionally emits explanatory fields such as ``speed`` or
+    ``duration`` for a gripper action even though the RobotAPI action contract
+    represents those actions with ``args: {}``.  Preview coordinates are not
+    executable, so discard only those extra non-motion arguments before the
+    normal structural validator runs.  Move arguments are never modified.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("actions"), list):
+        return payload
+    normalized = dict(payload)
+    actions: list[Any] = []
+    for raw_action in payload["actions"]:
+        if not isinstance(raw_action, dict):
+            actions.append(raw_action)
+            continue
+        action = dict(raw_action)
+        if action.get("name") in {"open_gripper", "close_gripper", "home"}:
+            action["args"] = {}
+        actions.append(action)
+    normalized["actions"] = actions
+    return normalized
+
+
 def validate_exploration_payload(
     payload: Any,
     *,
     allowed_skill_names: Sequence[str] | None = None,
+    max_actions: int = MAX_EXPLORATION_ACTIONS,
 ) -> ExplorationProposal:
     """Validate Claude's JSON before generating executable RobotAPI source."""
 
@@ -352,6 +442,11 @@ def validate_exploration_payload(
         raise ExplorationPlanningError(f"missing exploration fields: {sorted(missing)}")
     if unknown:
         raise ExplorationPlanningError(f"unknown exploration fields: {sorted(unknown)}")
+    raw_checkpoint = payload.get("requires_lift_checkpoint", True)
+    if not isinstance(raw_checkpoint, bool):
+        raise ExplorationPlanningError(
+            "requires_lift_checkpoint must be a boolean"
+        )
 
     strings = ("garment_observation", "reveal_strategy", "expected_observation")
     for name in strings:
@@ -396,12 +491,14 @@ def validate_exploration_payload(
             )
         skill_invocations.append({"name": name, "reason": reason.strip()})
 
+    if isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions <= 0:
+        raise ValueError("max_actions must be a positive integer")
     raw_actions = payload["actions"]
     if not isinstance(raw_actions, list) or not raw_actions:
         raise ExplorationPlanningError("actions must contain at least one action")
-    if len(raw_actions) > MAX_EXPLORATION_ACTIONS:
+    if len(raw_actions) > max_actions:
         raise ExplorationPlanningError(
-            f"actions exceed the {MAX_EXPLORATION_ACTIONS}-action safety limit"
+            f"actions exceed the {max_actions}-action safety limit"
         )
     actions: list[dict[str, Any]] = []
     move_count = 0
@@ -495,6 +592,7 @@ def validate_exploration_payload(
         expected_observation=payload["expected_observation"].strip(),
         safety_notes=tuple(notes),
         skill_invocations=tuple(skill_invocations),
+        requires_lift_checkpoint=raw_checkpoint,
     )
 
 
@@ -502,6 +600,7 @@ def validate_global_exploration_payload(
     payload: Any,
     *,
     allowed_skill_names: Sequence[str] | None = None,
+    max_actions: int = MAX_EXPLORATION_ACTIONS,
 ) -> ExplorationProposal:
     """Validate a full-scene proposal with one Claude-selected image pixel."""
 
@@ -520,13 +619,12 @@ def validate_global_exploration_payload(
             f"unknown global exploration fields: {sorted(unknown)}"
         )
     selected = payload["selected_grasp"]
-    if not isinstance(selected, dict) or set(selected) != {
-        "camera",
-        "pixel_xy",
-        "reason",
-    }:
+    if not isinstance(selected, dict) or set(selected) not in (
+        {"camera", "pixel_xy", "reason"},
+        {"camera", "pixel_xy", "reason", "reference_id"},
+    ):
         raise ExplorationPlanningError(
-            "selected_grasp must contain exactly camera, pixel_xy, and reason"
+            "selected_grasp must contain camera, pixel_xy, reason, and optional reference_id"
         )
     camera = selected["camera"]
     if camera != "A":
@@ -548,11 +646,19 @@ def validate_global_exploration_payload(
         raise ExplorationPlanningError(
             "selected_grasp.reason must be a non-empty string"
         )
+    reference_id = selected.get("reference_id")
+    if reference_id is not None and (
+        not isinstance(reference_id, str) or not re.fullmatch(r"R\d{3,}", reference_id)
+    ):
+        raise ExplorationPlanningError(
+            "selected_grasp.reference_id must look like R001 when supplied"
+        )
     base_payload = dict(payload)
     base_payload.pop("selected_grasp")
     proposal = validate_exploration_payload(
         base_payload,
         allowed_skill_names=allowed_skill_names,
+        max_actions=max_actions,
     )
     return ExplorationProposal(
         garment_observation=proposal.garment_observation,
@@ -562,10 +668,12 @@ def validate_global_exploration_payload(
         expected_observation=proposal.expected_observation,
         safety_notes=proposal.safety_notes,
         skill_invocations=proposal.skill_invocations,
+        requires_lift_checkpoint=proposal.requires_lift_checkpoint,
         selected_grasp={
             "camera": camera,
             "pixel_xy": [int(pixel[0]), int(pixel[1])],
             "reason": reason.strip(),
+            **({"reference_id": reference_id} if reference_id is not None else {}),
         },
     )
 
@@ -576,20 +684,24 @@ def validate_global_probe_profile(
     *,
     measurement: Mapping[str, Any] | None = None,
     max_unvalidated_lateral_mm: float = 35.0,
+    min_hold_lift_mm: float = 40.0,
 ) -> dict[str, Any]:
-    """Require a short diagnostic probe until target-layer motion is supported.
+    """Require an observable hold before conditional target-layer transport.
 
     A positive vertical lift is already required by the generic action validator.
-    This second gate prevents a fresh/uncertain high-relief hypothesis from
-    immediately turning into a long lateral pull that can tighten a rolled
-    wrinkle. When ``measurement`` marks a narrow/mixed shape for compression,
-    it additionally requires a shallow press below the measured surface and a
-    near-vertical hold before any lateral motion. Once a previous evaluation
-    supports target-layer motion, the normal transport authority is restored.
+    This second gate requires a fresh/uncertain high-relief hypothesis to reach
+    a near-vertical, camera-observable checkpoint before any long lateral pull.
+    The complete long trajectory may be proposed and prevalidated up front, but
+    runtime must branch at the hold: continue only when an independent layer is
+    visibly supported, otherwise descend and release. When ``measurement`` marks
+    a narrow/mixed shape for compression, the grasp must also shallowly press
+    below the measured surface before lifting to the checkpoint.
     """
 
     if proposal.selected_grasp is None:
         raise ExplorationPlanningError("probe profile requires a selected grasp")
+    if not math.isfinite(float(min_hold_lift_mm)) or float(min_hold_lift_mm) <= 0:
+        raise ExplorationPlanningError("min_hold_lift_mm must be finite and positive")
 
     # A narrow/ambiguous relief can be a rolled wrinkle rather than a free ply.
     # When the local geometry diagnostic recommends a compression probe, the
@@ -638,14 +750,16 @@ def validate_global_probe_profile(
                 )
             compression_depth_mm = float(raw_depth)
     latest_evaluation: Mapping[str, Any] | None = None
+    latest_record: Mapping[str, Any] | None = None
     for item in reversed(list(history)):
         if not isinstance(item, Mapping):
             continue
         evaluation = item.get("evaluation")
         if isinstance(evaluation, Mapping):
             latest_evaluation = evaluation
+            latest_record = item
             break
-    previous_validated = bool(
+    previous_outcome_supported = bool(
         latest_evaluation is not None
         and (latest_evaluation.get("target_selection") or {}).get("status")
         == "SUPPORTED"
@@ -654,6 +768,31 @@ def validate_global_probe_profile(
         and (latest_evaluation.get("target_structure_acquired") or {}).get("status")
         == "SUPPORTED"
     )
+    current_selected = proposal.selected_grasp
+    previous_selected = None
+    if isinstance(latest_record, Mapping):
+        previous_proposal = latest_record.get("proposal")
+        if isinstance(previous_proposal, Mapping):
+            candidate = previous_proposal.get("selected_grasp")
+            if isinstance(candidate, Mapping):
+                previous_selected = candidate
+    same_validated_anchor = False
+    if previous_outcome_supported and isinstance(previous_selected, Mapping):
+        previous_pixel = previous_selected.get("pixel_xy")
+        current_pixel = current_selected.get("pixel_xy")
+        same_validated_anchor = bool(
+            previous_selected.get("camera") == current_selected.get("camera")
+            and isinstance(previous_pixel, (list, tuple))
+            and isinstance(current_pixel, (list, tuple))
+            and len(previous_pixel) == 2
+            and len(current_pixel) == 2
+            and math.dist(
+                [float(previous_pixel[0]), float(previous_pixel[1])],
+                [float(current_pixel[0]), float(current_pixel[1])],
+            )
+            <= 3.0
+        )
+    previous_validated = previous_outcome_supported and same_validated_anchor
     close_index = next(
         (index for index, action in enumerate(proposal.actions) if action["name"] == "close_gripper"),
         None,
@@ -723,27 +862,46 @@ def validate_global_probe_profile(
         for move in moves
     )
     first_post = moves[0]
+    first_post_lift_mm = float(first_post["z"]) - grasp_z
     first_post_lateral = float(
         np.linalg.norm(
             np.asarray([float(first_post["x"]), float(first_post["y"])]) - grasp_xy
         )
     )
-    if compression_probe_required and first_post_lateral > 5.0 + 1e-6:
+    online_checkpoint_required = bool(
+        compression_probe_required
+        or (not previous_validated and lateral > float(max_unvalidated_lateral_mm) + 1e-6)
+    )
+    if first_post_lateral > 5.0 + 1e-6:
         raise ExplorationPlanningError(
-            "compression probe must lift nearly vertically before any lateral motion; "
+            "online hold checkpoint must lift nearly vertically before any lateral transport; "
             f"first post-grasp lateral offset={first_post_lateral:.1f} mm > 5.0 mm"
         )
-    if not previous_validated and lateral > float(max_unvalidated_lateral_mm) + 1e-6:
+    if first_post_lift_mm < float(min_hold_lift_mm) - 1e-6:
         raise ExplorationPlanningError(
-            "uncertain target-layer hypothesis requires a short lateral probe; "
-            f"requested {lateral:.1f} mm > {float(max_unvalidated_lateral_mm):.1f} mm"
+            "online hold checkpoint lift is too small for an observable acquisition test; "
+            f"requested lift={first_post_lift_mm:.1f} mm < "
+            f"required={float(min_hold_lift_mm):.1f} mm"
         )
     return {
         "mode": "VALIDATED_TRANSPORT" if previous_validated else "STRUCTURE_PROBE",
         "previous_target_layer_supported": previous_validated,
+        "previous_outcome_supported": previous_outcome_supported,
+        "same_validated_anchor": same_validated_anchor,
+        "previous_selected_grasp": (
+            dict(previous_selected) if isinstance(previous_selected, Mapping) else None
+        ),
         "max_lateral_mm": lateral,
         "max_unvalidated_lateral_mm": float(max_unvalidated_lateral_mm),
-        "requires_hold_and_short_probe": not previous_validated,
+        "requires_hold_and_short_probe": False,
+        "requires_online_hold": True,
+        "first_post_lateral_mm": first_post_lateral,
+        "hold_lift_mm": first_post_lift_mm,
+        "min_hold_lift_mm": float(min_hold_lift_mm),
+        "online_checkpoint_required": online_checkpoint_required,
+        "long_transport_is_conditional": bool(
+            lateral > float(max_unvalidated_lateral_mm) + 1e-6
+        ),
         "compression_probe_required": compression_probe_required,
         "compression_probe_surface_shape": (
             diagnostic.get("surface_shape") if diagnostic is not None else None
@@ -756,6 +914,184 @@ def validate_global_probe_profile(
             else None
         ),
     }
+
+
+def split_global_checkpoint_plan(
+    proposal: ExplorationProposal,
+) -> GlobalCheckpointPlan:
+    """Split one proposal at its first post-grasp move and build a safe abort."""
+
+    close_index = next(
+        (
+            index
+            for index, action in enumerate(proposal.actions)
+            if action["name"] == "close_gripper"
+        ),
+        None,
+    )
+    if close_index is None:
+        raise ExplorationPlanningError("checkpoint plan requires close_gripper")
+    checkpoint_index = next(
+        (
+            index
+            for index, action in enumerate(
+                proposal.actions[close_index + 1 :], start=close_index + 1
+            )
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if checkpoint_index is None:
+        raise ExplorationPlanningError("checkpoint plan requires a post-grasp hold move")
+    release_index = next(
+        (
+            index
+            for index, action in enumerate(
+                proposal.actions[checkpoint_index + 1 :],
+                start=checkpoint_index + 1,
+            )
+            if action["name"] == "open_gripper"
+        ),
+        None,
+    )
+    if release_index is None:
+        raise ExplorationPlanningError(
+            "checkpoint continuation must contain an explicit release"
+        )
+    grasp_move = next(
+        (
+            action
+            for action in reversed(proposal.actions[:close_index])
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if grasp_move is None:
+        raise ExplorationPlanningError("checkpoint plan requires a grasp move")
+    hold = proposal.actions[checkpoint_index]["args"]
+    grasp = grasp_move["args"]
+    abort_actions = (
+        {
+            "name": "move",
+            "args": {
+                "x": float(hold["x"]),
+                "y": float(hold["y"]),
+                "z": float(grasp["z"]),
+                "yaw": float(hold["yaw"]),
+            },
+        },
+        {"name": "open_gripper", "args": {}},
+        {"name": "home", "args": {}},
+    )
+    plan = GlobalCheckpointPlan(
+        checkpoint_action_index=checkpoint_index,
+        acquisition_actions=tuple(proposal.actions[: checkpoint_index + 1]),
+        continuation_actions=tuple(proposal.actions[checkpoint_index + 1 :]),
+        abort_actions=abort_actions,
+    )
+    if len(plan.abort_path) > 12:
+        raise ExplorationPlanningError(
+            "checkpoint abort path exceeds the 12-action safety limit"
+        )
+    return plan
+
+
+def split_global_lift_checkpoint_plan(
+    proposal: ExplorationProposal,
+    *,
+    checkpoint_count: int = 3,
+) -> GlobalLiftCheckpointPlan:
+    """Build a lift-only experiment from Claude's first post-grasp lift.
+
+    The runtime uses the first post-grasp move only to determine the lift target. It
+    interpolates two or three same-X/Y lift waypoints, captures evidence at each,
+    then reverses those waypoints to the grasp height before releasing. Claude's
+    later lateral transport is intentionally not executed in this experiment.
+    """
+
+    if not 2 <= int(checkpoint_count) <= 3:
+        raise ExplorationPlanningError("lift checkpoint count must be 2 or 3")
+    close_index = next(
+        (
+            index
+            for index, action in enumerate(proposal.actions)
+            if action["name"] == "close_gripper"
+        ),
+        None,
+    )
+    if close_index is None:
+        raise ExplorationPlanningError("lift checkpoint plan requires close_gripper")
+    grasp_move = next(
+        (
+            action
+            for action in reversed(proposal.actions[:close_index])
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if grasp_move is None:
+        raise ExplorationPlanningError("lift checkpoint plan requires a grasp move")
+    first_lift = next(
+        (
+            action
+            for action in proposal.actions[close_index + 1 :]
+            if action["name"] == "move"
+        ),
+        None,
+    )
+    if first_lift is None:
+        raise ExplorationPlanningError(
+            "lift checkpoint plan requires a post-grasp lift move"
+        )
+    grasp = {key: float(value) for key, value in grasp_move["args"].items()}
+    target = {key: float(value) for key, value in first_lift["args"].items()}
+    lateral = math.hypot(target["x"] - grasp["x"], target["y"] - grasp["y"])
+    if lateral > 5.0 + 1e-6:
+        raise ExplorationPlanningError(
+            "lift checkpoint target must remain near-vertical; "
+            f"lateral offset={lateral:.1f} mm > 5.0 mm"
+        )
+    if target["z"] <= grasp["z"]:
+        raise ExplorationPlanningError(
+            "lift checkpoint target must be above the grounded grasp height"
+        )
+
+    checkpoint_poses: list[dict[str, float]] = []
+    for step in range(1, int(checkpoint_count) + 1):
+        fraction = step / float(checkpoint_count)
+        checkpoint_poses.append(
+            {
+                "x": grasp["x"] + fraction * (target["x"] - grasp["x"]),
+                "y": grasp["y"] + fraction * (target["y"] - grasp["y"]),
+                "z": grasp["z"] + fraction * (target["z"] - grasp["z"]),
+                "yaw": target["yaw"],
+            }
+        )
+
+    lift_moves = tuple(
+        {"name": "move", "args": dict(pose)} for pose in checkpoint_poses
+    )
+    prefix = tuple(dict(action) for action in proposal.actions[: close_index + 1])
+    return_moves = tuple(
+        {"name": "move", "args": dict(pose)}
+        for pose in (*reversed(checkpoint_poses[:-1]), grasp)
+    )
+    return_actions = return_moves + (
+        {"name": "open_gripper", "args": {}},
+        {"name": "home", "args": {}},
+    )
+    actions = prefix + lift_moves + return_actions
+    checkpoint_start = len(prefix)
+    checkpoint_indices = tuple(
+        checkpoint_start + index for index in range(len(lift_moves))
+    )
+    return GlobalLiftCheckpointPlan(
+        actions=actions,
+        checkpoint_action_indices=checkpoint_indices,
+        checkpoint_poses=tuple(checkpoint_poses),
+        acquisition_actions=prefix + lift_moves,
+        return_actions=return_actions,
+    )
 
 
 def _measure_global_selected_surface(
@@ -811,10 +1147,11 @@ def ground_global_grasp_target(
     proposal: ExplorationProposal,
     perception_dir: Path,
     *,
+    robot_config: RobotConfig | None = None,
     radius_px: int = 3,
     anchor_match_tolerance_mm: float = 2.0,
 ) -> tuple[ExplorationProposal, dict[str, Any]]:
-    """Apply the selected pixel's measured XY to every grasp-anchor waypoint."""
+    """Apply runtime-authoritative selected-pixel XYZ to the grasp trajectory."""
 
     selected = proposal.selected_grasp
     if selected is None:
@@ -831,6 +1168,22 @@ def ground_global_grasp_target(
     measured_xy = np.asarray(
         measurement["base_xyz_median_mm"][:2], dtype=np.float64
     )
+    requested_grasp_z_mm = float(grasp_move["z"])
+    grasp_height_resolution: dict[str, Any] | None = None
+    authoritative_grasp_z_mm = requested_grasp_z_mm
+    if robot_config is not None:
+        try:
+            resolution = resolve_grasp_height(
+                measurement=measurement,
+                table_plane_abc=None,
+                robot_config=robot_config,
+            )
+        except GraspHeightError as exc:
+            raise ExplorationPlanningError(
+                f"shared grasp-height policy rejected the selected pixel: {exc}"
+            ) from exc
+        grasp_height_resolution = resolution.as_dict()
+        authoritative_grasp_z_mm = resolution.target_xyz_mm[2]
     tolerance = float(anchor_match_tolerance_mm)
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ExplorationPlanningError(
@@ -849,6 +1202,8 @@ def ground_global_grasp_target(
                 args["x"] = float(measured_xy[0])
                 args["y"] = float(measured_xy[1])
                 grounded_action_numbers.append(action_index + 1)
+            if action_index == grasp_action_index and robot_config is not None:
+                args["z"] = float(authoritative_grasp_z_mm)
         grounded_actions.append(grounded_action)
 
     grounded_proposal = replace(proposal, actions=tuple(grounded_actions))
@@ -856,19 +1211,33 @@ def ground_global_grasp_target(
     post_grounding_xy = np.asarray(
         [grounded_grasp_move["x"], grounded_grasp_move["y"]], dtype=np.float64
     )
+    post_grounding_z_mm = float(grounded_grasp_move["z"])
     post_grounding_error_mm = float(np.linalg.norm(post_grounding_xy - measured_xy))
     if post_grounding_error_mm > 1e-6:
         raise ExplorationPlanningError(
             "runtime failed to apply selected-pixel XY to the grasp target"
         )
+    if robot_config is not None and abs(
+        post_grounding_z_mm - authoritative_grasp_z_mm
+    ) > 1e-6:
+        raise ExplorationPlanningError(
+            "runtime failed to apply the shared grasp-height target"
+        )
     return grounded_proposal, {
         "selected_grasp": dict(selected),
         "measurement": measurement,
-        "grounding_policy": "runtime_authoritative_selected_pixel_xy",
+        "grounding_policy": (
+            "runtime_authoritative_selected_pixel_xyz"
+            if robot_config is not None
+            else "runtime_authoritative_selected_pixel_xy"
+        ),
         "claude_requested_grasp_xy_mm": requested_xy.tolist(),
         "commanded_grasp_xy_mm": post_grounding_xy.tolist(),
         "xy_correction_mm": float(np.linalg.norm(requested_xy - measured_xy)),
         "post_grounding_xy_error_mm": post_grounding_error_mm,
+        "claude_requested_grasp_z_mm": requested_grasp_z_mm,
+        "commanded_grasp_z_mm": post_grounding_z_mm,
+        "grasp_height_resolution": grasp_height_resolution,
         "grounded_action_numbers": grounded_action_numbers,
         "anchor_match_tolerance_mm": tolerance,
         "valid": True,
@@ -927,7 +1296,10 @@ def _json_from_claude_text(text: str) -> dict[str, Any]:
         if isinstance(outer, dict) and isinstance(outer.get("structuredOutput"), dict):
             return outer["structuredOutput"]
         if isinstance(outer, dict) and isinstance(outer.get("result"), str):
-            candidates.insert(0, outer["result"])
+            # The CLI envelope itself is valid JSON but is not the requested
+            # proposal.  If its result text is malformed, never fall through
+            # and accidentally return the envelope as if it were a plan.
+            candidates = [outer["result"]]
         elif isinstance(outer, dict) and isinstance(outer.get("result"), dict):
             return outer["result"]
         elif isinstance(outer, dict):
@@ -982,7 +1354,18 @@ class ClaudeExplorationClient:
         image_paths: Iterable[str | Path],
         prompt: str,
         run_dir: Path,
+        *,
+        direct_prompt: bool = False,
+        preview_only: bool = False,
+        reference_mode: bool = False,
     ) -> ClaudeExplorationResult:
+        """Ask Claude for one structured proposal.
+
+        Production callers use ``direct_prompt=True`` so the complete generated
+        context is the CLI prompt itself; the markdown context remains only an
+        auditable snapshot. ``False`` is retained for older integrations that
+        intentionally exercise the context-file bootstrap protocol.
+        """
         root = run_dir.resolve()
         if not root.is_dir():
             raise ExplorationPlanningError(f"run directory does not exist: {root}")
@@ -1008,6 +1391,14 @@ class ClaudeExplorationClient:
                 return "REFERENCE | FLAT GARMENT | RAW RGB"
             if name == "camera_a_flat_reference_anchors.png":
                 return "REFERENCE | FLAT GARMENT | ANNOTATED ANCHORS"
+            if name == "camera_a_rgb_upright.png":
+                return "CURRENT CAMERA A | RGB | UPRIGHT (CLOCKWISE 90-DEG ROTATION)"
+            if name == "camera_a_rxxx_overlay_upright.png":
+                return "CURRENT CAMERA A | Rxxx OVERLAY | UPRIGHT (CLOCKWISE 90-DEG ROTATION)"
+            if name == "camera_a_coordinate_overlay.png":
+                return "CURRENT CAMERA A | Rxxx COORDINATE OVERLAY"
+            if name == "camera_a_coordinate_guide.json":
+                return "CURRENT CAMERA A | Rxxx COORDINATE GUIDE"
             return "CURRENT SCENE | RGB/GEOMETRY"
 
         image_text = "\n".join(
@@ -1035,14 +1426,109 @@ class ClaudeExplorationClient:
             "now, and use height/depth maps only to verify relief, layer boundaries, "
             "and graspability. Do not choose a point solely because it is the brightest "
             "or highest point in a heatmap. A narrow ridge or isolated height spike may "
-            "be a rolled wrinkle rather than a separable free ply; require a conservative "
-            "vertical lift/hold check and a short relative-motion check before committing "
-            "to a long lateral pull. If the local-surface diagnostic marks "
-            "`compression_probe_recommended`, close only after lowering the grasp TCP to "
-            "about the recommended shallow depth below the measured surface. This is a "
+            "be a rolled wrinkle rather than a separable free ply; make the first post-grasp "
+            "move a conservative near-vertical lift/hold checkpoint at least 40 mm above the "
+            "grasp height. You may plan the full "
+            "meaningful lateral transport after that hold: runtime will inspect fresh Camera "
+            "A/B RGB-D and execute the remaining transport only when independent cloth-layer "
+            "motion is visibly supported. A visibly held garment corner or cloth patch counts "
+            "as support when the rest of the garment and distant landmarks remain seated; a "
+            "pre-existing visible opening or certain semantic ply identity is not required. "
+            "Otherwise runtime descends and releases. If the "
+            "local-surface diagnostic marks "
+            "`compression_probe_recommended`, runtime will lower the grasp TCP using the "
+            "shared shallow-compression policy; do not override that height. This is a "
             "controlled compression test, not permission to press deeply into the table."
         )
-        full_prompt = (
+        if preview_only:
+            system_prompt = (
+                "You are a planning-only robotics garment analyst. The user wants to inspect "
+                "Claude's complete visual fold plan before execution. Read the supplied images "
+                "and return exactly one JSON proposal. Do not call any grounding or geometry "
+                "tool, do not edit files, do not execute commands, do not control a robot, and "
+                "do not perform workspace, table-height, preflight, or IK validation. Choose a "
+                "Camera-A image pixel and explicitly describe the complete intended grasp, "
+                "lift, transport, laydown, release, and home trajectory. The coordinates are "
+                "preview values for diagnosing planning only; the runtime will not execute them. "
+                "In this free-motion preview, temporarily ignore workspace boundaries, table "
+                "clearance, collision, reachability, speed, and controller limits. If the prompt "
+                "contains a previous-plan ledger, use it to remember which garment part was "
+                "already planned, distinguish planned from physically executed actions, and "
+                "choose or deliberately revise the next part rather than forgetting the history."
+            )
+            # The preview caller may rotate Camera A before presenting it. Keep this
+            # orientation contract explicit so Claude does not mentally rotate the
+            # already-upright image a second time.
+            if any(path.name.lower() == "camera_a_rgb_upright.png" for path in safe_images):
+                system_prompt += (
+                    " Camera A is already displayed in upright garment orientation after a "
+                    "clockwise 90-degree image rotation; reason directly in the displayed "
+                    "orientation and do not rotate it again. The Rxxx overlay uses the same "
+                    "rotated image frame."
+                )
+            if reference_mode:
+                system_prompt += (
+                    " The current scene includes a labeled Rxxx coordinate overlay. This is an "
+                    "RGB-only visual decision: do not use height, depth, gradient, table, or "
+                    "calibrated XYZ evidence to rank or reject markers. In this invocation, "
+                    "selected_grasp must name one displayed Rxxx reference and use that marker's "
+                    "visible pixel; never invent an unmarked pixel."
+                )
+        if "LIFT_CHECKPOINT_EXPERIMENT" in prompt:
+            system_prompt += (
+                " This invocation plans a lift-checkpoint experiment: the runtime will "
+                "capture several rising Camera A/B checkpoints and reverse the lift to "
+                "release. Do not assume that a Claude hold-classification call or a long "
+                "lateral continuation will run during this physical iteration; make the "
+                "first post-grasp lift target the primary useful output."
+            )
+        if preview_only:
+            full_prompt = (
+                f"{prompt}\n\nGarment images to inspect:\n{image_text}\n\n"
+                "PLANNING-ONLY PREVIEW:\n"
+                "This call is only for inspecting Claude's proposed fold plan. Do not use a "
+                "grounding tool and do not try to make the plan controller-valid. First choose "
+                "one Camera-A grasp pixel from the RGB scene. Then output one complete overall "
+                "plan with every gripper state and every move waypoint in order. Explain which "
+                "garment part is grasped, where it is carried, where it is laid down, and what "
+                "visual change should result. Keep the plan coherent as one fold action even if "
+                "some numeric waypoints would later fail workspace or IK checks.\n\n"
+                "Use the reference and current RGB images for visual reasoning, but do not "
+                "call any coordinate or surface-measurement tool. Return only the required JSON.\n\n"
+                "Return exactly these fields: selected_grasp ({camera: A, pixel_xy: [integer x, "
+                "integer y], reason: string}), garment_observation (string), reveal_strategy "
+                "(string; describe the fold intent), confidence (number 0..1), actions "
+                "(non-empty ordered list of {name,args}), expected_observation (string), "
+                "safety_notes (non-empty list of strings), optional skill_invocations, and "
+                "requires_lift_checkpoint (boolean). For every move, include numeric x,y,z,yaw "
+                "in millimetres/degrees. For open_gripper, close_gripper, and home, use exactly "
+                "args: {} with no extra fields. Include open/close gripper states and home. "
+                "Keep the action list at or below 12."
+            )
+            if reference_mode:
+                full_prompt += (
+                    "\n\nRXXX CANDIDATE SELECTION MODE:\n"
+                    "Camera A may be presented after a clockwise 90-degree rotation so that "
+                    "the collar-to-hem direction matches the flat reference. Reason in the "
+                    "displayed orientation; do not rotate the image a second time. The Rxxx "
+                    "reference_id remains the stable grasp identity, and the runtime maps that "
+                    "ID back to the original Camera-A calibration internally. Do not convert the "
+                    "displayed pixel back to the original image yourself.\n"
+                    "The Camera A coordinate overlay contains uniformly distributed, labeled "
+                    "Rxxx points over the garment. Use only the current raw RGB and this visual "
+                    "overlay to decide which marker lies on the desired cloth region. Do not "
+                    "inspect or infer from height maps, depth maps, gradients, table values, or "
+                    "calibrated XYZ data, and do not reject a marker because of a negative or "
+                    "unavailable depth value. First choose one visible Rxxx marker on actual "
+                    "cloth, preferably an outer sleeve/cuff or other free edge. Return "
+                    "selected_grasp.reference_id exactly as the chosen marker ID and return "
+                    "selected_grasp.pixel_xy exactly as that marker's visible overlay pixel. "
+                    "Do not invent an unmarked pixel and do not output a pixel between markers. "
+                    "The free-motion exception applies only to later transport waypoints: the "
+                    "grasp waypoint must remain anchored to the chosen Rxxx reference.\n"
+                )
+        else:
+            full_prompt = (
             f"{prompt}\n\nGarment images to inspect:\n{image_text}\n\n"
             "Visual evidence priority:\n"
             "1. Inspect `REFERENCE | FLAT GARMENT | RAW RGB` first to establish the "
@@ -1059,10 +1545,12 @@ class ClaudeExplorationClient:
             "keep those hypotheses separate. Before selecting a pixel, state the target-relevant "
             "reference region, the currently covering layer when relevant, and the expected "
             "directly visible task change. If the selected structure is a narrow ridge, plan the "
-            "first post-grasp move as a near-vertical hold and only then a short lateral probe; "
-            "do not spend the whole action on a long pull before observing independent material "
-            "motion. If the returned diagnostic recommends compression, close at roughly "
-            "1 mm below the measured surface, then lift nearly vertically before any lateral "
+            "first post-grasp move as a near-vertical hold at least 40 mm above the grasp height, "
+            "then provide the full useful transport "
+            "and laydown as the conditional continuation. Do not replace the useful continuation "
+            "with a repeated 10-30 mm probe: runtime observes the hold before deciding whether the "
+            "continuation is physically authorized. If the returned diagnostic recommends compression, runtime applies "
+            "the shared shallow-compression grasp height; then lift nearly vertically before any lateral "
             "motion. During the hold, compare the peak with its neighbouring cloth: if the "
             "height difference visibly collapses without an independent hanging patch, call "
             "this a `COMPRESSIBLE_SINGLE_PEAK`/rolled wrinkle, lower grasp confidence, release, "
@@ -1084,12 +1572,13 @@ class ClaudeExplorationClient:
             "`sample_local_surface` exactly once with camera=A for that chosen pixel. Do not use the tool "
             "to compare, rank, scan, or search pixels. The runtime owns the precise grasp "
             "target: after your proposal, it independently measures the chosen pixel and "
-            "replaces the grasp-anchor X/Y with `base_xyz_median_mm`. Use that returned X/Y "
-            "for a coherent provisional approach and lift path, but never intentionally "
+            "replaces the grasp-anchor X/Y/Z using `base_xyz_median_mm`, local table height, "
+            "the robot lower bound, and the shared compression policy. Use that returned "
+            "surface XYZ for a coherent provisional approach and lift path, but never intentionally "
             "offset it toward another visual region. To grasp another region, select that "
             "Camera A pixel instead. You remain responsible for all "
-            "other action coordinates and geometry, including approach, grasp TCP "
-            "height, lift, retreat, laydown, release, and yaw. Cite the single returned "
+            "other action coordinates and geometry, including approach, lift, retreat, "
+            "laydown, release, and yaw; grasp TCP height is runtime-authoritative. Cite the single returned "
             "measurement in `reveal_strategy` or `safety_notes`, then return the final "
             "proposal without another tool call. The measurement is not a grasp "
             "recommendation or motion authorization.\n\n"
@@ -1102,19 +1591,22 @@ class ClaudeExplorationClient:
             "describe the opening/regrasp/laydown strategy here), confidence (number "
             "0..1), actions (non-empty list of {name,args}), expected_observation (string), "
             "safety_notes (non-empty list of strings), and optional skill_invocations "
-            "(list of {name,reason}; use only an approved skill name from the library). "
+            "(list of {name,reason}; use only an approved skill name from the library), "
+            "and requires_lift_checkpoint (boolean). "
             "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees; "
             "yaw is relative to the calibrated Home TCP orientation, so yaw=0 keeps "
             "the gripper orientation without an unnecessary wrist turn. "
-            "You choose the grasp region and all waypoint geometry. Prefer an action that "
+            "You choose the grasp region and all remaining waypoint geometry after the "
+            "runtime-authoritative grasp target. Prefer an action that "
             "directly advances the Objective stated above. If the Objective names a specific "
             "garment part or region, do not substitute a generic spreading action for that target. "
-            "Use a small anchor test only when uncertainty prevents a grounded task action. "
+            "Represent uncertainty with the near-vertical online hold checkpoint, while still "
+            "planning the useful task action that should follow if the hold supports an independent layer. "
             "If you invoke an approved skill, use its procedural guidance "
             "but still emit explicit Claude-chosen move waypoints; the skill never supplies "
             "fixed coordinates. Always release before the action list ends. Keep the action "
             "list at or below 12."
-        )
+            )
         context_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         context_dir = root / "workspace" / "claude_planning_contexts"
         context_dir.mkdir(parents=True, exist_ok=True)
@@ -1129,38 +1621,57 @@ class ClaudeExplorationClient:
             "the permitted grounding tool as specified there, and return only the "
             "required JSON object."
         )
-        mcp_config = grounding_mcp_config(root, mode="pixel")
-        enabled_tools = ("Read", *PIXEL_GROUNDING_MCP_TOOLS)
-        command = [
-            binary,
-            "--print",
+        mcp_config = grounding_mcp_config(root, mode="pixel") if not preview_only else None
+        enabled_tools = ("Read", *PIXEL_GROUNDING_MCP_TOOLS) if not preview_only else ("Read",)
+        command = [binary, "--print"]
+        if direct_prompt:
+            # The caller has already supplied the complete context, image list,
+            # and task contract. Passing it as the print prompt avoids spending
+            # a model turn opening the generated context markdown first.
+            command.append(full_prompt)
+        schema = GLOBAL_EXPLORATION_JSON_SCHEMA
+        if preview_only and reference_mode:
+            schema = copy.deepcopy(GLOBAL_EXPLORATION_JSON_SCHEMA)
+            selected_schema = schema["properties"]["selected_grasp"]
+            selected_schema["required"] = [
+                "camera",
+                "pixel_xy",
+                "reference_id",
+                "reason",
+            ]
+        command.extend([
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(GLOBAL_EXPLORATION_JSON_SCHEMA, separators=(",", ":")),
+            json.dumps(schema, separators=(",", ":")),
             "--permission-mode",
             "dontAsk",
             "--allowedTools",
             ",".join(enabled_tools),
             "--tools",
             "Read",
-            "--mcp-config",
-            json.dumps(mcp_config, ensure_ascii=False, separators=(",", ":")),
-            "--strict-mcp-config",
             "--disable-slash-commands",
             "--no-session-persistence",
             "--add-dir",
             str(root),
             "--system-prompt",
             system_prompt,
-        ]
+        ])
+        if mcp_config is not None:
+            # Keep the MCP server out of planning-only previews.  Executing
+            # callers retain the existing strict read-only grounding contract.
+            command[command.index("--disable-slash-commands"):command.index("--disable-slash-commands")] = [
+                "--mcp-config",
+                json.dumps(mcp_config, ensure_ascii=False, separators=(",", ":")),
+                "--strict-mcp-config",
+            ]
         completed = None
         try:
             completed = subprocess.run(
                 command,
                 cwd=root,
                 text=True,
-                input=bootstrap_prompt,
+                input=None if direct_prompt else bootstrap_prompt,
                 capture_output=True,
                 timeout=self.timeout_s,
                 check=False,
@@ -1173,6 +1684,7 @@ class ClaudeExplorationClient:
                     "prompt": full_prompt,
                     "prompt_context_path": str(context_path),
                     "bootstrap_prompt": bootstrap_prompt,
+                    "input_mode": "direct_prompt" if direct_prompt else "context_file_bootstrap",
                     "command": list(command),
                     "returncode": None,
                     "stdout": getattr(exc, "stdout", "") or "",
@@ -1195,6 +1707,7 @@ class ClaudeExplorationClient:
                     "prompt": full_prompt,
                     "prompt_context_path": str(context_path),
                     "bootstrap_prompt": bootstrap_prompt,
+                    "input_mode": "direct_prompt" if direct_prompt else "context_file_bootstrap",
                     "command": list(command),
                     "returncode": None,
                     "stdout": "",
@@ -1214,6 +1727,7 @@ class ClaudeExplorationClient:
                     "prompt": full_prompt,
                     "prompt_context_path": str(context_path),
                     "bootstrap_prompt": bootstrap_prompt,
+                    "input_mode": "direct_prompt" if direct_prompt else "context_file_bootstrap",
                     "command": list(command),
                     "returncode": completed.returncode,
                     "stdout": completed.stdout,
@@ -1228,8 +1742,11 @@ class ClaudeExplorationClient:
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
         try:
+            parsed_payload = _json_from_claude_text(completed.stdout)
+            if preview_only:
+                parsed_payload = _normalize_preview_action_args(parsed_payload)
             proposal = validate_global_exploration_payload(
-                _json_from_claude_text(completed.stdout),
+                parsed_payload,
                 allowed_skill_names=self.skill_names,
             )
         except BaseException as exc:
@@ -1264,6 +1781,7 @@ class ClaudeExplorationClient:
                 "prompt": result.prompt,
                 "prompt_context_path": str(context_path),
                 "bootstrap_prompt": bootstrap_prompt,
+                "input_mode": "direct_prompt" if direct_prompt else "context_file_bootstrap",
                 "command": list(result.command),
                 "returncode": result.returncode,
                 "stdout": result.stdout,
@@ -1271,6 +1789,199 @@ class ClaudeExplorationClient:
                 "created_at": result.created_at,
                 "proposal": result.proposal.as_dict(),
             },
+        )
+        return result
+
+    def evaluate_hold_checkpoint(
+        self,
+        before_images: Iterable[str | Path],
+        hold_images: Iterable[str | Path],
+        *,
+        proposal: ExplorationProposal,
+        run_dir: Path,
+        timeout_s: int = 600,
+    ) -> dict[str, Any]:
+        """Classify a live post-grasp hold; only independent ply support continues."""
+
+        if not 15 <= int(timeout_s) <= 900:
+            raise ValueError("hold checkpoint timeout_s must be between 15 and 900")
+        root = run_dir.resolve()
+        if not root.is_dir():
+            raise ExplorationPlanningError(f"run directory does not exist: {root}")
+
+        def safe_paths(values: Iterable[str | Path]) -> list[Path]:
+            paths: list[Path] = []
+            for raw in values:
+                path = Path(raw)
+                if not path.is_absolute():
+                    path = root / path
+                path = path.resolve()
+                if path != root and root not in path.parents:
+                    raise PermissionError(
+                        "hold-checkpoint images must stay inside the current run"
+                    )
+                if not path.is_file():
+                    raise FileNotFoundError(path)
+                paths.append(path)
+            return paths
+
+        before = safe_paths(before_images)
+        hold = safe_paths(hold_images)
+        if not before or not hold:
+            raise ExplorationPlanningError(
+                "hold checkpoint requires both before and live hold images"
+            )
+        classifications = (
+            "INDEPENDENT_LAYER_SUPPORTED",
+            "WHOLE_GARMENT_COUPLED",
+            "COMPRESSIBLE_SINGLE_PEAK",
+            "NO_HOLD",
+            "UNKNOWN",
+        )
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "classification": {"type": "string", "enum": list(classifications)},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "evidence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "independent_patch_supported": {"type": "boolean"},
+                "distant_landmark_motion": {
+                    "type": "string",
+                    "enum": ["STATIONARY", "COUPLED", "UNCLEAR"],
+                },
+                "peak_response": {
+                    "type": "string",
+                    "enum": ["INDEPENDENT_HANG", "COLLAPSED", "TIGHTENED", "NO_MOTION", "UNCLEAR"],
+                },
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": [
+                "classification",
+                "confidence",
+                "evidence",
+                "independent_patch_supported",
+                "distant_landmark_motion",
+                "peak_response",
+                "reason",
+            ],
+        }
+        prompt = (
+            "This is a time-bounded physical hold checkpoint. The robot has closed the "
+            "gripper at the selected Camera A point and moved only to its first post-grasp "
+            "hold waypoint. Compare the labelled BEFORE RGB/depth evidence with the fresh "
+            "HOLD Camera A/B RGB/depth evidence listed below. Determine whether the gripper "
+            "visibly supports a cloth patch that moves independently while distant garment "
+            "landmarks remain on the table. Height alone is not enough. A ridge that collapses "
+            "toward neighbouring cloth is COMPRESSIBLE_SINGLE_PEAK. Distant landmarks rising "
+            "or moving together is WHOLE_GARMENT_COUPLED. No visible held material is NO_HOLD. "
+            "Any ambiguity is UNKNOWN. A visibly held corner or cloth region with the rest of "
+            "the garment still seated qualifies as an independent hanging/tented patch even if "
+            "its exact semantic part or ply topology was uncertain before contact; do not require "
+            "a pre-existing visible opening after the physical lift has supplied direct evidence. "
+            "Use INDEPENDENT_LAYER_SUPPORTED when that held patch and stationary distant landmarks "
+            "are both positively visible in either full-resolution Camera A or Camera B hold view. "
+            "Return only the schema JSON; do not execute commands or control the robot.\n\n"
+            f"Selected proposal: {json.dumps(proposal.as_dict(), ensure_ascii=False)}\n\n"
+            "BEFORE evidence:\n"
+            + "\n".join(f"- {path}" for path in before)
+            + "\n\nHOLD evidence:\n"
+            + "\n".join(f"- {path}" for path in hold)
+        )
+        binary = (
+            shutil.which(self.binary)
+            if Path(self.binary).name == self.binary
+            else self.binary
+        )
+        if binary is None:
+            raise ExplorationPlanningError(f"Claude CLI not found: {self.binary}")
+        command = [
+            binary,
+            "--print",
+            prompt,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema, separators=(",", ":")),
+            "--permission-mode",
+            "dontAsk",
+            "--allowedTools",
+            "Read",
+            "--tools",
+            "Read",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--add-dir",
+            str(root),
+            "--system-prompt",
+            (
+                "You are a conservative real-time garment hold classifier. Inspect only the "
+                "listed images. False continuation can damage the garment state, so uncertainty "
+                "must be UNKNOWN. Return only the requested JSON object."
+            ),
+        ]
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=int(timeout_s),
+                check=False,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ExplorationTimeoutError(
+                f"Claude hold checkpoint timed out after {int(timeout_s)} seconds"
+            ) from exc
+        if completed.returncode != 0:
+            raise ExplorationPlanningError(
+                f"Claude hold checkpoint exited with {completed.returncode}: "
+                f"{completed.stderr.strip() or completed.stdout.strip()}"
+            )
+        parsed = _json_from_claude_text(completed.stdout)
+        if set(parsed) != set(schema["required"]):
+            raise ExplorationPlanningError(
+                "Claude hold checkpoint returned missing or unknown fields"
+            )
+        classification = parsed.get("classification")
+        if classification not in classifications:
+            raise ExplorationPlanningError(
+                f"invalid hold checkpoint classification: {classification!r}"
+            )
+        confidence = _finite_number(parsed.get("confidence"), "checkpoint confidence")
+        evidence = parsed.get("evidence")
+        if not 0 <= confidence <= 1 or not isinstance(evidence, list) or not evidence:
+            raise ExplorationPlanningError("invalid hold checkpoint confidence/evidence")
+        positive = bool(
+            classification == "INDEPENDENT_LAYER_SUPPORTED"
+            and parsed.get("independent_patch_supported") is True
+            and parsed.get("distant_landmark_motion") == "STATIONARY"
+            and parsed.get("peak_response") == "INDEPENDENT_HANG"
+        )
+        result = {
+            **parsed,
+            "continue_transport": positive,
+            "runtime_decision": "CONTINUE_TRANSPORT" if positive else "ABORT_RELEASE",
+            "duration_s": time.monotonic() - started,
+            "before_images": [str(path) for path in before],
+            "hold_images": [str(path) for path in hold],
+            "command": command,
+            "returncode": completed.returncode,
+            "raw_stdout": completed.stdout,
+            "raw_stderr": completed.stderr,
+        }
+        log_dir = root / "results" / "claude_hold_checkpoint"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        (log_dir / f"{stamp}.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return result
 
@@ -1562,29 +2273,34 @@ def exploration_prompt(
     )
     mode_text = (
         "Planning mode: VALIDATED EXPANSION. The previous target selection, grasp acquisition, "
-        "and target-layer motion were supported. Preserve the grasp anchor/depth and carry out "
-        "a meaningful outward transport, normally using most of the visible safe distance; do "
-        "not repeat a few-millimetre probe."
+        "and target-layer motion were supported. Preserve the grasp anchor/depth, first use a "
+        "near-vertical observable hold at least 40 mm above the grasp height, and then carry out a meaningful outward transport, "
+        "normally using most of the visible safe distance; do not repeat a few-millimetre probe."
         if previous_validated
         else (
-            "Planning mode: EXPLORATION. No target-layer hypothesis is fully validated yet. "
-            "Use a small reversible probe, roughly 10–30 mm or at most one third of the visibly "
-            "safe distance, to identify the layer response before committing to a long pull."
+            "Planning mode: ONLINE-CHECKPOINTED EXPLORATION. No target-layer hypothesis is fully "
+            "validated yet. First lift nearly vertically by at least 40 mm to an observable hold, then include a "
+            "meaningful safe transport and controlled laydown as the conditional continuation. "
+            "Runtime will use fresh Camera A/B RGB-D at the hold and will execute that continuation "
+            "only if an independently supported cloth layer is visible; otherwise it descends and releases."
         )
     )
     custom_objective = not is_default_exploration_objective(objective)
     if custom_objective:
         mode_text = (
             "Planning mode: VALIDATED TASK PROGRESS. The previous target selection, grasp "
-            "acquisition, and target motion were supported. Preserve the named target and "
-            "make a meaningful next move toward the user objective; do not switch to a "
+            "acquisition, and target motion were supported. Preserve the named target, first "
+            "use a near-vertical observable hold at least 40 mm above the grasp height, and make a meaningful next move toward the "
+            "user objective; do not switch to a "
             "generic garment-spreading action."
             if previous_validated
             else
             "Planning mode: TASK-DIRECTED EXPLORATION. The named target or its layer is not "
-            "fully validated yet. Use the smallest reversible action that resolves the "
-            "specific uncertainty needed to execute the user objective, then continue toward "
-            "that objective; do not perform an unrelated generic spreading probe."
+            "fully validated yet. Put the uncertainty test in the first near-vertical hold at "
+            "least 40 mm above the grasp height, then "
+            "include a meaningful conditional continuation toward the exact user objective. Runtime "
+            "will abort that continuation unless fresh Camera A/B RGB-D supports an independent held "
+            "layer; do not replace the requested task with repeated tiny unrelated probes."
         )
         task_contract = (
             "The user-provided objective above is the sole task objective for this run. "
@@ -1649,8 +2365,9 @@ def exploration_prompt(
         "Do not redesign this into a candidate list or SELECT/PROBE/VERIFY state machine.\n\n"
         "The only available low-level calls are move(x,y,z,yaw), open_gripper(), "
         "close_gripper(), and home(). Every Cartesian waypoint must be emitted explicitly as "
-        "a move(x,y,z,yaw) action and the runtime executes those values without replacing them "
-        "with a template. You must choose the approach height, grasp height, lift/retreat "
+        "a move(x,y,z,yaw) action. Runtime preserves the planned trajectory except that it "
+        "replaces the final grasp-anchor XYZ with the shared calibrated grasp-height result. "
+        "You must choose the approach height, lift/retreat "
         "height, lateral destination, release height, and yaw from the current observation. "
         "Yaw is relative to the calibrated Home TCP orientation; yaw=0 preserves the "
         "gripper orientation and does not request a pre-grasp wrist rotation. "
@@ -1670,17 +2387,20 @@ def exploration_prompt(
         "narrow ridge or isolated height spike is specifically ambiguous: it may be a free "
         "overlapping layer, or it may be a rolled wrinkle that will only curl upward when pulled. "
         "If the selected-pixel local-surface diagnostic contains `compression_probe_recommended=true`, "
-        "treat that as a required shallow compression probe: close at approximately the returned "
-        "`recommended_press_below_surface_mm` below the measured surface, then lift nearly vertically "
+        "treat that as a required shallow compression probe: runtime applies the shared configured "
+        "compression depth including that recommendation, then lift nearly vertically "
         "before any lateral motion. Compare the compressed peak with its neighbouring cloth in the "
         "hold/rollout frames. If the peak-to-neighbour height difference collapses without a separate "
         "hanging patch, classify it as `COMPRESSIBLE_SINGLE_PEAK` (likely rolled wrinkle), lower the "
         "graspability confidence, release, and re-plan instead of pulling it farther. "
-        "For an ambiguous ridge, the first post-grasp move must be a near-vertical lift/hold, "
-        "followed by a very short lateral check only if the lifted material forms a visible "
-        "tent/hanging patch while far garment landmarks stay put. If the ridge merely gets taller, "
-        "narrows, or rotates without independent hanging material, release and re-plan instead of "
-        "continuing the pull. In a "
+        "For an ambiguous ridge, the first post-grasp move must be a near-vertical lift/hold "
+        "at least 40 mm above the grasp height. "
+        "Still plan a complete useful transport and controlled laydown after that hold; runtime "
+        "will conditionally skip those remaining actions unless fresh full-resolution Camera A/B "
+        "evidence supports the hold. A visibly lifted corner or cloth patch with the rest of the "
+        "garment and far landmarks still seated is positive physical acquisition evidence even if "
+        "no opening passage was identifiable before contact. If the ridge merely gets taller, "
+        "narrows, or rotates without independently held material, runtime descends and releases. In a "
         "severely crumpled/OOD state, full garment topology may be unobservable and semantic "
         "keypoints may be unreliable. Semantic identity "
         "is uncertain when evidence is weak; prefer phrases such as possible boundary, "
@@ -1694,7 +2414,12 @@ def exploration_prompt(
         f"Robot workspace bounds (mm): {json.dumps(bounds, ensure_ascii=False)}\n"
         f"Fixed orientation: roll={robot.orientation_roll_deg} deg, pitch={robot.orientation_pitch_deg} deg\n\n"
         "Available procedural skill guidance:\n"
-        f"{skill_guidance if skill_guidance is not None else skill_prompt()}\n"
+        f"{skill_guidance if skill_guidance is not None else skill_prompt()}\n\n"
+        "Runtime evidence precedence: skills and prior evaluations are fallible guidance, not a "
+        "veto on fresh physical evidence. If the online hold visibly supports a corner or cloth "
+        "patch while the rest of the garment stays seated, preserve that acquisition and execute "
+        "the conditionally planned meaningful continuation. Do not discard it merely because a "
+        "static image lacked a resolvable opening or an older run called similar attempts failures.\n"
     )
 
 
@@ -1774,6 +2499,7 @@ def global_perception_image_paths(
         for key in (
             "image",
             "garment_rgb",
+            "coordinate_overlay",
             "height_map",
             "height_map_global",
             "height_map_boundary",
@@ -1790,6 +2516,36 @@ def global_perception_image_paths(
     if not paths:
         raise FileNotFoundError("perception result contains no saved full-scene images")
     return paths
+
+
+def invoke_direct_prompt(
+    client: Any,
+    image_paths: Iterable[str | Path],
+    prompt: str,
+    run_dir: Path,
+) -> ClaudeExplorationResult:
+    """Invoke a planning client with the complete prompt in one CLI turn.
+
+    A few lightweight test/dashboard adapters intentionally implement the older
+    three-argument ``invoke`` protocol. Keep those adapters usable while the
+    real :class:`ClaudeExplorationClient` receives ``direct_prompt=True``.
+    """
+
+    invoke = getattr(client, "invoke")
+    try:
+        parameters = inspect.signature(invoke).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_direct = (
+        "direct_prompt" in parameters
+        or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+    )
+    if accepts_direct:
+        return invoke(image_paths, prompt, run_dir, direct_prompt=True)
+    return invoke(image_paths, prompt, run_dir)
 
 
 def _depth_visualization_range(depth_m: np.ndarray) -> tuple[float, float]:
@@ -2258,10 +3014,16 @@ def run_exploration_viewer(
                 robot,
                 history=state.history,
             )
-            response = planner.invoke(images, prompt, session.run_dir)
+            response = invoke_direct_prompt(
+                planner,
+                images,
+                prompt,
+                session.run_dir,
+            )
             grounded_proposal, _ = ground_global_grasp_target(
                 response.proposal,
                 session.workspace / "perception_views",
+                robot_config=robot,
             )
             state.proposal = grounded_proposal
             state.proposal_source = exploration_source(grounded_proposal)
@@ -2526,7 +3288,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--run-dir")
     parser.add_argument("--run-id")
-    parser.add_argument("--robot-config")
+    parser.add_argument(
+        "--robot-config",
+        default="config/robot.example.json",
+        help=(
+            "robot configuration JSON (default: config/robot.example.json; "
+            "uses absolute camera depth without live tabletop Z flooring)"
+        ),
+    )
     parser.add_argument("--perception-config")
     parser.add_argument("--urdf")
     parser.add_argument("--claude-binary", default="claude")

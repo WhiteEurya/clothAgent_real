@@ -84,9 +84,49 @@ FLATTEN_SKILL = SkillSpec(
 )
 
 
+COLLAR_FULL_SHAKE_SKILL = SkillSpec(
+    name="collar-full-shake",
+    purpose=(
+        "Use a validated shirt-collar grasp to lift, shake open, transport, and "
+        "lay the garment down so the collar structure can reveal the garment."
+    ),
+    guidance=(
+        "Use only after the visual collar decision and grounded Camera A grasp are "
+        "validated. Keep the collar grasp orientation fixed and perpendicular to the "
+        "collar. Lift to a controller-reachable high pose, center at Y=0, perform the "
+        "host-owned shake-open maneuver, then move toward a useful +X location before "
+        "retreating toward -X while descending through several waypoints. Keep descent "
+        "and retreat balanced rather than making either one dominate, release only near "
+        "the table after the garment has had room to spread, and retract/home afterward. "
+        "Use current measured geometry and controller IK; never copy fixed coordinates, "
+        "release in mid-air, or replace the collar with a shoulder or sleeve."
+    ),
+)
+
+
+DIRECT_SHAKE_SKILL = SkillSpec(
+    name="direct-shake",
+    purpose=(
+        "Test whether a validated garment grasp can open the cloth by lifting and "
+        "shaking it without running the collar-specific transport and laydown routine."
+    ),
+    guidance=(
+        "Use after any grounded fabric grasp when the immediate experiment is only a "
+        "shake response test. Lift to a controller-reachable high pose, keep the held "
+        "fabric clear of the table, center if useful, run the host-owned shake maneuver, "
+        "observe whether the garment separates or reveals structure, then lower and release "
+        "in a controlled way. Do not add a long +X retreat or pretend that a shake-only "
+        "result proves collar identity; preserve workspace, grounding, preflight, and IK "
+        "checks and never use fixed coordinates."
+    ),
+)
+
+
 SKILL_REGISTRY: dict[str, SkillSpec] = {
     LAYDOWN_SKILL.name: LAYDOWN_SKILL,
     FLATTEN_SKILL.name: FLATTEN_SKILL,
+    COLLAR_FULL_SHAKE_SKILL.name: COLLAR_FULL_SHAKE_SKILL,
+    DIRECT_SHAKE_SKILL.name: DIRECT_SHAKE_SKILL,
 }
 
 

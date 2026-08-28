@@ -260,6 +260,9 @@ def _claude_output_markdown(
 
     lines = ["### Claude calls and intermediate variables", ""]
     attempts = record.get("claude_global_attempts", [])
+    standalone_attempts = record.get("planning_attempts", [])
+    if not attempts and isinstance(standalone_attempts, list):
+        attempts = standalone_attempts
     if isinstance(attempts, list) and attempts:
         lines.extend(["**Global planning call**", ""])
         for index, attempt in enumerate(attempts, start=1):
@@ -291,9 +294,20 @@ def _claude_output_markdown(
                 )
         lines.append("")
     else:
-        lines.extend(["- global planning call: `no completed call recorded yet`", ""])
+        lines.extend(["- planning call: `no completed call recorded yet`", ""])
 
     rejections = record.get("global_planning_rejections", [])
+    if not rejections and isinstance(standalone_attempts, list):
+        rejections = [
+            {
+                "attempt": item.get("attempt", "?"),
+                "error": item.get("error", ""),
+                "feedback_target": "standalone fold planner",
+                "physical_command_sent": False,
+            }
+            for item in standalone_attempts
+            if isinstance(item, dict) and item.get("status") == "REJECTED_BEFORE_EXECUTION"
+        ]
     if isinstance(rejections, list) and rejections:
         lines.extend(["**Rejected planning attempts**", ""])
         for item in rejections:
@@ -313,9 +327,10 @@ def _claude_output_markdown(
             f"- candidate policy: `{record.get('candidate_policy', '—')}`",
             f"- before images: `{_short(record.get('before_images', []), 1400)}`",
             f"- after images: `{_short(record.get('after_images', []), 1400)}`",
-            f"- grounding: `{_short(record.get('global_grounding', {}), 2200)}`",
+            f"- grounding: `{_short(record.get('global_grounding', record.get('grounding', {})), 2200)}`",
             f"- preflight: `{_short(record.get('preflight', {}), 2200)}`",
             f"- controller IK: `{_short(record.get('controller_ik', {}), 1800)}`",
+            f"- planning attempts: `{_short(record.get('planning_attempts', []), 2600)}`",
             f"- error feedback to Claude: `{_short(record.get('error_feedback_to_claude', {}), 2200)}`",
             f"- pre-execution error recovery: `{_short(record.get('preexecution_error_recovery', {}), 2600)}`",
             f"- evaluation error recovery: `{_short(record.get('evaluation_error_recovery', {}), 2200)}`",
@@ -382,7 +397,7 @@ def _claude_markdown(
         proposal_path = _path_from_result(result_dir, "proposal.json")
         proposal = _load_json(proposal_path) if proposal_path else {}
     selected = proposal.get("selected_grasp", {}) if isinstance(proposal, dict) else {}
-    grounding = record.get("global_grounding", {})
+    grounding = record.get("global_grounding", record.get("grounding", {}))
     measurement = grounding.get("measurement", {}) if isinstance(grounding, dict) else {}
     observation = _short(proposal.get("garment_observation"), 1800)
     strategy = _short(proposal.get("reveal_strategy"), 1800)
@@ -418,6 +433,16 @@ def _claude_markdown(
         evaluation_path = _path_from_result(result_dir, "evaluation.json")
         evaluation = _load_json(evaluation_path) if evaluation_path else {}
     task = evaluation.get("task_progress", {}) if isinstance(evaluation, dict) else {}
+    if isinstance(evaluation, dict) and not task and "status" in evaluation:
+        task = {
+            "status": evaluation.get("status"),
+            "confidence": evaluation.get("confidence"),
+            "outcome": (
+                f"alignment={evaluation.get('stack_alignment', '—')}; "
+                f"flatness={evaluation.get('flatness', '—')}; "
+                f"protruding_parts={evaluation.get('protruding_parts', '—')}"
+            ),
+        }
     next_experiment = evaluation.get("next_experiment", {}) if isinstance(evaluation, dict) else {}
     evaluation_text = (
         "### Claude evaluation / learning result\n\n"
@@ -775,25 +800,22 @@ def run_viewer(
         ) from exc
 
     source = source.expanduser().resolve()
-    if source.parent.name == "runs":
-        project_root = source.parent.parent.resolve()
-    elif source.parent.name == "molmo_keypoint_cli" and len(source.parents) > 4:
-        # output_dir = project/runs/run/results/molmo_keypoint_cli/stamp
-        project_root = source.parents[4].resolve()
-    else:
-        discovered = discover_output_dir(source)
-        project_root = (
-            discovered.parents[4].resolve()
-            if discovered is not None and len(discovered.parents) > 4
-            else source.resolve()
-        )
-    run_root = (
-        source
-        if source.parent.name == "runs"
-        else source.parents[2]
-        if source.parent.name == "molmo_keypoint_cli" and len(source.parents) > 2
-        else source
+    # Resolve project/run roots from the stable ``runs/<run>`` ancestor so the
+    # viewer can follow both the historical molmo_keypoint_cli output and the
+    # standalone neat_fold output tree.
+    runs_ancestor = next(
+        (ancestor for ancestor in (source, *source.parents) if ancestor.name == "runs"),
+        None,
     )
+    project_root = runs_ancestor.parent.resolve() if runs_ancestor is not None else source.resolve()
+    run_root = next(
+        (
+            ancestor
+            for ancestor in (source, *source.parents)
+            if ancestor.parent.name == "runs"
+        ),
+        source,
+    ).resolve()
     robot_config_path = run_root / "workspace" / "robot_config.json"
     if not robot_config_path.is_file():
         robot_config_path = project_root / "config" / "robot.example.json"

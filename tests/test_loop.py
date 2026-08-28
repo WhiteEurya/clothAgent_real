@@ -482,6 +482,94 @@ def test_runner_saves_preflight_result(tmp_path: Path) -> None:
     assert (run_dir / "results/experiment_001.source.py").read_text() == source
 
 
+def test_checkpointed_runner_continues_only_for_positive_hold(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    source = (
+        "def run():\n"
+        "    open_gripper()\n"
+        "    move(500, 0, 60, 0)\n"
+        "    move(500, 0, 20, 0)\n"
+        "    close_gripper()\n"
+        "    move(500, 0, 45, 0)\n"
+        "    move(580, 0, 45, 0)\n"
+        "    open_gripper()\n"
+        "    home()\n"
+    )
+    write_experiment(workspace, "experiment_checkpoint.py", source)
+    runner = ExperimentRunner(run_dir, robot_config())
+
+    result = runner.run_checkpointed_experiment(
+        "experiment_checkpoint.py",
+        checkpoint_action_index=4,
+        abort_actions=(
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 20, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "home", "args": {}},
+        ),
+        checkpoint_callback=lambda: {
+            "classification": "INDEPENDENT_LAYER_SUPPORTED",
+            "continue_transport": True,
+        },
+    )
+
+    assert result["execution_completed"] is True
+    assert result["checkpoint"]["executed_branch"] == "CONTINUATION"
+    moves = [
+        action["args"]
+        for action in result["actual_robot_actions"]
+        if action["name"] == "move"
+    ]
+    assert any(move["x"] == pytest.approx(580.0) for move in moves)
+
+
+def test_checkpointed_runner_fails_closed_to_descend_release_home(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    source = (
+        "def run():\n"
+        "    move(500, 0, 20, 0)\n"
+        "    close_gripper()\n"
+        "    move(500, 0, 45, 0)\n"
+        "    move(580, 0, 45, 0)\n"
+        "    open_gripper()\n"
+    )
+    write_experiment(workspace, "experiment_checkpoint.py", source)
+    runner = ExperimentRunner(run_dir, robot_config())
+
+    def failed_checkpoint():
+        raise TimeoutError("hold classifier timed out")
+
+    result = runner.run_checkpointed_experiment(
+        "experiment_checkpoint.py",
+        checkpoint_action_index=2,
+        abort_actions=(
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 20, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "home", "args": {}},
+        ),
+        checkpoint_callback=failed_checkpoint,
+    )
+
+    assert result["execution_completed"] is True
+    assert result["checkpoint"]["classification"] == "UNKNOWN"
+    assert result["checkpoint"]["executed_branch"] == "ABORT_RELEASE"
+    assert [action["name"] for action in result["actual_robot_actions"][-3:]] == [
+        "move",
+        "open_gripper",
+        "home",
+    ]
+    assert result["actual_robot_actions"][-3]["args"]["z"] == pytest.approx(20.0)
+    assert not any(
+        action["name"] == "move" and action["args"]["x"] == pytest.approx(580.0)
+        for action in result["actual_robot_actions"]
+    )
+
+
 def test_runner_saves_static_validation_failure(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     workspace = run_dir / "workspace"

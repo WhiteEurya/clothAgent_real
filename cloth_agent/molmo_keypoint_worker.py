@@ -1,8 +1,9 @@
 """GPU worker for one-point Molmo keypoints with model-token confidence.
 
-The model is loaded once. Each named keypoint is still queried independently
-with its own prompt, but independent prompts are sent in small GPU batches so
-the vision tower and decoder are not run serially for every anchor.
+The model is loaded once. Collar localization is deliberately independent from
+the weak garment-axis hypothesis: a sewn neck-label topology guide is queried
+first, then the collar is queried with that local relation. Remaining keypoints
+may still be inferred concurrently.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -31,6 +33,13 @@ AXIS_SPECS = (
         "description": "the center of the garment's lowest visible bottom hem; the bottom point of its own collar-to-hem centerline",
     },
 )
+
+# Axis endpoints are weak layout hypotheses on folded garments. In particular,
+# neither collar nor neckline may alias axis_top: doing so turns one wrong
+# centerline endpoint into a high-confidence false collar observation.
+AXIS_RECORD_ALIASES: dict[str, str] = {}
+NECK_LABEL_NAMES = frozenset({"neck_label", "neck_tag"})
+COLLAR_NAMES = frozenset({"collar", "neckline"})
 
 
 def geometric_mean_probability(values: Sequence[float]) -> float:
@@ -87,16 +96,70 @@ def _load_specs(path: Path) -> list[dict[str, Any]]:
     return specs
 
 
-def _prompt(description: str, context: str = "") -> str:
+def _prompt(
+    description: str,
+    context: str = "",
+    *,
+    allow_clothing_label: bool = False,
+) -> str:
     context_prefix = f"{context.strip()}\n" if context.strip() else ""
+    label_rule = (
+        "This is the dedicated neck-label topology-guide query, so point directly "
+        "to the small sewn neck/size label when it is identifiable. Do not point to "
+        "a printed chest graphic, loose packaging, table marking, or unrelated tag."
+        if allow_clothing_label
+        else "Do not point to a clothing label or tag."
+    )
     return (
-        f"{context_prefix}Point to the garment's {description}. Return exactly one point only when "
+        f"{context_prefix}Point to this keypoint on the garment: {description}. "
+        "Return exactly one point only when "
         "that keypoint is clearly identifiable on visible garment fabric. If it is "
         "occluded, ambiguous, outside the image, or not confidently identifiable, "
-        "return no point. Do not point to the table, robot, gripper, clothing label, "
+        f"return no point. {label_rule} Do not point to the table, robot, gripper, "
         "printed graphic, image border, or another object. For sleeve and hem anchors, "
         "point on the actual outer garment boundary."
     )
+
+
+def _partition_specs_for_axis_reuse(
+    specs: Sequence[dict[str, Any]],
+    axis_records: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Split independent queries from semantic aliases of axis records."""
+
+    axis_by_name = {
+        str(record.get("name", "")): record
+        for record in axis_records
+        if isinstance(record, dict)
+    }
+    independent: list[dict[str, Any]] = []
+    reused: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        semantic_name = str(spec["name"])
+        source_axis_name = AXIS_RECORD_ALIASES.get(semantic_name)
+        if source_axis_name is None:
+            independent.append(spec)
+            continue
+        source = axis_by_name.get(source_axis_name)
+        if source is None:
+            raise RuntimeError(
+                f"semantic keypoint {semantic_name!r} requires missing axis record "
+                f"{source_axis_name!r}"
+            )
+        record = dict(source)
+        record.update(
+            {
+                "name": semantic_name,
+                "description": str(spec["description"]),
+                "query_mode": "axis_alias_reuse_no_second_model_call",
+                "reused_axis_record": True,
+                "source_axis_name": source_axis_name,
+                "source_axis_description": source.get("description"),
+                "source_axis_prompt": source.get("prompt"),
+            }
+        )
+        reused[semantic_name] = record
+    return independent, reused
 
 
 def _selected_token_probabilities(
@@ -184,7 +247,12 @@ def _infer_keypoint_record(
 ) -> dict[str, Any]:
     """Infer one independent prompt, optionally on its own CUDA stream."""
 
-    prompt = _prompt(spec["description"], context)
+    semantic_name = str(spec["name"])
+    prompt = _prompt(
+        spec["description"],
+        context,
+        allow_clothing_label=semantic_name in NECK_LABEL_NAMES,
+    )
     messages = [
         {
             "role": "user",
@@ -296,6 +364,17 @@ def _infer_keypoint_record(
     }
 
 
+def _point_context(record: dict[str, Any] | None) -> str | None:
+    """Return a compact coordinate string for one successful point record."""
+
+    if not isinstance(record, dict) or record.get("status") != "point_returned":
+        return None
+    pixel = record.get("pixel_xy")
+    if not isinstance(pixel, list) or len(pixel) != 2:
+        return None
+    return f"({float(pixel[0]):.1f},{float(pixel[1]):.1f})"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", action="append", type=Path, required=True)
@@ -304,6 +383,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", default="allenai/MolmoPoint-8B")
     parser.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
+    parser.add_argument(
+        "--gpu-max-memory-gib",
+        type=float,
+        default=0.0,
+        help="when positive, cap CUDA model placement and permit remaining layers on CPU",
+    )
+    parser.add_argument("--allow-cpu-offload", action="store_true")
+    parser.add_argument("--load-in-8bit", action="store_true")
+    parser.add_argument(
+        "--direct-keypoints",
+        action="store_true",
+        help=(
+            "query only the requested keypoints without the generic garment-axis "
+            "or neck-label/collar prequeries; useful for image-relative targets"
+        ),
+    )
     parser.add_argument("--max-crops", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=96)
     parser.add_argument(
@@ -341,13 +436,50 @@ def main(argv: list[str] | None = None) -> int:
         model_dtype = torch.float16
     else:
         model_dtype = torch.float32
-    model = AutoModelForImageTextToText.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        dtype=model_dtype,
-        device_map="auto",
-        local_files_only=args.local_files_only,
-    )
+    load_kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "dtype": model_dtype,
+        "device_map": "auto",
+        "local_files_only": args.local_files_only,
+    }
+    if args.load_in_8bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            import bitsandbytes  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "--load-in-8bit requires bitsandbytes in the Molmo environment"
+            ) from exc
+        # This warning is emitted once per quantized matmul in bitsandbytes
+        # 0.50.x, producing tens of thousands of duplicate lines per point.
+        logging.getLogger("bitsandbytes.autograd._functions").setLevel(logging.ERROR)
+        # bitsandbytes 0.50.x currently calls ``.view(-1)`` on the CUDA
+        # ``argwhere`` result used by its LLM.int8 outlier path.  With the
+        # MolmoPoint point-predictor activation shape and our PyTorch build,
+        # that result is non-contiguous and inference aborts before returning
+        # even the first point.  A zero threshold disables only that optional
+        # outlier split while retaining 8-bit model loading, which is required
+        # for MolmoPoint-8B to fit beside the desktop workload on a 4090.
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_threshold=0.0,
+            # MolmoPoint's custom coordinate head applies Linear layers to a
+            # four-dimensional [batch, crop, patch, feature] tensor.  The
+            # bitsandbytes Linear8bitLt CUDA kernel accepts only 2-D/3-D
+            # activations, so this small task-specific head must stay in the
+            # requested floating-point dtype.  The vision tower and connector
+            # also stay floating point because point accuracy is the purpose
+            # of this worker; the much larger text backbone remains quantized.
+            llm_int8_skip_modules=["vit", "connector", "point_predictor"],
+        )
+    if args.gpu_max_memory_gib > 0:
+        load_kwargs["max_memory"] = {
+            0: f"{float(args.gpu_max_memory_gib):.2f}GiB",
+            "cpu": "64GiB",
+        }
+        load_kwargs["offload_folder"] = str(args.output.parent / "model_offload")
+        load_kwargs["offload_state_dict"] = True
+    model = AutoModelForImageTextToText.from_pretrained(args.model, **load_kwargs)
     device_map = getattr(model, "hf_device_map", None) or {}
     offloaded = sorted(
         {
@@ -356,8 +488,15 @@ def main(argv: list[str] | None = None) -> int:
             if str(device) in {"cpu", "disk", "meta"}
         }
     )
-    if offloaded:
+    if offloaded and not args.allow_cpu_offload:
         raise RuntimeError(f"MolmoPoint model/vision tower was offloaded to {offloaded}")
+    if offloaded:
+        print(
+            f"MolmoPoint CPU offload enabled for devices={offloaded}; "
+            f"gpu_max_memory_gib={args.gpu_max_memory_gib:.2f}",
+            file=sys.stderr,
+            flush=True,
+        )
     processor = AutoProcessor.from_pretrained(
         args.model,
         trust_remote_code=True,
@@ -379,6 +518,56 @@ def main(argv: list[str] | None = None) -> int:
     parallel_fallback = False
     for image_path, label in zip(args.image, args.label):
         image = Image.open(image_path).convert("RGB")
+        base_infer_kwargs = {
+            "image": image,
+            "processor": processor,
+            "model": model,
+            "torch": torch,
+            "amp_dtype": amp_dtype,
+            "point_token_start": point_token_start,
+            "max_crops": args.max_crops,
+            "max_new_tokens": args.max_new_tokens,
+        }
+        if args.direct_keypoints:
+            # Image-relative targets become less reliable when the generic axis
+            # preamble redefines left/right as garment-as-worn. Query the
+            # requested target directly and avoid two unnecessary model calls.
+            records = [
+                _infer_keypoint_record(
+                    spec,
+                    context=(
+                        "Use the provided image coordinates and spatial wording in the "
+                        "requested keypoint description exactly."
+                    ),
+                    use_stream=False,
+                    **base_infer_kwargs,
+                )
+                for spec in specs
+            ]
+            for record in records:
+                record.update(
+                    {
+                        "query_mode": "direct_requested_keypoint_query",
+                        "reused_axis_record": False,
+                        "source_axis_name": None,
+                    }
+                )
+            torch.cuda.empty_cache()
+            views.append(
+                {
+                    "label": str(label).upper(),
+                    "image": str(image_path),
+                    "image_size": [image.width, image.height],
+                    "axis_reference": None,
+                    "axis_records": [],
+                    "records": records,
+                    "axis_model_query_count": 0,
+                    "semantic_model_query_count": len(specs),
+                    "reused_axis_record_count": 0,
+                    "neck_label_topology_guide": None,
+                }
+            )
+            continue
         # Stage 1 is intentionally sequential. The current garment's own
         # collar-to-hem axis must be established before any left/right query.
         axis_records = [
@@ -414,15 +603,23 @@ def main(argv: list[str] | None = None) -> int:
         ):
             dx = float(axis_bottom[0]) - float(axis_top[0])
             dy = float(axis_bottom[1]) - float(axis_top[1])
-            axis_context = (
-                "Current garment centerline: collar-top=("
-                f"{float(axis_top[0]):.1f},{float(axis_top[1]):.1f}), bottom=("
-                f"{float(axis_bottom[0]):.1f},{float(axis_bottom[1]):.1f}), "
-                f"direction=({dx:.1f},{dy:.1f}). Use this garment centerline, "
-                "not image axes. Left/right means the garment's left/right as worn. "
-                f"The bottom hem is near y={float(axis_bottom[1]):.1f}; do not use "
-                "a sleeve edge or printed panel for hem anchors."
-            )
+            if math.hypot(dx, dy) >= 1.0:
+                axis_context = (
+                    "Current garment centerline: collar-top=("
+                    f"{float(axis_top[0]):.1f},{float(axis_top[1]):.1f}), bottom=("
+                    f"{float(axis_bottom[0]):.1f},{float(axis_bottom[1]):.1f}), "
+                    f"direction=({dx:.1f},{dy:.1f}). Use this garment centerline, "
+                    "not image axes. Left/right means the garment's left/right as worn. "
+                    f"The bottom hem is near y={float(axis_bottom[1]):.1f}; do not use "
+                    "a sleeve edge or printed panel for hem anchors."
+                )
+            else:
+                axis_context = (
+                    "The axis_top and axis_bottom queries collapsed to the same pixel, "
+                    "so the current garment centerline is unavailable. Do not infer a "
+                    "centerline or left/right direction from this degenerate axis; use "
+                    "independent semantic evidence and current appearance instead."
+                )
         else:
             axis_context = (
                 "Infer the current garment's own collar-to-hem centerline first. "
@@ -430,23 +627,126 @@ def main(argv: list[str] | None = None) -> int:
                 "left/right as worn. If the centerline is not reliable, return no point."
             )
         axis_reference["axis_context"] = axis_context
-        records: list[dict[str, Any]] = []
-        infer_kwargs = {
-            "image": image,
-            "processor": processor,
-            "model": model,
-            "torch": torch,
-            "amp_dtype": amp_dtype,
-            "point_token_start": point_token_start,
-            "max_crops": args.max_crops,
-            "max_new_tokens": args.max_new_tokens,
-            "context": axis_context,
-        }
+        # Stage 2: locate the sewn neck/size label as a topology guide. Unlike
+        # action anchors, this dedicated query is allowed to point to the label.
+        neck_label_specs = [
+            spec for spec in specs if str(spec["name"]) in NECK_LABEL_NAMES
+        ]
+        neck_label_records = [
+            _infer_keypoint_record(
+                spec,
+                context=(
+                    "Locate the shirt's sewn neck/size label as a topology guide. "
+                    "On the approved flat reference it sits immediately inside and below "
+                    "the neckline. This query may point to the label itself. The garment "
+                    "may be folded or rotated, so do not assume image-top means collar."
+                ),
+                use_stream=False,
+                **base_infer_kwargs,
+            )
+            for spec in neck_label_specs
+        ]
+        for record in neck_label_records:
+            record.update(
+                {
+                    "query_mode": "independent_neck_label_topology_query",
+                    "reused_axis_record": False,
+                    "source_axis_name": None,
+                    "topology_guide": True,
+                }
+            )
+        neck_label_record = next(
+            (
+                record
+                for record in neck_label_records
+                if record.get("status") == "point_returned"
+            ),
+            None,
+        )
+        neck_label_point = _point_context(neck_label_record)
+
+        # Stage 3: ask a fresh collar question. The label-to-neckline relation
+        # is stronger than axis_top on folded garments, and axis_top is explicitly
+        # demoted to a weak hypothesis that the model may contradict.
+        collar_specs = [spec for spec in specs if str(spec["name"]) in COLLAR_NAMES]
+        if neck_label_point is not None:
+            collar_context = (
+                f"A separate query located the sewn neck/size label at {neck_label_point}. "
+                "In the approved flat reference, that label is immediately inside/below "
+                "the neckline and the collar band surrounds its upper/outer side. Use the "
+                "label only to localize topology: point to adjacent collar-band or neck-"
+                "opening fabric, never to the label itself. Do not substitute a sleeve, "
+                "shoulder, chest fold, or broad interior panel. The earlier axis_top is only "
+                "a weak folded-garment hypothesis; ignore it when it conflicts with the label."
+            )
+            collar_query_mode = "neck_label_guided_independent_collar_query"
+        else:
+            collar_context = (
+                "The sewn neck/size label was not reliably located. Make an independent "
+                "collar decision from visible garment topology. The earlier axis_top is a "
+                "weak hypothesis only and must not be copied. Do not substitute a sleeve, "
+                "shoulder, chest fold, or broad interior panel; return no point if uncertain."
+            )
+            collar_query_mode = "independent_collar_query_without_neck_label"
+        collar_records = [
+            _infer_keypoint_record(
+                spec,
+                context=collar_context,
+                use_stream=False,
+                **base_infer_kwargs,
+            )
+            for spec in collar_specs
+        ]
+        for record in collar_records:
+            record.update(
+                {
+                    "query_mode": collar_query_mode,
+                    "reused_axis_record": False,
+                    "source_axis_name": None,
+                    "topology_guide_name": (
+                        str(neck_label_record["name"])
+                        if neck_label_record is not None
+                        else None
+                    ),
+                    "topology_guide_pixel_xy": (
+                        neck_label_record.get("pixel_xy")
+                        if neck_label_record is not None
+                        else None
+                    ),
+                }
+            )
+        collar_record = next(
+            (
+                record
+                for record in collar_records
+                if record.get("status") == "point_returned"
+            ),
+            None,
+        )
+        collar_point = _point_context(collar_record)
+
+        remaining_specs = [
+            spec
+            for spec in specs
+            if str(spec["name"]) not in NECK_LABEL_NAMES | COLLAR_NAMES
+        ]
+        remaining_context = axis_context
+        if collar_point is not None:
+            remaining_context += (
+                f" A separate label-guided collar query proposed {collar_point}; use it as "
+                "a semantic clue for shoulder side identity, not as an unquestionable fact."
+            )
+        inferred_records: list[dict[str, Any]] = []
         try:
             if args.query_batch_size == 1:
-                records = [
-                    _infer_keypoint_record(spec, use_stream=False, **infer_kwargs)
-                    for spec in specs
+                inferred_records = [
+                    _infer_keypoint_record(
+                        spec,
+                        context=remaining_context,
+                        use_stream=False,
+                        **base_infer_kwargs,
+                    )
+                    for spec in remaining_specs
                 ]
             else:
                 # MolmoPoint's released remote model currently rejects true
@@ -459,12 +759,13 @@ def main(argv: list[str] | None = None) -> int:
                         pool.submit(
                             _infer_keypoint_record,
                             spec,
+                            context=remaining_context,
                             use_stream=True,
-                            **infer_kwargs,
+                            **base_infer_kwargs,
                         )
-                        for spec in specs
+                        for spec in remaining_specs
                     ]
-                    records = [future.result() for future in futures]
+                    inferred_records = [future.result() for future in futures]
         except Exception as exc:
             if args.query_batch_size == 1:
                 raise
@@ -475,10 +776,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             parallel_fallback = True
             torch.cuda.synchronize()
-            records = [
-                _infer_keypoint_record(spec, use_stream=False, **infer_kwargs)
-                for spec in specs
+            inferred_records = [
+                _infer_keypoint_record(
+                    spec,
+                    context=remaining_context,
+                    use_stream=False,
+                    **base_infer_kwargs,
+                )
+                for spec in remaining_specs
             ]
+        for record in inferred_records:
+            record.update(
+                {
+                    "query_mode": "independent_keypoint_query",
+                    "reused_axis_record": False,
+                    "source_axis_name": None,
+                }
+            )
+        inferred_by_name = {
+            str(record["name"]): record
+            for record in neck_label_records + collar_records + inferred_records
+        }
+        records = [inferred_by_name[str(spec["name"])] for spec in specs]
         torch.cuda.empty_cache()
         views.append(
             {
@@ -488,13 +807,24 @@ def main(argv: list[str] | None = None) -> int:
                 "axis_reference": axis_reference,
                 "axis_records": axis_records,
                 "records": records,
+                "axis_model_query_count": len(axis_records),
+                "semantic_model_query_count": len(specs),
+                "reused_axis_record_count": 0,
+                "neck_label_topology_guide": (
+                    neck_label_record if neck_label_record is not None else None
+                ),
             }
         )
 
     payload = {
         "schema_version": 1,
         "model": args.model,
-        "query_mode": "axis_first_then_independent_point_per_keypoint_parallel_streams_with_token_confidence",
+        "query_mode": (
+            "direct_requested_keypoints"
+            if args.direct_keypoints
+            else "axis_then_neck_label_guided_independent_collar"
+        ),
+        "axis_record_aliases": dict(AXIS_RECORD_ALIASES),
         "axis_specs": list(AXIS_SPECS),
         "query_batch_size": args.query_batch_size,
         "parallel_fallback": parallel_fallback,

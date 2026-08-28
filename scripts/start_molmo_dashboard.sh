@@ -7,26 +7,29 @@ PYTHON="${PYTHON:-/home/CNS2026330003/miniconda3/envs/cali/bin/python}"
 REFRESH_S="${REFRESH_S:-0.5}"
 
 usage() {
-  echo "Usage: $0 [--dry-run|--real] [--objective TASK] [recovery/Viser options] [camera overrides]"
+  echo "Usage: $0 [--dry-run|--real] [--no-molmo] [--objective TASK] [planning/recovery/Viser options] [camera overrides]"
   echo
   echo "  --dry-run  Run one iteration without physical robot motion (default)."
   echo "  --real     Run continuous physical execution until interrupted."
   echo "  --objective TASK"
   echo "             Natural-language task sent to Claude on every exploration iteration."
-  echo "  --rgb-only-comparison / --no-rgb-only-comparison"
-  echo "             Run an extra non-executing RGB-only Claude thought and save its trajectory (default: enabled)."
+  echo "  --no-molmo  Disable the optional global Molmo annotation pass; keep Claude-global RGB-D exploration and skills."
+  echo "  --claude-timeout-s N  Max seconds for one Claude planning call (default: 900s)."
+  echo "  --max-replans N       Extra Claude correction calls after pre-execution rejection (default: 1)."
   echo
   echo "Recovery (enabled by default for --real):"
   echo "  --recover / --continue-on-recoverable-errors"
   echo "  --no-recover"
-  echo "  --max-consecutive-recoverable-failures N"
+  echo "  --max-consecutive-recoverable-failures N (0 = unlimited pre-execution recovery)"
   echo "  --recovery-backoff-s SECONDS"
   echo
   echo "Camera A/B rollout recording (enabled by default):"
   echo "  --record-rollouts"
   echo "  --no-record-rollouts"
   echo "  --recording-no-native  Keep the cumulative MP4 but omit RealSense .db3 files"
-  echo "  --combined-video-speed N  Speed up the cumulative video by N (default: 4x)"
+  echo "  --combined-video-speed N  Speed up the cumulative video by N (default: 32x)"
+  echo "  --hold-checkpoint-timeout-s N  Max Claude hold-classification time (default: 600s, max: 900s)"
+  echo "  --hold-checkpoint-settle-s N   Hold still before fresh A/B capture (default: 0.75s)"
   echo "  Completed rollout segments are appended in order to combined_rollout.mp4; old per-iteration video files are pruned after evaluation."
   echo
   echo "Read-only Viser (enabled by default for --real):"
@@ -41,7 +44,7 @@ usage() {
   echo "  --camera-a-white-balance VALUE"
   echo "  --camera-b-white-balance VALUE"
   echo
-  echo "Optional environment variables: RUN_ID, PYTHON, REFRESH_S, VISER_PORT"
+  echo "Optional environment variables: RUN_ID, PYTHON, REFRESH_S, VISER_PORT, CLAUDE_TIMEOUT_S, MAX_REPLANS, HOLD_CHECKPOINT_TIMEOUT_S"
 }
 
 mode="--dry-run"
@@ -49,12 +52,20 @@ mode_seen=false
 objective="Take one planning-mode-appropriate agent-chosen action that makes the current garment as open and spread as safely possible."
 camera_args=()
 recovery_mode="auto"
-max_recoverable_failures="3"
+# A real overnight dashboard should not terminate merely because several
+# consecutive pre-execution perception/planning attempts failed. The CLI uses
+# 0 as the explicit unlimited-recovery sentinel; hardware and operator errors
+# remain non-recoverable and still stop the run.
+max_recoverable_failures="0"
 recovery_backoff_s="2"
 recording_mode="enabled"
 recording_native="enabled"
-comparison_mode="enabled"
-combined_video_speed="4"
+molmo_mode="enabled"
+combined_video_speed="32"
+hold_checkpoint_timeout_s="${HOLD_CHECKPOINT_TIMEOUT_S:-600}"
+hold_checkpoint_settle_s="0.75"
+claude_timeout_s="${CLAUDE_TIMEOUT_S:-900}"
+max_replans="${MAX_REPLANS:-1}"
 viser_mode="auto"
 viser_host="127.0.0.1"
 viser_port="${VISER_PORT:-8765}"
@@ -78,12 +89,8 @@ while (( $# > 0 )); do
       objective="$2"
       shift 2
       ;;
-    --rgb-only-comparison)
-      comparison_mode="enabled"
-      shift
-      ;;
-    --no-rgb-only-comparison)
-      comparison_mode="disabled"
+    --no-molmo)
+      molmo_mode="disabled"
       shift
       ;;
     --combined-video-speed)
@@ -92,6 +99,38 @@ while (( $# > 0 )); do
         exit 2
       fi
       combined_video_speed="$2"
+      shift 2
+      ;;
+    --hold-checkpoint-timeout-s)
+      if (( $# < 2 )); then
+        echo "$1 requires a timeout in seconds." >&2
+        exit 2
+      fi
+      hold_checkpoint_timeout_s="$2"
+      shift 2
+      ;;
+    --hold-checkpoint-settle-s)
+      if (( $# < 2 )); then
+        echo "$1 requires a settle interval in seconds." >&2
+        exit 2
+      fi
+      hold_checkpoint_settle_s="$2"
+      shift 2
+      ;;
+    --claude-timeout-s)
+      if (( $# < 2 )); then
+        echo "$1 requires a timeout in seconds." >&2
+        exit 2
+      fi
+      claude_timeout_s="$2"
+      shift 2
+      ;;
+    --max-replans)
+      if (( $# < 2 )); then
+        echo "$1 requires an integer value." >&2
+        exit 2
+      fi
+      max_replans="$2"
       shift 2
       ;;
     --camera-a-exposure|--camera-b-exposure|--camera-a-white-balance|--camera-b-white-balance)
@@ -226,10 +265,9 @@ if [[ "$recording_mode" == "enabled" ]]; then
 else
   recording_args=(--no-record-rollouts)
 fi
-
-comparison_args=()
-if [[ "$comparison_mode" == "enabled" ]]; then
-  comparison_args=(--rgb-only-comparison)
+if [[ "$mode" == "--real" && "$recording_mode" != "enabled" ]]; then
+  echo "--real requires rollout recording for the online Camera A/B hold checkpoint." >&2
+  exit 2
 fi
 
 RUN_ID="${RUN_ID:-${run_prefix}_$(date +%Y%m%d_%H%M%S)}"
@@ -350,7 +388,12 @@ echo "Run ID: $RUN_ID"
 echo "Artifacts: $PROJECT_ROOT/runs/$RUN_ID"
 echo "Objective: $objective"
 if [[ "$recovery_mode" == "enabled" ]]; then
-  echo "Recovery: enabled (max consecutive failures=$max_recoverable_failures, backoff=${recovery_backoff_s}s)"
+  if [[ "$max_recoverable_failures" == "0" ]]; then
+    recovery_limit_label="unlimited"
+  else
+    recovery_limit_label="$max_recoverable_failures"
+  fi
+  echo "Recovery: enabled (max consecutive failures=$recovery_limit_label, backoff=${recovery_backoff_s}s)"
 else
   echo "Recovery: disabled"
 fi
@@ -363,12 +406,15 @@ if [[ "$recording_mode" == "enabled" ]]; then
 else
   echo "Rollout recording: disabled"
 fi
-if [[ "$comparison_mode" == "enabled" ]]; then
-  echo "RGB-only comparison: enabled (saved only; no physical command)"
-else
-  echo "RGB-only comparison: disabled"
-fi
 echo "Combined video speed: ${combined_video_speed}x"
+if [[ "$molmo_mode" == "enabled" ]]; then
+  echo "Global Molmo annotations: enabled"
+else
+  echo "Global Molmo annotations: disabled (Claude + RGB-D/reference only)"
+fi
+echo "Lift checkpoints: 3 rising A/B captures, reverse release, settle=${hold_checkpoint_settle_s}s"
+echo "Legacy hold timeout setting: ${hold_checkpoint_timeout_s}s (not used by lift-checkpoint mode)"
+echo "Claude planning timeout: ${claude_timeout_s}s (extra replans=${max_replans})"
 if [[ "$viser_mode" == "enabled" ]]; then
   echo "Viser: enabled (read-only, http://$viser_host:$viser_port)"
   echo "OpenCV artifact dashboard: disabled (Viser is the sole dashboard)"
@@ -383,17 +429,25 @@ if [[ "$viser_mode" != "enabled" ]]; then
 fi
 start_viser
 
+molmo_args=()
+if [[ "$molmo_mode" == "enabled" ]]; then
+  molmo_args+=(--global-molmo-annotations)
+fi
+
 if "$PYTHON" -m cloth_agent.molmo_keypoint_cli \
   --project-root . \
   --run-id "$RUN_ID" \
   --planning-policy claude_global \
-  --global-molmo-annotations \
+  "${molmo_args[@]}" \
   --perception-config config/perception.free_exploration.json \
   "${camera_args[@]}" \
   --confidence-threshold 0.80 \
   --objective "$objective" \
   --combined-video-speed "$combined_video_speed" \
-  "${comparison_args[@]}" \
+  --claude-timeout-s "$claude_timeout_s" \
+  --max-replans "$max_replans" \
+  --hold-checkpoint-timeout-s "$hold_checkpoint_timeout_s" \
+  --hold-checkpoint-settle-s "$hold_checkpoint_settle_s" \
   --max-iterations "$max_iterations" \
   "${recovery_args[@]}" \
   "${recording_args[@]}" \

@@ -755,7 +755,15 @@ def build_parser() -> argparse.ArgumentParser:
     run = parser.add_mutually_exclusive_group()
     run.add_argument("--run-dir", type=Path)
     run.add_argument("--run-id")
-    parser.add_argument("--robot-config", type=Path)
+    parser.add_argument(
+        "--robot-config",
+        type=Path,
+        default=Path("config/robot.example.json"),
+        help=(
+            "robot configuration JSON (default: config/robot.example.json; "
+            "uses absolute camera depth without live tabletop Z flooring)"
+        ),
+    )
     parser.add_argument("--perception-config", type=Path)
     parser.add_argument("--skip-capture", action="store_true", help="reuse workspace/perception_views from an existing run")
     parser.add_argument("--use-molmo", action="store_true", help="run the skill-selected MolmoPoint query")

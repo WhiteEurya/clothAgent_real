@@ -28,7 +28,7 @@ import traceback
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -268,6 +268,47 @@ VISUAL_PLAN_REQUIRED_FIELDS = frozenset(
 )
 VISUAL_PLAN_OPTIONAL_FIELDS = frozenset({"skill_invocations"})
 VISUAL_PLAN_FIELDS = VISUAL_PLAN_REQUIRED_FIELDS | VISUAL_PLAN_OPTIONAL_FIELDS
+VISUAL_PLAN_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "garment_observation": {"type": "string", "minLength": 1},
+        "opening_strategy": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "selected_reference": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "camera": {"type": "string", "enum": ["A", "B"]},
+                "reference_id": {"type": "string", "pattern": "^R[0-9]{3,}$"},
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["camera", "reference_id", "reason"],
+        },
+        "motion_intent": {"type": "string", "minLength": 1},
+        "expected_observation": {"type": "string", "minLength": 1},
+        "safety_notes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {"type": "string", "minLength": 1},
+        },
+        "skill_invocations": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                "required": ["name", "reason"],
+            },
+        },
+    },
+    "required": sorted(VISUAL_PLAN_REQUIRED_FIELDS),
+}
 DEFAULT_AUTO_OBJECTIVE = DEFAULT_EXPLORATION_OBJECTIVE
 
 
@@ -1064,6 +1105,160 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _command_argument_diagnostics(command: Sequence[str]) -> dict[str, Any]:
+    """Return byte-size diagnostics for an argv before spawning a process."""
+
+    encoded_sizes = [len(str(item).encode("utf-8")) for item in command]
+    longest_index = int(np.argmax(encoded_sizes)) if encoded_sizes else -1
+    return {
+        "argument_count": len(encoded_sizes),
+        "total_argument_bytes": int(sum(encoded_sizes)),
+        "largest_argument_bytes": (
+            int(encoded_sizes[longest_index]) if longest_index >= 0 else 0
+        ),
+        "largest_argument_index": longest_index,
+    }
+
+
+def _normalize_final_grounding_payload(
+    payload: Any,
+) -> tuple[Any, list[str]]:
+    """Repair harmless non-action schema overflow in final grounding output."""
+
+    normalizations: list[str] = []
+    if not isinstance(payload, dict):
+        return payload, normalizations
+    raw_safety_notes = payload.get("safety_notes")
+    if (
+        isinstance(raw_safety_notes, list)
+        and len(raw_safety_notes) > 10
+        and all(
+            isinstance(note, str) and note.strip()
+            for note in raw_safety_notes
+        )
+    ):
+        payload = dict(payload)
+        payload["safety_notes"] = raw_safety_notes[:10]
+        normalizations.append(
+            "truncated safety_notes to the schema maximum of 10"
+        )
+    return payload, normalizations
+
+
+def _write_final_grounding_context(
+    root: Path,
+    *,
+    context: Mapping[str, Any],
+    selected_reference: Mapping[str, Any],
+    mode_action_instruction: str,
+) -> dict[str, Any]:
+    """Persist large Stage-2 inputs as separate auditable run-local logs."""
+
+    root = Path(root).resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    context_dir = root / "results" / "claude_context" / f"final_grounding_{stamp}"
+    context_dir.mkdir(parents=True, exist_ok=False)
+
+    objective_path = context_dir / "01_objective.md"
+    visual_path = context_dir / "02_visual_plan.json"
+    history_path = context_dir / "03_previous_physical_outcomes.json"
+    robot_path = context_dir / "04_robot_and_mode_context.json"
+    contract_path = context_dir / "05_final_grounding_contract.md"
+    manifest_path = context_dir / "manifest.json"
+
+    objective_path.write_text(str(context.get("objective", "")).strip() + "\n", encoding="utf-8")
+    _write_json(visual_path, context.get("visual_plan", {}))
+    _write_json(history_path, context.get("previous_physical_outcomes", []))
+    _write_json(
+        robot_path,
+        {
+            key: value
+            for key, value in context.items()
+            if key not in {"objective", "visual_plan", "previous_physical_outcomes"}
+        },
+    )
+    selected_camera = str(selected_reference.get("camera", ""))
+    selected_id = str(selected_reference.get("reference_id", ""))
+    fold_step = _fold_sleeve_step_from_objective(str(context.get("objective", "")))
+    grasp_anchor_lines = [
+        "For ordinary tasks, the move immediately before close_gripper must use the selected Rxxx Base XY within 2 mm.",
+    ]
+    if fold_step is not None:
+        grasp_anchor_lines.extend(
+            [
+                f"For this {fold_step} sleeve step, Rxxx is a calibrated semantic anchor, not a mandatory closure center.",
+                f"A deliberate learned contact offset up to {_FOLD_GRASP_ANCHOR_OFFSET_MAX_MM:.1f} mm from the anchor is allowed, but only inward toward garment fabric, never outward toward bare table.",
+                "Keep the offset small and explicit in reveal_strategy/safety_notes; the host will map the closure Base XY back into Camera A and require it to remain inside the garment mask.",
+                "Approach and pre-scuff waypoints may shape the entry, but the bounded offset rule applies to the final move immediately before close_gripper.",
+            ]
+        )
+    contract_path.write_text(
+        "\n".join(
+            [
+                "# Stage 2 final grounding contract",
+                "",
+                "The Stage-1 visual decision is fixed. Do not revisit images, compare alternatives, or change the selected reference.",
+                f"Call `lookup_reference` exactly once with camera={selected_camera} and reference_id={selected_id}.",
+                "Use that returned measurement to ground the grasp and compose the final numeric RobotAPI proposal.",
+                "Do not call any other MCP tool.",
+                "Always release before the action list ends and keep at most 12 actions.",
+                "The objective file is authoritative; do not replace the requested task with generic garment opening.",
+                "",
+                "Return exactly these fields and no others:",
+                "- garment_observation: string",
+                "- reveal_strategy: string",
+                "- confidence: number in [0,1]",
+                "- actions: non-empty list of {name,args}",
+                "- expected_observation: string",
+                "- safety_notes: list containing 1 to 10 non-empty strings",
+                "- optional skill_invocations: list of {name,reason}",
+                "",
+                "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees.",
+                "The only permitted actions are move, open_gripper, close_gripper, and home.",
+                "Use multiple waypoints to shape the path, not to silently change the intended net displacement.",
+                "",
+                "## Selected-reference anchor rule",
+                *grasp_anchor_lines,
+                "",
+                "## Planning-mode action rule",
+                mode_action_instruction,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    read_order = [
+        objective_path,
+        visual_path,
+        history_path,
+        robot_path,
+        contract_path,
+    ]
+    manifest = {
+        "schema_version": 1,
+        "created_at": _now(),
+        "stage": "final_grounding",
+        "selected_reference": dict(selected_reference),
+        "read_order": [_run_relative(path, root) for path in read_order],
+        "files": {
+            path.name: {
+                "path": _run_relative(path, root),
+                "size_bytes": path.stat().st_size,
+            }
+            for path in read_order
+        },
+    }
+    _write_json(manifest_path, manifest)
+    return {
+        "directory": str(context_dir),
+        "manifest": str(manifest_path),
+        "manifest_relative": _run_relative(manifest_path, root),
+        "read_order": list(manifest["read_order"]),
+        "files": dict(manifest["files"]),
+    }
+
+
 def _run_relative(path: Path, run_dir: Path) -> str:
     try:
         return str(path.resolve().relative_to(run_dir.resolve()))
@@ -1284,6 +1479,29 @@ def validate_visual_plan_payload(
 
     if not isinstance(payload, dict):
         raise ExplorationPlanningError("visual plan must be a JSON object")
+    # Normalize two common harmless Claude aliases/explanatory additions before
+    # enforcing the executable contract.  Motion fields, camera, and Rxxx are
+    # never inferred or changed here.
+    payload = dict(payload)
+    raw_reference = payload.get("selected_reference")
+    if isinstance(raw_reference, dict) and {
+        "camera",
+        "reference_id",
+        "reason",
+    }.issubset(raw_reference):
+        payload["selected_reference"] = {
+            key: raw_reference[key]
+            for key in ("camera", "reference_id", "reason")
+        }
+    raw_skills = payload.get("skill_invocations")
+    if isinstance(raw_skills, list):
+        normalized_skills: list[Any] = []
+        for item in raw_skills:
+            if isinstance(item, dict) and "name" not in item and "skill" in item:
+                item = {**item, "name": item["skill"]}
+                item.pop("skill", None)
+            normalized_skills.append(item)
+        payload["skill_invocations"] = normalized_skills
     missing = VISUAL_PLAN_REQUIRED_FIELDS.difference(payload)
     unknown = set(payload).difference(VISUAL_PLAN_FIELDS)
     if missing:
@@ -1385,6 +1603,282 @@ def validate_visual_plan_payload(
     )
 
 
+_FOLD_NEXT_STEP_RE = re.compile(
+    r"next incomplete step is\s+(left_sleeve|right_sleeve)\b",
+    re.IGNORECASE,
+)
+_EXACT_REFERENCE_GRASP_TOLERANCE_MM = 2.0
+_FOLD_GRASP_ANCHOR_OFFSET_MAX_MM = 10.0
+_FOLD_GRASP_OFFSET_PIXEL_MATCH_MAX_MM = 2.0
+_FOLD_GRASP_OUTWARD_PIXEL_TOLERANCE = 2.0
+
+
+def _fold_sleeve_step_from_objective(objective: str | None) -> str | None:
+    if not objective:
+        return None
+    match = _FOLD_NEXT_STEP_RE.search(objective)
+    return match.group(1).lower() if match else None
+
+
+def _fold_sleeve_reference_geometry(
+    garment_mask_raw: np.ndarray,
+    raw_pixel_xy: Sequence[int | float],
+    *,
+    step: str,
+    rgb_raw: np.ndarray | None = None,
+    max_interior_distance_px: float = 14.0,
+    require_free_edge: bool = True,
+) -> dict[str, Any]:
+    """Validate a sleeve anchor in the canonical clockwise-90 RGB frame.
+
+    This is deliberately a coarse deterministic gate, not a semantic segmenter.
+    It rejects the failure class seen in production: a torso/print interior point
+    described as a sleeve. The caller may retain the historical free-edge gate,
+    or may admit the whole outer sleeve region for acquisition-learning runs in
+    which useful contact structure must be inferred from physical outcomes.
+    """
+
+    if step not in {"left_sleeve", "right_sleeve"}:
+        raise ValueError(f"unsupported sleeve step: {step}")
+    mask_raw = np.asarray(garment_mask_raw, dtype=bool)
+    if mask_raw.ndim != 2 or not np.any(mask_raw):
+        raise ValueError("Camera A garment mask is empty or invalid")
+    if len(raw_pixel_xy) != 2:
+        raise ValueError("selected reference has no valid raw Camera-A pixel")
+    x_raw = int(round(float(raw_pixel_xy[0])))
+    y_raw = int(round(float(raw_pixel_xy[1])))
+    raw_height, raw_width = mask_raw.shape
+    if not (0 <= x_raw < raw_width and 0 <= y_raw < raw_height):
+        raise ValueError(
+            f"raw pixel [{x_raw}, {y_raw}] lies outside Camera A {raw_width}x{raw_height}"
+        )
+
+    mask = np.rot90(mask_raw, k=3)
+    x_upright = raw_height - 1 - y_raw
+    y_upright = x_raw
+    if not bool(mask[y_upright, x_upright]):
+        raise ValueError(
+            f"upright pixel [{x_upright}, {y_upright}] is outside the garment mask"
+        )
+
+    ys, xs = np.nonzero(mask)
+    x_min, x_max = int(xs.min()), int(xs.max())
+    y_min, y_max = int(ys.min()), int(ys.max())
+    width = max(1.0, float(x_max - x_min))
+    height = max(1.0, float(y_max - y_min))
+    outer_fraction = 0.18
+    if step == "left_sleeve":
+        side_limit = float(x_min) + outer_fraction * width
+        side_ok = float(x_upright) <= side_limit
+        side_rule = f"x <= {side_limit:.1f}"
+    else:
+        side_limit = float(x_max) - outer_fraction * width
+        side_ok = float(x_upright) >= side_limit
+        side_rule = f"x >= {side_limit:.1f}"
+
+    sleeve_y_min = float(y_min) + 0.15 * height
+    sleeve_y_max = float(y_min) + 0.58 * height
+    sleeve_height_ok = sleeve_y_min <= float(y_upright) <= sleeve_y_max
+    sleeve_height_rule = f"{sleeve_y_min:.1f} <= y <= {sleeve_y_max:.1f}"
+
+    from scipy.ndimage import distance_transform_edt
+
+    interior_distance_px = float(distance_transform_edt(mask)[y_upright, x_upright])
+    max_interior_distance_px = float(max_interior_distance_px)
+    if (
+        not math.isfinite(max_interior_distance_px)
+        or max_interior_distance_px <= 0.0
+    ):
+        raise ValueError("max_interior_distance_px must be positive and finite")
+    boundary_ok = interior_distance_px <= max_interior_distance_px
+    edge_contrast_ok: bool | None = None
+    edge_contrast_rgb_norm: float | None = None
+    minimum_edge_contrast_rgb_norm = 80.0
+    if rgb_raw is not None:
+        rgb_array = np.asarray(rgb_raw)
+        if rgb_array.shape[:2] != mask_raw.shape or rgb_array.ndim != 3:
+            raise ValueError("Camera A RGB shape does not match its garment mask")
+        rgb = np.rot90(rgb_array[..., :3], k=3).astype(np.float64)
+        local_radius = 4
+        x0 = max(0, x_upright - local_radius)
+        x1 = min(mask.shape[1], x_upright + local_radius + 1)
+        y0 = max(0, y_upright - local_radius)
+        y1 = min(mask.shape[0], y_upright + local_radius + 1)
+        local_mask = mask[y0:y1, x0:x1]
+        local_pixels = rgb[y0:y1, x0:x1][local_mask]
+        search_radius = max(20, int(math.ceil(interior_distance_px)) + 10)
+        sx0 = max(0, x_upright - search_radius)
+        sx1 = min(mask.shape[1], x_upright + search_radius + 1)
+        sy0 = max(0, y_upright - search_radius)
+        sy1 = min(mask.shape[0], y_upright + search_radius + 1)
+        outside_pixels = rgb[sy0:sy1, sx0:sx1][~mask[sy0:sy1, sx0:sx1]]
+        if len(local_pixels) == 0 or len(outside_pixels) == 0:
+            edge_contrast_ok = False
+            edge_contrast_rgb_norm = 0.0
+        else:
+            outside_rgb = np.median(outside_pixels, axis=0)
+            selected_rgb = rgb[y_upright, x_upright]
+            edge_contrast_rgb_norm = float(np.linalg.norm(selected_rgb - outside_rgb))
+            edge_contrast_ok = (
+                edge_contrast_rgb_norm >= minimum_edge_contrast_rgb_norm
+            )
+    diagnostic = {
+        "step": step,
+        "rotation": "clockwise90",
+        "raw_pixel_xy": [x_raw, y_raw],
+        "upright_pixel_xy": [x_upright, y_upright],
+        "upright_garment_bbox_xyxy": [x_min, y_min, x_max, y_max],
+        "requested_side_rule": side_rule,
+        "requested_side_ok": side_ok,
+        "sleeve_height_rule": sleeve_height_rule,
+        "sleeve_height_ok": sleeve_height_ok,
+        "interior_distance_px": interior_distance_px,
+        "max_interior_distance_px": max_interior_distance_px,
+        "free_edge_band_ok": boundary_ok,
+        "edge_contrast_rgb_norm": edge_contrast_rgb_norm,
+        "minimum_edge_contrast_rgb_norm": minimum_edge_contrast_rgb_norm,
+        "edge_contrast_ok": edge_contrast_ok,
+        "free_edge_required": bool(require_free_edge),
+    }
+    failures: list[str] = []
+    if not side_ok:
+        failures.append(
+            f"upright x={x_upright} is not in the outer {step} side band ({side_rule})"
+        )
+    if not sleeve_height_ok:
+        failures.append(
+            f"upright y={y_upright} is outside the sleeve-height band "
+            f"({sleeve_height_rule})"
+        )
+    if require_free_edge and not boundary_ok:
+        failures.append(
+            f"point is {interior_distance_px:.1f}px inside the garment, beyond the "
+            f"{max_interior_distance_px:.1f}px sleeve free-edge band"
+        )
+    if require_free_edge and edge_contrast_ok is False:
+        failures.append(
+            f"RGB edge contrast {edge_contrast_rgb_norm:.1f} is below the "
+            f"{minimum_edge_contrast_rgb_norm:.1f} threshold; marker may be mask leakage "
+            "or flat table rather than a visible cuff boundary"
+        )
+    if failures:
+        raise ValueError("; ".join(failures))
+    return diagnostic
+
+
+def _validate_fold_grasp_anchor_offset(
+    session: AgentSession,
+    measurement: Mapping[str, Any],
+    actual_xy: Sequence[int | float],
+    *,
+    step: str,
+    max_offset_mm: float = _FOLD_GRASP_ANCHOR_OFFSET_MAX_MM,
+) -> dict[str, Any]:
+    """Validate a small inboard closure offset from a calibrated sleeve anchor.
+
+    Rxxx remains the measured semantic anchor. A fold planner may use a small,
+    deliberate contact offset supported by its physical-outcome history, but
+    the offset must map back to visible garment pixels and may not move outward
+    toward bare table.
+    """
+
+    if step not in {"left_sleeve", "right_sleeve"}:
+        raise ValueError(f"unsupported fold grasp-offset step: {step}")
+    expected_xy = np.asarray(measurement.get("base_xyz_mm", [])[:2], dtype=np.float64)
+    actual = np.asarray(actual_xy, dtype=np.float64)
+    if expected_xy.shape != (2,) or actual.shape != (2,):
+        raise ValueError("fold grasp offset requires finite anchor and actual Base XY")
+    if not np.all(np.isfinite(expected_xy)) or not np.all(np.isfinite(actual)):
+        raise ValueError("fold grasp offset contains non-finite Base XY")
+    offset_xy = actual - expected_xy
+    offset_mm = float(np.linalg.norm(offset_xy))
+    if offset_mm > float(max_offset_mm):
+        raise ValueError(
+            f"closure offset {offset_mm:.1f} mm exceeds the "
+            f"{float(max_offset_mm):.1f} mm sleeve-anchor limit"
+        )
+
+    pixel_xy = measurement.get("pixel_xy")
+    if not isinstance(pixel_xy, Sequence) or len(pixel_xy) != 2:
+        raise ValueError("selected sleeve anchor has no raw Camera-A pixel")
+    selected_x = int(round(float(pixel_xy[0])))
+    selected_y = int(round(float(pixel_xy[1])))
+    perception_dir = (
+        session.run_dir.resolve() / "workspace" / "perception_views"
+    )
+    xyz_path = perception_dir / "camera_A_base_xyz_mm.npy"
+    mask_path = perception_dir / "camera_A_garment_mask.npy"
+    if not xyz_path.is_file() or not mask_path.is_file():
+        raise ValueError(
+            "Camera-A dense Base XYZ or garment mask is unavailable for "
+            "fold grasp-offset validation"
+        )
+    xyz_map = np.load(xyz_path, allow_pickle=False)
+    garment_mask = np.asarray(np.load(mask_path, allow_pickle=False), dtype=bool)
+    if xyz_map.shape[:2] != garment_mask.shape or xyz_map.ndim != 3 or xyz_map.shape[2] < 2:
+        raise ValueError("Camera-A dense Base XYZ and garment mask shapes do not match")
+    height, width = garment_mask.shape
+    if not (0 <= selected_x < width and 0 <= selected_y < height):
+        raise ValueError("selected sleeve anchor pixel lies outside Camera A")
+
+    search_radius_px = 48
+    x0 = max(0, selected_x - search_radius_px)
+    x1 = min(width, selected_x + search_radius_px + 1)
+    y0 = max(0, selected_y - search_radius_px)
+    y1 = min(height, selected_y + search_radius_px + 1)
+    local_xy = np.asarray(xyz_map[y0:y1, x0:x1, :2], dtype=np.float64)
+    finite = np.all(np.isfinite(local_xy), axis=2)
+    if not np.any(finite):
+        raise ValueError("no finite Camera-A Base XY exists near the sleeve anchor")
+    distances = np.linalg.norm(local_xy - actual.reshape(1, 1, 2), axis=2)
+    distances[~finite] = np.inf
+    local_y, local_x = np.unravel_index(int(np.argmin(distances)), distances.shape)
+    map_match_error_mm = float(distances[local_y, local_x])
+    actual_x = int(x0 + local_x)
+    actual_y = int(y0 + local_y)
+    if map_match_error_mm > _FOLD_GRASP_OFFSET_PIXEL_MATCH_MAX_MM:
+        raise ValueError(
+            f"offset closure Base XY has no calibrated Camera-A pixel within "
+            f"{_FOLD_GRASP_OFFSET_PIXEL_MATCH_MAX_MM:.1f} mm; nearest error is "
+            f"{map_match_error_mm:.1f} mm"
+        )
+    if not bool(garment_mask[actual_y, actual_x]):
+        raise ValueError(
+            f"offset closure maps to raw Camera-A pixel [{actual_x}, {actual_y}] "
+            "outside the garment mask"
+        )
+
+    selected_upright_x = float(height - 1 - selected_y)
+    actual_upright_x = float(height - 1 - actual_y)
+    if step == "left_sleeve":
+        inboard_delta_px = actual_upright_x - selected_upright_x
+        inboard_rule = "upright +x toward garment center"
+    else:
+        inboard_delta_px = selected_upright_x - actual_upright_x
+        inboard_rule = "upright -x toward garment center"
+    if inboard_delta_px < -_FOLD_GRASP_OUTWARD_PIXEL_TOLERANCE:
+        raise ValueError(
+            f"closure offset moves outward by {-inboard_delta_px:.1f} px; "
+            f"{step} requires {inboard_rule}"
+        )
+    return {
+        "mode": "bounded_inboard_anchor_offset",
+        "step": step,
+        "anchor_reference_id": measurement.get("reference_id"),
+        "anchor_base_xy_mm": expected_xy.tolist(),
+        "closure_base_xy_mm": actual.tolist(),
+        "offset_xy_mm": offset_xy.tolist(),
+        "offset_distance_mm": offset_mm,
+        "max_offset_mm": float(max_offset_mm),
+        "anchor_raw_pixel_xy": [selected_x, selected_y],
+        "closure_raw_pixel_xy": [actual_x, actual_y],
+        "closure_pixel_map_error_mm": map_match_error_mm,
+        "inboard_delta_upright_px": inboard_delta_px,
+        "inboard_rule": inboard_rule,
+        "closure_inside_garment_mask": True,
+    }
+
+
 class ClaudeAutoClient:
     """Claude adapter that plans actions and judges before/after images."""
 
@@ -1410,6 +1904,9 @@ class ClaudeAutoClient:
         self.last_visual_plan_result: ClaudeVisualPlanResult | None = None
         self.last_plan_timing: dict[str, float] = {}
         self.last_rejected_visual_references: list[dict[str, Any]] = []
+        self.last_reference_validation: dict[str, Any] | None = None
+        self.last_reference_candidate_report: dict[str, Any] | None = None
+        self.last_grounding_verification: dict[str, Any] | None = None
         self.last_evaluation_result: ClaudeEvaluationResult | None = None
 
     @staticmethod
@@ -1465,6 +1962,15 @@ class ClaudeAutoClient:
                 return "REFERENCE | FLAT GARMENT | RAW RGB"
             if name == "camera_a_flat_reference_anchors.png":
                 return "REFERENCE | FLAT GARMENT | ANNOTATED ANCHORS"
+            if name == "camera_a_rgb_upright.png":
+                return (
+                    "CURRENT CAMERA A | RGB ONLY | CANONICAL UPRIGHT "
+                    "(CLOCKWISE 90-DEG ROTATION)"
+                )
+            if name == "camera_a_rxxx_overlay_upright.png":
+                return (
+                    "CURRENT CAMERA A | Rxxx OVERLAY | SAME CANONICAL UPRIGHT FRAME"
+                )
             return "CURRENT SCENE | RGB/GEOMETRY"
 
         image_text = "\n".join(
@@ -1483,6 +1989,15 @@ class ClaudeAutoClient:
             "probe-versus-expansion MODE supplied below: exploration may be a small reversible "
             "probe, while a validated hypothesis should be expanded into meaningful transport.\n\n"
             f"Garment images to inspect:\n{image_text}\n\n"
+            "When the canonical upright Camera-A RGB and Rxxx overlay are supplied, "
+            "they are the only authoritative frame for image-left/image-right garment "
+            "semantics. They show the same rotated pixels and the same Rxxx identities. "
+            "Do not reinterpret an Rxxx from a sideways/raw orientation. Before naming "
+            "a sleeve reference, visually verify that its marker is on the requested "
+            "sleeve fabric, not the torso interior, chest print, opposite sleeve, label, "
+            "or table. Do not assume that any particular edge, interior point, seam, or "
+            "wrinkle is privileged; use the supplied physical-outcome history to justify "
+            "the current contact hypothesis.\n\n"
             "Visual evidence priority: inspect the raw flat-garment reference first to "
             "establish topology, printed-pattern correspondence, and which current layer "
             "is covering which region. Use current RGB to localize that structure and use "
@@ -1494,9 +2009,11 @@ class ClaudeAutoClient:
             "garment_observation (string), opening_strategy (string), confidence "
             "(number 0..1), selected_reference ({camera: A|B, reference_id: Rxxx, "
             "reason: string}), motion_intent (string), expected_observation (string), "
-            "safety_notes (non-empty list of strings), and optional skill_invocations "
-            "(list containing approved skill names such as laydown or flatten-garment, "
-            "with a reason). Do not return "
+            "safety_notes (list containing 1 to 10 non-empty strings), and optional skill_invocations "
+            "(objects containing exactly name and reason; name is an approved skill "
+            "such as laydown or flatten-garment). The selected_reference object must "
+            "contain exactly camera, reference_id, and reason; put all supporting "
+            "visual context inside reason instead of adding fields. Do not return "
             "actions, XYZ coordinates, Python, or a run function in this stage."
         )
         command = [
@@ -1505,6 +2022,8 @@ class ClaudeAutoClient:
             prompt,
             "--output-format",
             "json",
+            "--json-schema",
+            json.dumps(VISUAL_PLAN_JSON_SCHEMA, separators=(",", ":")),
             "--permission-mode",
             "plan",
             "--allowedTools",
@@ -1616,25 +2135,16 @@ class ClaudeAutoClient:
         return result
 
     @staticmethod
-    def _validate_reference_for_stage2(
-        visual: VisualPlanDecision,
+    def _validate_measurement_for_stage2(
+        camera: str,
+        reference_id: str,
+        measurement: Mapping[str, Any],
         session: AgentSession,
+        objective: str | None = None,
     ) -> dict[str, Any]:
-        """Reject an unexecutable Stage-1 reference before spending a Stage-2 call."""
+        """Apply the deterministic Stage-2 gates to one saved measurement."""
 
-        selected = visual.selected_reference
-        camera = selected["camera"]
-        reference_id = selected["reference_id"]
-        try:
-            measurement = GarmentGrounding(
-                session.run_dir.resolve() / "workspace" / "perception_views"
-            ).lookup_reference(camera, reference_id)
-        except GroundingToolError as exc:
-            raise SelectedReferenceNotExecutableError(
-                camera,
-                reference_id,
-                f"saved calibrated measurement is unavailable: {exc}",
-            ) from exc
+        measurement = dict(measurement)
 
         xyz = np.asarray(measurement.get("base_xyz_mm", []), dtype=np.float64)
         if xyz.shape != (3,) or not np.all(np.isfinite(xyz)):
@@ -1668,7 +2178,192 @@ class ClaudeAutoClient:
                 "; ".join(violations),
                 measurement=measurement,
             )
+
+        fold_step = _fold_sleeve_step_from_objective(objective)
+        if fold_step is not None:
+            if camera != "A":
+                raise SelectedReferenceNotExecutableError(
+                    camera,
+                    reference_id,
+                    (
+                        f"{fold_step} must be selected in the canonical upright Camera-A "
+                        "RGB/Rxxx frame; Camera B is observation-only"
+                    ),
+                    measurement=measurement,
+                )
+            mask_path = (
+                session.run_dir.resolve()
+                / "workspace"
+                / "perception_views"
+                / "camera_A_garment_mask.npy"
+            )
+            if not mask_path.is_file():
+                raise SelectedReferenceNotExecutableError(
+                    camera,
+                    reference_id,
+                    f"Camera A garment mask is unavailable for {fold_step} semantic validation",
+                    measurement=measurement,
+                )
+            try:
+                from PIL import Image
+
+                rgb_path = mask_path.with_name("camera_0_A.png")
+                rgb_raw = None
+                if rgb_path.is_file():
+                    with Image.open(rgb_path) as rgb_image:
+                        rgb_raw = np.asarray(rgb_image.convert("RGB"))
+                maximum_interior_distance_px = 14.0
+                if measurement.get("measurement_kind") == (
+                    "uniform_calibrated_reference"
+                ):
+                    try:
+                        uniform_stride_px = float(
+                            measurement.get("sample_stride_px", 48.0)
+                        )
+                    except (TypeError, ValueError):
+                        uniform_stride_px = 48.0
+                    # A uniform grid cannot guarantee a point within the old
+                    # 14 px edge band: with a 48 px stride, the nearest visible
+                    # cloth sample can naturally be about 24 px inside. Match
+                    # the gate to the sampling contract while retaining the
+                    # independent outer-side and sleeve-height checks.
+                    maximum_interior_distance_px = min(
+                        32.0,
+                        max(14.0, 0.6 * uniform_stride_px),
+                    )
+                semantic = _fold_sleeve_reference_geometry(
+                    np.load(mask_path),
+                    measurement.get("pixel_xy", []),
+                    step=fold_step,
+                    rgb_raw=rgb_raw,
+                    max_interior_distance_px=maximum_interior_distance_px,
+                    require_free_edge=False,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                raise SelectedReferenceNotExecutableError(
+                    camera,
+                    reference_id,
+                    (
+                        f"semantic sleeve-region validation failed for {fold_step}: {exc}. "
+                        "Choose a visible Rxxx on the requested outer sleeve region, not "
+                        "the torso, print interior, opposite sleeve, or table"
+                    ),
+                    measurement=measurement,
+                ) from exc
+            measurement = dict(measurement)
+            measurement["fold_semantic_validation"] = semantic
         return measurement
+
+    @staticmethod
+    def _validate_reference_for_stage2(
+        visual: VisualPlanDecision,
+        session: AgentSession,
+        objective: str | None = None,
+    ) -> dict[str, Any]:
+        """Reject an unexecutable Stage-1 reference before spending a Stage-2 call."""
+
+        selected = visual.selected_reference
+        camera = selected["camera"]
+        reference_id = selected["reference_id"]
+        try:
+            measurement = GarmentGrounding(
+                session.run_dir.resolve() / "workspace" / "perception_views"
+            ).lookup_reference(camera, reference_id)
+        except GroundingToolError as exc:
+            raise SelectedReferenceNotExecutableError(
+                camera,
+                reference_id,
+                f"saved calibrated measurement is unavailable: {exc}",
+            ) from exc
+        return ClaudeAutoClient._validate_measurement_for_stage2(
+            camera,
+            reference_id,
+            measurement,
+            session,
+            objective,
+        )
+
+    @staticmethod
+    def _fold_reference_candidate_report(
+        session: AgentSession,
+        objective: str | None,
+    ) -> dict[str, Any] | None:
+        """Prevalidate every visible uniform Rxxx for a named sleeve step.
+
+        The full uniform overlay remains visible for semantic context, but Claude
+        must not spend calls selecting references that the host can already prove
+        will fail workspace or sleeve-anchor validation.
+        """
+
+        step = _fold_sleeve_step_from_objective(objective)
+        if step is None:
+            return None
+        perception_dir = (
+            session.run_dir.resolve() / "workspace" / "perception_views"
+        )
+        grounding = GarmentGrounding(perception_dir)
+        try:
+            guide = grounding._guide("A")
+        except GroundingToolError as exc:
+            raise ReferenceReselectionExhaustedError(
+                f"deterministic {step} reference prevalidation could not read "
+                f"Camera-A references: {exc}"
+            ) from exc
+
+        accepted: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for sample in guide.get("samples", []):
+            if not isinstance(sample, Mapping):
+                continue
+            if sample.get("reference_source") == "fold_rgb_boundary_dense":
+                continue
+            reference_id = str(sample.get("reference_id", "")).strip().upper()
+            if not reference_id:
+                continue
+            try:
+                measurement = grounding.lookup_reference("A", reference_id)
+                validated = ClaudeAutoClient._validate_measurement_for_stage2(
+                    "A",
+                    reference_id,
+                    measurement,
+                    session,
+                    objective,
+                )
+            except (GroundingToolError, SelectedReferenceNotExecutableError) as exc:
+                reason = exc.reason if isinstance(
+                    exc, SelectedReferenceNotExecutableError
+                ) else str(exc)
+                rejected.append(
+                    {
+                        "reference_id": reference_id,
+                        "pixel_xy": sample.get("pixel_xy"),
+                        "reason": reason,
+                    }
+                )
+                continue
+            semantic = validated.get("fold_semantic_validation", {})
+            accepted.append(
+                {
+                    "reference_id": reference_id,
+                    "pixel_xy": validated.get("pixel_xy"),
+                    "base_xyz_mm": validated.get("base_xyz_mm"),
+                    "interior_distance_px": semantic.get("interior_distance_px"),
+                    "edge_contrast_rgb_norm": semantic.get(
+                        "edge_contrast_rgb_norm"
+                    ),
+                }
+            )
+        return {
+            "step": step,
+            "reference_mode": "uniform_full_garment",
+            "visible_reference_count": len(accepted) + len(rejected),
+            "executable_reference_count": len(accepted),
+            "executable_reference_ids": [
+                item["reference_id"] for item in accepted
+            ],
+            "accepted": accepted,
+            "rejected": rejected,
+        }
 
     def _ground_final_plan(
         self,
@@ -1730,40 +2425,23 @@ class ClaudeAutoClient:
                 "toward the requested state. Do not turn the user task into a generic garment "
                 "opening, spreading, or outward-transport objective."
             )
+        context_bundle = _write_final_grounding_context(
+            root,
+            context=context,
+            selected_reference=selected,
+            mode_action_instruction=mode_action_instruction,
+        )
         prompt = (
-            "STAGE 2 — FINAL RXX GROUNDING AND RUN GENERATION. The visual-planning "
-            "stage below has already selected the final grasp reference. Do not revisit "
-            "the images, compare alternatives, or change the selected reference. Call "
-            "`lookup_reference` exactly once with camera="
-            f"{selected['camera']} and reference_id={selected['reference_id']}. Then use "
-            "that returned measurement to ground the grasp location and immediately "
-            "compose the final numeric RobotAPI proposal. Claude chooses all remaining "
-            "approach, grasp TCP height, lift, retreat, laydown, release, and yaw values "
-            "from the visual motion intent, returned measurement, robot bounds, and "
-            "safety margin. Do not call another tool. Always release before the action "
-            "list ends and keep at most 12 actions.\n\n"
-            f"Two-stage planning context:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
-            "The `objective` in this context is authoritative. Execute that user task; do not "
-            "silently add or substitute a generic garment-opening or spreading goal. If the "
-            "objective names a garment part or region, keep the selected reference and all "
-            "waypoints tied to that target.\n\n"
-            "Return exactly these fields and no others: garment_observation (string), "
-            "reveal_strategy (string), confidence (number 0..1), actions (non-empty "
-            "list of {name,args}), expected_observation (string), safety_notes "
-            "(non-empty list of strings), and optional skill_invocations (list of "
-            "{name,reason}; use an approved skill such as laydown or flatten-garment). "
-            "For move, args must contain exactly numeric "
-            "x,y,z,yaw in millimetres/degrees; yaw is relative to the calibrated Home "
-            "TCP orientation, so yaw=0 keeps the gripper orientation without an "
-            "unnecessary wrist turn. The action contract permits only move, "
-            "open_gripper, close_gripper, and home. "
-            f"{mode_action_instruction} Do not turn an exploration probe into a long pull, "
-            "and do not turn a validated hypothesis into a few-millimetre re-probe. Use multiple waypoints to shape the path, not to "
-            "silently change the intended net displacement. In WORKSPACE_RECOVERY, the "
-            "garment_workspace_recovery requested_translation_xy_mm is authoritative for "
-            "the net move from the grounded grasp XY to the final move XY before release."
+            "STAGE 2 — FINAL RXX GROUNDING AND RUN GENERATION. "
+            f"Read `{context_bundle['manifest_relative']}` first with the Read tool, "
+            "then read every file listed in its read_order completely and in order. "
+            "Those run-local files are the complete authoritative planning context. "
+            f"After reading them, call lookup_reference exactly once for "
+            f"{selected['camera']}/{selected['reference_id']} and return only the required "
+            "final JSON proposal. Do not inspect images or any file not listed by the manifest."
         )
         mcp_config = grounding_mcp_config(root)
+        enabled_tools = ("Read", *GROUNDING_MCP_TOOLS)
         command = [
             self._binary(),
             "--print",
@@ -1773,9 +2451,9 @@ class ClaudeAutoClient:
             "--permission-mode",
             "dontAsk",
             "--allowedTools",
-            ",".join(GROUNDING_MCP_TOOLS),
+            ",".join(enabled_tools),
             "--tools",
-            "",
+            "Read",
             "--mcp-config",
             json.dumps(mcp_config, ensure_ascii=False, separators=(",", ":")),
             "--strict-mcp-config",
@@ -1786,11 +2464,18 @@ class ClaudeAutoClient:
             "--system-prompt",
             (
                 "You are the final grounding/compiler stage of a garment-task "
-                "robotics agent. The visual decision is fixed. Call the single exact "
-                "Rxxx lookup once, then return only the final JSON proposal. Do not "
-                "read images, write files, execute commands, or control a robot."
+                "robotics agent. Read only the manifest and context files explicitly "
+                "named by the bootstrap prompt. The visual decision is fixed. Call the "
+                "single exact Rxxx lookup once, then return only the final JSON proposal. "
+                "Do not read images, write files, execute commands, or control a robot."
             ),
         ]
+        command_diagnostics = _command_argument_diagnostics(command)
+        if command_diagnostics["largest_argument_bytes"] >= 120_000:
+            raise ExplorationPlanningError(
+                "Claude final-grounding command still contains an oversized argument "
+                f"before process launch: {command_diagnostics}"
+            )
         started = time.monotonic()
         try:
             completed = subprocess.run(
@@ -1819,6 +2504,8 @@ class ClaudeAutoClient:
                     "error": error,
                     "created_at": _now(),
                     "stage": "final_grounding",
+                    "context_bundle": context_bundle,
+                    "command_diagnostics": command_diagnostics,
                 },
                 failed=True,
             )
@@ -1840,6 +2527,8 @@ class ClaudeAutoClient:
                     "error": "non-zero Claude final-grounding return code",
                     "created_at": _now(),
                     "stage": "final_grounding",
+                    "context_bundle": context_bundle,
+                    "command_diagnostics": command_diagnostics,
                 },
                 failed=True,
             )
@@ -1847,9 +2536,15 @@ class ClaudeAutoClient:
                 f"Claude final grounding exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
+        payload_normalizations: list[str] = []
         try:
+            grounded_payload, payload_normalizations = (
+                _normalize_final_grounding_payload(
+                    _json_from_claude_text(completed.stdout)
+                )
+            )
             proposal = validate_exploration_payload(
-                _json_from_claude_text(completed.stdout),
+                grounded_payload,
                 allowed_skill_names=self.skill_names,
             )
             measurement = GarmentGrounding(
@@ -1867,12 +2562,43 @@ class ClaudeAutoClient:
                 [targets[0]["x"], targets[0]["y"]], dtype=np.float64
             )
             grounding_error_mm = float(np.linalg.norm(actual_xy - expected_xy))
-            if grounding_error_mm > 2.0:
+            fold_step = _fold_sleeve_step_from_objective(objective)
+            grasp_anchor_offset_validation: dict[str, Any]
+            if grounding_error_mm <= _EXACT_REFERENCE_GRASP_TOLERANCE_MM:
+                grasp_anchor_offset_validation = {
+                    "mode": "exact_anchor",
+                    "step": fold_step,
+                    "anchor_reference_id": measurement.get("reference_id"),
+                    "anchor_base_xy_mm": expected_xy.tolist(),
+                    "closure_base_xy_mm": actual_xy.tolist(),
+                    "offset_xy_mm": (actual_xy - expected_xy).tolist(),
+                    "offset_distance_mm": grounding_error_mm,
+                    "max_offset_mm": _EXACT_REFERENCE_GRASP_TOLERANCE_MM,
+                }
+            elif fold_step is not None:
+                try:
+                    grasp_anchor_offset_validation = (
+                        _validate_fold_grasp_anchor_offset(
+                            session,
+                            measurement,
+                            actual_xy,
+                            step=fold_step,
+                        )
+                    )
+                except ValueError as exc:
+                    raise ExplorationPlanningError(
+                        "final fold grasp offset from the selected Rxxx anchor is invalid: "
+                        f"selected={selected['camera']}/{selected['reference_id']} "
+                        f"expected_xy={expected_xy.tolist()} actual_xy={actual_xy.tolist()} "
+                        f"error={grounding_error_mm:.1f} mm; {exc}"
+                    ) from exc
+            else:
                 raise ExplorationPlanningError(
                     "final grasp XY does not use the visually selected Rxxx measurement: "
                     f"selected={selected['camera']}/{selected['reference_id']} "
                     f"expected_xy={expected_xy.tolist()} actual_xy={actual_xy.tolist()} "
-                    f"error={grounding_error_mm:.1f} mm"
+                    f"error={grounding_error_mm:.1f} mm; ordinary tasks allow at most "
+                    f"{_EXACT_REFERENCE_GRASP_TOLERANCE_MM:.1f} mm"
                 )
             recovery_validation = (
                 validate_garment_recovery_actions(
@@ -1895,6 +2621,9 @@ class ClaudeAutoClient:
                     "created_at": _now(),
                     "stage": "final_grounding",
                     "selected_reference": dict(selected),
+                    "context_bundle": context_bundle,
+                    "command_diagnostics": command_diagnostics,
+                    "payload_normalizations": payload_normalizations,
                 },
                 failed=True,
             )
@@ -1918,12 +2647,17 @@ class ClaudeAutoClient:
             "duration_s": duration_s,
             "stage": "final_grounding",
             "selected_reference": dict(selected),
+            "context_bundle": context_bundle,
+            "command_diagnostics": command_diagnostics,
+            "payload_normalizations": payload_normalizations,
             "grounding_verification": {
                 "measurement": measurement,
                 "grasp_xy_error_mm": grounding_error_mm,
+                "grasp_anchor_offset": grasp_anchor_offset_validation,
             },
             "proposal": proposal.as_dict(),
         }
+        self.last_grounding_verification = dict(payload["grounding_verification"])
         if recovery_validation is not None:
             payload["garment_workspace_recovery_validation"] = recovery_validation
         self.planner._save_invocation_log(root, payload)
@@ -1945,6 +2679,9 @@ class ClaudeAutoClient:
         self.last_visual_plan_result = None
         self.last_plan_timing = {}
         self.last_rejected_visual_references = []
+        self.last_reference_validation = None
+        self.last_reference_candidate_report = None
+        self.last_grounding_verification = None
         prompt_objective = objective
         if feedback:
             prompt_objective += (
@@ -2001,6 +2738,79 @@ class ClaudeAutoClient:
                 "reference that corresponds to that named target; do not treat an unrelated "
                 "convenient fold as an acceptable substitute."
             )
+        fold_sleeve_step = _fold_sleeve_step_from_objective(objective)
+        fold_reference_instruction = ""
+        if fold_sleeve_step is not None:
+            candidate_report = self._fold_reference_candidate_report(
+                session,
+                objective,
+            )
+            self.last_reference_candidate_report = candidate_report
+            _write_json(
+                session.run_dir.resolve()
+                / "workspace"
+                / "perception_views"
+                / f"camera_A_{fold_sleeve_step}_executable_references.json",
+                candidate_report,
+            )
+            executable_reference_ids = list(
+                candidate_report.get("executable_reference_ids", [])
+                if isinstance(candidate_report, Mapping)
+                else []
+            )
+            if not executable_reference_ids:
+                rejected = list(candidate_report.get("rejected", []))
+                reason_counts: dict[str, int] = {}
+                for item in rejected:
+                    reason = str(item.get("reason", "unknown rejection"))
+                    if "safe upper bound" in reason or "safe lower bound" in reason:
+                        key = "workspace"
+                    elif "RGB edge contrast" in reason:
+                        key = "rgb_edge_contrast"
+                    elif "free-edge band" in reason:
+                        key = "free_edge_band"
+                    else:
+                        key = "other"
+                    reason_counts[key] = reason_counts.get(key, 0) + 1
+                payload = {
+                    "stage": "reference_candidate_prevalidation",
+                    "created_at": _now(),
+                    "failed": True,
+                    "candidate_report": candidate_report,
+                    "reason_counts": reason_counts,
+                }
+                self._save_visual_log(session.run_dir.resolve(), payload, failed=True)
+                raise ReferenceReselectionExhaustedError(
+                    "deterministic prevalidation found no executable Camera-A "
+                    f"Rxxx for {fold_sleeve_step}; Claude was not called; "
+                    f"rejection_counts={reason_counts}"
+                )
+            allowed_text = ", ".join(executable_reference_ids)
+            fold_reference_instruction = (
+                "\nFor this sleeve step, image-left/image-right refer only to the "
+                "clockwise-90 canonical upright Camera-A RGB and matching upright Rxxx "
+                "overlay. Select Camera A only. The cyan Rxxx markers are the original "
+                "uniform calibrated references spread across the entire visible garment; "
+                "they are not pre-ranked contact candidates. Select exactly "
+                "one Rxxx that is visibly shown on the requested sleeve region and "
+                "never name a hidden or unshown ID. "
+                "A magenta MOLMO marker may be present as a fallible semantic sleeve-region "
+                "hypothesis. Never grasp the magenta point directly. When it agrees with "
+                "the visible sleeve, use it only to focus attention and compare nearby cyan "
+                "Rxxx; when it visibly disagrees, trust the RGB garment topology instead. "
+                "The chosen marker must visibly lie on the requested outer sleeve region. "
+                "Torso/print interior markers and opposite-side markers will be rejected "
+                "before Stage 2. Compare the full visible grid yourself and use the saved "
+                "physical outcomes to decide whether the next hypothesis should alter contact "
+                "location, jaw alignment, entry path, or height. The host deliberately does "
+                "not reveal a preferred edge/interior/seam/wrinkle answer. "
+                "The host has already applied the current workspace, outer-side, "
+                "sleeve-height, and region-membership gates to every visible "
+                "uniform marker. The full cyan grid remains visible for context, but the "
+                f"only references executable for this step are: {allowed_text}. Select "
+                "exactly one ID from that list; every other visible Rxxx is deterministically "
+                "invalid and must not be selected."
+            )
         visual_prompt = (
             "Observe only the current garment shown in the supplied Camera A/B "
             "images. "
@@ -2013,7 +2823,7 @@ class ClaudeAutoClient:
             f"{planning_mode_instruction}\n"
             "This zero-shot visual stage has no prior coordinates or action values. Do not "
             "invent them; use prior evaluation only to decide whether this is a probe or an "
-            "expansion.\n\n"
+            f"expansion.{fold_reference_instruction}\n\n"
             "Approved procedural skill library:\n"
             f"{self.skill_guidance or 'No dynamic skill updates are active.'}"
         )
@@ -2047,6 +2857,11 @@ class ClaudeAutoClient:
         visual_started = time.monotonic()
         visual_result: ClaudeVisualPlanResult | None = None
         max_visual_attempts = self.max_reference_reselections + 1
+        if fold_sleeve_step is not None:
+            # A sleeve candidate has already passed deterministic host
+            # prevalidation.  If Claude still names a forbidden ID, allow one
+            # compact correction rather than spending three long visual calls.
+            max_visual_attempts = min(max_visual_attempts, 2)
         for visual_attempt in range(1, max_visual_attempts + 1):
             attempt_prompt = visual_prompt
             if rejected_keys:
@@ -2100,7 +2915,11 @@ class ClaudeAutoClient:
                 )
             else:
                 try:
-                    self._validate_reference_for_stage2(candidate.decision, session)
+                    self.last_reference_validation = self._validate_reference_for_stage2(
+                        candidate.decision,
+                        session,
+                        objective,
+                    )
                 except SelectedReferenceNotExecutableError as exc:
                     rejection = exc
 
@@ -2224,6 +3043,7 @@ class ClaudeAutoClient:
         rollout_recording_dir: Path | None = None,
         skill_guidance: str | None = None,
         workspace_recovery: GarmentWorkspaceRecovery | None = None,
+        hold_checkpoint: dict[str, Any] | None = None,
     ) -> ExplorationEvaluation:
         self.last_evaluation_result = None
         root = run_dir.resolve()
@@ -2287,8 +3107,48 @@ class ClaudeAutoClient:
                 f"{json.dumps(workspace_recovery.as_dict(), ensure_ascii=False)}\n\n"
             )
         )
+        checkpoint_instruction = ""
+        if isinstance(hold_checkpoint, dict):
+            checkpoint_summary = {
+                key: hold_checkpoint.get(key)
+                for key in (
+                    "status",
+                    "classification",
+                    "confidence",
+                    "evidence",
+                    "reason",
+                    "continue_transport",
+                    "runtime_decision",
+                    "executed_branch",
+                )
+                if key in hold_checkpoint
+            }
+            checkpoint_instruction = (
+                "The runtime used an online post-grasp hold checkpoint. This record is "
+                "authoritative for which action branch was actually executed: "
+                f"{json.dumps(checkpoint_summary, ensure_ascii=False)}\n"
+            )
+            if hold_checkpoint.get("executed_branch") == "ABORT_RELEASE" or not bool(
+                hold_checkpoint.get("continue_transport")
+            ):
+                checkpoint_instruction += (
+                    "The planned continuation transport was NOT executed. Do not label its "
+                    "direction or distance as failed and do not learn transport changes from it. "
+                    "Judge acquisition/target support from the hold and mark unexecuted transport "
+                    "UNKNOWN; evaluate only the local descent/release that actually occurred.\n\n"
+                )
+            else:
+                checkpoint_instruction += (
+                    "The checkpoint authorized the continuation from fresh full-resolution Camera "
+                    "A/B evidence. Treat grasp acquisition and target-structure support at the hold "
+                    "as established; do not later rewrite that successful hold as acquisition failure "
+                    "because a uniformly sampled contact sheet is smaller or ambiguous. Only record "
+                    "later slippage as a subsequent transport failure. Evaluate the executed transport "
+                    "and laydown normally from the visual evidence.\n\n"
+                )
         prompt = (
             evaluation_mode_instruction
+            + checkpoint_instruction
             + "Compare the before and after garment images after one robot handling action. "
             "Evaluate the action stage by stage instead of collapsing it into one useful flag. "
             "Use only directly visible evidence from the labelled RGB/depth files and the "
@@ -2322,6 +3182,13 @@ class ClaudeAutoClient:
             "grasp anchor or grasp depth merely because transport failed. For example, when "
             "acquisition and target-layer motion are supported but transport is insufficient, "
             "keep grasp_anchor and grasp_depth, and change pull_direction and/or pull_distance. "
+            "When acquisition fails, treat contact location, jaw alignment, pre-close entry "
+            "path, closure geometry, and Z as competing causal hypotheses. Do not recommend "
+            "another height-only retry merely because the cloth is thin unless the visible "
+            "evidence specifically isolates height as the cause. After repeated empty closes "
+            "with the same contact geometry, next_experiment.change must include at least one "
+            "non-height contact dimension. Do not name a privileged solution in advance; infer "
+            "the next hypothesis from the observed failures. "
             "The change list must be non-empty when another safe grounded experiment exists. "
             "Use an empty change list only when the garment is already as open as this setup can "
             "reasonably achieve, or continuing is unsafe, visually ungrounded, or blocked by a "
@@ -4811,7 +5678,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--run-dir")
     parser.add_argument("--run-id")
-    parser.add_argument("--robot-config")
+    parser.add_argument(
+        "--robot-config",
+        default="config/robot.example.json",
+        help=(
+            "robot configuration JSON (default: config/robot.example.json; "
+            "uses absolute camera depth without live tabletop Z flooring)"
+        ),
+    )
     parser.add_argument("--perception-config")
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--claude-timeout-s", type=int, default=900)

@@ -19,8 +19,9 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import threading
 import time
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -433,6 +434,355 @@ def speed_up_mp4(
         temporary.unlink(missing_ok=True)
 
 
+def _parse_recorded_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _recorded_video_duration_s(manifest: Mapping[str, Any]) -> float | None:
+    frames = manifest.get("composite_encoded_frame_count")
+    fps = manifest.get("fps")
+    if isinstance(frames, (int, float)) and isinstance(fps, (int, float)):
+        if float(frames) > 0 and float(fps) > 0:
+            return float(frames) / float(fps)
+    started = _parse_recorded_time(manifest.get("created_at"))
+    ended = _parse_recorded_time(manifest.get("ended_at"))
+    if started is not None and ended is not None and ended > started:
+        return (ended - started).total_seconds()
+    duration = manifest.get("duration_s")
+    if isinstance(duration, (int, float)) and np.isfinite(float(duration)):
+        if float(duration) > 0:
+            return float(duration)
+    return None
+
+
+def _rollout_action_phase(
+    actions: Sequence[Mapping[str, Any]],
+    index: int,
+    *,
+    checkpoint_index: int | None,
+    abort_branch: bool,
+) -> str:
+    action = actions[index]
+    name = str(action.get("name", "action")).strip().lower()
+    names = [str(item.get("name", "")).strip().lower() for item in actions]
+    close_indices = [position for position, value in enumerate(names) if value == "close_gripper"]
+    close_index = close_indices[0] if close_indices else None
+    release_index = next(
+        (
+            position
+            for position, value in enumerate(names)
+            if value == "open_gripper"
+            and close_index is not None
+            and position > close_index
+        ),
+        None,
+    )
+    prefix = f"STEP {index + 1:02d}/{len(actions):02d} | "
+    if name == "home":
+        return prefix + "RETURN HOME"
+    if name == "close_gripper":
+        return prefix + "CLOSE GRIPPER | GRASP"
+    if name == "open_gripper":
+        if close_index is None or index < close_index:
+            return prefix + "OPEN GRIPPER"
+        if abort_branch and checkpoint_index is not None and index > checkpoint_index:
+            return prefix + "ABORT | RELEASE AT ORIGIN"
+        return prefix + "RELEASE GARMENT"
+    if name != "move":
+        return prefix + name.replace("_", " ").upper()
+    if checkpoint_index is not None and index == checkpoint_index:
+        return prefix + "LIFT TO HOLD CHECK"
+    if (
+        abort_branch
+        and checkpoint_index is not None
+        and index > checkpoint_index
+        and (release_index is None or index < release_index)
+    ):
+        return prefix + "ABORT | DESCEND TO ORIGIN"
+    if close_index is None or index < close_index:
+        later_moves_before_close = any(
+            names[position] == "move"
+            for position in range(index + 1, close_index or len(actions))
+        )
+        return prefix + (
+            "APPROACH TARGET" if later_moves_before_close else "DESCEND TO GRASP"
+        )
+    if release_index is not None and index < release_index:
+        move_indices = [
+            position
+            for position in range(close_index + 1, release_index)
+            if names[position] == "move"
+        ]
+        if move_indices and index == move_indices[0]:
+            return prefix + "LIFT GARMENT"
+        if move_indices and index == move_indices[-1]:
+            return prefix + "DESCEND FOR LAYDOWN"
+        return prefix + "TRANSPORT GARMENT"
+    return prefix + "RETRACT GRIPPER"
+
+
+def build_rollout_phase_timeline(
+    execution: Mapping[str, Any] | None,
+    recording_manifest: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Align robot-action phases to the unaccelerated rollout video clock."""
+
+    if not isinstance(execution, Mapping) or not isinstance(recording_manifest, Mapping):
+        return []
+    raw_actions = execution.get("actual_robot_actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raw_actions = execution.get("requested_robot_actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        return []
+    actions = [item for item in raw_actions if isinstance(item, Mapping)]
+    if not actions:
+        return []
+    recording_start = _parse_recorded_time(recording_manifest.get("created_at"))
+    if recording_start is None:
+        recording_start = _parse_recorded_time(actions[0].get("requested_at"))
+    duration_s = _recorded_video_duration_s(recording_manifest)
+    if recording_start is None or duration_s is None:
+        return []
+    checkpoint_value = execution.get("checkpoint_action_index")
+    checkpoint_index = (
+        int(checkpoint_value)
+        if isinstance(checkpoint_value, int)
+        and not isinstance(checkpoint_value, bool)
+        and 0 <= checkpoint_value < len(actions)
+        else None
+    )
+    checkpoint = execution.get("checkpoint")
+    abort_branch = bool(
+        isinstance(checkpoint, Mapping)
+        and str(checkpoint.get("executed_branch", checkpoint.get("runtime_decision", ""))).upper()
+        == "ABORT_RELEASE"
+    )
+    parsed_actions: list[tuple[Mapping[str, Any], datetime, datetime]] = []
+    for action in actions:
+        requested = _parse_recorded_time(action.get("requested_at"))
+        completed = _parse_recorded_time(action.get("completed_at")) or requested
+        if requested is None or completed is None:
+            continue
+        parsed_actions.append((action, requested, max(requested, completed)))
+    if not parsed_actions:
+        return []
+    # Preserve action indices after filtering malformed timestamp records.
+    aligned_actions = [item[0] for item in parsed_actions]
+    if len(aligned_actions) != len(actions):
+        actions = aligned_actions
+        checkpoint_index = None
+
+    def offset(timestamp: datetime) -> float:
+        return min(duration_s, max(0.0, (timestamp - recording_start).total_seconds()))
+
+    timeline: list[dict[str, Any]] = []
+
+    def append_interval(start_s: float, end_s: float, label: str) -> None:
+        start = min(duration_s, max(0.0, float(start_s)))
+        end = min(duration_s, max(start, float(end_s)))
+        if end - start < 1e-3:
+            return
+        if timeline and timeline[-1]["label"] == label and abs(timeline[-1]["end_s"] - start) < 1e-3:
+            timeline[-1]["end_s"] = end
+            return
+        timeline.append({"start_s": start, "end_s": end, "label": label})
+
+    first_start = offset(parsed_actions[0][1])
+    append_interval(0.0, first_start, "WAITING FOR ROBOT EXECUTION")
+    for index, (_, requested, completed) in enumerate(parsed_actions):
+        start_s = offset(requested)
+        completed_s = offset(completed)
+        next_start_s = (
+            offset(parsed_actions[index + 1][1])
+            if index + 1 < len(parsed_actions)
+            else completed_s
+        )
+        label = _rollout_action_phase(
+            actions,
+            index,
+            checkpoint_index=checkpoint_index,
+            abort_branch=abort_branch,
+        )
+        append_interval(start_s, completed_s, label)
+        settled_label = (
+            "HOLD CHECK | CLAUDE EVALUATION"
+            if checkpoint_index is not None and index == checkpoint_index
+            else label
+        )
+        append_interval(completed_s, next_start_s, settled_label)
+    last_end = offset(parsed_actions[-1][2])
+    append_interval(last_end, duration_s, "ROLLOUT COMPLETE")
+    return timeline
+
+
+def _escape_drawtext(value: str) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace(":", "\\:")
+        .replace("%", "\\%")
+    )
+
+
+def overlay_rollout_labels_mp4(
+    source: Path,
+    output: Path,
+    *,
+    iteration: int | None = None,
+    phase_timeline: Sequence[Mapping[str, Any]] = (),
+    ffmpeg_binary: str = "ffmpeg",
+) -> dict[str, Any]:
+    """Burn iteration and time-aligned process phases into a rollout video.
+
+    Labels are applied before playback acceleration in the normal recording
+    path, so every phase remains attached to the correct physical action.
+    """
+
+    source_path = Path(source).expanduser().resolve()
+    output_path = Path(output).expanduser().resolve()
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        raise RolloutRecorderError(f"video is missing or empty: {source_path}")
+    if source_path == output_path:
+        raise RolloutRecorderError("rollout-label output must differ from the source")
+    if iteration is not None and (isinstance(iteration, bool) or int(iteration) < 1):
+        raise RolloutRecorderError("iteration number must be a positive integer")
+    normalized_timeline: list[dict[str, Any]] = []
+    for item in phase_timeline:
+        try:
+            start_s = float(item["start_s"])
+            end_s = float(item["end_s"])
+            phase_label = str(item["label"]).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not phase_label or not np.isfinite(start_s) or not np.isfinite(end_s):
+            continue
+        if end_s <= start_s:
+            continue
+        normalized_timeline.append(
+            {"start_s": max(0.0, start_s), "end_s": end_s, "label": phase_label}
+        )
+    if iteration is None and not normalized_timeline:
+        raise RolloutRecorderError("at least one rollout label is required")
+    binary = (
+        shutil.which(ffmpeg_binary)
+        if Path(ffmpeg_binary).name == ffmpeg_binary
+        else ffmpeg_binary
+    )
+    if binary is None:
+        raise RolloutRecorderError(
+            f"FFmpeg executable not found: {ffmpeg_binary}; cannot label MP4"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f".{output_path.stem}.label.tmp.mp4")
+    temporary.unlink(missing_ok=True)
+    label = f"ITER {int(iteration):03d}" if iteration is not None else None
+    filters: list[str] = []
+    if label is not None:
+        # Keep the iteration box below the recorder's camera caption at y=29.
+        filters.extend(
+            [
+                "drawbox=x=16:y=56:w=220:h=48:color=black@0.72:t=fill",
+                f"drawtext=fontcolor=white:fontsize=30:expansion=none:text='{label}':x=29:y=64",
+            ]
+        )
+    for item in normalized_timeline:
+        start_s = float(item["start_s"])
+        end_s = float(item["end_s"])
+        enabled = f"between(t\\,{start_s:.6f}\\,{end_s:.6f})"
+        phase_label = _escape_drawtext(str(item["label"]))
+        filters.extend(
+            [
+                "drawbox=x=16:y=112:w=1180:h=50:color=black@0.72:t=fill:"
+                f"enable='{enabled}'",
+                "drawtext=fontcolor=white:fontsize=28:expansion=none:"
+                f"text='{phase_label}':x=29:y=121:enable='{enabled}'",
+            ]
+        )
+    filter_graph = ",".join(filters)
+    command = [
+        str(binary),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        filter_graph,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(temporary),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RolloutRecorderError(
+                f"FFmpeg rollout-label failed for {source_path.name}: "
+                f"{detail or 'unknown error'}"
+            )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RolloutRecorderError("FFmpeg produced no usable labelled MP4")
+        temporary.replace(output_path)
+        return {
+            "status": "completed",
+            "iteration": int(iteration) if iteration is not None else None,
+            "label": label,
+            "phase_timeline": normalized_timeline,
+            "source": str(source_path),
+            "output": str(output_path),
+            "output_size_bytes": output_path.stat().st_size,
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def label_iteration_mp4(
+    source: Path,
+    output: Path,
+    *,
+    iteration: int,
+    phase_timeline: Sequence[Mapping[str, Any]] = (),
+    ffmpeg_binary: str = "ffmpeg",
+) -> dict[str, Any]:
+    """Burn the iteration and current robot-process phase into one segment."""
+
+    return overlay_rollout_labels_mp4(
+        source,
+        output,
+        iteration=iteration,
+        phase_timeline=phase_timeline,
+        ffmpeg_binary=ffmpeg_binary,
+    )
+
+
 def prune_rollout_video_files(recording_dir: Path) -> list[str]:
     """Delete per-rollout video/native-recording files after evaluation.
 
@@ -518,6 +868,8 @@ class _CameraState:
 class _CapturedFrame:
     label: str
     serial: str
+    rgb: np.ndarray
+    depth_m: np.ndarray
     rgb_bgr: np.ndarray
     depth_bgr: np.ndarray
     host_utc: str
@@ -526,6 +878,21 @@ class _CapturedFrame:
     color_device_timestamp_ms: float
     depth_frame_number: int
     depth_device_timestamp_ms: float
+    valid_depth_fraction: float
+
+
+@dataclass(frozen=True)
+class RolloutRGBDFrame:
+    """One unlabelled aligned frame copied from the active recorder thread."""
+
+    label: str
+    serial: str
+    rgb: np.ndarray
+    depth_m: np.ndarray
+    host_utc: str
+    host_monotonic_ns: int
+    color_frame_number: int
+    depth_frame_number: int
     valid_depth_fraction: float
 
 
@@ -572,6 +939,8 @@ class DualRealSenseRolloutRecorder:
         self.errors: list[str] = []
         self.video_finalization: dict[str, dict[str, Any]] = {}
         self._closed = False
+        self._snapshot_condition = threading.Condition()
+        self._latest_rgbd: dict[str, RolloutRGBDFrame] = {}
 
     def _start_camera(self, spec: CameraSpec, rs: Any) -> _CameraState:
         cv2 = _require_cv2()
@@ -748,6 +1117,8 @@ class DualRealSenseRolloutRecorder:
         return _CapturedFrame(
             label=state.spec.label,
             serial=state.spec.serial,
+            rgb=rgb,
+            depth_m=depth_m,
             rgb_bgr=rgb_bgr,
             depth_bgr=depth_bgr,
             host_utc=_now(),
@@ -758,6 +1129,71 @@ class DualRealSenseRolloutRecorder:
             depth_device_timestamp_ms=float(depth.get_timestamp()),
             valid_depth_fraction=float(np.mean(valid)),
         )
+
+    @staticmethod
+    def _snapshot_frame(frame: _CapturedFrame) -> RolloutRGBDFrame:
+        return RolloutRGBDFrame(
+            label=frame.label,
+            serial=frame.serial,
+            rgb=frame.rgb.copy(),
+            depth_m=frame.depth_m.copy(),
+            host_utc=frame.host_utc,
+            host_monotonic_ns=frame.host_monotonic_ns,
+            color_frame_number=frame.color_frame_number,
+            depth_frame_number=frame.depth_frame_number,
+            valid_depth_fraction=frame.valid_depth_fraction,
+        )
+
+    def wait_for_latest_rgbd(
+        self,
+        *,
+        after_monotonic_ns: int = 0,
+        timeout_s: float = 3.0,
+        labels: tuple[str, ...] = ("A", "B"),
+    ) -> dict[str, RolloutRGBDFrame]:
+        """Return one fresh synchronized recorder snapshot without reopening cameras."""
+
+        if timeout_s <= 0:
+            raise ValueError("snapshot timeout_s must be positive")
+        required = tuple(dict.fromkeys(str(label) for label in labels))
+        if not required:
+            raise ValueError("at least one snapshot camera label is required")
+        deadline = time.monotonic() + float(timeout_s)
+        with self._snapshot_condition:
+            while True:
+                ready = all(
+                    label in self._latest_rgbd
+                    and self._latest_rgbd[label].host_monotonic_ns
+                    > int(after_monotonic_ns)
+                    for label in required
+                )
+                if ready:
+                    return {
+                        label: RolloutRGBDFrame(
+                            **{
+                                **self._latest_rgbd[label].__dict__,
+                                "rgb": self._latest_rgbd[label].rgb.copy(),
+                                "depth_m": self._latest_rgbd[label].depth_m.copy(),
+                            }
+                        )
+                        for label in required
+                    }
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    available = {
+                        label: frame.host_monotonic_ns
+                        for label, frame in self._latest_rgbd.items()
+                    }
+                    raise RolloutRecorderError(
+                        "timed out waiting for fresh recorder RGB-D snapshot: "
+                        f"required={list(required)} after={after_monotonic_ns} "
+                        f"available={available}"
+                    )
+                if self._closed and not ready:
+                    raise RolloutRecorderError(
+                        "recorder closed before a fresh RGB-D snapshot became available"
+                    )
+                self._snapshot_condition.wait(timeout=remaining)
 
     def _write_timestamp(self, frame: _CapturedFrame) -> None:
         if self.timestamp_writer is None or self.started_monotonic_ns is None:
@@ -822,6 +1258,12 @@ class DualRealSenseRolloutRecorder:
                         }
                     )
                     self._write_timestamp(frame)
+                with self._snapshot_condition:
+                    self._latest_rgbd = {
+                        label: self._snapshot_frame(frame)
+                        for label, frame in captured.items()
+                    }
+                    self._snapshot_condition.notify_all()
                 if self.composite_writer is not None and {"A", "B"}.issubset(captured):
                     composite = compose_four_panel(
                         captured["A"].rgb_bgr,
@@ -867,11 +1309,15 @@ class DualRealSenseRolloutRecorder:
     def request_stop(self, reason: str = "stop_requested") -> None:
         self.stop_reason = reason
         self.stop_requested = True
+        with self._snapshot_condition:
+            self._snapshot_condition.notify_all()
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        with self._snapshot_condition:
+            self._snapshot_condition.notify_all()
         if self.composite_writer is not None:
             self.composite_writer.release()
             self.composite_writer = None

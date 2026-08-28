@@ -49,7 +49,9 @@ from .free_exploration import (
     evaluation_perception_image_paths,
     global_perception_image_paths,
     ground_global_grasp_target,
+    invoke_direct_prompt,
     perception_image_paths,
+    split_global_lift_checkpoint_plan,
     validate_global_probe_profile,
 )
 from .molmo_keypoint_pipeline import (
@@ -66,6 +68,8 @@ from .robot_api import move_robot_to_perception_position, validate_controller_tr
 from .rollout_recorder import (
     DualRealSenseRolloutRecorder,
     append_mp4_to_cumulative,
+    build_rollout_phase_timeline,
+    label_iteration_mp4,
     prune_rollout_video_files,
     speed_up_mp4,
 )
@@ -232,6 +236,98 @@ def _save_global_selected_pixel_overlay(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
     return output_path.resolve()
+
+
+def _save_hold_checkpoint_snapshot(
+    snapshot: dict[str, Any],
+    output_dir: Path,
+    *,
+    depth_ranges: dict[str, tuple[float, float]],
+    stage: str = "HOLD",
+) -> tuple[list[Path], dict[str, Any]]:
+    """Persist unlabelled recorder RGB-D arrays as labelled checkpoint evidence."""
+
+    from PIL import Image, ImageDraw
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    safe_stage = str(stage).upper().replace(" ", "_")
+    image_paths: list[Path] = []
+    manifest_frames: list[dict[str, Any]] = []
+    for label in sorted(snapshot):
+        frame = snapshot[label]
+        rgb = np.asarray(frame.rgb, dtype=np.uint8)
+        depth = np.asarray(frame.depth_m, dtype=np.float32)
+        if rgb.ndim != 3 or rgb.shape[2] != 3 or depth.shape != rgb.shape[:2]:
+            raise AutoExplorationError(
+                f"invalid Camera {label} checkpoint RGB-D shapes: rgb={rgb.shape} depth={depth.shape}"
+            )
+        rgb_path = output_dir / f"{safe_stage}_camera_{label}_rgb.png"
+        rgb_image = Image.fromarray(rgb)
+        rgb_draw = ImageDraw.Draw(rgb_image)
+        rgb_draw.rectangle((0, 0, rgb_image.width, 38), fill=(0, 0, 0))
+        rgb_draw.text(
+            (12, 11),
+            f"{safe_stage} | CAMERA {label} | RGB",
+            fill=(255, 255, 255),
+        )
+        rgb_image.save(rgb_path, format="PNG", optimize=True)
+
+        depth_path = output_dir / f"{safe_stage}_camera_{label}_depth.png"
+        depth_npy = output_dir / f"camera_{label}_depth_m.npy"
+        np.save(depth_npy, depth)
+        finite = np.isfinite(depth) & (depth > 0.0)
+        min_depth, max_depth = depth_ranges.get(
+            label,
+            (float(np.nanpercentile(depth[finite], 2)), float(np.nanpercentile(depth[finite], 98)))
+            if np.any(finite)
+            else (0.2, 1.5),
+        )
+        if max_depth <= min_depth:
+            max_depth = min_depth + 1e-3
+        normalized = np.zeros(depth.shape, dtype=np.float32)
+        normalized[finite] = np.clip(
+            (max_depth - depth[finite]) / (max_depth - min_depth), 0.0, 1.0
+        )
+        red = normalized
+        green = 1.0 - np.abs(2.0 * normalized - 1.0)
+        blue = 1.0 - normalized
+        depth_rgb = np.rint(
+            np.stack((red, green, blue), axis=2) * 255.0
+        ).astype(np.uint8)
+        depth_rgb[~finite] = 0
+        depth_image = Image.fromarray(depth_rgb)
+        depth_draw = ImageDraw.Draw(depth_image)
+        depth_draw.rectangle((0, 0, depth_image.width, 38), fill=(0, 0, 0))
+        depth_draw.text(
+            (12, 11),
+            f"{safe_stage} | CAMERA {label} | DEPTH ({min_depth:.3f}-{max_depth:.3f} m)",
+            fill=(255, 255, 255),
+        )
+        depth_image.save(depth_path, format="PNG", optimize=True)
+        image_paths.extend((rgb_path.resolve(), depth_path.resolve()))
+        manifest_frames.append(
+            {
+                "camera": label,
+                "serial": frame.serial,
+                "host_utc": frame.host_utc,
+                "host_monotonic_ns": frame.host_monotonic_ns,
+                "color_frame_number": frame.color_frame_number,
+                "depth_frame_number": frame.depth_frame_number,
+                "valid_depth_fraction": frame.valid_depth_fraction,
+                "rgb": str(rgb_path.resolve()),
+                "depth_visualization": str(depth_path.resolve()),
+                "depth_m": str(depth_npy.resolve()),
+                "depth_range_m": [min_depth, max_depth],
+            }
+        )
+    manifest = {
+        "created_at": _now(),
+        "stage": safe_stage,
+        "frames": manifest_frames,
+        "image_paths": [str(path) for path in image_paths],
+    }
+    _write_json(output_dir / "snapshot_manifest.json", manifest)
+    return image_paths, manifest
 
 
 class CliReporter:
@@ -485,9 +581,14 @@ class KeypointCliOptions:
     claude_binary: str = "claude"
     claude_timeout_s: int = 900
     claude_grounding_timeout_s: int = 120
+    hold_checkpoint_timeout_s: int = 600
+    hold_checkpoint_settle_s: float = 0.75
     max_replans: int = 1
     continue_on_recoverable_errors: bool = False
-    max_consecutive_recoverable_failures: int = 3
+    # Zero is the unattended-run default: pre-execution failures are recorded
+    # and retried without a consecutive-failure cap. Physical/hardware errors
+    # remain non-recoverable and are never auto-replayed.
+    max_consecutive_recoverable_failures: int = 0
     recovery_backoff_s: float = 2.0
     max_evaluation_retries: int = 0
     evaluation_retry_backoff_s: float = 2.0
@@ -499,7 +600,10 @@ class KeypointCliOptions:
     recording_warmup_frames: int | None = None
     objective: str = DEFAULT_EXPLORATION_OBJECTIVE
     rgb_only_comparison: bool = False
-    combined_video_speed: float = 4.0
+    # Cumulative rollout review videos are intentionally highly accelerated so
+    # long physical runs remain easy to inspect.  Callers can still override
+    # this explicitly with --combined-video-speed.
+    combined_video_speed: float = 32.0
 
 
 def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
@@ -520,8 +624,8 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError(
             "max_replans must be 0 or 1; hard validation permits one correction"
         )
-    if options.max_consecutive_recoverable_failures < 1 or options.max_consecutive_recoverable_failures > 20:
-        raise ValueError("max_consecutive_recoverable_failures must be between 1 and 20")
+    if options.max_consecutive_recoverable_failures < 0 or options.max_consecutive_recoverable_failures > 20:
+        raise ValueError("max_consecutive_recoverable_failures must be between 0 and 20 (0 means unlimited)")
     if not 0 <= options.recovery_backoff_s <= 300:
         raise ValueError("recovery_backoff_s must be between 0 and 300 seconds")
     if not 0 <= options.max_evaluation_retries <= 100:
@@ -536,6 +640,10 @@ def _validate_options(options: KeypointCliOptions) -> KeypointCliOptions:
         raise ValueError("claude_timeout_s must be between 30 and 1200 seconds")
     if not 15 <= options.claude_grounding_timeout_s <= 400:
         raise ValueError("claude_grounding_timeout_s must be between 15 and 400 seconds")
+    if not 15 <= options.hold_checkpoint_timeout_s <= 900:
+        raise ValueError("hold_checkpoint_timeout_s must be between 15 and 900 seconds")
+    if not 0 <= options.hold_checkpoint_settle_s <= 5:
+        raise ValueError("hold_checkpoint_settle_s must be between 0 and 5 seconds")
     if not 30 <= options.molmo_timeout_s <= 3600:
         raise ValueError("molmo_timeout_s must be between 30 and 3600 seconds")
     if not 0 <= options.min_gpu_free_mib <= 24_564:
@@ -975,6 +1083,11 @@ def run_keypoint_cli_loop(
             timeout_s=options.claude_timeout_s,
             grounding_timeout_s=options.claude_grounding_timeout_s,
         )
+    # The lift-checkpoint budget is run-scoped.  Initialise it before the
+    # summary is built (the summary records the value at startup), then
+    # replace it with the persisted history value below once the experience
+    # ledger has been loaded.
+    lift_checkpoint_experiment_used = False
     summary: dict[str, Any] = {
         "created_at": _now(),
         "status": "RUNNING",
@@ -985,6 +1098,27 @@ def run_keypoint_cli_loop(
         "rgb_only_comparison": options.rgb_only_comparison,
         "combined_rollout_video": str(combined_video_path),
         "combined_video_speed": options.combined_video_speed,
+        "hold_checkpoint": {
+            "mandatory": False,
+            "replaced_by": "LIFT_CHECKPOINT_EXPERIMENT",
+            "min_lift_mm": 40.0,
+            "max_lateral_mm": 5.0,
+            "settle_s": options.hold_checkpoint_settle_s,
+            "claude_timeout_s": None,
+        },
+        "lift_checkpoint": {
+            "mandatory": False,
+            "decision_policy": (
+                "CLAUDE_DECIDES; at most one physical experiment per run, then direct execution"
+            ),
+            "checkpoint_count": 3,
+            "max_physical_experiments_per_run": 1,
+            "used_at_start": lift_checkpoint_experiment_used,
+            "used": lift_checkpoint_experiment_used,
+            "remaining_experiments": 0 if lift_checkpoint_experiment_used else 1,
+            "capture_settle_s": options.hold_checkpoint_settle_s,
+            "transport_decision": "DISABLED; reverse lift and release",
+        },
         "confidence_threshold": options.confidence_threshold,
         "max_iterations": options.max_iterations,
         "evaluation_retry": {
@@ -1044,6 +1178,12 @@ def run_keypoint_cli_loop(
                 if options.max_evaluation_retries == 0
                 else f"retry up to {options.max_evaluation_retries} time(s)"
             ),
+            "Lift checkpoints": (
+                f"Claude-selected; when enabled: 3 rising A/B captures + reverse release; "
+                f"settle={options.hold_checkpoint_settle_s:g}s"
+                if options.planning_policy == "claude_global"
+                else "not applicable"
+            ),
             "Results": output,
             "Combined rollout video": combined_video_path,
             "Combined video speed": f"{options.combined_video_speed:g}x",
@@ -1063,6 +1203,10 @@ def run_keypoint_cli_loop(
             "keypoint_count": len(options.keypoint_specs),
             "perception_position_sequence": ["home", "perception_position"],
             "perception_position_enabled": options.enable_real,
+            "lift_checkpoint_count": 3,
+            "lift_checkpoint_min_lift_mm": 40.0,
+            "lift_checkpoint_max_lateral_mm": 5.0,
+            "lift_checkpoint_settle_s": options.hold_checkpoint_settle_s,
         },
         level="WARNING" if options.enable_real else "INFO",
     )
@@ -1072,16 +1216,34 @@ def run_keypoint_cli_loop(
         iteration_number: int,
         iteration_record: dict[str, Any],
         recording_directory: Path,
+        execution_record: dict[str, Any] | None,
     ) -> None:
         """Append the completed composite segment without affecting execution."""
 
         source_video = recording_directory / "composite_AB_depth.mp4"
         if not source_video.is_file():
             return
+        labelled_source = recording_directory / ".composite_AB_depth.iteration.mp4"
         speed_segment = recording_directory / ".composite_AB_depth.speed.mp4"
         try:
-            speed_info = speed_up_mp4(
+            rollout_recording = iteration_record.get("rollout_recording")
+            recording_manifest = (
+                rollout_recording.get("manifest")
+                if isinstance(rollout_recording, dict)
+                else None
+            )
+            phase_timeline = build_rollout_phase_timeline(
+                execution_record,
+                recording_manifest,
+            )
+            label_info = label_iteration_mp4(
                 source_video,
+                labelled_source,
+                iteration=iteration_number,
+                phase_timeline=phase_timeline,
+            )
+            speed_info = speed_up_mp4(
+                labelled_source,
                 speed_segment,
                 speed=options.combined_video_speed,
             )
@@ -1090,6 +1252,9 @@ def run_keypoint_cli_loop(
                 combined_video_path,
             )
             append_info["playback_speed"] = options.combined_video_speed
+            append_info["iteration"] = iteration_number
+            append_info["iteration_label"] = label_info
+            append_info["process_phase_count"] = len(phase_timeline)
             append_info["speed_up"] = speed_info
         except Exception as exc:
             iteration_record.setdefault("rollout_recording", {})[
@@ -1103,6 +1268,7 @@ def run_keypoint_cli_loop(
             )
             return
         finally:
+            labelled_source.unlink(missing_ok=True)
             speed_segment.unlink(missing_ok=True)
         iteration_record.setdefault("rollout_recording", {})[
             "cumulative_video"
@@ -1379,6 +1545,23 @@ def run_keypoint_cli_loop(
     experiences = load_structured_experiences(experience_path)
     global_experience_path = session.workspace / "global_experience.jsonl"
     global_experiences = _load_jsonl(global_experience_path)
+    # A lift-checkpoint is an experiment, not a reusable action primitive. Once
+    # one physical checkpoint experiment has been executed in this run, later
+    # iterations must use direct Claude actions instead of repeating the probe.
+    lift_checkpoint_experiment_used = any(
+        isinstance(item, dict)
+        and isinstance(item.get("proposal"), dict)
+        and item["proposal"].get("requires_lift_checkpoint") is True
+        for item in global_experiences
+    )
+    # Keep the already-written summary truthful when a resumed run contains a
+    # prior checkpoint experiment.  New runs retain the initial False value.
+    summary["lift_checkpoint"]["used_at_start"] = lift_checkpoint_experiment_used
+    summary["lift_checkpoint"]["used"] = lift_checkpoint_experiment_used
+    summary["lift_checkpoint"]["remaining_experiments"] = (
+        0 if lift_checkpoint_experiment_used else 1
+    )
+    _write_json(output / "summary.json", summary)
     skill_store = SkillStore(session.project_root / "data" / "skills")
     run_skill_ledger = RunSkillLedger(session.workspace)
 
@@ -1404,6 +1587,7 @@ def run_keypoint_cli_loop(
             "status": "RUNNING",
             "objective": options.objective,
             "artifacts": {},
+            "lift_checkpoint_experiment_used_at_start": lift_checkpoint_experiment_used,
         }
         source_path = session.workspace / "_molmo_keypoint_cli.py"
         try:
@@ -1541,9 +1725,11 @@ def run_keypoint_cli_loop(
                 proposal: ExplorationProposal | None = None
                 grounding: dict[str, Any] | None = None
                 probe_profile: dict[str, Any] | None = None
+                checkpoint_plan = None
                 source = ""
                 preflight = None
                 controller = None
+                checkpoint_abort_controller = None
                 validation_feedback: str | None = None
                 for attempt in range(1, options.max_replans + 2):
                     reporter.start_phase(
@@ -1568,6 +1754,28 @@ def run_keypoint_cli_loop(
                         ),
                         skill_guidance=run_skill_prompt(),
                     )
+                    prompt += (
+                        "\n\nYou must explicitly decide whether this proposal needs a "
+                        "lift-checkpoint experiment and return `requires_lift_checkpoint` as "
+                        "true or false. Set it true when the selected structure, graspability, "
+                        "layer identity, or expected cloth response is uncertain and direct "
+                        "transport would be speculative. When true, runtime will grasp, capture "
+                        "three rising Camera A/B checkpoints, reverse the lift, release, and "
+                        "return Home; it will not execute lateral transport in this iteration. "
+                        "Set it false only when the target and intended action are sufficiently "
+                        "supported to execute the complete action list directly; runtime will "
+                        "then skip all lift checkpoints and the online hold classifier.\n"
+                    )
+                    if lift_checkpoint_experiment_used:
+                        prompt += (
+                            "A physical lift-checkpoint experiment has already been used "
+                            "in this run. Do not request another probe: return "
+                            "`requires_lift_checkpoint=false` and plan the next direct "
+                            "action from the new evidence. The one-probe budget is spent "
+                            "even if the previous probe failed; change the grasp region, "
+                            "transport, or release strategy instead of repeating the same "
+                            "lift-and-release test.\n"
+                        )
                     if global_molmo_manifest is not None:
                         prompt += (
                             "\n\nAn axis-first Molmo semantic annotation pass was run for "
@@ -1588,7 +1796,8 @@ def run_keypoint_cli_loop(
                             f"{validation_feedback}\n"
                         )
                     try:
-                        response = global_client.invoke(
+                        response = invoke_direct_prompt(
+                            global_client,
                             before_images,
                             prompt,
                             session.run_dir,
@@ -1596,22 +1805,86 @@ def run_keypoint_cli_loop(
                         proposal, grounding = ground_global_grasp_target(
                             response.proposal,
                             session.workspace / "perception_views",
+                            robot_config=session.robot_config,
                         )
-                        probe_profile = validate_global_probe_profile(
-                            proposal,
-                            global_experiences,
-                            measurement=(grounding or {}).get("measurement"),
-                        )
-                        source = exploration_source(proposal)
+                        if (
+                            lift_checkpoint_experiment_used
+                            and proposal.requires_lift_checkpoint
+                        ):
+                            record["checkpoint_decision_override"] = {
+                                "requested": True,
+                                "applied": False,
+                                "reason": (
+                                    "one physical lift-checkpoint experiment has already "
+                                    "been used in this run; repeated probing is disabled"
+                                ),
+                            }
+                            proposal = replace(
+                                proposal,
+                                requires_lift_checkpoint=False,
+                            )
+                        if proposal.requires_lift_checkpoint:
+                            probe_profile = validate_global_probe_profile(
+                                proposal,
+                                global_experiences,
+                                measurement=(grounding or {}).get("measurement"),
+                            )
+                            probe_profile["hold_settle_s"] = (
+                                options.hold_checkpoint_settle_s
+                            )
+                        else:
+                            probe_profile = {
+                                "mode": "DIRECT_EXECUTION",
+                                "requires_online_hold": False,
+                                "online_checkpoint_required": False,
+                                "transport_decision": "CLAUDE_DIRECT",
+                            }
+                        if proposal.requires_lift_checkpoint:
+                            checkpoint_plan = split_global_lift_checkpoint_plan(
+                                proposal,
+                                checkpoint_count=3,
+                            )
+                            # This iteration is deliberately a lift-only experiment:
+                            # capture evidence at three rising waypoints, then reverse
+                            # those waypoints and release. Claude's lateral continuation
+                            # remains in the proposal for provenance but is not executed.
+                            lift_proposal = replace(
+                                proposal,
+                                actions=checkpoint_plan.actions,
+                            )
+                            source = exploration_source(lift_proposal)
+                        else:
+                            # Claude judged the structure sufficiently actionable;
+                            # execute its validated proposal directly without adding
+                            # an online hold/checkpoint experiment.
+                            checkpoint_plan = None
+                            source = exploration_source(proposal)
                         source_path.write_text(source, encoding="utf-8")
                         preflight = session.runner.preflight(source_path.name)
                         if preflight.error:
                             raise ExperimentValidationError(preflight.error)
                         if options.skip_controller_ik:
                             controller = {"status": "SKIPPED_DRY_RUN"}
+                            checkpoint_abort_controller = {
+                                "status": "SKIPPED_DRY_RUN"
+                            }
                         else:
                             controller = controller_validator(
                                 session.robot_config, preflight.actions
+                            )
+                            # Validate the reverse-laydown branch independently as
+                            # well; it is the only branch that will run after the
+                            # final checkpoint.
+                            checkpoint_abort_controller = (
+                                controller_validator(
+                                    session.robot_config,
+                                    list(
+                                        checkpoint_plan.acquisition_actions
+                                        + checkpoint_plan.return_actions
+                                    ),
+                                )
+                                if checkpoint_plan is not None
+                                else {"status": "NOT_REQUIRED"}
                             )
                     except Exception as exc:
                         reporter.fail_current_phase(
@@ -1620,6 +1893,33 @@ def run_keypoint_cli_loop(
                         rejected_proposal = (
                             proposal.as_dict() if proposal is not None else None
                         )
+                        rejected_requires_lift = (
+                            proposal.requires_lift_checkpoint
+                            if proposal is not None
+                            else None
+                        )
+                        if rejected_requires_lift is False:
+                            decision_recovery_policy = (
+                                "The rejected proposal explicitly chose "
+                                "requires_lift_checkpoint=false. Preserve that decision in "
+                                "the correction unless this exact error is evidence that "
+                                "the grasp structure cannot be judged safely. For IK, "
+                                "workspace, reach, or waypoint errors, keep false and only "
+                                "repair the selected pixel or motion geometry; do not add "
+                                "a lift-checkpoint experiment as a generic workaround."
+                            )
+                        elif rejected_requires_lift is True:
+                            decision_recovery_policy = (
+                                "The rejected proposal explicitly chose "
+                                "requires_lift_checkpoint=true. Preserve that decision "
+                                "unless the exact error proves the checkpoint experiment "
+                                "itself is unnecessary."
+                            )
+                        else:
+                            decision_recovery_policy = (
+                                "The checkpoint decision was unavailable; make an explicit "
+                                "requires_lift_checkpoint decision from the fresh evidence."
+                            )
                         feedback_payload = {
                             "attempt": attempt,
                             "phase": "global_preexecution_validation",
@@ -1631,6 +1931,8 @@ def run_keypoint_cli_loop(
                                 if isinstance(rejected_proposal, dict)
                                 else None
                             ),
+                            "rejected_requires_lift_checkpoint": rejected_requires_lift,
+                            "decision_recovery_policy": decision_recovery_policy,
                             "feedback_target": "next Claude planning attempt",
                             "required_response": (
                                 "materially change the rejected pixel, waypoint geometry, "
@@ -1656,6 +1958,7 @@ def run_keypoint_cli_loop(
                             raise
                         proposal = None
                         grounding = None
+                        checkpoint_plan = None
                         continue
                     record.setdefault("claude_global_attempts", []).append(
                         {
@@ -1788,6 +2091,11 @@ def run_keypoint_cli_loop(
                     or grounding is None
                     or preflight is None
                     or controller is None
+                    or checkpoint_abort_controller is None
+                    or (
+                        proposal.requires_lift_checkpoint
+                        and checkpoint_plan is None
+                    )
                 ):
                     raise AutoExplorationError(
                         "global planning ended without a validated proposal"
@@ -1876,6 +2184,9 @@ def run_keypoint_cli_loop(
                 record["proposal"] = proposal.as_dict()
                 record["global_grounding"] = grounding
                 record["probe_profile"] = probe_profile
+                if checkpoint_plan is not None:
+                    record["hold_checkpoint_plan"] = checkpoint_plan.as_dict()
+                    record["lift_checkpoint_plan"] = checkpoint_plan.as_dict()
                 selected_pixel_overlay = _save_global_selected_pixel_overlay(
                     proposal,
                     saved,
@@ -1888,11 +2199,27 @@ def run_keypoint_cli_loop(
                 record["proposal_source"] = source
                 record["preflight"] = _jsonable(preflight)
                 record["controller_ik"] = _jsonable(controller)
+                record["checkpoint_abort_controller_ik"] = _jsonable(
+                    checkpoint_abort_controller
+                )
                 (iteration_dir / "proposal.py").write_text(source, encoding="utf-8")
                 _write_json(iteration_dir / "proposal.json", proposal.as_dict())
                 _write_json(iteration_dir / "global_grounding.json", grounding)
                 _write_json(iteration_dir / "preflight.json", preflight)
                 _write_json(iteration_dir / "controller_ik.json", controller)
+                _write_json(
+                    iteration_dir / "checkpoint_abort_controller_ik.json",
+                    checkpoint_abort_controller,
+                )
+                if checkpoint_plan is not None:
+                    _write_json(
+                        iteration_dir / "hold_checkpoint_plan.json",
+                        checkpoint_plan.as_dict(),
+                    )
+                    _write_json(
+                        iteration_dir / "lift_checkpoint_plan.json",
+                        checkpoint_plan.as_dict(),
+                    )
                 if options.rgb_only_comparison:
                     reporter.start_phase(
                         "rgb-only-comparison",
@@ -2012,6 +2339,18 @@ def run_keypoint_cli_loop(
                     ),
                     iteration=iteration,
                 )
+                checkpoint_depth_ranges = evaluation_depth_ranges(
+                    (saved, saved_path)
+                )
+                checkpoint_before_images = evaluation_perception_image_paths(
+                    saved,
+                    saved_path,
+                    stage="BEFORE",
+                    depth_ranges=checkpoint_depth_ranges,
+                )
+                record["hold_checkpoint_before_images"] = [
+                    str(path) for path in checkpoint_before_images
+                ]
                 perception_position_ready = False
                 rollout_recorder: DualRealSenseRolloutRecorder | None = None
                 recording_thread: threading.Thread | None = None
@@ -2070,14 +2409,150 @@ def run_keypoint_cli_loop(
                         "status": "recording",
                         "directory": str(recording_dir),
                     }
+
+                def _capture_lift_checkpoint(
+                    checkpoint_number: int,
+                ) -> dict[str, Any]:
+                    """Capture one lift experiment checkpoint; never call Claude here."""
+
+                    reporter.emit(
+                        "lift-checkpoint",
+                        (
+                            f"robot reached lift checkpoint {checkpoint_number}/3; "
+                            "capturing fresh Camera A/B RGB-D"
+                        ),
+                        iteration=iteration,
+                        level="START",
+                    )
+                    try:
+                        if rollout_recorder is None:
+                            raise AutoExplorationError(
+                                "lift checkpoint requires active Camera A/B rollout recording"
+                            )
+                        reporter.emit(
+                            "lift-checkpoint",
+                            (
+                                "holding still before fresh RGB-D capture; "
+                                f"settle={options.hold_checkpoint_settle_s:.2f}s"
+                            ),
+                            iteration=iteration,
+                            level="WAIT",
+                        )
+                        sleep(options.hold_checkpoint_settle_s)
+                        fresh_after_ns = time.monotonic_ns()
+                        snapshot = rollout_recorder.wait_for_latest_rgbd(
+                            after_monotonic_ns=fresh_after_ns,
+                            timeout_s=3.0,
+                            labels=("A", "B"),
+                        )
+                        stage = f"LIFT_CHECKPOINT_{int(checkpoint_number):02d}"
+                        checkpoint_dir = (
+                            iteration_dir / "lift_checkpoints" / stage
+                        )
+                        checkpoint_images, snapshot_manifest = _save_hold_checkpoint_snapshot(
+                            snapshot,
+                            checkpoint_dir,
+                            depth_ranges=checkpoint_depth_ranges,
+                            stage=stage,
+                        )
+                        checkpoint_record = {
+                            "checkpoint_number": int(checkpoint_number),
+                            "status": "CAPTURED",
+                            "stage": stage,
+                            "images": [str(path) for path in checkpoint_images],
+                            "snapshot_manifest": snapshot_manifest,
+                        }
+                        record.setdefault("lift_checkpoints", []).append(
+                            checkpoint_record
+                        )
+                        _write_json(
+                            checkpoint_dir / "checkpoint.json",
+                            checkpoint_record,
+                        )
+                        reporter.emit(
+                            "lift-checkpoint",
+                            (
+                                f"checkpoint {checkpoint_number}/3 captured; "
+                                "continuing the lift experiment"
+                            ),
+                            iteration=iteration,
+                            level="DONE",
+                            payload=checkpoint_record,
+                        )
+                        return {
+                            "status": "CAPTURED",
+                            "checkpoint_number": int(checkpoint_number),
+                            "stage": stage,
+                            "images": [str(path) for path in checkpoint_images],
+                            "snapshot_manifest": snapshot_manifest,
+                            "continue_transport": False,
+                            "runtime_decision": "REVERSE_RELEASE",
+                        }
+                    except BaseException as exc:
+                        failure = {
+                            "status": "CAPTURE_FAILED",
+                            "checkpoint_number": int(checkpoint_number),
+                            "continue_transport": False,
+                            "runtime_decision": "REVERSE_RELEASE",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                        reporter.emit(
+                            "lift-checkpoint",
+                            (
+                                f"checkpoint {checkpoint_number}/3 capture failed; "
+                                f"reverse release will still be attempted: {failure['error']}"
+                            ),
+                            iteration=iteration,
+                            level="WARNING",
+                            payload=failure,
+                        )
+                        return failure
+
                 execution: dict[str, Any] | None = None
                 try:
-                    execution = session.run_experiment(
-                        source_path.name,
-                        real=True,
-                        confirmed=True,
-                        notes=f"Claude global CLI iteration {iteration}.",
+                    checkpoint_executor = getattr(
+                        session, "run_checkpointed_experiment", None
                     )
+                    if (
+                        proposal.requires_lift_checkpoint
+                        and checkpoint_plan is not None
+                        and callable(checkpoint_executor)
+                    ):
+                        lift_checkpoint_experiment_used = True
+                        summary["lift_checkpoint"]["used"] = True
+                        summary["lift_checkpoint"]["remaining_experiments"] = 0
+                        # Persist this transition immediately.  If the robot or
+                        # process stops during the physical probe, a resumed run
+                        # must still know that the one-shot experiment was spent.
+                        _write_json(output / "summary.json", summary)
+                        record["lift_checkpoint_experiment_started"] = True
+                        execution = checkpoint_executor(
+                            source_path.name,
+                            checkpoint_action_index=(
+                                checkpoint_plan.checkpoint_action_indices[-1]
+                            ),
+                            checkpoint_action_indices=(
+                                checkpoint_plan.checkpoint_action_indices
+                            ),
+                            abort_actions=checkpoint_plan.return_actions,
+                            checkpoint_callback=_capture_lift_checkpoint,
+                            real=True,
+                            confirmed=True,
+                            notes=(
+                                f"Claude global CLI iteration {iteration}; "
+                                "lift-checkpoint experiment with reverse release."
+                            ),
+                        )
+                    else:
+                        # Claude judged that a checkpoint experiment was not
+                        # necessary, so execute the original validated proposal
+                        # directly without any online hold/checkpoint callback.
+                        execution = session.run_experiment(
+                            source_path.name,
+                            real=True,
+                            confirmed=True,
+                            notes=f"Claude global CLI iteration {iteration}.",
+                        )
                 finally:
                     if rollout_recorder is not None:
                         rollout_recorder.request_stop(
@@ -2112,6 +2587,7 @@ def run_keypoint_cli_loop(
                             iteration,
                             record,
                             recording_dir,
+                            execution,
                         )
                         _write_json(
                             iteration_dir / "rollout_recording.json",
@@ -2122,6 +2598,27 @@ def run_keypoint_cli_loop(
                         "physical rollout returned no result"
                     )
                 record["execution"] = execution
+                if isinstance(execution.get("checkpoint"), dict):
+                    record["hold_checkpoint"] = {
+                        **(
+                            record.get("hold_checkpoint")
+                            if isinstance(record.get("hold_checkpoint"), dict)
+                            else {}
+                        ),
+                        **execution["checkpoint"],
+                    }
+                    _write_json(
+                        iteration_dir / "hold_checkpoint.json",
+                        record["hold_checkpoint"],
+                    )
+                if record.get("lift_checkpoints"):
+                    record["artifacts"]["lift_checkpoints"] = str(
+                        iteration_dir / "lift_checkpoints.json"
+                    )
+                    _write_json(
+                        iteration_dir / "lift_checkpoints.json",
+                        record["lift_checkpoints"],
+                    )
                 record["mandatory_return_home"] = session.last_return_home_outcome
                 _write_json(iteration_dir / "execution.json", execution)
                 _write_json(
@@ -2188,6 +2685,17 @@ def run_keypoint_cli_loop(
                     stage="AFTER",
                     depth_ranges=evaluation_depth_scale,
                 )
+                lift_checkpoint_images = [
+                    Path(path)
+                    for checkpoint in record.get("lift_checkpoints", [])
+                    if isinstance(checkpoint, dict)
+                    for path in checkpoint.get("images", [])
+                    if Path(path).is_file()
+                ]
+                evaluation_after_images.extend(lift_checkpoint_images)
+                record["lift_checkpoint_evaluation_images"] = [
+                    str(path) for path in lift_checkpoint_images
+                ]
                 record["after_perception"] = after_perception
                 record["after_images"] = [str(path) for path in after_images]
                 record["evaluation_before_images"] = [
@@ -2223,6 +2731,11 @@ def run_keypoint_cli_loop(
                         objective=options.objective,
                         run_dir=session.run_dir,
                         skill_guidance=run_skill_prompt(),
+                        hold_checkpoint=(
+                            record.get("hold_checkpoint")
+                            if isinstance(record.get("hold_checkpoint"), dict)
+                            else None
+                        ),
                         rollout_recording_dir=(
                             recording_dir
                             if options.record_rollouts
@@ -2282,7 +2795,11 @@ def run_keypoint_cli_loop(
                     "iteration": iteration,
                     "objective": options.objective,
                     "before_images": [str(path) for path in before_images],
-                    "after_images": [str(path) for path in after_images],
+                    "after_images": [
+                        str(path) for path in after_images
+                    ] + [
+                        str(path) for path in lift_checkpoint_images
+                    ],
                     "selected_grasp": proposal.selected_grasp,
                     "grounding": grounding,
                     "proposal": proposal.as_dict(),
@@ -2977,6 +3494,7 @@ def run_keypoint_cli_loop(
                         iteration,
                         record,
                         recording_dir,
+                        execution,
                     )
                     _write_json(iteration_dir / "rollout_recording.json", record["rollout_recording"])
             if execution is None:
@@ -3171,7 +3689,11 @@ def run_keypoint_cli_loop(
             if (
                 options.continue_on_recoverable_errors
                 and _is_recoverable_loop_error(exc, record)
-                and consecutive_recoverable_failures < options.max_consecutive_recoverable_failures
+                and (
+                    options.max_consecutive_recoverable_failures == 0
+                    or consecutive_recoverable_failures
+                    < options.max_consecutive_recoverable_failures
+                )
             ):
                 consecutive_recoverable_failures += 1
                 feedback_payload = record.get("error_feedback_to_claude")
@@ -3216,7 +3738,11 @@ def run_keypoint_cli_loop(
                 record["recovery"] = {
                     "enabled": True,
                     "consecutive_failure": consecutive_recoverable_failures,
-                    "max_consecutive_failures": options.max_consecutive_recoverable_failures,
+                    "max_consecutive_failures": (
+                        "unlimited"
+                        if options.max_consecutive_recoverable_failures == 0
+                        else options.max_consecutive_recoverable_failures
+                    ),
                     "next_step": "fresh perception and new planning iteration",
                 }
                 record["completed_at"] = _now()
@@ -3233,7 +3759,7 @@ def run_keypoint_cli_loop(
                     (
                         f"recoverable pre-execution failure recorded; continuing with a fresh "
                         f"iteration ({consecutive_recoverable_failures}/"
-                        f"{options.max_consecutive_recoverable_failures})"
+                        f"{'∞' if options.max_consecutive_recoverable_failures == 0 else options.max_consecutive_recoverable_failures})"
                     ),
                     iteration=iteration,
                     level="WARNING",
@@ -3337,7 +3863,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--run-id")
-    parser.add_argument("--robot-config", type=Path)
+    parser.add_argument(
+        "--robot-config",
+        type=Path,
+        default=Path("config/robot.example.json"),
+        help=(
+            "robot configuration JSON (default: config/robot.example.json; "
+            "uses absolute camera depth without live tabletop Z flooring)"
+        ),
+    )
     parser.add_argument(
         "--perception-config",
         type=Path,
@@ -3414,6 +3948,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument("--claude-grounding-timeout-s", type=int, default=120)
+    parser.add_argument(
+        "--hold-checkpoint-timeout-s",
+        type=int,
+        default=600,
+        help=(
+            "maximum seconds to hold fabric while Claude classifies fresh Camera A/B "
+            "RGB-D; timeout always descends and releases (default: 600; max: 900)"
+        ),
+    )
+    parser.add_argument(
+        "--hold-checkpoint-settle-s",
+        type=float,
+        default=0.75,
+        help=(
+            "seconds to hold still before requesting post-lift Camera A/B RGB-D "
+            "for the mandatory checkpoint (default: 0.75)"
+        ),
+    )
     recording_group = parser.add_mutually_exclusive_group()
     recording_group.add_argument(
         "--record-rollouts",
@@ -3452,8 +4004,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-consecutive-recoverable-failures",
         type=int,
-        default=3,
-        help="stop continuous recovery after this many consecutive pre-execution failures",
+        default=0,
+        help=(
+            "stop continuous recovery after this many consecutive pre-execution failures; "
+            "0 means unlimited recovery"
+        ),
     )
     parser.add_argument(
         "--recovery-backoff-s",
@@ -3502,8 +4057,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--combined-video-speed",
         type=float,
-        default=4.0,
-        help="playback speed multiplier for the cumulative combined rollout video (default: 4x)",
+        default=32.0,
+        help="playback speed multiplier for the cumulative combined rollout video (default: 32x)",
     )
     parser.add_argument(
         "--enable-real",
@@ -3571,6 +4126,8 @@ def main(argv: list[str] | None = None) -> int:
         claude_binary=args.claude_binary,
         claude_timeout_s=args.claude_timeout_s,
         claude_grounding_timeout_s=args.claude_grounding_timeout_s,
+        hold_checkpoint_timeout_s=args.hold_checkpoint_timeout_s,
+        hold_checkpoint_settle_s=args.hold_checkpoint_settle_s,
         max_replans=args.max_replans,
         continue_on_recoverable_errors=args.continue_on_recoverable_errors,
         max_consecutive_recoverable_failures=args.max_consecutive_recoverable_failures,

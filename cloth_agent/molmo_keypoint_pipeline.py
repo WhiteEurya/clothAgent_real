@@ -514,7 +514,15 @@ def _validated_axis_references(
     *,
     cameras: Sequence[str],
 ) -> dict[str, dict[str, Any] | None]:
-    """Validate optional axis-first metadata while keeping old payloads compatible."""
+    """Validate optional axis-first metadata while keeping old payloads compatible.
+
+    The garment centerline is auxiliary layout context.  On a heavily folded
+    garment Molmo can return the same pixel for ``axis_top`` and
+    ``axis_bottom``; that must not invalidate independent semantic anchors such
+    as ``neck_label`` and ``collar``.  A degenerate axis is therefore degraded
+    to ``None`` while malformed/non-finite/out-of-frame metadata remains a hard
+    error.
+    """
 
     if not isinstance(payload, dict) or not isinstance(payload.get("views"), list):
         raise MolmoKeypointPipelineError("Molmo keypoint output needs a views list")
@@ -537,11 +545,19 @@ def _validated_axis_references(
             raise MolmoKeypointPipelineError(
                 f"Camera {camera} axis-first payload has invalid image_size"
             )
-        output[camera] = _validate_axis_reference(
-            axis,
-            image_size=image_size,
-            context=f"Camera {camera}",
-        )
+        try:
+            output[camera] = _validate_axis_reference(
+                axis,
+                image_size=image_size,
+                context=f"Camera {camera}",
+            )
+        except MolmoKeypointPipelineError as exc:
+            if "axis reference has zero length" not in str(exc):
+                raise
+            # Keep the semantic keypoint pipeline alive.  Downstream code can
+            # still use the independent label/collar queries and will simply
+            # omit axis-based reference comparisons for this camera.
+            output[camera] = None
     return output
 
 
@@ -706,7 +722,12 @@ def _draw_semantic_anchor_overlays(
     diagnostic_image = accepted_image.copy()
     accepted_draw = ImageDraw.Draw(accepted_image)
     diagnostic_draw = ImageDraw.Draw(diagnostic_image)
-    if axis_reference is not None:
+    independent_collar_present = any(
+        str(record.get("name")) in {"collar", "neckline"}
+        and not bool(record.get("reused_axis_record", False))
+        for record in records
+    )
+    if axis_reference is not None and not independent_collar_present:
         top = axis_reference.get("top_pixel_xy")
         bottom = axis_reference.get("bottom_pixel_xy")
         if isinstance(top, list) and isinstance(bottom, list):
@@ -722,7 +743,14 @@ def _draw_semantic_anchor_overlays(
             continue
         x_px, y_px = float(pixel[0]), float(pixel[1])
         accepted = bool(record.get("accepted"))
-        color = (255, 210, 20) if accepted else (255, 70, 50)
+        topology_guide = bool(record.get("topology_guide", False))
+        color = (
+            (40, 220, 255)
+            if topology_guide
+            else (255, 210, 20)
+            if accepted
+            else (255, 70, 50)
+        )
         diagnostic_draw.ellipse(
             (x_px - 7, y_px - 7, x_px + 7, y_px + 7),
             outline=color,
@@ -730,12 +758,29 @@ def _draw_semantic_anchor_overlays(
         )
         diagnostic_draw.text(
             (x_px + 9, y_px - 8),
-            f"{record['name']} {record['confidence']:.3f}",
+            (
+                f"GUIDE {record['name']} {record['confidence']:.3f}"
+                if topology_guide
+                else f"{record['name']} {record['confidence']:.3f}"
+            ),
             fill=color,
             stroke_width=2,
             stroke_fill=(0, 0, 0),
         )
-        if accepted:
+        if topology_guide:
+            accepted_draw.ellipse(
+                (x_px - 8, y_px - 8, x_px + 8, y_px + 8),
+                outline=color,
+                width=3,
+            )
+            accepted_draw.text(
+                (x_px + 10, y_px - 9),
+                f"GUIDE {record['name']} c={record['confidence']:.3f}",
+                fill=(255, 255, 255),
+                stroke_width=2,
+                stroke_fill=(0, 0, 0),
+            )
+        elif accepted:
             accepted_draw.ellipse(
                 (x_px - 8, y_px - 8, x_px + 8, y_px + 8),
                 fill=(255, 210, 20),
@@ -808,6 +853,14 @@ def build_semantic_anchor_manifest(
                 "point_token_probabilities": raw.get(
                     "point_token_probabilities", []
                 ),
+                "query_mode": raw.get(
+                    "query_mode", "independent_keypoint_query"
+                ),
+                "reused_axis_record": bool(raw.get("reused_axis_record", False)),
+                "source_axis_name": raw.get("source_axis_name"),
+                "topology_guide": bool(raw.get("topology_guide", False)),
+                "topology_guide_name": raw.get("topology_guide_name"),
+                "topology_guide_pixel_xy": raw.get("topology_guide_pixel_xy"),
                 "axis_reference": axis_references.get(camera),
                 "reference_comparison": None,
             }
@@ -830,7 +883,13 @@ def build_semantic_anchor_manifest(
                 except MolmoKeypointPipelineError as exc:
                     record["rejection_reason"] = f"invalid_anchor_geometry: {exc}"
                 else:
-                    record["preliminarily_accepted"] = True
+                    if bool(record["topology_guide"]):
+                        record["preliminarily_accepted"] = False
+                        record["rejection_reason"] = (
+                            "topology_guide_only_not_action_semantic_anchor"
+                        )
+                    else:
+                        record["preliminarily_accepted"] = True
                     record["reference_comparison"] = _reference_comparison(
                         reference,
                         camera=camera,
@@ -948,6 +1007,14 @@ def build_semantic_anchor_manifest(
                 "accepted_overlay": str(accepted_overlay),
                 "diagnostic_overlay": str(diagnostic_overlay),
                 "query_count": len(records),
+                "model_query_count": sum(
+                    not bool(item.get("reused_axis_record", False))
+                    for item in records
+                ),
+                "reused_axis_record_count": sum(
+                    bool(item.get("reused_axis_record", False))
+                    for item in records
+                ),
                 "accepted_count": sum(bool(item["accepted"]) for item in records),
                 "records": records,
                 "axis_reference": axis_references.get(camera),
@@ -966,6 +1033,11 @@ def build_semantic_anchor_manifest(
             "local_base_z_spread_mm": item["local_base_z_spread_mm"],
             "confidence": item["confidence"],
             "confidence_definition": CONFIDENCE_DEFINITION,
+            "query_mode": item.get("query_mode", "independent_keypoint_query"),
+            "reused_axis_record": bool(item.get("reused_axis_record", False)),
+            "source_axis_name": item.get("source_axis_name"),
+            "topology_guide_name": item.get("topology_guide_name"),
+            "topology_guide_pixel_xy": item.get("topology_guide_pixel_xy"),
             "corroborating_observations": item.get(
                 "corroborating_observations", []
             ),
@@ -974,6 +1046,26 @@ def build_semantic_anchor_manifest(
             "role": "semantic_anchor_not_grasp_point",
         }
         for item in canonical
+    ]
+    topology_guides = [
+        {
+            "type": item["name"],
+            "description": item["description"],
+            "camera": item["camera"],
+            "pixel_xy": item.get("pixel_xy"),
+            "source_pixel_xy": item.get("source_pixel_xy"),
+            "base_xyz_mm": item.get("base_xyz_mm"),
+            "height_above_table_mm": item.get("height_above_table_mm"),
+            "confidence": item["confidence"],
+            "confidence_definition": CONFIDENCE_DEFINITION,
+            "query_mode": item.get("query_mode"),
+            "role": "topology_guide_not_grasp_anchor",
+        }
+        for camera in cameras
+        for item in by_camera[camera]
+        if bool(item.get("topology_guide"))
+        and item.get("status") == "point_returned"
+        and item.get("base_xyz_mm") is not None
     ]
     manifest = {
         "schema_version": 1,
@@ -988,6 +1080,8 @@ def build_semantic_anchor_manifest(
         ),
         "anchor_count": len(anchors),
         "anchors": anchors,
+        "topology_guide_count": len(topology_guides),
+        "topology_guides": topology_guides,
         "axis_references": axis_references,
         "flat_reference": (
             {
@@ -1076,6 +1170,11 @@ def build_confidence_filtered_references(
                 "termination_point_token_probability": raw.get(
                     "termination_point_token_probability"
                 ),
+                "query_mode": raw.get(
+                    "query_mode", "independent_keypoint_query"
+                ),
+                "reused_axis_record": bool(raw.get("reused_axis_record", False)),
+                "source_axis_name": raw.get("source_axis_name"),
                 "axis_reference": axis_references.get(camera),
                 "reference_comparison": None,
             }
@@ -1139,6 +1238,9 @@ def build_confidence_filtered_references(
                     "confidence",
                     "confidence_threshold",
                     "confidence_definition",
+                    "query_mode",
+                    "reused_axis_record",
+                    "source_axis_name",
                     "local_radius_px",
                     "local_sample_count",
                     "local_base_xyz_p10_mm",
@@ -1369,6 +1471,10 @@ def run_molmo_keypoint_pipeline(
     molmo_python: Path | None = None,
     model: str = "allenai/MolmoPoint-8B",
     dtype: str = "bf16",
+    gpu_max_memory_gib: float | None = None,
+    allow_cpu_offload: bool = False,
+    load_in_8bit: bool = False,
+    direct_keypoints: bool = False,
     max_crops: int = 1,
     max_new_tokens: int = 96,
     query_batch_size: int = 2,
@@ -1460,6 +1566,16 @@ def run_molmo_keypoint_pipeline(
         "--query-batch-size",
         str(query_batch_size),
     ]
+    if gpu_max_memory_gib is not None:
+        if not math.isfinite(float(gpu_max_memory_gib)) or float(gpu_max_memory_gib) <= 0:
+            raise MolmoKeypointPipelineError("gpu_max_memory_gib must be positive")
+        command.extend(["--gpu-max-memory-gib", str(float(gpu_max_memory_gib))])
+    if allow_cpu_offload:
+        command.append("--allow-cpu-offload")
+    if load_in_8bit:
+        command.append("--load-in-8bit")
+    if direct_keypoints:
+        command.append("--direct-keypoints")
     for camera in normalized_cameras:
         command.extend(["--image", str(image_paths[camera]), "--label", camera])
     if local_files_only:
@@ -1539,8 +1655,12 @@ def run_molmo_keypoint_pipeline(
         "max_crops": max_crops,
         "max_new_tokens": max_new_tokens,
         "query_batch_size": query_batch_size,
+        "gpu_max_memory_gib": gpu_max_memory_gib,
+        "allow_cpu_offload": bool(allow_cpu_offload),
+        "load_in_8bit": bool(load_in_8bit),
+        "direct_keypoints": bool(direct_keypoints),
         "local_files_only": local_files_only,
-        "axis_first": True,
+        "axis_first": not direct_keypoints,
     }
     if flat_reference is not None:
         manifest.setdefault("flat_reference", {})["artifact_copy_dir"] = str(

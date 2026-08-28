@@ -17,6 +17,7 @@ from cloth_agent.free_exploration import (
     exploration_prompt,
     exploration_source,
     ground_global_grasp_target,
+    split_global_checkpoint_plan,
     _voxel_balance_cloud,
     validate_global_probe_profile,
     validate_global_exploration_payload,
@@ -202,23 +203,33 @@ def test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy(
     offset_payload["actions"][3]["args"]["y"] = -35.0
     offset = validate_global_exploration_payload(offset_payload)
 
-    grounded, grounding = ground_global_grasp_target(offset, perception_dir)
+    grounded, grounding = ground_global_grasp_target(
+        offset,
+        perception_dir,
+        robot_config=_robot_config(),
+    )
 
     assert grounding["claude_requested_grasp_xy_mm"] == pytest.approx([530.0, -35.0])
     assert grounding["commanded_grasp_xy_mm"] == pytest.approx([520.0, -40.0])
     assert grounding["xy_correction_mm"] == pytest.approx(np.hypot(10.0, 5.0))
     assert grounding["post_grounding_xy_error_mm"] == pytest.approx(0.0)
+    assert grounding["claude_requested_grasp_z_mm"] == pytest.approx(20.0)
+    assert grounding["commanded_grasp_z_mm"] == pytest.approx(15.5)
+    assert grounding["grasp_height_resolution"]["policy"] == (
+        "runtime_authoritative_surface_compression"
+    )
     assert grounding["grounded_action_numbers"] == [1, 2, 4]
     assert [
         (action["args"]["x"], action["args"]["y"])
         for action in grounded.actions
         if action["name"] == "move"
     ] == [(520.0, -40.0), (520.0, -40.0), (520.0, -40.0)]
+    assert grounded.actions[1]["args"]["z"] == pytest.approx(15.5)
     assert offset.actions[1]["args"]["x"] == 530.0
     assert validate_global_grasp_grounding(grounded, perception_dir)["valid"] is True
 
 
-def test_global_probe_profile_caps_unvalidated_lateral_pull(tmp_path: Path):
+def test_global_probe_profile_gates_long_pull_at_online_checkpoint(tmp_path: Path):
     proposal = validate_global_exploration_payload(
         {
             "selected_grasp": {
@@ -232,15 +243,111 @@ def test_global_probe_profile_caps_unvalidated_lateral_pull(tmp_path: Path):
             "actions": [
                 {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
                 {"name": "close_gripper", "args": {}},
-                {"name": "move", "args": {"x": 500, "y": 0, "z": 80, "yaw": 0}},
-                {"name": "move", "args": {"x": 550, "y": 0, "z": 80, "yaw": 0}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 100, "yaw": 0}},
+                {"name": "move", "args": {"x": 550, "y": 0, "z": 100, "yaw": 0}},
                 {"name": "open_gripper", "args": {}},
             ],
             "expected_observation": "A free layer should form a hanging patch.",
             "safety_notes": ["Release if the ridge only curls upward."],
         }
     )
-    with pytest.raises(ExplorationPlanningError, match="short lateral probe"):
+    result = validate_global_probe_profile(proposal)
+
+    assert result["max_lateral_mm"] == pytest.approx(50.0)
+    assert result["online_checkpoint_required"] is True
+    assert result["long_transport_is_conditional"] is True
+    assert result["hold_lift_mm"] == pytest.approx(40.0)
+    assert result["min_hold_lift_mm"] == pytest.approx(40.0)
+    plan = split_global_checkpoint_plan(proposal)
+    assert plan.checkpoint_action_index == 2
+    assert plan.acquisition_actions[-1]["args"]["x"] == pytest.approx(500.0)
+    assert plan.continuation_actions[0]["args"]["x"] == pytest.approx(550.0)
+    assert [action["name"] for action in plan.abort_actions] == [
+        "move",
+        "open_gripper",
+        "home",
+    ]
+    assert plan.abort_actions[0]["args"] == {
+        "x": 500.0,
+        "y": 0.0,
+        "z": 60.0,
+        "yaw": 0.0,
+    }
+
+
+def test_global_probe_profile_does_not_inherit_validation_for_new_anchor():
+    payload = {
+        "selected_grasp": {
+            "camera": "A",
+            "pixel_xy": [200, 120],
+            "reason": "A new boundary is visible.",
+        },
+        "garment_observation": "A boundary may cover another layer.",
+        "reveal_strategy": "Hold vertically, then conditionally transport.",
+        "confidence": 0.6,
+        "actions": [
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 40, "yaw": 0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500, "y": 0, "z": 80, "yaw": 0}},
+            {"name": "move", "args": {"x": 580, "y": 0, "z": 80, "yaw": 0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        "expected_observation": "An independently held patch moves outward.",
+        "safety_notes": ["Abort at the hold if independent support is absent."],
+    }
+    proposal = validate_global_exploration_payload(payload)
+    supported_evaluation = {
+        "target_selection": {"status": "SUPPORTED"},
+        "grasp_acquisition": {"status": "SUCCESS"},
+        "target_structure_acquired": {"status": "SUPPORTED"},
+    }
+    history = [
+        {
+            "proposal": {
+                "selected_grasp": {"camera": "A", "pixel_xy": [80, 90]}
+            },
+            "evaluation": supported_evaluation,
+        }
+    ]
+
+    result = validate_global_probe_profile(proposal, history)
+
+    assert result["previous_outcome_supported"] is True
+    assert result["same_validated_anchor"] is False
+    assert result["previous_target_layer_supported"] is False
+    assert result["online_checkpoint_required"] is True
+
+    history[0]["proposal"]["selected_grasp"]["pixel_xy"] = [202, 121]
+    matched = validate_global_probe_profile(proposal, history)
+    assert matched["same_validated_anchor"] is True
+    assert matched["previous_target_layer_supported"] is True
+    assert matched["online_checkpoint_required"] is False
+
+
+def test_global_probe_profile_rejects_unobservable_hold_lift():
+    proposal = validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [20, 30],
+                "reason": "A possible cloth corner.",
+            },
+            "garment_observation": "A corner may be graspable.",
+            "reveal_strategy": "Lift to a hold, then conditionally transport.",
+            "confidence": 0.5,
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 20, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 45, "yaw": 0}},
+                {"name": "move", "args": {"x": 560, "y": 0, "z": 45, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "The held corner separates from the table.",
+            "safety_notes": ["Abort unless the live hold is clearly visible."],
+        }
+    )
+
+    with pytest.raises(ExplorationPlanningError, match="lift is too small"):
         validate_global_probe_profile(proposal)
 
 
@@ -270,8 +377,8 @@ def test_global_probe_profile_requires_shallow_compression_for_narrow_peak():
                 {"name": "move", "args": {"x": 500, "y": 0, "z": 60, "yaw": 0}},
                 {"name": "move", "args": {"x": 500, "y": 0, "z": 24, "yaw": 0}},
                 {"name": "close_gripper", "args": {}},
-                {"name": "move", "args": {"x": 500, "y": 0, "z": 44, "yaw": 0}},
-                {"name": "move", "args": {"x": 520, "y": 0, "z": 44, "yaw": 0}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 64, "yaw": 0}},
+                {"name": "move", "args": {"x": 520, "y": 0, "z": 64, "yaw": 0}},
                 {"name": "open_gripper", "args": {}},
             ],
             "expected_observation": "The peak either hangs independently or compresses without separating.",
@@ -484,6 +591,12 @@ def test_claude_json_extractor_prefers_structured_output():
     assert _json_from_claude_text(wrapped) == payload
 
 
+def test_claude_json_extractor_does_not_return_cli_envelope_for_bad_result():
+    wrapped = json.dumps({"result": "```json\n{not valid json}\n```", "duration_ms": 1})
+    with pytest.raises(ExplorationPlanningError, match="did not contain"):
+        _json_from_claude_text(wrapped)
+
+
 def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     run_dir = tmp_path / "run"
     images = run_dir / "results" / "perception"
@@ -560,8 +673,89 @@ def test_exploration_client_is_read_only_and_logs_proposal(tmp_path: Path, monke
     assert "as open and spread" in context_text
     assert "No system-generated grasp candidates" in context_text
     assert "Skill: laydown" in context_text
+    assert "Runtime evidence precedence" in context_text
+    assert "visibly supports a corner or cloth patch" in context_text
+    assert "followed by a very short lateral check only" not in context_text
     assert not any("`sample_local_surface` exactly once" in str(part) for part in seen["command"])
     assert list((run_dir / "results" / "claude_exploration").glob("*.json"))
+
+
+def test_hold_checkpoint_only_authorizes_strict_independent_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    evidence_dir = run_dir / "results" / "hold"
+    evidence_dir.mkdir(parents=True)
+    before = evidence_dir / "before.png"
+    hold = evidence_dir / "hold.png"
+    before.write_bytes(b"before")
+    hold.write_bytes(b"hold")
+    proposal = validate_global_exploration_payload(
+        {
+            "selected_grasp": {
+                "camera": "A",
+                "pixel_xy": [20, 30],
+                "reason": "A possible independent edge.",
+            },
+            "garment_observation": "A possible layer edge is visible.",
+            "reveal_strategy": "Lift to a hold, then transport if supported.",
+            "confidence": 0.6,
+            "actions": [
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 20, "yaw": 0}},
+                {"name": "close_gripper", "args": {}},
+                {"name": "move", "args": {"x": 500, "y": 0, "z": 45, "yaw": 0}},
+                {"name": "move", "args": {"x": 570, "y": 0, "z": 45, "yaw": 0}},
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "A held patch separates from stationary landmarks.",
+            "safety_notes": ["Release unless the live hold supports an independent patch."],
+        }
+    )
+    payload = {
+        "classification": "INDEPENDENT_LAYER_SUPPORTED",
+        "confidence": 0.9,
+        "evidence": ["A hanging patch is visible while the far print remains on the table."],
+        "independent_patch_supported": True,
+        "distant_landmark_motion": "STATIONARY",
+        "peak_response": "INDEPENDENT_HANG",
+        "reason": "The positive hold criteria are all visible.",
+    }
+    monkeypatch.setattr(
+        "cloth_agent.free_exploration.shutil.which", lambda _: "/usr/bin/claude"
+    )
+    monkeypatch.setattr(
+        "cloth_agent.free_exploration.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": payload}),
+            stderr="",
+        ),
+    )
+
+    result = ClaudeExplorationClient().evaluate_hold_checkpoint(
+        [before],
+        [hold],
+        proposal=proposal,
+        run_dir=run_dir,
+        timeout_s=30,
+    )
+
+    assert result["continue_transport"] is True
+    assert result["runtime_decision"] == "CONTINUE_TRANSPORT"
+    assert "visibly held corner or cloth region" in result["command"][2]
+    assert "do not require a pre-existing visible opening" in result["command"][2]
+
+    payload["distant_landmark_motion"] = "UNCLEAR"
+    conservative = ClaudeExplorationClient().evaluate_hold_checkpoint(
+        [before],
+        [hold],
+        proposal=proposal,
+        run_dir=run_dir,
+        timeout_s=30,
+    )
+    assert conservative["continue_transport"] is False
+    assert conservative["runtime_decision"] == "ABORT_RELEASE"
 
 
 def test_exploration_timeout_is_concise_and_not_wrapped_as_generic_failure(
@@ -647,11 +841,12 @@ def test_exploration_prompt_references_persisted_history_instead_of_embedding_it
     assert "heatmap pixel as the target" in prompt
 
 
-def test_exploration_prompt_makes_all_motion_heights_agent_decisions():
+def test_exploration_prompt_keeps_grasp_height_runtime_authoritative():
     prompt = exploration_prompt(
         ExperimentConfig(500, -20, 40, 100, 200, 0), _robot_config()
     )
-    assert "choose the approach height, grasp height" in prompt
+    assert "shared calibrated grasp-height result" in prompt
+    assert "choose the approach height, lift/retreat" in prompt
     assert "direct opening maneuver" in prompt
     assert "not a required grasp target" in prompt
 

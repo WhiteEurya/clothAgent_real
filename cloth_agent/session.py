@@ -7,7 +7,7 @@ import shutil
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping, Sequence
 
 from .claude import ClaudeCodeClient, ClaudeResult
 from .config import ExperimentConfig, RobotConfig
@@ -93,8 +93,22 @@ class AgentSession:
                     "boundaries": asdict(robot_config.boundaries),
                     "workspace_margin_mm": robot_config.workspace_margin_mm,
                     "lower_z_margin_mm": robot_config.lower_z_margin_mm,
+                    "online_camera_z_bias_correction": (
+                        robot_config.online_camera_z_bias_correction
+                    ),
                     "expected_tcp_offset_mm_deg": list(robot_config.expected_tcp_offset_mm_deg),
                     "tcp_offset_tolerance": robot_config.tcp_offset_tolerance,
+                    "grasp_height": {
+                        "surface_compression_mm": (
+                            robot_config.grasp_surface_compression_mm
+                        ),
+                        "min_compression_mm": robot_config.grasp_min_compression_mm,
+                        "max_compression_mm": robot_config.grasp_max_compression_mm,
+                        "table_clearance_mm": robot_config.grasp_table_clearance_mm,
+                        "use_table_clearance_floor": (
+                            robot_config.grasp_use_table_clearance_floor
+                        ),
+                    },
                     "fixed_orientation_deg": {
                         "roll": robot_config.orientation_roll_deg,
                         "pitch": robot_config.orientation_pitch_deg,
@@ -328,6 +342,9 @@ class AgentSession:
             "fused_points_base_mm",
             "fused_colors_rgb",
             "fused_source_mask",
+            "fused_height_above_table_mm",
+            "fused_garment_mask",
+            "fused_relief_mask",
             "path",
             "preview",
             "heatmap",
@@ -466,6 +483,88 @@ class AgentSession:
                     notes=(
                         "Mandatory post-Claude return to configured Home, attempted "
                         "regardless of rollout success or failure."
+                    )
+                )
+                self.last_return_home_outcome = outcome
+                if result is not None:
+                    result["mandatory_return_home"] = outcome
+                    result_path = self.results / f"{result['experiment']}.json"
+                    result_path.write_text(
+                        json.dumps(result, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+
+    def run_checkpointed_experiment(
+        self,
+        path: str | Path,
+        *,
+        checkpoint_action_index: int,
+        checkpoint_action_indices: Sequence[int] | None = None,
+        abort_actions: Sequence[Mapping[str, Any]],
+        checkpoint_callback: Callable[..., Mapping[str, Any]],
+        real: bool = False,
+        confirmed: bool = False,
+        single_view_confirmed: bool = False,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        """Execute one checkpointed rollout, still bracketed by Home."""
+
+        metadata_path = self.run_dir / "run_metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        self.last_pre_run_home_outcome = None
+        self.last_return_home_outcome = None
+        if real and (
+            metadata.get("last_perception_mode") == "single_camera_rgbd"
+            and not single_view_confirmed
+        ):
+            raise PermissionError(
+                "single-camera RGB-D plan requires explicit single-view confirmation"
+            )
+
+        pre_run_home: dict[str, Any] | None = None
+        if real and confirmed and metadata.get("pre_run_home_required"):
+            pre_run_home = self._attempt_pre_run_home(
+                notes=(
+                    "Mandatory return to configured Home after perception and before "
+                    "the next checkpointed physical rollout."
+                )
+            )
+            self.last_pre_run_home_outcome = pre_run_home
+            metadata["last_pre_run_home_outcome"] = pre_run_home
+            metadata["pre_run_home_required"] = not pre_run_home["completed"]
+            if pre_run_home["completed"]:
+                metadata["pre_run_home_completed_at"] = _now()
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            if not pre_run_home["completed"]:
+                detail = pre_run_home.get("error") or pre_run_home.get("robot_errors")
+                raise RuntimeError(
+                    "mandatory pre-run Home did not complete; checkpointed rollout was "
+                    f"blocked: {detail}"
+                )
+
+        result: dict[str, Any] | None = None
+        try:
+            result = self.runner.run_checkpointed_experiment(
+                path,
+                checkpoint_action_index=checkpoint_action_index,
+                checkpoint_action_indices=checkpoint_action_indices,
+                abort_actions=abort_actions,
+                checkpoint_callback=checkpoint_callback,
+                real=real,
+                confirmed=confirmed,
+                notes=notes,
+            )
+            if pre_run_home is not None:
+                result["mandatory_pre_run_home"] = pre_run_home
+            return result
+        finally:
+            if real and confirmed:
+                outcome = self._attempt_return_home(
+                    notes=(
+                        "Mandatory post-checkpoint return to configured Home, attempted "
+                        "regardless of continuation, abort, or execution failure."
                     )
                 )
                 self.last_return_home_outcome = outcome

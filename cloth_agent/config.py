@@ -114,6 +114,21 @@ class RobotConfig:
     tcp_offset_tolerance: float = 1.0
     workspace_margin_mm: float = 0.0
     lower_z_margin_mm: float = 0.0
+    # Use the deepest value allowed by the shared shallow-engagement policy.
+    # The robot lower bound and controller checks still prevent illegal motion.
+    grasp_surface_compression_mm: float = 3.0
+    grasp_min_compression_mm: float = 0.75
+    grasp_max_compression_mm: float = 3.0
+    grasp_table_clearance_mm: float = 0.0
+    # A live tabletop is not a reliable absolute-Z reference on the current
+    # RealSense setup.  When disabled, perception keeps table geometry for
+    # segmentation/diagnostics but does not apply the per-camera online Z-bias
+    # correction to the calibrated camera depth.
+    online_camera_z_bias_correction: bool = True
+    # When disabled, grasp-height resolution uses the measured absolute camera
+    # surface Z and the robot lower bound only.  Table estimates remain in the
+    # audit record, but cannot veto an otherwise engaged grasp.
+    grasp_use_table_clearance_floor: bool = True
     speed_mm_s: float = 15.0
     acceleration_mm_s2: float = 30.0
     home_speed_deg_s: float = 5.0
@@ -203,6 +218,7 @@ class RobotConfig:
         )
         motion = raw.get("motion", {})
         gripper = raw.get("gripper", {})
+        grasp_height = raw.get("grasp_height", {})
         return cls(
             robot_ip=str(raw.get("robot_ip", boundary_doc.get("robot_ip", "192.168.1.200"))),
             boundaries=boundaries,
@@ -219,6 +235,28 @@ class RobotConfig:
             workspace_margin_mm=_number(raw.get("workspace_margin_mm", 0.0), "workspace margin"),
             lower_z_margin_mm=_number(
                 raw.get("lower_z_margin_mm", 0.0), "lower-z workspace margin"
+            ),
+            grasp_surface_compression_mm=_number(
+                grasp_height.get("surface_compression_mm", 3.0),
+                "grasp surface compression",
+            ),
+            grasp_min_compression_mm=_number(
+                grasp_height.get("min_compression_mm", 0.75),
+                "minimum grasp compression",
+            ),
+            grasp_max_compression_mm=_number(
+                grasp_height.get("max_compression_mm", 3.0),
+                "maximum grasp compression",
+            ),
+            grasp_table_clearance_mm=_number(
+                grasp_height.get("table_clearance_mm", 0.0),
+                "grasp table clearance",
+            ),
+            online_camera_z_bias_correction=bool(
+                raw.get("online_camera_z_bias_correction", True)
+            ),
+            grasp_use_table_clearance_floor=bool(
+                grasp_height.get("use_table_clearance_floor", True)
             ),
             speed_mm_s=_number(motion.get("speed_mm_s", 15.0), "speed_mm_s"),
             acceleration_mm_s2=_number(motion.get("acceleration_mm_s2", 30.0), "acceleration_mm_s2"),
@@ -274,6 +312,22 @@ class RobotConfig:
             raise ConfigError("TCP offset tolerance must be positive")
         if self.lower_z_margin_mm < 0:
             raise ConfigError("lower-z workspace margin must be non-negative")
+        if self.grasp_min_compression_mm <= 0:
+            raise ConfigError("minimum grasp compression must be positive")
+        if self.grasp_max_compression_mm < self.grasp_min_compression_mm:
+            raise ConfigError(
+                "maximum grasp compression must be at least the minimum compression"
+            )
+        if not (
+            self.grasp_min_compression_mm
+            <= self.grasp_surface_compression_mm
+            <= self.grasp_max_compression_mm
+        ):
+            raise ConfigError(
+                "grasp surface compression must lie between its minimum and maximum"
+            )
+        if self.grasp_table_clearance_mm < 0:
+            raise ConfigError("grasp table clearance must be non-negative")
 
     def validate_live_tcp_offset(self, actual: Any) -> None:
         """Reject real execution if the controller's saved tool frame changed."""
