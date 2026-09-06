@@ -1,977 +1,220 @@
-# Minimal real-xArm Agent experimentation loop
+# ClothAgent
 
-This repository now implements only the first requested loop:
-
-```text
-Agent intent
-  -> Claude Code writes a visible experiment_*.py
-  -> AST/static safety preflight
-  -> print every planned action and xyz/yaw
-  -> explicit one-rollout confirmation
-  -> restricted RobotAPI executes on xArm
-  -> result/stdout/trace are saved
-  -> manual result + memory-based stop/modify decision
-```
-
-It does not implement folding, learned policies, automatic success
-classification, or automatic retry. Perception is deliberately limited to one
-calibrated two-camera RGB-D fusion pass.
-
-The perception extension transforms both calibrated A/B RealSense clouds into
-the robot base frame, voxel-fuses them, fits the table plane, and extracts the
-largest garment-height component. It reports only cloth `x/y` and observed
-surface `z`; Claude then chooses grasp/approach/lift/transfer/release heights
-and yaw from the saved views.
-
-## Existing robot interfaces and the new wrapper
-
-The original repository contained:
-
-- `scripts/record_xarm_boundaries.py`: `XArmAPI(ip)`, `motion_enable`,
-  `set_mode`, `set_state`, `get_position`, and `get_servo_angle`.
-- `xarm_boundaries.json`: measured base-frame bounds. It currently lacks
-  `x_max`, which is allowed: upper-X reachability is delegated to read-only
-  controller inverse kinematics and the final controller motion command.
-- `data/robot/xarm_init_pose.json`: the existing home/observation joint pose
-  and TCP pose.
-
-The thin real-robot adapter is `cloth_agent/robot_api.py`:
-
-- initialization: `XArmBackend.__init__`
-- Cartesian motion: `XArmBackend.move` -> `XArmAPI.set_position(...)`
-- gripper initialization: `set_gripper_mode(0)`,
-  `set_gripper_enable(True)`, `set_gripper_speed(...)`
-- gripper open/close: `set_gripper_position(...)`
-- home/observation pose: `set_servo_angle(...)` using
-  `data/robot/xarm_init_pose.json`
-
-Generated code never receives `XArmBackend` or `XArmAPI`. It receives only:
-
-```python
-move(x, y, z, yaw)
-open_gripper()
-close_gripper()
-home()
-```
-
-Every move is checked against the measured bounds, the local z lower bound,
-hard low-speed/acceleration caps, and read-only controller IK before the robot
-is enabled. The configured workspace margin is currently `0 mm`; the first
-failure aborts the script immediately.
-
-## Agent code tools
-
-`cloth_agent/session.py::AgentSession` exposes the requested tools:
-
-- `inspect_file(path)` reads project/current-run files only.
-- `invoke_claude_code(prompt)` asks Claude Code to create or modify an
-  experiment in the current workspace. The complete prompt, raw stdout/stderr,
-  command metadata, and return code are saved under `results/claude/`.
-- `run_experiment(path)` performs validation, prints the full plan, and runs
-  either the simulator or one explicitly confirmed physical rollout.
-- `inspect_result(experiment)` reads the saved result, stdout, requested
-  actions, actual EE poses (when available), gripper results, and errors.
-- `locate_cloth_center()` captures both calibrated RGB-D cameras, performs dense
-  A/B fusion in the robot base frame, and returns a validated fused garment
-  center plus the observed surface height. It does not generate motion
-  waypoints; Claude chooses the approach, grasp, lift, transfer, release, and
-  yaw actions from the saved views.
-
-`record_manual_result` accepts only `SUCCESS`, `FAILED_GRASP`, `FAILED_LIFT`,
-or `OTHER_FAILURE`. `update_memory` records the hypothesis and why the next
-experiment changes, not only the parameter history.
-
-## Claude Code confinement
-
-`cloth_agent/claude.py` runs the installed `claude` CLI with:
-
-- working directory and `--add-dir` set to `runs/<run_id>/workspace/`;
-- only the `Read`, `Edit`, and `Write` tools (no Bash/shell tool);
-- safe mode and an explicit workspace-only system prompt;
-- no shell interpolation (`subprocess.run(..., shell=False)`).
-
-The core project is not added as a writable Claude directory. The workspace
-contains `ROBOT_API.md`, the experiment configuration, robot configuration,
-and `memory.md`, so Claude does not need to edit the core project. If it finds
-an infrastructure problem, its contract requires an `ENGINEERING_ISSUE:`
-report instead of a core edit.
-
-Before execution, `cloth_agent/experiment.py` parses generated code as Python
-AST. It rejects all imports (including `xarm`), attribute access, filesystem or
-shell access, unknown calls, loops/retries, exception handling, dynamic code,
-and anything other than one `run()` function containing the four allowed robot
-calls and simple numeric variables/arithmetic. The script is then executed
-with empty builtins and only the four bound RobotAPI functions.
-
-## Dense two-camera RGB-D fusion
-
-The runtime uses this data flow:
+ClothAgent 是一个面向 xArm7 和双 RealSense 相机的布料操作实验框架。它把视觉、动作规划和机器人执行串成一个可审查的流程：
 
 ```text
-camera A aligned RGB-D -----------> A point cloud in robot base frame
-camera B aligned RGB-D -----------> B point cloud in robot base frame
-                                      -> voxel-fuse A+B points
-                                      -> fit the table plane
-                                      -> select garment points above the table
-                                      -> choose the fused garment grasp point
-                                      -> save fused points and a top-down height map
+相机 A/B RGB-D → 点云融合 → Claude 生成动作 → 静态检查与 IK → 模拟或一次真实执行
 ```
 
-The perception result is rejected before code generation if the two-camera
-cloud cannot produce enough valid points, the fitted table is unstable, or no
-connected garment-height component can be found.
+项目适合做布料抓取、展开和折叠相关实验。每次运行都会保存相机数据、生成的动作程序、检查结果和执行日志，方便复现与排查问题。
 
-Each dense-fusion result also saves visual height-map diagnostics:
+## 主要功能
 
-- `camera_A/B_height_above_table_mm.npy`: per-pixel surface height above the
-  fitted table plane, in millimeters;
-- `camera_A/B_height_map_heatmap.png`: garment-focused heatmap of that height
-  difference; brighter colors mean a larger garment/table height difference;
-- `camera_A/B_height_map_heatmap_global.png`: the same height map normalized over
-  the whole valid camera image;
-- `camera_A/B_height_map_boundary.png`: the focused heatmap with the fused
-  garment boundary overlaid in white;
-- `camera_A/B_height_gradient_edges.png`: internal height-gradient/occlusion
-  evidence overlaid in cyan;
-- `fused_height_map_heatmap.png` and `fused_height_map_boundary.png`: the
-  top-down A+B fused height-above-table map and its boundary;
-  `fused_fold_edges.png` remains as a compatibility filename for the fused
-  height-gradient diagnostic.
+- 使用两台已标定的 RealSense 相机进行 RGB-D 融合，估计布料区域和表面高度。
+- 让 Claude 根据当前画面提出动作计划。
+- 只允许生成受限的 Robot API：`move`、`open_gripper`、`close_gripper`、`home`。
+- 在动作执行前检查 Python AST、工作空间、速度限制、轨迹和 xArm 控制器 IK。
+- 支持模拟运行、Viser 可视化预览，以及需要明确确认的真实机器人运行。
+- 保存完整的运行证据，便于人工标注成功/失败并继续下一轮实验。
 
-For every valid camera pixel and fused point, the runtime transforms the RGB-D
-measurement into the robot base frame, evaluates the fitted table plane at that
-same `x/y`, and stores `surface_z_mm - table_z_mm`. The heatmaps colorize this
-height-above-table map directly; there is no longer a second conversion to fold
-depth below the garment upper surface. These images are diagnostic overlays only;
-the segmented fused point cloud remains the source used for perception validation.
+## 环境要求
 
-No scene coordinate needs to be entered manually. Perception writes a fused
-center/reference surface height (the legacy `grasp_z` field is used as
-`surface_z_mm` for compatibility) plus per-camera calibrated coordinate guides.
-The center is not a mandatory grasp target. Uniform cyan `Rxxx` references in
-`camera_A/B_coordinate_overlay.png` map through
-`camera_A/B_coordinate_guide.json` to measured robot-base XYZ; they are not
-ranked grasp candidates. The full per-pixel mapping is saved in
-`camera_A/B_base_xyz_mm.npy`. Claude chooses the visual/geometric region and all
-motion waypoints. The generated action program is then checked against robot
-bounds, static preflight, controller IK, and animation before execution.
+- Python 3.10 或更高版本
+- 本项目依赖：NumPy、Pillow、PyYAML、SciPy、Viser、yourdfpy
+- 使用真实相机时：Intel RealSense SDK（`pyrealsense2`）和两台已标定的相机
+- 使用真实 xArm 时：xArm Python SDK（`xarm`）和可连接的 xArm7
+- 使用 Claude 规划时：系统中可调用 `claude` 命令
+- `semantic_local` 兼容模式还需要 PyTorch、Molmo 和可用 GPU；推荐模式是 `claude_global`
 
-## Garment-opening free exploration
-
-Claude free/automatic exploration now optimizes for making the garment as open
-and spread on the table as safely possible. It favors actions that increase
-visible coverage, separate overlapping layers, reduce bundled/high-relief
-regions, and finish with a controlled low laydown. A usable lifting anchor is
-an intermediate tool rather than the terminal goal. A small test grasp is used
-only when uncertainty prevents a grounded opening action. Previous proposals
-and before/after evaluations are passed into the next planning prompt.
-
-The reusable `laydown` skill is procedural prompt guidance, not a hidden robot
-trajectory. When Claude believes a grasp supports a useful hanging
-configuration it may invoke `laydown`, then it must still emit every concrete
-`move`/gripper action itself. The intended maneuver is a quasi-static retreat
-and descent followed by controlled release, not a fling or high drop.
-
-### Evolving skills and review
-
-After a completed before/after experiment, Claude may omit a skill update,
-propose a genuinely new skill (`create`), or propose a revision to an approved
-skill (`modify`). Proposals contain a purpose, high-level guidance, rationale,
-confidence, and visual before/after evidence. During a run, proposals and the
-complete before/after experience are kept under that run's workspace in
-`run_skill_lifecycle/`; they receive a provisional `RUN_LOCAL_PENDING` review
-and do not mutate the persistent library. The next iteration can use these
-run-local candidates as provisional evidence while later observations refine
-or contradict them.
-
-When the run ends, the ledger groups repeated candidates, combines their
-evidence and rationale, writes `run_skill_synthesis.json`, and only then passes
-the synthesized candidates through the independent `SkillStore` reviewer.
-Only resulting approved versions are written to `data/skills/approved.json` or
-emitted as external system-skill patches. Each iteration still saves
-`skill_review.json` when a proposal was made, but an iteration-level review is
-not global activation. Skills never contain coordinates, joint angles, SDK
-calls, or executable code.
-
-Built-in system skills remain immutable. A proposed modification to one is
-saved under `data/skills/patches/` but is not loaded merely because Claude or
-the automatic reviewer created it. After an independent evidence review, an
-operator explicitly approves the candidate with:
+安装 Python 包：
 
 ```bash
-python scripts/approve_skill_patch.py \
-  data/skills/patches/<patch>.json \
-  --reviewer operator \
-  --note "Reviewed against the saved before/after evidence"
+python -m pip install -e .
 ```
 
-Approval writes `data/skills/approved_patches.json`; later prompts apply only
-the ordered patches listed there whose SHA-256 and base version still match.
-The candidate patch remains an immutable record with `applied: false`: it
-cannot approve itself, and the external approval manifest is the activation
-authority. A missing, reordered, stale, or modified approved patch fails
-closed instead of silently changing system guidance.
+如果运行环境已经提供了项目所需的 RealSense、xArm 或 Claude 工具，直接使用该环境的 Python 即可。
 
-Deterministic pre-execution errors participate in the same learning loop. The
-runtime checkpoints the exact error, rejected proposal/actions, and confirms
-that no physical command was sent; the next Claude attempt receives that
-payload verbatim. When Claude returns a materially different correction that
-passes grounding, static preflight, workspace, and controller IK, the
-error→correction pair is saved as `preexecution_error_recovery.json` and can
-create a reviewed recovery skill such as `controller-ik-recovery`. Errors that
-require a fresh iteration are also appended to global experience so the next
-Claude prompt does not lose the failure context.
+## 配置
 
-The xArm controller already defines its TCP at the installed gripper tool
-point. A read-only hardware check on 2026-08-11 reported
-`tcp_offset=[0, 0, 172, 0, 0, 0]`. Real execution verifies this value before
-enabling motion and aborts if the controller tool frame changed.
+第一次使用前，请检查以下文件：
 
-The xArm gripper URDF uses `drive_joint=0.0` for open and `0.85` for closed.
-The measured lower TCP boundary may be used for the grasp descent with the
-configured `0 mm` workspace margin, and no command is allowed below the
-recorded `z_min`.
+| 文件 | 用途 |
+| --- | --- |
+| `config/robot.example.json` | xArm IP、速度、夹爪和安全参数 |
+| `config/perception.example.json` | 相机序列号、分辨率和外参路径 |
+| `config/perception.free_exploration.json` | 自动展开流程使用的视觉配置 |
+| `config/experiment.example.json` | 手工实验参数模板；使用感知时可保留为 `null` |
+| `xarm_boundaries.json` | 已测量的机器人工作空间边界 |
+| `data/robot/xarm_init_pose.json` | Home/观察位姿 |
+| `data/robot/xarm_perception_pose.json` | 感知位姿（如果配置了） |
 
-#### Local sponge support
-
-`config/robot.example.json` now describes the optional sponge layer used under
-the garment (`support_layer`). Perception estimates support height only from a
-small annulus outside each camera's final garment mask and saves a magenta
-`camera_*_support_ring_overlay.png` plus JSON diagnostics. The example marks the
-support layer as operator-confirmed (`"confirmed": true`), because a sponge
-that exists only under the garment can be hidden from an annulus outside the
-mask. Without that declaration, the allowance is activated only when the local
-ring is measurably elevated above the global table plane; otherwise the legacy
-3 mm grasp compression remains in force.
-When active, the example policy permits a 6 mm press (8 mm hard cap) while
-retaining the robot's absolute `z_min` and controller IK checks. The global table
-plane is still retained for segmentation and diagnostics, but it is not allowed
-to veto a grasp into a confirmed local sponge patch.
-
-## What must be configured
-
-The workspace measurement is already present for the current machine. If the
-robot/table layout changes, rerun this manual/free-drive measurement procedure;
-it does not run an experiment:
+如果机器人、相机或夹爪移动过，请重新检查边界、位姿、相机外参和 TCP 偏移。测量 xArm 边界可运行：
 
 ```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  scripts/record_xarm_boundaries.py \
+python scripts/record_xarm_boundaries.py \
   --ip 192.168.1.200 \
   --output xarm_boundaries.json
 ```
 
-After re-measuring, review the generated file and ensure these five local limits exist: `x_min`,
-`y_min`, `y_max`, `z_min`, and `z_max`. `x_max` is optional and is checked by
-the xArm controller/SDK instead.
+双相机感知要求 A、B 两台相机都能提供有效深度；当前版本不支持单相机模式。请确认 `config/perception*.json` 中的序列号和外参路径与实际安装一致。
 
-For the current machine, no per-run experiment configuration is required.
-`config/experiment.example.json` deliberately contains six `null` values;
-perception fills the center reference and observed surface height while saving
-the coordinate guides above. Claude selects the interaction region and supplies
-the motion values in the generated action program.
+注意：示例配置中的 Camera B 外参默认指向上级目录的 `RobotCamCalib` 项目。如果本机没有该目录，请把 `extrinsics_file` 改成实际的标定文件路径。
 
-Only one-time hardware facts remain:
+## 快速开始
 
-- measured bounds in `xarm_boundaries.json` (already present; `x_max` is
-  intentionally optional and delegated to the xArm SDK);
-- home/observation pose in `data/robot/xarm_init_pose.json` (already present);
-- controller TCP offset `[0, 0, 172, 0, 0, 0]` and gripper pulse values
-  (already recorded in `config/robot.example.json`);
-- effective gripper jaw width for the yaw-dependent Y allowance. The standard
-  xArm Gripper example uses the conservative nominal opening `86.0 mm`; change
-  `gripper.width_mm` if the installed tool is different;
-- camera serials and calibrated extrinsics (already recorded in
-  `config/perception.example.json`).
+下面的步骤从不移动真实机器人开始。
 
-Re-measure these only when hardware is physically moved, a camera is remounted,
-or the gripper/tool frame is changed. Every explicit Claude move is checked
-against the robot bounds; `require_ready()` is used only for manually supplied
-complete plans.
+### 1. 只运行感知
 
-### Very-slow motion profile
-
-The default real-robot profile is intentionally slow so the operator has time
-to use the emergency stop:
-
-- Cartesian moves: `15 mm/s`, acceleration `30 mm/s^2`
-- `home()` joint motion: `5 deg/s`, acceleration `10 deg/s^2`
-- gripper speed: `500`
-
-The safety layer also rejects Cartesian speeds above `30 mm/s`, Cartesian
-acceleration above `60 mm/s^2`, home speed above `10 deg/s`, or home
-acceleration above `20 deg/s^2`. Generated experiment code cannot change any
-of these values.
-
-After every explicitly confirmed real experiment launched through
-`AgentSession.run_experiment`, the runtime makes a separate best-effort
-`home()` call in a `finally` path, regardless of whether the Claude rollout
-succeeded or failed. The Home attempt has its own result JSON and is also
-summarized under `results/mandatory_return_home/`; a hardware/controller fault
-can still prevent physical return, but the attempt and error are never hidden.
-
-`config/perception.example.json` is pre-populated with the serials and A/B
-extrinsic paths found in the current calibration project. Verify that camera A
-is still serial `261722071490`, camera B is `261822074715`, and that the two
-YAML files match the physical camera mounts before use.
-
-Both cameras must provide enough calibrated depth for the fused cloud. The
-runtime fits a robust table plane, selects points above that plane, keeps the
-largest connected garment component, and blocks execution if that component is
-too small or the table fit is unstable. Single-camera perception is disabled.
-
-Reachability note: the current saved camera-A plan around
-`x=784.6 mm, y=-85.4 mm` passes simple Cartesian bounds, but the controller
-returns IK code 10 for its approach, grasp, and lift poses. The Viser
-console therefore displays it as unreachable and keeps animation/physical
-execution disabled. Move the garment closer to the robot or correct the camera
-calibration before trying to execute that same target.
-
-## Start one Agent session
-
-### 1. View only the fused RGB-D result
-
-This creates a run and performs perception only. It never connects to xArm:
+创建一个运行目录，并采集双相机数据：
 
 ```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent create \
-  --run-id preview_center \
-  --goal "locate the cloth center"
+python -m cloth_agent create \
+  --run-id preview_01 \
+  --goal "locate the garment center" \
+  --robot-config config/robot.example.json
 
-/home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent perceive \
-  --run-dir runs/preview_center \
+python -m cloth_agent perceive \
+  --run-dir runs/preview_01 \
   --perception-config config/perception.example.json
 ```
 
-Look in `runs/preview_center/results/perception/` for the original A/B images,
-aligned depth arrays, fused base-frame points, source masks, and height map.
+结果保存在 `runs/preview_01/results/perception/`，包括 RGB、深度、融合点云和高度图。该步骤会连接相机，但不会连接或移动 xArm。
 
-### 2. View the complete Agent loop without robot motion
+### 2. 运行一轮完整的模拟流程
 
-This captures both cameras, calculates the fused center/surface observation,
-asks Claude to choose all motion waypoints and write the experiment, prints the source and full action sequence, then executes
-only in the simulator:
+该命令会采集感知、调用 Claude 生成实验程序、打印动作计划，并在模拟器中执行：
 
 ```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent session \
-  --goal "grasp cloth center, lift, release, return to observation pose" \
-  --intent "Inspect the fused A/B garment views and choose a cautious approach, grasp, lift, transfer, release, yaw, and return-home sequence. Emit explicit move coordinates; use experiment_config.json only for the fused center and surface observation." \
-  --detect-center
-```
-
-The outer process uses the existing `cali` environment for RealSense and xArm;
-no Molmo process or GPU model is launched.
-
-The active perception config keeps RGB auto-white-balance disabled and uses a
-manual `color_white_balance` of 3800 K and a manual `color_exposure` of 400 for
-both Camera A and B. The values were selected from no-motion camera-control
-sweeps saved under `results/white_balance_sweep/`.
-
-### Claude-global garment-opening pipeline
-
-The headless CLI defaults to `--planning-policy claude_global`. After each
-synchronized A/B observation, Claude receives the full RGB scenes, garment-only
-RGB, table-relative height maps, garment boundaries, height gradients, fused
-scene diagnostics, calibration context, and previous before/after evaluations.
-It summarizes the current garment state, decides the next experiment, and
-selects one arbitrary Camera A/B pixel. The runtime does not generate, rank, or
-filter Sxxx/Rxxx grasp candidates in this mode.
-
-Only after Claude has selected its pixel, a read-only MCP tool may be called
-once to measure the robust local Base XYZ. The move immediately before
-`close_gripper()` must use that measured X/Y within 2 mm. Static workspace,
-controller IK, trajectory, and action-schema checks remain hard safety gates;
-they do not choose a point. A rejected proposal is returned to Claude once with
-the exact validation error. After a real rollout, Claude compares the complete
-before/after state and writes causal `keep`, `change`, and `reason` fields to
-`workspace/global_experience.jsonl` for the next iteration.
-
-The earlier semantic pipeline remains available only through the explicit
-`--planning-policy semantic_local` compatibility mode:
-
-That compatibility pipeline reruns after every synchronized A/B observation and uses
-Molmo for one narrow job: proposing a few semantic anchors such as collar,
-sleeve end, or hem corner. The default strict policy is `confidence > 0.80`.
-The score is the geometric mean probability of Molmo's three point-location
-tokens; it filters unstable outputs but is never treated as graspability or a
-calibrated semantic probability. Equal/below-threshold, off-mask, duplicated,
-and cross-view-inconsistent observations are withheld from Claude.
-
-Accepted `Sxxx` records are explicitly `semantic_anchor_not_grasp_point`. A
-light semantic-state builder relates them to the garment centroid and records
-possible fold/overlap states as hypotheses. Claude's strategy stage chooses
-which garment relation to change, but cannot emit Rxxx, coordinates, or robot
-actions. Local geometry then searches only inside that selected Sxxx region for
-free boundaries, raised fold edges, discrete height steps, and interior ridges;
-only these geometry-derived options become Rxxx grasp candidates.
-
-The runtime chooses action authority from evaluator state: acquisition unknown
-allows only a short lift; supported acquisition permits a structure/transport
-test; supported opening relevance permits a completion stroke. Claude has one
-normal `propose_action()` surface and cannot request arbitrary probe/run loops;
-each proposal is restricted to one grasp/release cycle and a scope-specific
-number of post-grasp waypoints. Workspace/controller-IK failures are removed
-before Claude sees the local candidate list. The local overlay marks selectable
-candidates in green and rejected candidates with red crosses.
-Evaluation is split into semantic target, acquisition, structure engagement,
-opening relevance, transport, laydown, and task progress. Each iteration writes
-a coordinate-independent structured experience and enforces acquisition and
-transport budgets before persisting or escaping a semantic hypothesis. A bad
-transport direction keeps the semantic hypothesis and prior successful local
-geometry family, then changes only transport; a failed structure engagement
-keeps the semantic target but resets the next action to acquisition scope with
-a different local grasp.
-
-The recommended entry point is the headless CLI. It does not start Viser or a
-browser. Every phase is printed to the terminal, including Claude's
-complete-scene summary, selected pixel and action JSON, generated restricted
-source, preflight/controller IK, execution, and evaluation.
-Interactive terminals use status colors and symbols. Each line starts with the
-local clock, total run elapsed time, iteration, and current phase, for example:
-
-```text
-10:42:07  +00:00.0   RUN  STARTUP               • headless claude_global loop started
-10:42:08  +00:01.1  I001  PERCEPTION            ▶ capturing synchronized Camera A/B RGB-D
-10:42:11  +00:04.2  I001  PERCEPTION            ✓ saved dense A/B result · phase 00:03.1
-10:42:12  +00:05.0  I001  GLOBAL-PLANNING       ▶ Claude inspecting the complete A/B scene
-10:42:22  +00:15.0  I001  GLOBAL-PLANNING       … still running · phase elapsed 00:10.0
-```
-
-The `+MM:SS.s` (or `+HH:MM:SS.s`) field is elapsed time since launch; completed
-phase lines also show that phase's own duration. A heartbeat prints the active
-phase every 10 seconds during quiet camera, Claude, IK, execution, and
-evaluation work. Configure it with `--heartbeat-s N`, use `--heartbeat-s 0` to
-disable it, and use `--no-color` for plain redirected/log-file output.
-Global mode does not load Molmo and does not run the Molmo GPU-memory gate. In
-`semantic_local` compatibility mode, the CLI checks GPU 0 and requires at least
-`19000 MiB` free before every Molmo launch.
-
-Run one dry iteration through complete-scene Claude planning, static preflight, and controller
-IK without sending robot motion:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  -m cloth_agent.molmo_keypoint_cli \
-  --project-root . \
-  --run-id claude_global_cli_01 \
-  --planning-policy claude_global \
-  --perception-config config/perception.free_exploration.json \
-  --max-iterations 1
-```
-
-For continuous physical execution, add the explicit real-execution flag and
-use `0` for an unbounded iteration count:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  -m cloth_agent.molmo_keypoint_cli \
-  --project-root . \
-  --run-id claude_global_cli_real_01 \
-  --planning-policy claude_global \
-  --perception-config config/perception.free_exploration.json \
-  --max-iterations 0 \
-  --enable-real
-```
-
-For a long unattended run that recovers from bounded Claude/planning failures,
-add:
-
-```bash
-  --continue-on-recoverable-errors \
-  --max-consecutive-recoverable-failures 3 \
-  --recovery-backoff-s 2
-```
-
-For the video-backed five-step fold pipeline, an outer watchdog can start a
-new timestamped child run after a safe process-level failure while carrying
-forward the previous child's `workspace/fold_experience` ledger:
-
-```bash
-bash scripts/start_fold_exploration_watchdog.sh
-```
-
-The watchdog defaults to a continuous real run with unattended retries and a
-read-only Viser viewer. Use `--dry-run` (or `--no-real`), `--no-unattended`, or
-`--no-viser` to disable those defaults. Watchdog options such as
-`--run-prefix`, `--restart-delay-s`, and `--max-restarts` remain available when
-you need to override them; pipeline-specific options can follow `--`.
-
-The fold pipeline uses the full `--claude-timeout-s` for final Rxxx grounding
-by default; the old 400-second grounding cap has been removed. To run a
-longer boundary experiment, pass an explicit override after the watchdog's
-`--`, for example `-- --grounding-timeout-s 1800`.
-
-The watchdog writes its own `watchdog_events.jsonl` and experience snapshots
-under a `_fold_night_watchdog_*` directory in `runs/`. It restarts after
-planning/perception/evaluation process failures, but stops on a clean terminal
-status, Ctrl-C, or evidence that a real execution failure may have left the
-robot in an unknown state. `--max-restarts 0` means unlimited safe restarts.
-When `--viser` is used, child runs receive increasing viewer ports by default
-so an old read-only viewer does not block the new run.
-
-Each fold iteration also writes a local evidence package under
-`iteration_NNN/evidence/`. The package is filled in order: RGB target
-selection, metric grounding, execution gate, post-grasp/video evidence, and
-experience update. Physical execution is allowed only when the first three
-stages are present and marked as passing by the host. If saved visual/evaluation
-evidence reports a sleeve as gathered or rolled, the next sleeve iteration is
-forced into `REPAIR_SLEEVE` (lift, move outward, and flatten) before another
-probe or inward fold is allowed. Acquisition-only probes are capped at three
-per fold step; once exhausted, the planner must propose the actual fold.
-The condition ledger is stored beside `experiences.jsonl` as
-`garment_condition.json`, so a later child run launched with
-`--experience-dir` inherits the sleeve-repair state as well as the textual
-experience history.
-
-Claude evaluation timeouts are handled separately because the physical rollout,
-mandatory return-Home, and after-state capture have already completed. The CLI
-retries evaluation against the same saved before/after evidence until it
-succeeds or the operator presses `Ctrl+C`; no robot or camera command is
-repeated. Use `--max-evaluation-retries N` to impose a limit (`0` means
-unlimited) and `--evaluation-retry-backoff-s S` to change the retry delay.
-
-The CLI never exposes real motion without `--enable-real`. For a camera/Claude
-diagnostic that also avoids connecting to xArm for read-only IK,
-add `--skip-controller-ik` to a dry run.
-
-Cartesian action `yaw` is interpreted as a wrist-yaw delta relative to the
-calibrated Home TCP orientation. Therefore `yaw=0` preserves the Home gripper
-orientation instead of rotating the wrist by the roughly 170-degree Euler yaw
-difference present in the xArm home joint report.
-
-The host also computes a yaw-dependent Y workspace allowance for the TCP
-center: `0.5 * gripper.width_mm * abs(sin(radians(yaw)))`. It is zero at
-`yaw=0` and reaches half the configured effective gripper width at `+/-90`
-degrees. The standard xArm Gripper example therefore allows `43.0 mm` at
-`yaw=+/-90`; X/Z limits and controller IK remain authoritative for every
-waypoint.
-
-The built-in procedural skill library now also includes `flatten-garment`: when
-the evidence supports a whole-garment opening maneuver, Claude may lift a
-supported grasp, move toward the farthest safe X boundary, and retreat while
-descending to a controlled low release. The skill supplies the sequence and
-safety constraints; Claude still chooses the measured anchor, exact boundary,
-waypoints, and release height, followed by the normal workspace/IK gates.
-
-To inspect the saved intermediate images while the CLI is running, start the
-separate lightweight artifact viewer in another terminal:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  -m cloth_agent.molmo_artifact_viewer \
-  runs/claude_global_cli_real_01
-```
-
-The viewer only polls existing PNG/JSON files. It does not open either camera,
-connect to xArm, load Molmo/Claude, use CUDA, start a browser, or start Viser.
-It keeps one resizable OpenCV window with overview, A/B perception, planning,
-and before/after pages. In global mode, the perception page shows the complete
-scene without a generated candidate overlay. The raw-depth tile is in
-metres; the height tile is `surface Z - fitted table Z` in millimetres and uses
-a per-camera table-appearance filter so solidified silhouettes cannot leak
-white table pixels into the garment heatmap.
-Press `1`-`4` to select a page, left/right (or `a`/`d`) to move between pages,
-`r` to refresh, and `q` or Escape to close it. The title area follows the same
-iteration, current phase, status, elapsed time, and heartbeat message as the
-CLI. Point it at the run directory and it automatically follows the newest
-`results/molmo_keypoint_cli/<timestamp>` child.
-
-For a zero-GUI snapshot instead, add:
-
-```bash
---page 1 --snapshot /tmp/clothagent_artifacts.png
-```
-
-For a manually triggered RGB photo from Camera C, use the standalone capture
-utility. It opens the uncalibrated observer, warms it up, saves a timestamped
-PNG and manifest, then closes the camera without moving the robot:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  scripts/capture_camera_photo.py
-```
-
-Use `--count N --interval-s S` for a short burst, `--output-dir DIR` to choose
-the parent directory, or `--serial SERIAL` for another RealSense device. See
-`scripts/capture_camera_photo.py --help` for all camera controls.
-
-The dashboard launcher can enable both recovery and a browser-based, read-only
-Viser point-cloud view in one command.  In real mode both are enabled by
-default:
-
-```bash
-bash scripts/start_molmo_dashboard.sh --real
-```
-
-The launcher passes `--continue-on-recoverable-errors`, with a cap of three
-consecutive pre-execution failures and a two-second backoff.  It also starts
-`cloth_agent.molmo_artifact_viser` on `http://127.0.0.1:8765`; that process only
-reads the saved Camera A/B and fused point-cloud/height-map artifacts, the
-static xArm7 model, the validated TCP path, and Claude's structured
-proposal/evaluation summaries. It has no camera, robot connection, Claude
-process, or action controls. When Viser is enabled, the OpenCV artifact
-dashboard is suppressed so Viser is the sole dashboard. Use `--no-recover` or
-`--no-viser` to disable either behavior, and `--viser-port PORT` to change the
-Viser port. The Viser panels also follow the skill lifecycle audit
-(`proposals.jsonl`, `reviews.jsonl`, and `approved.json`) and show the explicit
-Claude CLI stdout/stderr, parsed proposal, evaluator output, grounding,
-preflight, controller-IK, and recovery checkpoints. These are recorded model
-outputs and runtime variables; hidden chain-of-thought is not synthesized.
-
-Evaluation-timeout retry is active in this launcher independently of
-`--no-recover`. Each retry is checkpointed under
-`evaluation_timeout_retries`, reuses the saved before/after images, and never
-repeats the completed physical rollout. Once a retry succeeds, the same
-error→recovery evidence is reviewed as the `evaluation-timeout-retry` skill.
-
-Every launch creates
-`runs/<run-id>/results/molmo_keypoint_cli/<timestamp>/` with:
-
-```text
-events.jsonl                         # every terminal phase event
-summary.json                        # run status and per-iteration summary
-iteration_001.json                  # top-level iteration checkpoint
-iteration_001/
-  result.json                       # updated after every completed phase
-  proposal.json
-  proposal.py
-  global_grounding.json             # selected pixel and measured local Base XYZ
-  preflight.json
-  controller_ik.json
-  preexecution_error_recovery.json  # when Claude corrected a rejected plan
-  execution.json                    # real mode only
-  mandatory_return_home.json        # real mode only
-  evaluation.json                   # before/after keep/change result, real mode
-  skill_review.json                 # proposal review/activation decision, when proposed
-```
-
-Global experience is appended to `workspace/global_experience.jsonl`.
-`semantic_local` compatibility runs additionally write Sxxx, semantic-state,
-local-Rxxx, and structured-semantic-experience artifacts.
-
-The Viser-based `cloth_agent.auto_exploration --molmo-keypoints` entry point is
-still available for visual debugging, but is no longer required by this
-pipeline.
-
-Both automatic entry points support opt-in fresh-iteration recovery for
-failures that happen before physical execution. Use
-`--continue-on-recoverable-errors` with
-`--max-consecutive-recoverable-failures N` and `--recovery-backoff-s S` to save
-the failed iteration and begin a fresh perception/planning iteration. A
-headless-CLI evaluation timeout after completed execution instead retries only
-the evaluator with its saved evidence. Unknown robot state, incomplete
-execution, and failed return-Home remain hard stops; the loop never blindly
-retries those conditions.
-
-In `--planning-policy semantic_local` only, use repeated
-`--keypoint-camera A|B` options to restrict CLI inference to a
-camera, or `--keypoints-json PATH` to supply up to 20 custom
-`{name, description, color}` records. Without those options, both cameras and
-the default garment landmarks are used. The corresponding legacy Viser flags
-retain their `--molmo-keypoint-camera` and `--molmo-keypoints-json` names.
-
-The same pipeline can be run against an existing captured workspace without
-starting Claude or the robot:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  -m cloth_agent.molmo_keypoint_pipeline \
-  --project-root . \
-  --perception-dir runs/RUN_ID/workspace/perception_views \
-  --output-dir runs/RUN_ID/results/molmo_keypoints/manual_001 \
-  --confidence-threshold 0.80
-```
-
-Each default standalone run writes raw Molmo records, accepted-only Sxxx
-overlays, diagnostics, and `molmo_semantic_anchors.json`. It does not replace
-the workspace Rxxx coordinate guide. Only the later local-geometry stage creates
-and installs an Rxxx guide for the selected semantic region; the original
-uniform guide remains preserved as `camera_*_uniform_coordinate_guide.json`.
-
-### Claude plan preview with a hard stop before execution
-
-To run the live A/B perception and the same Claude planning contract used by
-automatic exploration, validate the generated restricted program, build the
-URDF animation, save Camera A/B and fused top-down plan overlays, and then exit
-without exposing physical execution authority:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  scripts/claude_plan_preview.py \
-  --project-root . \
-  --run-id claude_plan_preview_01 \
-  --perception-config config/perception.free_exploration.json
-```
-
-This entry point has no `run_experiment()` call. Controller validation is
-read-only IK; the saved summary always records
-`physical_execution_authority=false`, `physical_commands_sent=false`, and
-`execution_status=terminated_before_execution`. Outputs are written under
-`runs/<run-id>/results/claude_plan_preview/`.
-
-To sample Claude three independent times from exactly the same saved A/B and
-depth evidence, validate each plan, and compose Camera A/B plus fused top-down
-comparison sheets:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  scripts/claude_plan_preview_batch.py \
-  --project-root . \
-  --run-dir runs/claude_plan_preview_01 \
-  --samples 3 \
-  --claude-timeout-s 600
-```
-
-The batch command copies each proposal and visualization before invoking the
-next sample, and does not add physical execution authority.
-
-## Standalone Camera A/B rollout video recorder
-
-`scripts/record_rollout_video.py` is an external camera-only module. It imports
-no xArm API and cannot execute robot actions. Use it after perception/planning
-has finished and the main UI is waiting for explicit execution confirmation:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  scripts/record_rollout_video.py \
-  --project-root . \
-  --perception-config config/perception.free_exploration.json
-```
-
-Wait until the terminal prints `RECORDING READY`, start the phone recording,
-then confirm the robot rollout in the other terminal/UI. After the robot has
-returned Home, press `Ctrl+C` in the recorder terminal. Do not start this
-module while another process owns Camera A or B.
-
-Each recording directory contains:
-
-```text
-camera_A_rgb.mp4             camera_B_rgb.mp4
-camera_A_depth.mp4           camera_B_depth.mp4
-camera_A.db3                 camera_B.db3
-composite_AB_depth.mp4       frame_timestamps.csv
-recording_manifest.json
-```
-
-The installed RealSense SDK uses `.db3` for native RGB-D recordings. MP4 frames
-are wall-clock resampled so playback duration matches the physical rollout,
-then finalized as broadly compatible H.264/AVC (`yuv420p`, fast-start) files;
-the CSV and native recordings retain the actual device frames and timestamps.
-Use `--duration-s N` for a fixed-duration recording, or the default `0` to
-record until `Ctrl+C`. Pass `--no-native-recording` when disk space is limited.
-
-For automatic exploration, do not launch the standalone recorder in parallel.
-Enable the same module as an execution-stage plugin with one command:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python \
-  -m cloth_agent.auto_exploration \
-  --project-root . \
-  --run-id auto_recorded_01 \
-  --perception-config config/perception.free_exploration.json \
-  --max-iterations 0 \
-  --settle-s 2 \
-  --enable-real
-```
-
-Camera A/B recording is enabled by default. Recording begins only after
-perception/planning/preflight/IK and ends after
-the mandatory return-home. A recorder startup failure blocks physical
-execution. `--max-iterations 0` keeps opening the garment until the evaluator
-judges it reasonably maximally spread or safe continuation is no longer
-possible. Use `--no-record-rollouts` to disable recording, or
-`--recording-no-native` to omit the large `.db3` files.
-
-`config/perception.free_exploration.json` also defines a calibrated
-`garment_center_workspace_mm` rectangle. Every fused A/B perception checks the
-robust garment center against that rectangle. If it is outside, the next
-physical action is forced to be an inward workspace-recovery transport before
-normal garment opening resumes. The final grasp-to-release motion is checked
-against the requested inward vector before preflight/IK and execution.
-
-Visual planning defaults to a `400` second timeout; the final exact-Rxxx
-grounding/run-generation stage defaults to `120` seconds. Without the recovery
-flag, a timeout stops the automatic loop immediately. With
-`--continue-on-recoverable-errors`, a pre-execution timeout (or an evaluation
-timeout after a completed rollout and verified return-Home) is checkpointed and
-the next iteration starts from a fresh capture. It is never treated as proof
-that a physical action is safe to retry.
-
-For every proposal, the Viser console marks the `move()` immediately before
-`close_gripper()` as the grasp target: Base-frame XYZ/yaw in the GUI, a red 3-D
-sphere with yaw axis, and calibrated crosshairs on Camera A/B. The validated
-A/B overlays and target JSON are saved in that iteration's artifact directory;
-plans without a grounded target show `unknown`.
-
-Every automatic iteration also writes `camera_A_perception_report.png` in its
-`iteration_XXX/` directory. The exact-pixel report sheet contains Camera A RGB,
-height above table, garment boundary, height-gradient/fold edges, Rxx references,
-and the selected grasp overlay. The automatic exploration loop does not call
-Molmo. The sheet is created immediately after perception with an `unknown`
-target, then refreshed after preflight/IK with the validated target;
-therefore timeout and rejected-plan iterations still retain a report figure.
-The centralized `results/report_figures/<auto-run>/` directory contains the
-`iteration_XXX_camera_A.png` report sheets.
-
-Claude can ground that target through a strictly read-only local MCP server.
-Planning uses two separate Claude processes. The first restores the original
-safe/read-only visual flow with no MCP server and selects one Camera A/B Rxxx.
-Before the second process starts, deterministic workspace validation checks the
-selected reference. An unavailable or out-of-bounds Rxxx is recorded and sent
-back to Stage 1 as an excluded reference; Stage 1 re-inspects the same images
-and must select a different point. This reselection is bounded by
-`--max-replans`, so an invalid reference never consumes the Stage-2 timeout.
-The second receives the validated decision, exposes only one exact-Rxxx lookup,
-calls it once, and immediately writes the numeric run. A second successful
-lookup is rejected.
-The returned Rxxx grounds the selected point; Claude independently chooses all
-remaining waypoint heights, lift/laydown/release geometry, and yaw. The tool
-has no file-write, shell, candidate-selection, or robot-control authority.
-Viser displays a live timer for both stages and saves their durations in each
-iteration record.
-
-Without `--detect-center`, all six experiment values must be supplied manually;
-that mode is retained only for diagnostics.
-
-Full real-session command:
-
-```bash
-/home/CNS2026330003/miniconda3/envs/cali/bin/python -m cloth_agent session \
-  --goal "grasp cloth center, lift, release, return to observation pose" \
-  --intent "Inspect the fused A/B garment views and choose a cautious approach, grasp, lift, transfer, release, yaw, and return-home sequence. Emit explicit move coordinates; use experiment_config.json only for the fused center and surface observation." \
+python -m cloth_agent session \
+  --goal "grasp the garment, lift it, release it, and return home" \
+  --intent "Inspect the A/B views and create a cautious grasp-lift-release plan with explicit move coordinates." \
   --detect-center \
+  --robot-config config/robot.example.json
+```
+
+运行前会显示生成的 Python 源码和每个 `x/y/z/yaw` 动作。确认计划是否符合预期后，再进行下一步。
+
+### 3. 打开 Viser 预览
+
+```bash
+python -m cloth_agent viewer --run-id viewer_01
+```
+
+然后打开 <http://127.0.0.1:8080>。Viser 可以查看相机画面、点云、动作路径、IK 和 URDF 动画。默认不会开放真实执行按钮。
+
+### 4. 运行真实机器人（谨慎）
+
+只有在确认相机、边界、TCP 和急停均已准备好后，才使用 `--real`：
+
+```bash
+python -m cloth_agent session \
+  --goal "grasp the garment, lift it, release it, and return home" \
+  --intent "Inspect the A/B views and create a cautious grasp-lift-release plan with explicit move coordinates." \
+  --detect-center \
+  --robot-config config/robot.example.json \
   --real
 ```
 
-The command first creates and prints the run workspace, calls Claude Code,
-prints the complete experiment source, and prints the exact action sequence.
-No real robot command has happened at that point. Physical movement can begin
-only after the operator types exactly `EXECUTE`. The first physical command in
-the requested sequence is normally `home()`; this is where
-`XArmBackend.set_servo_angle` actually starts robot motion.
+程序会先打印完整计划，不会立即发送动作。只有在终端中输入 `EXECUTE` 后，才会执行这一轮。每轮真实运行结束后，程序都会尽力调用 `home()` 返回观察位。
 
-There is no automatic retry. After a rollout the operator supplies the manual
-result. A modification requires explicitly choosing `MODIFY_EXPERIMENT` and
-entering the reason. Physical execution has no per-run count limit, but every
-rollout still requires a fresh validated plan and explicit confirmation.
+## 常用命令
 
-## Complete Viser operation console
-
-The Viser application now owns the complete interactive workflow. Start a new
-preview-only run with one command:
+当你希望把流程拆开执行时，可以使用以下子命令：
 
 ```bash
-python -m cloth_agent viewer \
-  --run-id viser_grasp_01
+# 在已有运行中调用 Claude 生成实验程序
+python -m cloth_agent generate \
+  --run-dir runs/preview_01 \
+  --prompt "Create a cautious grasp, lift, release, and home sequence."
+
+# 执行前检查，不移动机器人
+python -m cloth_agent preflight \
+  --run-dir runs/preview_01 \
+  --experiment experiment_001_grasp_lift_drop.py
+
+# 在模拟器中运行
+python -m cloth_agent run \
+  --run-dir runs/preview_01 \
+  --experiment experiment_001_grasp_lift_drop.py
+
+# 查看结果或源文件
+python -m cloth_agent inspect \
+  --run-dir runs/preview_01 \
+  --experiment experiment_001_grasp_lift_drop.py
+python -m cloth_agent inspect \
+  --run-dir runs/preview_01 \
+  --file memory.md
 ```
 
-Open `http://127.0.0.1:8080`. All subsequent steps are buttons inside Viser:
+真实执行的拆分式命令必须同时使用 `--real --confirm-real`，并且应先单独运行 `preflight` 检查。
 
-0. when the server was started with `--enable-real`, optionally click
-   `Init: Return arm to Home` to send exactly one low-speed `home()` action;
-1. capture aligned A/B RealSense RGB-D and inspect the photographs/3D point cloud;
-2. run dense A/B fusion and inspect the fused base-frame cloud/height map;
-3. choose the standard center-grasp path or generate a separate garment
-   randomization path, then inspect every named path point and restricted source;
-5. ask the xArm controller for read-only IK for every Cartesian target;
-6. load the copied xArm7 + xArm gripper URDF and play the complete arm/gripper
-   animation with a frame slider, play, pause, reset, and loop controls;
-7. optionally authorize exactly one physical rollout.
+### 连续自动探索（可选）
 
-The URDF and required visual/collision meshes are stored under
-`assets/robots/xarm7/`. Its `joint_tcp` is 172 mm, matching the controller's
-saved TCP tool offset.
-
-To allow the final physical button, start the same console with:
+如果需要让 Claude 连续提出多轮“展开布料”动作，可先运行一轮不连接真实 xArm 的 dry run：
 
 ```bash
-python -m cloth_agent viewer \
-  --run-id viser_grasp_real_01 \
-  --enable-real
+python -m cloth_agent.molmo_keypoint_cli \
+  --run-id explore_01 \
+  --planning-policy claude_global \
+  --perception-config config/perception.free_exploration.json \
+  --robot-config config/robot.example.json \
+  --max-iterations 1
 ```
 
-Real authority is accepted only on a loopback-bound server. The physical button
-remains disabled until perception, static validation, controller TCP/IK checks,
-and URDF animation generation pass, and the source must remain unchanged.
-The separate red Init button is available immediately in real mode because it
-contains only the configured `home()` action. It still performs the live TCP
-tool-offset, controller-state, workspace, and Home configuration checks before
-moving, and uses the configured low Home joint speed.
-After those gates pass, clicking the single red
-`Confirm and execute one physical rollout` button is the explicit confirmation
-and starts one physical rollout immediately; no token or extra checkbox is
-required.
+确认结果后，再额外加入 `--enable-real` 开启真实执行；连续运行可将 `--max-iterations` 设为 `0`。详细参数见 [FREE_EXPLORATION.md](FREE_EXPLORATION.md)。
 
-Controller IK is a hard validation gate. A target that passes simple Cartesian
-bounds but has no inverse-kinematics solution is shown as a hard failure, and
-animation/execution stay disabled. There is no automatic retry.
+## 安全机制
 
-### Single-gripper garment randomization
+真实机器人是可选功能，默认关闭。执行前会进行多重检查：
 
-After perception, click `Generate garment randomization path`. Each click uses
-a recorded random seed and produces a deterministic, reviewable sequence:
+- 生成的实验文件只能包含一个 `run()` 函数和四个受限动作，不能导入模块、访问文件或运行 Shell。
+- 所有坐标必须是有限数值，并通过已测量的工作空间和 Z 高度边界。
+- 速度、加速度和夹爪参数有硬上限。
+- 对每个 Cartesian 目标执行只读的 xArm 控制器 IK 检查。
+- 检查控制器 TCP 偏移是否仍与配置一致。
+- 真实运行需要操作者明确确认；检查失败时不会发送机器人命令。
+
+这些检查不能替代现场安全规范。连接真实设备时，请始终准备急停，并在低速下观察第一轮动作。
+
+## 运行结果
+
+每次运行的主要文件位于 `runs/<run-id>/`：
 
 ```text
-approach -> grasp -> lift -> inward drag -> twist while moving to drop point
-         -> low-air release -> retreat -> home
+runs/<run-id>/
+├── run_metadata.json
+├── workspace/
+│   ├── ROBOT_API.md
+│   ├── robot_config.json
+│   ├── experiment_config.json
+│   ├── experiment_*.py          # Claude 生成的受限实验程序
+│   ├── memory.md                # 人工结果与下一轮假设
+│   └── results/claude/           # Claude 调用记录
+└── results/
+    ├── perception/              # 相机、深度、点云和高度图
+    ├── experiment_*.json        # 执行结果
+    ├── experiment_*.stdout.txt  # 标准输出
+    └── experiment_*.trace.json  # 动作与错误轨迹
 ```
 
-The Viser panel prints every path point as `x/y/z/yaw`, draws the complete TCP
-polyline in the point cloud, prints the restricted RobotAPI source, and keeps
-physical execution disabled until static preflight, controller IK, and URDF
-animation all pass. `Use standard center-grasp path` switches back without
-requiring a new camera capture.
+运行结束后，可以用 `label` 记录人工结果（`SUCCESS`、`FAILED_GRASP`、`FAILED_LIFT` 或 `OTHER_FAILURE`），再用 `memory` 保存下一轮实验的假设。
 
-An existing run can also be reopened:
+## 自动探索与专题文档
+
+需要连续展开、折叠或 Molmo 兼容流程时，再查看：
+
+- [FREE_EXPLORATION.md](FREE_EXPLORATION.md)：Claude 驱动的布料展开流程
+- [LANGUAGE_SKILL_PIPELINE.md](LANGUAGE_SKILL_PIPELINE.md)：语言/技能管线
+- [GARMENT_PERCEPTION_PROBLEM_INVENTORY.md](GARMENT_PERCEPTION_PROBLEM_INVENTORY.md)：感知问题记录
+- [data/reference/flat_garment_reference/README.md](data/reference/flat_garment_reference/README.md)：平铺布料参考图说明
+
+推荐先用 `claude_global` 做一轮预览，再考虑启用自动或真实执行。
+
+## 测试
 
 ```bash
-python -m cloth_agent viewer \
-  --run-dir runs/preview_a_01
+python -m pytest
 ```
 
-## Saved run layout
-
-```text
-runs/<run_id>/
-  run_metadata.json
-  workspace/
-    ROBOT_API.md
-    robot_config.json
-    experiment_config.json
-    experiment_001_grasp_lift_drop.py
-    experiment_002.py                 # only after an explicit modification
-    memory.md
-    results/claude/*.json             # Claude invocation records
-  results/
-    perception/center_<timestamp>/
-      camera_0_A.png
-      camera_0_A_depth_m.npy
-      camera_A_height_above_table_mm.npy
-      camera_A_height_map_heatmap.png
-      camera_A_base_xyz_mm.npy
-      camera_A_coordinate_guide.json
-      camera_A_coordinate_overlay.png
-      camera_1_B.png
-      camera_1_B_depth_m.npy
-      camera_B_height_above_table_mm.npy
-      camera_B_height_map_heatmap.png
-      camera_B_base_xyz_mm.npy
-      camera_B_coordinate_guide.json
-      camera_B_coordinate_overlay.png
-      fused_points_base_mm.npy
-      fused_colors_rgb.npy
-      fused_source_mask.npy
-      fused_height_above_table_mm.npy
-      fused_height_map_mm.npy
-      fused_height_map_preview.png
-      result.json
-    experiment_001_grasp_lift_drop.json
-    experiment_001_grasp_lift_drop.source.py
-    experiment_001_grasp_lift_drop.stdout.txt
-    experiment_001_grasp_lift_drop.trace.json
-```
-
-For automation, the same flow is available as separate `create`, `perceive`,
-`generate`, `preflight`, `run`, `inspect`, `label`, and `memory` subcommands.
-`run --real` also requires `--confirm-real`; call `preflight` and review its
-output first.
+测试通常不需要连接真实机器人；涉及相机、xArm 或 GPU 的脚本应在对应硬件/环境中单独运行。
