@@ -116,8 +116,8 @@ def _prompt(
         "that keypoint is clearly identifiable on visible garment fabric. If it is "
         "occluded, ambiguous, outside the image, or not confidently identifiable, "
         f"return no point. {label_rule} Do not point to the table, robot, gripper, "
-        "printed graphic, image border, or another object. For sleeve and hem anchors, "
-        "point on the actual outer garment boundary."
+        "printed graphic, image border, or another object. Follow the requested semantic "
+        "region literally; do not silently replace a broad region request with an edge or boundary."
     )
 
 

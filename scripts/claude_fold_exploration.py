@@ -12,4 +12,10 @@ from cloth_agent.fold_exploration_pipeline import main
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        # Keep terminal Ctrl-C quiet and return the conventional shell status.
+        # The pipeline/session cleanup has already run in their finally blocks.
+        print("[fold-debug] operator interrupt received; stopping", file=sys.stderr, flush=True)
+        raise SystemExit(130)

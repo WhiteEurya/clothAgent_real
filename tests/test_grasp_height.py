@@ -77,6 +77,141 @@ def test_shared_grasp_height_honors_a_deeper_diagnostic_without_exceeding_cap() 
     assert resolution.target_xyz_mm[2] == pytest.approx(27.0)
 
 
+def test_sponge_support_ring_enables_local_deeper_press() -> None:
+    config = replace(
+        _config(),
+        support_layer_type="sponge",
+        support_layer_thickness_mm=20.0,
+        support_layer_press_mm=6.0,
+        support_layer_max_compression_mm=8.0,
+        support_layer_hard_clearance_mm=1.0,
+        support_layer_presence_threshold_mm=3.0,
+    )
+    measurement = _measurement(surface_z=25.0, table_z=5.0)
+    measurement.update(
+        {
+            "local_support_ring_valid": True,
+            "local_support_z_median_mm": 20.0,
+            "local_support_ring_elevation_mm": 18.0,
+        }
+    )
+    resolution = resolve_grasp_height(
+        measurement=measurement,
+        table_plane_abc=[0.0, 0.0, 5.0],
+        robot_config=config,
+    )
+
+    assert resolution.support_layer_active is True
+    assert resolution.desired_compression_mm == pytest.approx(6.0)
+    assert resolution.maximum_compression_mm == pytest.approx(8.0)
+    assert resolution.support_floor_z_mm == pytest.approx(1.0)
+    assert resolution.target_xyz_mm[2] == pytest.approx(19.0)
+    assert resolution.policy == (
+        "runtime_authoritative_surface_compression_with_local_sponge_support"
+    )
+
+
+def test_confirmed_sponge_replaces_global_table_floor() -> None:
+    config = replace(
+        _config(),
+        boundaries=WorkspaceBounds(
+            x_min=350,
+            x_max=800,
+            y_min=-300,
+            y_max=170,
+            z_min=0,
+            z_max=500,
+        ),
+        grasp_use_table_clearance_floor=True,
+        support_layer_type="sponge",
+        support_layer_thickness_mm=20.0,
+        support_layer_press_mm=6.0,
+        support_layer_max_compression_mm=8.0,
+        support_layer_hard_clearance_mm=1.0,
+        support_layer_presence_threshold_mm=3.0,
+    )
+    measurement = _measurement(surface_z=7.0, table_z=5.0)
+    measurement.update(
+        {
+            "local_support_ring_valid": True,
+            "local_support_z_median_mm": 20.0,
+            "local_support_ring_elevation_mm": 15.0,
+        }
+    )
+    resolution = resolve_grasp_height(
+        measurement=measurement,
+        table_plane_abc=[0.0, 0.0, 5.0],
+        robot_config=config,
+    )
+
+    assert resolution.support_layer_active is True
+    assert resolution.lower_z_mm == pytest.approx(1.0)
+    assert resolution.target_xyz_mm[2] == pytest.approx(1.0)
+
+
+def test_sponge_support_ring_below_presence_threshold_keeps_legacy_depth() -> None:
+    config = replace(
+        _config(),
+        support_layer_type="sponge",
+        support_layer_thickness_mm=20.0,
+        support_layer_press_mm=6.0,
+        support_layer_max_compression_mm=8.0,
+        support_layer_hard_clearance_mm=1.0,
+        support_layer_presence_threshold_mm=3.0,
+    )
+    measurement = _measurement(surface_z=25.0, table_z=5.0)
+    measurement.update(
+        {
+            "local_support_ring_valid": True,
+            "local_support_z_median_mm": 5.0,
+            "local_support_ring_elevation_mm": 0.5,
+        }
+    )
+    resolution = resolve_grasp_height(
+        measurement=measurement,
+        table_plane_abc=[0.0, 0.0, 5.0],
+        robot_config=config,
+    )
+
+    assert resolution.support_layer_active is False
+    assert resolution.desired_compression_mm == pytest.approx(3.0)
+    assert resolution.maximum_compression_mm == pytest.approx(3.0)
+    assert resolution.target_xyz_mm[2] == pytest.approx(22.0)
+
+
+def test_confirmed_sponge_enables_deeper_press_without_ring_elevation() -> None:
+    config = replace(
+        _config(),
+        support_layer_type="sponge",
+        support_layer_confirmed=True,
+        support_layer_thickness_mm=20.0,
+        support_layer_press_mm=6.0,
+        support_layer_max_compression_mm=8.0,
+        support_layer_hard_clearance_mm=1.0,
+        support_layer_presence_threshold_mm=3.0,
+    )
+    measurement = _measurement(surface_z=25.0, table_z=5.0)
+    measurement.update(
+        {
+            "local_support_ring_valid": True,
+            "local_support_z_median_mm": 5.0,
+            "local_support_ring_elevation_mm": 0.5,
+        }
+    )
+    resolution = resolve_grasp_height(
+        measurement=measurement,
+        table_plane_abc=[0.0, 0.0, 5.0],
+        robot_config=config,
+    )
+
+    assert resolution.support_layer_active is True
+    assert resolution.support_layer_confirmed is True
+    assert resolution.support_layer_activation_source == "declared_configuration"
+    assert resolution.desired_compression_mm == pytest.approx(6.0)
+    assert resolution.maximum_compression_mm == pytest.approx(8.0)
+    assert resolution.target_xyz_mm[2] == pytest.approx(19.0)
+
+
 def test_shared_grasp_height_rejects_a_target_that_cannot_engage_surface() -> None:
     config = replace(_config(), grasp_min_compression_mm=0.75)
 
@@ -127,3 +262,10 @@ def test_robot_config_loads_the_shared_grasp_height_policy() -> None:
     assert config.grasp_table_clearance_mm == pytest.approx(0.0)
     assert config.online_camera_z_bias_correction is False
     assert config.grasp_use_table_clearance_floor is False
+    assert config.support_layer_type == "sponge"
+    assert config.support_layer_confirmed is True
+    assert config.support_layer_thickness_mm == pytest.approx(20.0)
+    assert config.support_layer_press_mm == pytest.approx(6.0)
+    assert config.support_layer_max_compression_mm == pytest.approx(8.0)
+    assert config.support_layer_hard_clearance_mm == pytest.approx(1.0)
+    assert config.gripper_width_mm == pytest.approx(86.0)

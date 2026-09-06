@@ -208,6 +208,12 @@ class PerceptionConfig:
     grasp_contact_clearance_mm: float = 0.0
     approach_clearance_mm: float = 80.0
     lift_clearance_mm: float = 160.0
+    # The garment may sit on a local sponge patch rather than on the exposed
+    # tabletop.  Estimate that support only from a narrow ring outside the
+    # observed garment mask; the rest of the table is deliberately ignored.
+    support_ring_inner_px: int = 2
+    support_ring_outer_px: int = 16
+    support_ring_min_pixels: int = 100
     garment_center_workspace: GarmentCenterWorkspace | None = None
 
     @classmethod
@@ -275,6 +281,9 @@ class PerceptionConfig:
             grasp_contact_clearance_mm=float(raw.get("grasp_contact_clearance_mm", 0.0)),
             approach_clearance_mm=float(raw.get("approach_clearance_mm", 80.0)),
             lift_clearance_mm=float(raw.get("lift_clearance_mm", 160.0)),
+            support_ring_inner_px=int(raw.get("support_ring_inner_px", 2)),
+            support_ring_outer_px=int(raw.get("support_ring_outer_px", 16)),
+            support_ring_min_pixels=int(raw.get("support_ring_min_pixels", 100)),
             garment_center_workspace=(
                 GarmentCenterWorkspace.from_mapping(garment_workspace_raw)
                 if garment_workspace_raw is not None
@@ -319,6 +328,14 @@ class PerceptionConfig:
             raise PerceptionError(
                 "lift_clearance_mm must be greater than or equal to approach_clearance_mm"
             )
+        if self.support_ring_inner_px < 0:
+            raise PerceptionError("support_ring_inner_px must be non-negative")
+        if self.support_ring_outer_px <= self.support_ring_inner_px:
+            raise PerceptionError(
+                "support_ring_outer_px must be greater than support_ring_inner_px"
+            )
+        if self.support_ring_min_pixels <= 0:
+            raise PerceptionError("support_ring_min_pixels must be positive")
 
 
 @dataclass(frozen=True)
@@ -2544,6 +2561,124 @@ def _save_camera_coordinate_guide(
     }
 
 
+def _estimate_local_support_ring(
+    frame: RGBDFrame,
+    config: PerceptionConfig,
+    garment_mask: np.ndarray,
+    table_coefficients: np.ndarray,
+    *,
+    base_z_offset_mm: float = 0.0,
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Estimate the support surface from a narrow ring around the garment.
+
+    The workspace can contain a local sponge patch while the exposed table is
+    elsewhere in the image.  A global table fit is therefore not a reliable
+    support height for grasping.  This helper intentionally samples only pixels
+    just outside the final garment mask, fits a small local Z plane, and reports
+    the ring's elevation relative to the global plane as a conservative presence
+    test.  If the ring is not elevated above the global plane, the caller may
+    still use an explicit operator confirmation from the robot configuration;
+    otherwise it retains the legacy shallow policy.
+    """
+
+    numpy = _require_numpy()
+    from scipy.ndimage import distance_transform_edt
+
+    mask = numpy.asarray(garment_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise PerceptionError("garment mask must be a 2-D array for support-ring estimation")
+    inner = int(config.support_ring_inner_px)
+    outer = int(config.support_ring_outer_px)
+    minimum = int(config.support_ring_min_pixels)
+    if inner < 0 or outer <= inner or minimum <= 0:
+        raise PerceptionError("invalid local support-ring configuration")
+
+    # distance_transform_edt(~mask) is the pixel distance to the nearest cloth
+    # pixel for pixels outside the cloth.  This gives a true annulus without
+    # contaminating the support estimate with the garment itself.
+    outside_distance = distance_transform_edt(~mask)
+    ring_mask = (
+        (~mask)
+        & (outside_distance > float(inner))
+        & (outside_distance <= float(outer))
+    )
+    base_xyz_mm, valid_map = camera_base_xyz_map_mm(frame, config)
+    base_xyz_mm = numpy.asarray(base_xyz_mm, dtype=numpy.float64)
+    base_xyz_mm[valid_map, 2] += float(base_z_offset_mm)
+    finite = valid_map & numpy.all(numpy.isfinite(base_xyz_mm), axis=2)
+    usable_ring = ring_mask & finite
+    points = base_xyz_mm[usable_ring]
+    diagnostics: dict[str, Any] = {
+        "valid": False,
+        "ring_inner_px": inner,
+        "ring_outer_px": outer,
+        "ring_pixel_count": int(numpy.count_nonzero(ring_mask)),
+        "usable_ring_pixel_count": int(len(points)),
+        "minimum_ring_pixels": minimum,
+        "base_z_offset_mm": float(base_z_offset_mm),
+    }
+    if len(points) < minimum:
+        diagnostics["reason"] = "insufficient finite RGB-D pixels in local support ring"
+        return diagnostics, ring_mask
+
+    coefficients = numpy.asarray(table_coefficients, dtype=numpy.float64)
+    if coefficients.shape != (3,) or not numpy.all(numpy.isfinite(coefficients)):
+        raise PerceptionError("table plane coefficients must contain three finite values")
+
+    # Robustly fit z=a*x+b*y+c to the ring.  The residual trimming protects the
+    # support estimate from a few edge pixels that still see the garment or a
+    # fixture, while retaining the local plane tilt.
+    design = numpy.column_stack((points[:, 0], points[:, 1], numpy.ones(len(points))))
+    fit_mask = numpy.ones(len(points), dtype=bool)
+    local_coefficients = numpy.linalg.lstsq(design, points[:, 2], rcond=None)[0]
+    for _ in range(3):
+        residual = points[:, 2] - design @ local_coefficients
+        scale = float(numpy.median(numpy.abs(residual))) * 1.4826
+        threshold = max(2.0, min(12.0, 3.0 * scale))
+        next_mask = numpy.abs(residual) <= threshold
+        if int(numpy.count_nonzero(next_mask)) < max(20, minimum // 3):
+            break
+        fit_mask = next_mask
+        local_coefficients = numpy.linalg.lstsq(
+            design[fit_mask], points[fit_mask, 2], rcond=None
+        )[0]
+
+    local_z = points[:, 2]
+    global_z = (
+        coefficients[0] * points[:, 0]
+        + coefficients[1] * points[:, 1]
+        + coefficients[2]
+    )
+    residual = local_z - (design @ local_coefficients)
+    elevation = local_z - global_z
+    inlier_z = local_z[fit_mask]
+    inlier_elevation = elevation[fit_mask]
+    diagnostics.update(
+        {
+            "valid": True,
+            "reason": "local support ring estimated",
+            "local_plane_coefficients": [float(value) for value in local_coefficients],
+            "ring_z_p10_mm": float(numpy.percentile(inlier_z, 10)),
+            "ring_z_median_mm": float(numpy.percentile(inlier_z, 50)),
+            "ring_z_p90_mm": float(numpy.percentile(inlier_z, 90)),
+            "ring_z_spread_mm": float(
+                numpy.percentile(inlier_z, 90) - numpy.percentile(inlier_z, 10)
+            ),
+            "ring_elevation_p10_mm": float(numpy.percentile(inlier_elevation, 10)),
+            "ring_elevation_median_mm": float(
+                numpy.percentile(inlier_elevation, 50)
+            ),
+            "ring_elevation_p90_mm": float(numpy.percentile(inlier_elevation, 90)),
+            "ring_fit_residual_p90_abs_mm": float(
+                numpy.percentile(numpy.abs(residual[fit_mask]), 90)
+            ),
+            "ring_inlier_count": int(numpy.count_nonzero(fit_mask)),
+            "global_plane_coefficients": [float(value) for value in coefficients],
+        }
+    )
+    return diagnostics, ring_mask
+
+
 def _save_camera_height_heatmap(
     output_dir: Path,
     frame: RGBDFrame,
@@ -2607,6 +2742,29 @@ def _save_camera_height_heatmap(
     projection_diagnostics["garment_mask_pixels"] = int(
         numpy.count_nonzero(garment_mask)
     )
+    local_support, support_ring_mask = _estimate_local_support_ring(
+        frame,
+        config,
+        garment_mask,
+        table_coefficients,
+        base_z_offset_mm=base_z_offset_mm,
+    )
+    support_ring_name = f"camera_{frame.label}_support_ring_mask.npy"
+    support_stats_name = f"camera_{frame.label}_local_support.json"
+    numpy.save(output_dir / support_ring_name, support_ring_mask.astype(numpy.bool_))
+    (output_dir / support_stats_name).write_text(
+        json.dumps(local_support, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    # Magenta marks the exact annulus used for support estimation.  This makes
+    # it possible to verify that a partial sponge patch, rather than a distant
+    # exposed tabletop, is driving the grasp-height floor.
+    support_overlay = numpy.asarray(frame.rgb, dtype=numpy.uint8).copy()
+    support_overlay[support_ring_mask] = numpy.asarray(
+        [255, 0, 255], dtype=numpy.uint8
+    )
+    support_overlay_name = f"camera_{frame.label}_support_ring_overlay.png"
+    Image.fromarray(support_overlay).save(output_dir / support_overlay_name)
     if display_max_mm is None:
         display_max_mm = DEFAULT_HEIGHT_MAP_DISPLAY_MAX_MM
     display_max_mm = float(max(1.0, display_max_mm))
@@ -2741,6 +2899,10 @@ def _save_camera_height_heatmap(
         "table_z_map": table_surface_name,
         "table_references": table_reference_name,
         "table_reference_overlay": table_reference_overlay_name,
+        "support_ring_mask": support_ring_name,
+        "support_ring_stats": support_stats_name,
+        "support_ring_overlay": support_overlay_name,
+        "local_support": local_support,
         "heatmap": heatmap_name,
         "global_heatmap": global_heatmap_name,
         "boundary_overlay": boundary_name,
@@ -2783,6 +2945,10 @@ def _camera_height_view_artifacts(artifacts: dict[str, Any]) -> dict[str, Any]:
         "height_map_path": artifacts.get("height_map_path"),
         "garment_mask": artifacts.get("garment_mask"),
         "garment_rgb": artifacts.get("garment_rgb"),
+        "support_ring_mask": artifacts.get("support_ring_mask"),
+        "support_ring_stats": artifacts.get("support_ring_stats"),
+        "support_ring_overlay": artifacts.get("support_ring_overlay"),
+        "local_support": artifacts.get("local_support"),
         "fold_edge_overlay": artifacts["fold_edge_overlay"],
         "height_gradient_overlay": artifacts.get("height_gradient_overlay"),
         "base_xyz_map": artifacts.get("base_xyz_map"),
@@ -3655,7 +3821,11 @@ class ClothCenterPerception:
                 "fused_height_above_table_mm": "fused_height_above_table_mm.npy",
                 "fused_garment_mask": "fused_garment_mask.npy",
                 "fused_relief_mask": "fused_relief_mask.npy",
-                "camera_height_maps": camera_heatmaps,
+            "camera_height_maps": camera_heatmaps,
+            "local_support_by_camera": {
+                label: artifacts.get("local_support")
+                for label, artifacts in camera_heatmaps.items()
+            },
                 # Backward-compatible key for older consumers.
                 "camera_depth_heatmaps": camera_heatmaps,
                 **height_map,

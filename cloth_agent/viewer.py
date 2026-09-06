@@ -615,6 +615,19 @@ def run_viewer(
                         ),
                     )
                 )
+            support_overlay = result_path.parent / str(
+                view.get("support_ring_overlay", "")
+            )
+            if support_overlay.is_file():
+                image_handles.append(
+                    server.gui.add_image(
+                        np.asarray(Image.open(support_overlay).convert("RGB")),
+                        label=(
+                            f"Camera {view['label']} local support ring "
+                            "(magenta = sampled outside garment mask)"
+                        ),
+                    )
+                )
         artifacts = result.get("depth_fusion", {}).get("artifacts", {})
         fused_points, fused_colors = _load_fused_point_cloud(result, result_path.parent)
         if len(fused_points):

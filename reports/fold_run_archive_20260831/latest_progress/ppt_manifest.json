@@ -1,0 +1,20 @@
+{
+  "ppt": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/fold_experiment_review.pptx",
+  "slide_count": 9,
+  "planning_issue_ids": [
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "P5"
+  ],
+  "latest_progress": {
+    "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/camera_B_rgb.mp4",
+    "source_mtime": "2026-08-28T23:05:57.112384+08:00",
+    "source_duration_s": 119.933,
+    "speed_factor": 32.0,
+    "output": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/latest_progress/latest_progress_rollout_32x.mp4",
+    "output_duration_s": 3.833,
+    "selection": "longest available rollout in the recent seven-day window; latest timestamp breaks ties"
+  }
+}

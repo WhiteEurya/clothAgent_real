@@ -1,0 +1,75 @@
+{
+  "target_selection": {
+    "status": "UNKNOWN",
+    "confidence": 0.0,
+    "evidence": [
+      "Acquisition-only evaluation did not reassess semantic target selection."
+    ]
+  },
+  "grasp_acquisition": {
+    "status": "FAILURE",
+    "confidence": 0.89,
+    "evidence": [
+      "The Camera C lift hold-check still, captured immediately after the first post-close lift to z 76.5, shows the gripper assembly standing clear in the air at the image-left/upper side of the frame with no black cloth patch held between the jaws and no tented, peaked or hanging fabric beneath them.",
+      "In that same hold-check the collar, neck label, pixel-art chest print, both sleeve lobes and the bottom hem all remain flat and seated on the table, so no ply was raised even locally.",
+      "Across all 16 Camera C contact-sheet tiles the garment silhouette is identical from first tile to last; the arm descends and withdraws at the upper/image-left side (tiles 6-12) and no tile shows cloth following the jaws upward.",
+      "Camera A before and after frames are congruent: the image-left sleeve lobe, the white size label on the image-left torso, the chest print and the hem all occupy the same pixels, with no local disturbance at the probed mid-sleeve region.",
+      "Gripper telemetry reports position_pulse 0 after close_gripper with no arrest above zero, mechanical_grasp_detected false at both lift checkpoints, and grasp_state_samples empty; taken only as weak corroboration since every sample is flagged simulated with one repeated timestamp (04:28:47.655)."
+    ]
+  },
+  "target_structure_acquired": {
+    "status": "CONTRADICTED",
+    "confidence": 0.87,
+    "evidence": [
+      "The intended structure was a gathered ridge of image-left sleeve fabric pinched between the jaws after a 12 mm inboard skim, but the hold-check shows no independent cloth patch elevated with the gripper and no local tenting, peaking or crest under the jaws.",
+      "Both sleeve lobes, the collar, the neck label, the chest print and the bottom hem remain seated and unmoved in the hold-check and in every contact-sheet tile, which rules out whole-garment drag as well as local single-ply capture.",
+      "Unlike iterations 5, 10, 11 and 12, this failure cannot be attributed to grounding: the commanded anchor (524.61, -207.78) was 23.9 mm from the Molmo sleeve hint and 148.2 mm from the validated centre, so the jaws were over the named sleeve and the sleeve structure itself was genuinely tested and not acquired.",
+      "Full closure to position_pulse 0 with no arrest is consistent with the jaws meeting no fabric thickness at all, so no ply was isolated."
+    ]
+  },
+  "transport": {
+    "status": "UNKNOWN",
+    "confidence": 0.0,
+    "evidence": [
+      "Transport was intentionally not executed in the reversible acquisition probe."
+    ]
+  },
+  "laydown": {
+    "status": "NOT_REACHED",
+    "confidence": 1.0,
+    "evidence": [
+      "The probe reversed and released at the original contact instead of laying down a fold."
+    ]
+  },
+  "task_progress": {
+    "status": "NEUTRAL",
+    "confidence": 1.0,
+    "metrics": {
+      "visible_area_delta": "UNCHANGED",
+      "overlap_delta": "UNCHANGED",
+      "relief_delta": "UNCHANGED",
+      "boundary_change": "The compact evaluator directly reported no persistent garment-state change."
+    }
+  },
+  "earliest_failure_stage": "ACQUISITION",
+  "next_experiment": {
+    "keep": [
+      "current_step left_sleeve and the empty ordered five-step ledger, since nothing was grasped, transported or folded and no sub-action can be credited.",
+      "A/R082 as the sleeve anchor: at 23.9 mm from the Molmo hint it is the first reference in fourteen iterations to pass the 40 mm proximity gate, and it must not be excluded on target grounds.",
+      "The strictly reversible zero-net-lateral probe structure with release at the contact point before the vertical retreat, which again left the garment provably undisturbed.",
+      "requires_lift_checkpoint true with a purely vertical first post-close move, sized at +20 mm and +30 mm inside the observable band and comparable with iterations 7, 8, 10, 11 and 12.",
+      "Use of the Camera C hold-check still as the authoritative acquisition witness, with the simulated telemetry as corroboration only.",
+      "The reading of the garment as one flat, front-up, fully unfolded shirt with both sleeves extended and no doubled-layer relief.",
+      "Explicit advance disclosure that the returned measurement did not support the planned free-edge straddle and that the probe therefore tested a mid-sleeve gather instead; that honesty is what makes this negative interpretable."
+    ],
+    "change": [
+      "Stop spending iterations on contact geometry. This was the first probe at a gate-passing sleeve anchor, and the contact family is now exhausted across iterations 1, 7, 8, 10, 11, 12 and 14: interior mid-lobe contact, edge-crossing lines, a two-edge corner straddle, yaw from -45 to +85 deg, inward gathers of 6/12/14.1/18.8/30 mm, an outward shear of 27.5 mm, pure near-vertical entry, off-cloth starts, and jaw tips 2.2-16 mm above locally measured planes. Every one closed to pulse 0 with an empty hold-check.",
+      "Grounding is now eliminated as the explanation, which is the one genuinely new fact from this iteration. A/R082 measured (524.61, -207.78), 23.9 mm from the Molmo sleeve hint and 148.2 mm from the validated centre, so the jaws were over named image-left sleeve fabric and the sleeve contact hypothesis was finally tested at a well-grounded anchor. It still failed. The remaining live causes are closure actuation and the fabric plane, neither of which the planner can vary.",
+      "Escalate closure actuation as the primary blocker, now for the seventh consecutive iteration: thirteen closes have driven to position_pulse 0 with no arrest and mechanical_grasp_detected false, and close_gripper accepts only an empty args object, so jaw width, pinch force and closure speed cannot be commanded. A definite host answer on whether a parameterised, force-limited or partial close exists is required before any further sleeve attempt.",
+      "Confirm whether a real gripper is in the loop before spending another iteration. All eleven telemetry samples are simulated:true and share one identical timestamp (04:28:47.655), so pulse and mechanical_grasp_detected carry no information about actual jaw state. If the gripper is synthetic, no contact hypothesis is testable at all and that must be surfaced rather than probed around.",
+      "Add an instrumented touch-down, or state that it is unavailable. Depth is now the sixth mutually inconsistent estimate in this region: this frame reported table_z 50.43 mm with height_above_table 38.82 mm and surface z 89.25 mm on visibly flat single-ply, against 44.80, 46.03, 46.76, 55.33 and 57.51 earlier. The move/open_gripper/close_gripper/home vocabulary cannot express a force-sensed descent that records height at first contact, and a graded two-step descent is not a substitute.",
+      "Raise the lookup budget or apply the proximity gate host-side. The single permitted call returned R082 with budget_remaining 0, so when the measurement turned out to sit mid-sleeve rather than at the cuff edge the planned free-edge straddle could not be re-grounded; the probe had to be re-purposed in place rather than re-selected."
+    ],
+    "reason": "The probe executed exactly as commanded and returned a fourteenth consecutive clean negative, but its diagnostic value is different from the previous thirteen. For the first time the anchor passed the sleeve proximity gate: A/R082 measured 23.9 mm from the Molmo hint and 148.2 mm from the validated centre, so the jaws were genuinely over image-left sleeve fabric rather than torso, shoulder or empty table. Contact XY was 36-46 mm from every prior attempt, jaw alignment at yaw -20 was paired with a +12 mm inboard skim in a combination never tried, and Z was deliberately held at 56.5 mm inside the already-probed band so it could not confound the result. The jaws still closed to pulse 0, the hold-check shows them standing empty in the air, and no contact-sheet tile shows cloth following them. Grounding is therefore eliminated as the explanation, which removes the last fault the planner could fix by choosing differently. Two upstream inputs remain unresolved and both are outside the action vocabulary: closure cannot be parameterised, so a full close on single-ply jersey may simply sweep the cloth aside; and the local fabric plane has six mutually inconsistent estimates, so the commanded jaw tip may sit well above or below the true surface. Further permutation of contact XY, jaw alignment or entry path is not an informative experiment and would only add another identical negative. The garment is unchanged, current_step stays left_sleeve, and the ledger stays empty."
+  }
+}

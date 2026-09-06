@@ -1,0 +1,44 @@
+{
+  "visual_planning_s": {
+    "n": 76,
+    "mean_s": 193.4,
+    "median_s": 159.0,
+    "max_s": 1303.9,
+    "sum_s": 14701.7
+  },
+  "final_grounding_s": {
+    "n": 76,
+    "mean_s": 189.1,
+    "median_s": 187.2,
+    "max_s": 391.8,
+    "sum_s": 14373.7
+  },
+  "total_planning_s": {
+    "n": 76,
+    "mean_s": 382.6,
+    "median_s": 353.2,
+    "max_s": 1418.1,
+    "sum_s": 29075.4
+  },
+  "supervisor_s": {
+    "n": 72,
+    "mean_s": 105.2,
+    "median_s": 86.2,
+    "max_s": 345.5,
+    "sum_s": 7571.5
+  },
+  "perception_s": {
+    "n": 183,
+    "mean_s": 33.2,
+    "median_s": 36.9,
+    "max_s": 41.4,
+    "sum_s": 6083.4
+  },
+  "molmo_s": {
+    "n": 54,
+    "mean_s": 24.8,
+    "median_s": 17.1,
+    "max_s": 46.6,
+    "sum_s": 1339.2
+  }
+}

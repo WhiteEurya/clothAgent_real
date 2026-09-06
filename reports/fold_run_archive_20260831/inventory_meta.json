@@ -1,0 +1,14 @@
+{
+  "top_level_runs": 84,
+  "summary_status_counts": {
+    "FAILED": 251,
+    "INTERRUPTED": 6,
+    "RUNNING": 14,
+    "COMPLETED": 10,
+    "PHYSICAL_PROBE_COMPLETED": 1,
+    "BLOCKED": 2,
+    "BLOCKED_SELECTION_OR_MASK_DISAGREEMENT": 1,
+    "BAD": 1,
+    "MAX_FOLDS_REACHED": 2
+  }
+}

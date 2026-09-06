@@ -1,0 +1,122 @@
+[
+  {
+    "id": "S1",
+    "class": "structural",
+    "title": "袖子 acquisition 反复空抓",
+    "archive_dir": "structural/S1_acquisition_empty_grasp",
+    "finding": "97 个有 evaluation 的迭代中有 83 个 acquisition failure。代表性 Cam-C hold-check 显示夹爪抬起后没有悬挂布料，遥测 position_pulse=0、mechanical_grasp_detected=false；这说明抓取接触/边缘进入方式仍是首要瓶颈。",
+    "evidence_summary": "fold_night iteration 014 的 Camera-A before/after、Camera-C hold-check、Camera-C/AB 视频、evaluation、gripper telemetry 和 debug.log。"
+  },
+  {
+    "id": "S2",
+    "class": "structural",
+    "title": "抓到的是整团布/滚卷而非目标层",
+    "archive_dir": "structural/S2_whole_bundle_drag_roll",
+    "finding": "存在少数机械上确实抓到布料的迭代，但目标层未被分离：整件衣服被拖动，释放后变成更窄、更高的 sausage/roll。对应 evaluation 中 acquisition=SUCCESS、target_structure=CONTRADICTED、laydown=FAILURE 或 task_progress=REGRESSED。",
+    "evidence_summary": "fold_inherit iteration 001 的 A/B before/after、AB depth 视频、evaluation 和 trajectory。"
+  },
+  {
+    "id": "S3",
+    "class": "structural",
+    "title": "RGB→Rxxx→XYZ grounding / mask 不一致",
+    "finding": "出现过 selected Rxxx 与实际 grasp XY 相差约 320 mm、选点落在 production mask 外、以及目标虽叫 image-left sleeve 却解析到肩部/衣身的情况。另有 bbox bottom=718/720 被统一判为 PARTIAL。错误发生在视觉点到执行坐标的链路，不能归咎于 Claude 的折叠策略。",
+    "evidence_summary": "single_sleeve 的 selected_point_vs_production_mask.png；fold_holdcheck 的 320 mm 日志；fold_night iteration 009 的 Camera-A/C 图像、evaluation 和视频。",
+    "archive_dir": "structural/S3_grounding_mask_mismatch"
+  },
+  {
+    "id": "S4",
+    "class": "structural",
+    "title": "Claude planning / grounding 上下文导致极端延迟",
+    "finding": "76 次 planning 返回记录的 visual planning 平均约 193 s、最大 1304 s；final grounding 平均约 189 s、最大 392 s。持久 session 还发生多次 context rollover，随后出现 Prompt is too long / Argument list too long。瓶颈在提示词、结构化输出重试和上下文管理，而非相机或机械臂移动。",
+    "evidence_summary": "fold_persistent debug.log、summary、persistent_claude_session.json、timing_summary.json，以及同一迭代的 32x AB 视频。",
+    "archive_dir": "structural/S4_latency_context"
+  },
+  {
+    "id": "S5",
+    "class": "structural",
+    "title": "安全高度 / 工作空间 / controller IK 约束互相冲突",
+    "finding": "多次出现 no legal engaged grasp Z（surface_z 低于 table/robot 下限）、x 低于 safe lower bound、controller IK code=10。说明桌面/海绵/衣物高度模型和最终 controller 可达域没有形成稳定、可执行的统一约束。",
+    "evidence_summary": "collar_high_lift_05 的高度失败 summary 与 collar overlay；fold_holdcheck_004839 的 IK debug/summary；single_sleeve 的安全边界 summary。",
+    "archive_dir": "structural/S5_safety_ik_height"
+  },
+  {
+    "id": "S6",
+    "class": "structural",
+    "title": "抓取成功判据受夹爪遮挡且 telemetry 仍是弱信号",
+    "finding": "Camera-A 在夹爪靠近时遮挡了大部分目标；Camera-C 只能作为未标定 RGB observer。虽然加入了 hold-check，但多次 telemetry 样本标记 simulated=true、时间戳重复、mechanical_grasp_detected=false，因此只能作为弱机械证据，不能独立证明目标层被抓住。",
+    "evidence_summary": "fold_camC iteration 001 与 fold_night iteration 014 的 Camera-C 图像/视频、hold-check、gripper_telemetry.json。",
+    "archive_dir": "structural/S6_observability_telemetry"
+  },
+  {
+    "id": "S7",
+    "class": "structural",
+    "title": "无人值守状态机在 bunched/left_sleeve 上反复横跳",
+    "finding": "fold_night run 曾累计 194 次 unattended attempt；在衣服已 BUNCHED 时仍反复停留在 left_sleeve，repair 或 planning failure 后状态没有真正推进到可折叠状态。该问题会消耗整夜时间，却不产生新的有效物理证据。",
+    "evidence_summary": "fold_night_20260830T100630 的 summary、debug.log、unattended restart 记录和 iteration 009 视频；另有长 run 的 summary 记录。",
+    "archive_dir": "structural/S7_unattended_state_loop"
+  },
+  {
+    "id": "S8",
+    "class": "structural",
+    "title": "相机/光照质量门槛使 perception 整批阻塞",
+    "finding": "night run 大量出现 table luma 约 2–6（阈值 90）导致 before perception 连续失败；另有 mask silhouette coverage 仅 0.056。此类失败发生在 Claude/机器人动作之前，是采集质量和验证门槛的问题。",
+    "evidence_summary": "fold_night 多个 failed summary/debug.log；neat_fold_overnight 的 perception failure 图像与视频作为同环境对照。",
+    "archive_dir": "structural/S8_capture_quality"
+  },
+  {
+    "id": "P1",
+    "class": "planning",
+    "title": "目标点语义选择不稳定",
+    "archive_dir": "structural/S3_grounding_mask_mismatch",
+    "finding": "Claude 有时把 sleeve 目标选到肩部、衣身或 Rxxx 内部点，即使 RGB 中袖子可见。需要部件拓扑、左右语义、外轮廓距离和反事实检查。",
+    "evidence_summary": "S3 的 mask 对照、320 mm grounding 错位日志和 iteration 009 视频。"
+  },
+  {
+    "id": "P2",
+    "class": "planning",
+    "title": "没有形成边缘优先抓取策略",
+    "archive_dir": "structural/S1_acquisition_empty_grasp",
+    "finding": "连续空抓后，Claude 仍主要改变高度、yaw 或小范围位移，没有稳定切换到 sleeve hem/free-boundary、edge-straddle 或 opposition。",
+    "evidence_summary": "S1 的 Camera-C hold-check、telemetry 和 32 倍速 rollout。"
+  },
+  {
+    "id": "P3",
+    "class": "planning",
+    "title": "运输与落放规划不足",
+    "archive_dir": "structural/S2_whole_bundle_drag_roll",
+    "finding": "有些迭代确实抓到布，但计划是零横向位移、回到原点，或把整团布拖成更窄更高的 roll。需要显式验证 source→destination 位移和落放后的轮廓扩展。",
+    "evidence_summary": "S2 的 before/after、trajectory 和 AB 视频。"
+  },
+  {
+    "id": "P4",
+    "class": "planning",
+    "title": "失败归因和探索多样性不足",
+    "archive_dir": "structural/S7_unattended_state_loop",
+    "finding": "多次失败后仍重复相近假设，并在 BUNCHED/left_sleeve 状态循环。需要维护已证伪假设集合，强制下一轮改变因果维度。",
+    "evidence_summary": "S7 summary/debug.log、iteration 009 视频和保留的 experience ledger。"
+  },
+  {
+    "id": "P5",
+    "class": "planning",
+    "title": "计划输出契约不稳定",
+    "archive_dir": "planning/P5_plan_contract",
+    "finding": "Claude 偶发缺少 safety_notes、close_gripper、move target 或返回非法 skill invocation。需要更短的 schema 提示、规划前自检和局部重试。",
+    "evidence_summary": "P5 目录中的 schema/contract rejection 日志。"
+  },
+  {
+    "id": "O1",
+    "class": "operational",
+    "title": "网络、相机和 SDK 瞬时故障",
+    "archive_dir": "operational/O1_infra_transient",
+    "finding": "connect socket failed、API ENOTFOUND、SDK TypeError 属于运行基础设施问题，不计入 Claude planning 能力评估。",
+    "evidence_summary": "O1 目录中的 socket、DNS 和 TypeError 日志。"
+  },
+  {
+    "id": "O2",
+    "class": "operational",
+    "title": "人工中断和旧版运行上限",
+    "archive_dir": "operational/O2_interruptions_limits",
+    "finding": "INTERRUPTED、MAX_FOLDS_REACHED 和 KeyboardInterrupt 主要反映旧运行方式或人工停止。",
+    "evidence_summary": "O2 目录中的 interrupted/max-fold summary。"
+  }
+]

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-28T18:18:26.747+00:00",
+  "status": "FAILED",
+  "objective": "Fold a T-shirt in five ordered steps with video-backed closed-loop supervision.",
+  "fold_steps": [
+    {
+      "id": "left_sleeve",
+      "label": "image-left sleeve inward"
+    },
+    {
+      "id": "right_sleeve",
+      "label": "image-right sleeve inward"
+    },
+    {
+      "id": "left_side",
+      "label": "first torso side inward"
+    },
+    {
+      "id": "right_side",
+      "label": "second torso side inward"
+    },
+    {
+      "id": "hem_up",
+      "label": "bottom hem upward"
+    }
+  ],
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z",
+  "physical_execution": true,
+  "video_recording": true,
+  "timeouts": {
+    "claude_s": 1800,
+    "supervisor_s": 900,
+    "recording_join_s": 300
+  },
+  "retry_policy": {
+    "max_stage_retries": 1,
+    "retry_backoff_s": 5.0,
+    "supervisor_fallback": true,
+    "evaluation_fallback": true
+  },
+  "persistent_claude_session": {
+    "session_id": "809aabdf-c8e3-47ea-bf93-b963a777c157",
+    "name": "persistent-fold-agent",
+    "started": false,
+    "turn_count": 0,
+    "generation": 1,
+    "generation_turn_count": 0,
+    "max_generation_turns": 8,
+    "stage_counts": {},
+    "rollover_count": 0,
+    "last_rollover": null,
+    "state_path": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/workspace/persistent_claude_session.json"
+  },
+  "molmo_sleeve_grounding": {
+    "enabled": true,
+    "role": "fallible_semantic_sleeve_region_before_Claude_Rxxx_selection",
+    "camera": "A",
+    "confidence_threshold": 0.5,
+    "timeout_s": 900,
+    "gpu_max_memory_gib": 17.0,
+    "cpu_offload": false,
+    "load_in_8bit": true,
+    "fallback": "host_validated_outer_sleeve_region_candidates"
+  },
+  "debug": {
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/debug.log",
+    "events": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/debug_events.jsonl"
+  },
+  "viser": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "url": "http://127.0.0.1:8765",
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/viser.log",
+    "read_only": true
+  },
+  "iterations": [],
+  "error": "RuntimeError: before perception failed after 2 capture attempt(s): Exception: connect socket failed",
+  "failed_at": "2026-08-28T18:18:31.803+00:00"
+}

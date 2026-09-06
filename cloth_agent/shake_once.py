@@ -166,26 +166,24 @@ def build_shake_plan(
         )
     )
     for label, target, _, _ in targets:
-        config.boundaries.validate(
+        config.validate_workspace_pose(
             target[0],
             target[1],
             target[2],
-            config.workspace_margin_mm,
+            relative_yaw_deg=config.relative_yaw_from_absolute_deg(target[5]),
             require_complete=require_complete_workspace,
-            z_lower_margin_mm=config.lower_z_margin_mm,
         )
         if target[0] != x or target[2] != z or target[3:] != current[3:]:
             raise SafetyError(f"{label} is not a pure Y-axis motion")
 
     # Validate the observed start as well; no command should begin from outside
     # the configured workspace.
-    config.boundaries.validate(
+    config.validate_workspace_pose(
         x,
         y,
         z,
-        config.workspace_margin_mm,
+        relative_yaw_deg=config.relative_yaw_from_absolute_deg(current[5]),
         require_complete=require_complete_workspace,
-        z_lower_margin_mm=config.lower_z_margin_mm,
     )
     return ShakePlan(
         start_pose_mm_deg=current,

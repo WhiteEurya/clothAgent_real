@@ -580,7 +580,7 @@ def validate_exploration_payload(
         raise ExplorationPlanningError("a move immediately before close_gripper is required")
     first_post = moves_before_release[0]["args"]
     grasp_z = float(grasp_move["args"]["z"])
-    if float(first_post["z"]) <= grasp_z:
+    if raw_checkpoint and float(first_post["z"]) <= grasp_z:
         raise ExplorationPlanningError(
             "the first post-grasp move must lift above the grasp height for a hold check"
         )
@@ -816,12 +816,24 @@ def validate_global_probe_profile(
             raise ExplorationPlanningError(
                 "compression probe requires a finite measured surface and press depth"
             )
-        # Allow a small measurement/control tolerance, but keep the probe
-        # shallow enough to avoid driving the jaws into the table.  The default
-        # diagnostic asks for 1 mm below the local measured surface and caps
-        # the total compression depth at 3 mm.
+        # Allow a small measurement/control tolerance.  The legacy rigid-table
+        # policy caps a probe at 3 mm; when perception has confirmed the local
+        # sponge ring, the run-local support-layer cap is safe to use instead.
         tolerance_mm = 0.25
-        max_depth_mm = max(3.0, compression_depth_mm + 1.0)
+        configured_support_cap = measurement.get(
+            "support_layer_max_compression_mm", 0.0
+        )
+        support_active = measurement.get("support_layer_active") is True
+        support_cap = (
+            float(configured_support_cap)
+            if support_active
+            and isinstance(configured_support_cap, (int, float))
+            and not isinstance(configured_support_cap, bool)
+            and math.isfinite(float(configured_support_cap))
+            and float(configured_support_cap) > 0.0
+            else 0.0
+        )
+        max_depth_mm = max(3.0, support_cap, compression_depth_mm + 1.0)
         actual_depth_mm = compression_surface_z_mm - grasp_z
         if actual_depth_mm < compression_depth_mm - tolerance_mm:
             raise ExplorationPlanningError(
@@ -2377,7 +2389,16 @@ def exploration_prompt(
         "pixel-to-base transform or silently treat an ungrounded visual guess as a safe point. "
         "If grounding is uncertain, state the uncertainty and choose a conservative target. "
         "Keep every waypoint inside the stated bounds with margin; runtime workspace, IK, and "
-        "safety checks remain authoritative. Release before the action list ends.\n\n"
+        "safety checks remain authoritative. Y has a yaw-dependent TCP-center allowance: action "
+        f"yaw is relative to Home, yaw=0 keeps the configured Y bounds unchanged, and the "
+        f"outward allowance is 0.5 * gripper_width_mm * abs(sin(radians(yaw))) = "
+        f"0.5 * {float(robot.gripper_width_mm):g} mm * abs(sin(radians(yaw))). At +/-90 degrees "
+        f"the maximum allowance is {robot.y_workspace_extension_mm(90.0):g} mm. This affects "
+        "only Y and only the TCP center; do not use it to push the whole arm or gripper through "
+        "the boundary, and do not assume an allowance when yaw=0. If extra Y travel is needed, "
+        "rotate to the chosen relative yaw while the TCP is still inside the original yaw=0 "
+        "Y bounds, then move outward; do not cross the yaw=0 boundary first and rotate later. "
+        "The host validates this rule on every interpolated waypoint. Release before the action list ends.\n\n"
         "The garment-focused height map heatmap shows surface height above the fitted table "
         "plane in millimeters; brighter colors mean a larger garment/table height difference. "
         "`height_gradient_overlay` highlights internal height-gradient/occlusion edges and "
@@ -2389,7 +2410,9 @@ def exploration_prompt(
         "If the selected-pixel local-surface diagnostic contains `compression_probe_recommended=true`, "
         "treat that as a required shallow compression probe: runtime applies the shared configured "
         "compression depth including that recommendation, then lift nearly vertically "
-        "before any lateral motion. Compare the compressed peak with its neighbouring cloth in the "
+        "before any lateral motion. If the measurement also reports `support_layer_active=true`, "
+        "the local sponge-ring calibration authorizes the configured deeper press allowance; do not "
+        "substitute a deeper value yourself. Compare the compressed peak with its neighbouring cloth in the "
         "hold/rollout frames. If the peak-to-neighbour height difference collapses without a separate "
         "hanging patch, classify it as `COMPRESSIBLE_SINGLE_PEAK` (likely rolled wrinkle), lower the "
         "graspability confidence, release, and re-plan instead of pulling it farther. "

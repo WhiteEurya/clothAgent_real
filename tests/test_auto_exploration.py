@@ -19,6 +19,7 @@ from cloth_agent.auto_exploration import (
     ReferenceReselectionExhaustedError,
     VisualPlanDecision,
     _depth_preview,
+    _fold_sleeve_step_from_objective,
     _fold_sleeve_reference_geometry,
     _validate_fold_grasp_anchor_offset,
     _write_final_grounding_context,
@@ -45,6 +46,22 @@ from cloth_agent.free_exploration import (
     validate_exploration_payload,
 )
 from cloth_agent.perception import GarmentCenterWorkspace
+
+
+@pytest.mark.parametrize(
+    ("objective", "expected"),
+    [
+        ("The supervisor says the next incomplete step is left_sleeve.", "left_sleeve"),
+        ("The supervisor says current_step is right_sleeve.", "right_sleeve"),
+        ('{"current_step": "left_sleeve"}', "left_sleeve"),
+        ("ACTION MODE: current_step=right_sleeve", "right_sleeve"),
+    ],
+)
+def test_fold_sleeve_step_parser_accepts_current_step_contract(
+    objective: str,
+    expected: str,
+) -> None:
+    assert _fold_sleeve_step_from_objective(objective) == expected
 
 
 def test_fold_sleeve_semantic_gate_rejects_torso_interior() -> None:
@@ -154,7 +171,7 @@ def test_fold_reference_prevalidation_filters_before_claude(tmp_path: Path) -> N
         orientation_pitch_deg=0,
     )
     session = SimpleNamespace(run_dir=tmp_path, robot_config=robot)
-    objective = "The supervisor says the next incomplete step is left_sleeve."
+    objective = "The supervisor says current_step is left_sleeve."
 
     report = ClaudeAutoClient._fold_reference_candidate_report(
         session,  # type: ignore[arg-type]
@@ -166,6 +183,66 @@ def test_fold_reference_prevalidation_filters_before_claude(tmp_path: Path) -> N
     assert report["executable_reference_count"] == 1
     assert report["rejected"][0]["reference_id"] == "R002"
     assert "safe upper bound" in report["rejected"][0]["reason"]
+
+
+def test_fold_reference_prevalidation_uses_max_yaw_width_allowance(
+    tmp_path: Path,
+) -> None:
+    upright = np.full((180, 120, 3), 240, dtype=np.uint8)
+    upright_mask = np.zeros((180, 120), dtype=bool)
+    upright_mask[35:150, 35:85] = True
+    upright_mask[65:105, 5:35] = True
+    upright[upright_mask] = (20, 25, 45)
+    raw = np.rot90(upright, k=1)
+    raw_mask = np.rot90(upright_mask, k=1)
+    raw_height = raw_mask.shape[0]
+    perception = tmp_path / "workspace" / "perception_views"
+    perception.mkdir(parents=True)
+    Image.fromarray(raw).save(perception / "camera_0_A.png")
+    np.save(perception / "camera_A_garment_mask.npy", raw_mask)
+    (perception / "camera_A_coordinate_guide.json").write_text(
+        json.dumps(
+            {
+                "camera_label": "A",
+                "sample_stride_px": 48,
+                "samples": [
+                    {
+                        "reference_id": "R001",
+                        "pixel_xy": [85, raw_height - 1 - 10],
+                        "base_xyz_mm": [500.0, 200.0, 10.0],
+                        "height_above_table_mm": 2.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    robot = RobotConfig(
+        robot_ip="127.0.0.1",
+        boundaries=WorkspaceBounds(
+            x_min=363.595,
+            x_max=779.595,
+            y_min=-303.571,
+            y_max=171.087,
+            z_min=-5,
+            z_max=500,
+        ),
+        init_joints_deg=(0, 0, 0, 0, 0, 0, 0),
+        init_pose_mm_deg=(500, 0, 280, 180, 0, 0),
+        orientation_roll_deg=180,
+        orientation_pitch_deg=0,
+        gripper_width_mm=80.0,
+    )
+    session = SimpleNamespace(run_dir=tmp_path, robot_config=robot)
+
+    report = ClaudeAutoClient._fold_reference_candidate_report(
+        session,  # type: ignore[arg-type]
+        "The supervisor says current_step is left_sleeve.",
+    )
+
+    assert report is not None
+    assert report["executable_reference_ids"] == ["R001"]
+    assert report["workspace_y_extension_policy"]["maximum_extension_mm"] == pytest.approx(40.0)
 
 
 def test_fold_reference_prevalidation_zero_candidates_skips_claude(
@@ -231,7 +308,7 @@ def test_fold_reference_prevalidation_zero_candidates_skips_claude(
         client.plan(
             [],
             session,  # type: ignore[arg-type]
-            "The supervisor says the next incomplete step is left_sleeve.",
+            "The supervisor says current_step is left_sleeve.",
         )
 
 
@@ -261,14 +338,14 @@ def test_fold_grasp_anchor_allows_small_inboard_offset(tmp_path: Path) -> None:
         step="left_sleeve",
     )
 
-    assert result["mode"] == "bounded_inboard_anchor_offset"
+    assert result["mode"] == "bounded_sleeve_anchor_offset"
     assert result["offset_distance_mm"] == pytest.approx(5.0)
     assert result["closure_raw_pixel_xy"] == [50, 75]
     assert result["inboard_delta_upright_px"] == pytest.approx(5.0)
     assert result["closure_inside_garment_mask"] is True
 
 
-def test_fold_grasp_anchor_rejects_outward_or_excessive_offset(tmp_path: Path) -> None:
+def test_fold_grasp_anchor_allows_outward_mask_straddle_but_rejects_excessive_offset(tmp_path: Path) -> None:
     perception = tmp_path / "workspace" / "perception_views"
     perception.mkdir(parents=True)
     height, width = 100, 100
@@ -277,7 +354,7 @@ def test_fold_grasp_anchor_rejects_outward_or_excessive_offset(tmp_path: Path) -
     xyz[..., 0] = xx
     xyz[..., 1] = -yy
     mask = np.zeros((height, width), dtype=bool)
-    mask[65:95, 35:66] = True
+    mask[65:84, 35:66] = True
     np.save(perception / "camera_A_base_xyz_mm.npy", xyz)
     np.save(perception / "camera_A_garment_mask.npy", mask)
     session = SimpleNamespace(run_dir=tmp_path)
@@ -287,13 +364,15 @@ def test_fold_grasp_anchor_rejects_outward_or_excessive_offset(tmp_path: Path) -
         "base_xyz_mm": [50.0, -80.0, 5.0],
     }
 
-    with pytest.raises(ValueError, match="moves outward"):
-        _validate_fold_grasp_anchor_offset(
-            session,  # type: ignore[arg-type]
-            measurement,
-            [50.0, -85.0],
-            step="left_sleeve",
-        )
+    outward = _validate_fold_grasp_anchor_offset(
+        session,  # type: ignore[arg-type]
+        measurement,
+        [50.0, -85.0],
+        step="left_sleeve",
+    )
+    assert outward["closure_inside_garment_mask"] is False
+    assert outward["closure_outside_mask_distance_px"] == pytest.approx(2.0)
+    assert outward["mask_policy"] == "DIAGNOSTIC_ONLY_EDGE_STRADDLE_ALLOWED"
     with pytest.raises(ValueError, match="exceeds the 10.0 mm"):
         _validate_fold_grasp_anchor_offset(
             session,  # type: ignore[arg-type]
@@ -320,7 +399,8 @@ def test_fold_grounding_contract_exposes_bounded_anchor_offset(tmp_path: Path) -
 
     assert "calibrated semantic anchor, not a mandatory closure center" in contract
     assert "offset up to 10.0 mm" in contract
-    assert "only inward toward garment fabric" in contract
+    assert "either side of the observed garment-mask boundary" in contract
+    assert "mask is perceptual evidence, not a robot safety boundary" in contract
 
 
 def test_final_grounding_normalizes_only_safety_note_overflow() -> None:
@@ -1421,3 +1501,158 @@ def test_target_overlay_projects_base_target_into_rgb_frame():
     assert projections[0]["visible"] is True
     assert projections[0]["pixel"] == pytest.approx([50.0, 40.0])
     assert np.any(overlay != 0)
+
+
+def test_compact_acquisition_evaluation_synthesizes_full_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before_dir = tmp_path / "iteration_001" / "before_raw"
+    after_dir = tmp_path / "iteration_001" / "after_raw"
+    before_dir.mkdir(parents=True)
+    after_dir.mkdir(parents=True)
+    before = []
+    after = []
+    for name in ("camera_0_A.png", "camera_1_B.png"):
+        before_path = before_dir / name
+        after_path = after_dir / name
+        before_path.write_bytes(b"image")
+        after_path.write_bytes(b"image")
+        before.append(before_path)
+        after.append(after_path)
+    compact = {
+        "grasp_acquisition": {
+            "status": "FAILURE",
+            "confidence": 0.95,
+            "evidence": ["The jaws rose without any cloth following."],
+        },
+        "target_structure_acquired": {
+            "status": "CONTRADICTED",
+            "confidence": 0.9,
+            "evidence": ["No sleeve patch was suspended between the jaws."],
+        },
+        "garment_state_change": "UNCHANGED",
+        "next_experiment": {
+            "keep": ["same semantic sleeve target"],
+            "change": ["contact XY and jaw alignment"],
+            "reason": "The close was visibly empty, so the contact family must change.",
+        },
+    }
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": compact}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "cloth_agent.auto_exploration.subprocess.run",
+        fake_run,
+    )
+    proposal = validate_exploration_payload(
+        {
+            "garment_observation": "one sleeve is extended",
+            "reveal_strategy": "test one contact hypothesis",
+            "confidence": 0.7,
+            "actions": [
+                {"name": "open_gripper", "args": {}},
+                {
+                    "name": "move",
+                    "args": {"x": 500, "y": 0, "z": 20, "yaw": 0},
+                },
+                {"name": "close_gripper", "args": {}},
+                {
+                    "name": "move",
+                    "args": {"x": 500, "y": 0, "z": 40, "yaw": 0},
+                },
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "cloth follows during the short lift",
+            "safety_notes": ["stay in bounds"],
+        }
+    )
+    client = ClaudeAutoClient(binary="/usr/bin/claude")
+
+    evaluation = client.evaluate_acquisition_probe(
+        before,
+        after,
+        proposal=proposal,
+        run_dir=tmp_path,
+    )
+
+    assert evaluation.grasp_acquisition.status == "FAILURE"
+    assert evaluation.transport.status == "UNKNOWN"
+    assert evaluation.laydown.status == "NOT_REACHED"
+    assert evaluation.task_progress.status == "NEUTRAL"
+    assert evaluation.task_progress.metrics.visible_area_delta == "UNCHANGED"
+    assert evaluation.earliest_failure_stage == "ACQUISITION"
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--effort") + 1] == "low"
+
+
+def test_grounding_repair_reuses_visual_decision_without_new_visual_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = validate_exploration_payload(
+        {
+            "garment_observation": "sleeve visible",
+            "reveal_strategy": "short lift",
+            "confidence": 0.7,
+            "actions": [
+                {
+                    "name": "move",
+                    "args": {"x": 500, "y": 0, "z": 20, "yaw": 20},
+                },
+                {"name": "close_gripper", "args": {}},
+                {
+                    "name": "move",
+                    "args": {"x": 500, "y": 0, "z": 40, "yaw": 20},
+                },
+                {"name": "open_gripper", "args": {}},
+            ],
+            "expected_observation": "cloth follows",
+            "safety_notes": ["stay in bounds"],
+        }
+    )
+    decision = VisualPlanDecision(
+        garment_observation="sleeve visible",
+        opening_strategy="short lift",
+        confidence=0.7,
+        selected_reference={
+            "camera": "A",
+            "reference_id": "R103",
+            "reason": "visible sleeve region",
+        },
+        motion_intent="close and lift",
+        expected_observation="cloth follows",
+        safety_notes=("stay in bounds",),
+    )
+    client = ClaudeAutoClient(binary="/usr/bin/claude")
+    client.last_visual_plan_result = SimpleNamespace(decision=decision)
+    seen: dict[str, object] = {}
+
+    def fake_ground(visual, session, objective, history=None, workspace_recovery=None):
+        seen["visual"] = visual
+        seen["objective"] = objective
+        seen["history"] = history
+        return SimpleNamespace(proposal=proposal)
+
+    monkeypatch.setattr(client, "_ground_final_plan", fake_ground)
+    repaired = client.repair_last_grounding_plan(
+        SimpleNamespace(run_dir=tmp_path),  # type: ignore[arg-type]
+        "fold left sleeve",
+        feedback="controller IK rejected the laydown",
+        history=[{"iteration": 1}],
+    )
+
+    assert repaired is proposal
+    assert seen["visual"] is decision
+    assert "controller IK rejected" in str(seen["objective"])
+    assert client.last_plan_timing["repair_only"] is True
+    assert client.last_plan_timing["visual_planning_attempts"] == 0

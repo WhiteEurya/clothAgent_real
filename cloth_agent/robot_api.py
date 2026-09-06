@@ -59,6 +59,103 @@ def _validated_live_tcp_offset(arm: Any, config: RobotConfig) -> tuple[float, ..
     return tuple(float(value) for value in actual)
 
 
+def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
+    """Read vendor gripper telemetry without making it a motion precondition.
+
+    xArm gripper firmware >= 3.4.3 exposes a status register whose low two
+    bits distinguish stop (0), motion (1), and catch/grasp (2).  Reads are
+    deliberately best-effort: older or third-party end effectors may not
+    implement every getter, and telemetry must never turn a completed motion
+    into a false robot failure.
+    """
+
+    feedback: dict[str, Any] = {
+        "sampled_at": _timestamp(),
+        "status_code": None,
+        "status_raw": None,
+        "state_code": None,
+        "state": "unavailable",
+        "position_pulse": None,
+        "error_code": None,
+        "read_errors": [],
+    }
+
+    def result_value(name: str, getter: Any) -> Any:
+        try:
+            result = getter()
+        except BaseException as exc:  # telemetry is diagnostic only
+            feedback["read_errors"].append(
+                {"field": name, "error": f"{type(exc).__name__}: {exc}"}
+            )
+            return None
+        if isinstance(result, tuple) and len(result) >= 2:
+            code = int(result[0])
+            feedback[f"{name}_code"] = code
+            if code != 0:
+                feedback["read_errors"].append(
+                    {"field": name, "code": code}
+                )
+                return None
+            return result[1]
+        feedback[f"{name}_code"] = int(result) if isinstance(result, int) else None
+        return result
+
+    position = result_value("position", getattr(arm, "get_gripper_position", None))
+    if position is not None:
+        try:
+            feedback["position_pulse"] = int(position)
+        except (TypeError, ValueError):
+            feedback["read_errors"].append(
+                {"field": "position", "error": "non-numeric position"}
+            )
+
+    status_getter = getattr(arm, "get_gripper_status", None)
+    if callable(status_getter):
+        raw_status = result_value("status", status_getter)
+        if raw_status is not None:
+            try:
+                raw_status = int(raw_status)
+                state_code = raw_status & 0x03
+                feedback["status_raw"] = raw_status
+                feedback["state_code"] = state_code
+                feedback["state"] = {
+                    0: "stop",
+                    1: "moving",
+                    2: "grasp",
+                    3: "error",
+                }.get(state_code, "unknown")
+            except (TypeError, ValueError):
+                feedback["read_errors"].append(
+                    {"field": "status", "error": "non-numeric status"}
+                )
+    else:
+        feedback["read_errors"].append(
+            {"field": "status", "error": "getter unavailable"}
+        )
+
+    error_getter = getattr(arm, "get_gripper_err_code", None)
+    if callable(error_getter):
+        error_code = result_value("error", error_getter)
+        if error_code is not None:
+            try:
+                feedback["error_code"] = int(error_code)
+            except (TypeError, ValueError):
+                feedback["read_errors"].append(
+                    {"field": "error", "error": "non-numeric error code"}
+                )
+    else:
+        feedback["read_errors"].append(
+            {"field": "error", "error": "getter unavailable"}
+        )
+    feedback["mechanical_grasp_detected"] = feedback["state"] == "grasp"
+    feedback["available"] = bool(
+        feedback["position_pulse"] is not None
+        or feedback["status_raw"] is not None
+        or feedback["error_code"] is not None
+    )
+    return feedback
+
+
 def _controller_home_pose(arm: Any, config: RobotConfig) -> list[float]:
     """Read the controller's Cartesian pose for the configured home joints."""
 
@@ -159,6 +256,18 @@ def _controller_trajectory_with_arm(
                 sample_pose[index] = segment_start[index] + fraction * delta
             if sample_index == sample_count:
                 sample_pose = list(pose)
+            # Validate every interpolated TCP sample against the same
+            # yaw-dependent Y envelope used by RobotAPI.move().  The xArm IK
+            # check remains the final authority, but a segment must not pass
+            # through the static Y boundary while rotating the gripper.
+            config.validate_workspace_pose(
+                sample_pose[0],
+                sample_pose[1],
+                sample_pose[2],
+                relative_yaw_deg=config.relative_yaw_from_absolute_deg(
+                    sample_pose[5]
+                ),
+            )
             code, angles_deg = arm.get_inverse_kinematics(
                 sample_pose,
                 input_is_radian=False,
@@ -338,6 +447,27 @@ class SimulatedBackend:
         self.gripper = config.gripper_open
         self.state = "simulated"
 
+    def _gripper_feedback(self) -> dict[str, Any]:
+        return {
+            "sampled_at": _timestamp(),
+            "available": True,
+            "status_code": 0,
+            "status_raw": 0,
+            "state_code": 0,
+            "state": "stop",
+            "position_pulse": int(self.gripper),
+            "error_code": 0,
+            "mechanical_grasp_detected": False,
+            "simulated": True,
+            "read_errors": [],
+        }
+
+    def _state(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "gripper_feedback": self._gripper_feedback(),
+        }
+
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
         self.pose = [
             x,
@@ -347,39 +477,39 @@ class SimulatedBackend:
             config.orientation_pitch_deg,
             config.command_yaw_deg(yaw),
         ]
-        return list(self.pose), self.state
+        return list(self.pose), self._state()
 
     def open_gripper(self, config: RobotConfig):
         self.gripper = config.gripper_open
-        return {"position": self.gripper, "simulated": True}, (list(self.pose), self.state)
+        return {"position": self.gripper, "simulated": True, "feedback": self._gripper_feedback()}, (list(self.pose), self._state())
 
     def close_gripper(self, config: RobotConfig):
         self.gripper = config.gripper_close
-        return {"position": self.gripper, "simulated": True}, (list(self.pose), self.state)
+        return {"position": self.gripper, "simulated": True, "feedback": self._gripper_feedback()}, (list(self.pose), self._state())
 
     def shake(self, config: RobotConfig):
         from .shake_once import build_shake_plan
 
         plan = build_shake_plan(self.pose, config)
         self.pose = list(plan.steps[-1].target_pose_mm_deg)
-        return list(self.pose), {"state": self.state, "shake": plan.as_dict()}
+        return list(self.pose), {"state": self.state, "shake": plan.as_dict(), "gripper_feedback": self._gripper_feedback()}
 
     def shake_open(self, config: RobotConfig):
         from .shake_open_test import build_shake_open_plan
 
         plan = build_shake_open_plan(self.pose, config)
         self.pose = list(plan.steps[-1].target_pose_mm_deg)
-        return list(self.pose), {"state": self.state, "shake_open": plan.as_dict()}
+        return list(self.pose), {"state": self.state, "shake_open": plan.as_dict(), "gripper_feedback": self._gripper_feedback()}
 
     def home(self, config: RobotConfig):
         self.pose = list(config.init_pose_mm_deg)
-        return list(self.pose), self.state
+        return list(self.pose), self._state()
 
     def perception_position(self, config: RobotConfig):
         if config.perception_pose_mm_deg is None:
             raise RobotExecutionError("perception_position is not configured")
         self.pose = list(config.perception_pose_mm_deg)
-        return list(self.pose), self.state
+        return list(self.pose), self._state()
 
     def close(self) -> None:
         return None
@@ -437,6 +567,7 @@ class XArmBackend:
         state = {
             "state": self.arm.get_state(),
             "error_warn": self.arm.get_err_warn_code(),
+            "gripper_feedback": _read_gripper_feedback(self.arm),
         }
         angles = self.arm.get_servo_angle(is_radian=False)
         if (
@@ -469,16 +600,18 @@ class XArmBackend:
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_open, speed=config.gripper_speed, wait=True),
         )
-        position = self.arm.get_gripper_position()
-        return {"command_result": result, "position_result": position}, self._state()
+        pose, state = self._state()
+        feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
+        return {"command_result": result, "feedback": feedback}, (pose, state)
 
     def close_gripper(self, config: RobotConfig):
         result = self._check(
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_close, speed=config.gripper_speed, wait=True),
         )
-        position = self.arm.get_gripper_position()
-        return {"command_result": result, "position_result": position}, self._state()
+        pose, state = self._state()
+        feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
+        return {"command_result": result, "feedback": feedback}, (pose, state)
 
     def shake(self, config: RobotConfig):
         from .shake_once import shake
@@ -632,12 +765,11 @@ class RobotAPI:
     def move(self, x: float, y: float, z: float, yaw: float) -> None:
         record = self._begin("move", {"x": float(x), "y": float(y), "z": float(z), "yaw": float(yaw)})
         try:
-            self.config.boundaries.validate(
+            self.config.validate_workspace_pose(
                 record.args["x"],
                 record.args["y"],
                 record.args["z"],
-                self.config.workspace_margin_mm,
-                z_lower_margin_mm=self.config.lower_z_margin_mm,
+                relative_yaw_deg=record.args["yaw"],
             )
             actual = self.backend.move(record.args["x"], record.args["y"], record.args["z"], record.args["yaw"], self.config)
             self._finish(record, actual=actual)

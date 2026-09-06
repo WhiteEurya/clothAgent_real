@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "source": "xarm_sdk_gripper_feedback_at_action_boundaries",
+  "available": true,
+  "samples": [
+    {
+      "action_index": 1,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 2,
+      "action": "open_gripper",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 3,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 4,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 5,
+      "action": "close_gripper",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 0,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 6,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 0,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 7,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 0,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 8,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 0,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 9,
+      "action": "open_gripper",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 10,
+      "action": "move",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    },
+    {
+      "action_index": 11,
+      "action": "home",
+      "feedback": {
+        "sampled_at": "2026-08-30T04:28:47.655+00:00",
+        "available": true,
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 850,
+        "error_code": 0,
+        "mechanical_grasp_detected": false,
+        "simulated": true,
+        "read_errors": []
+      }
+    }
+  ],
+  "mechanical_grasp_detected_after_close": false,
+  "grasp_state_samples": [],
+  "note": "status=grasp is controller contact evidence, not visual proof of a held garment; combine with position, safe pre-close height, and lift behavior."
+}

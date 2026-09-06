@@ -1,0 +1,73 @@
+{
+  "target_selection": {
+    "status": "UNKNOWN",
+    "confidence": 0.0,
+    "evidence": [
+      "Acquisition-only evaluation did not reassess semantic target selection."
+    ]
+  },
+  "grasp_acquisition": {
+    "status": "UNKNOWN",
+    "confidence": 0.5,
+    "evidence": [
+      "Before/after Camera-A RGB are not identical this time: the image-left sleeve lobe and the lower-left silhouette sit in visibly different positions and the chest print has shifted slightly toward image-right, so the tool did engage fabric rather than closing on pure empty space.",
+      "No lift-checkpoint frame (#09-#13, tool highest over the contact) shows the unambiguous supported-cloth signature: no clear tent, no hanging flap below the jaws, no distinct shadow gap between raised cloth and the table.",
+      "In frames #10-#12 dark material appears immediately adjacent to the gripper column, but it cannot be separated from the sleeve merely lying against the tool versus being carried by it.",
+      "The depth halves in #11-#13 are dominated by large black invalid regions coincident with the arm, so they neither confirm nor exclude an elevated cloth mass beside the tool.",
+      "Net: fabric moved, but sustained support through the 28 mm lift is not visually demonstrated, which is the specific claim under test."
+    ]
+  },
+  "target_structure_acquired": {
+    "status": "CONTRADICTED",
+    "confidence": 0.62,
+    "evidence": [
+      "The intended structure was a local bite of the lofted image-left cuff/hem lip with interior passage underneath, which would appear as an isolated raised patch while far landmarks stayed seated.",
+      "Instead the after RGB shows the garment as a whole slightly repositioned: collar, chest print, and both sleeve lobes shift together, which is a drag signature rather than ply isolation.",
+      "No residual isolated cuff deformation, standing lip, or separated ply is visible at the contact region in the after view; the sleeve boundary is still a single continuous flat edge.",
+      "Camera B after confirms the shirt remains one flat single-layer panel with the print fully exposed and the sleeve lying flat, so no local structure was separated and retained."
+    ]
+  },
+  "transport": {
+    "status": "UNKNOWN",
+    "confidence": 0.0,
+    "evidence": [
+      "Transport was intentionally not executed in the reversible acquisition probe."
+    ]
+  },
+  "laydown": {
+    "status": "NOT_REACHED",
+    "confidence": 1.0,
+    "evidence": [
+      "The probe reversed and released at the original contact instead of laying down a fold."
+    ]
+  },
+  "task_progress": {
+    "status": "NEUTRAL",
+    "confidence": 1.0,
+    "metrics": {
+      "visible_area_delta": "UNKNOWN",
+      "overlap_delta": "UNKNOWN",
+      "relief_delta": "UNKNOWN",
+      "boundary_change": "Compact acquisition evaluator reported garment_state_change=CHANGED."
+    }
+  },
+  "earliest_failure_stage": "UNKNOWN",
+  "next_experiment": {
+    "keep": [
+      "The five-step fold objective and left_sleeve as the earliest incomplete step; no reordering.",
+      "Camera A as the grounding view and the outer image-left sleeve/cuff region as the named target.",
+      "The R110 lofted-relief contact region, which for the first time in four attempts produced a visible fabric response.",
+      "The sub-plane low entry over bare table that arrives from outboard and keeps the tool clear of the chest print and collar.",
+      "The inward +base_y transport direction toward the torso centreline, still untested and uncontradicted.",
+      "Constant yaw through the probe and the reversible lift-then-lower-then-release discipline."
+    ],
+    "change": [
+      "Opposition: the drag signature shows the sheet slid as a whole instead of a ply separating, so add a second contact that pins or tensions the sleeve inboard of the bite while the acquiring jaw closes.",
+      "Closure geometry: the 4 mm inboard centre on a 19.60 mm lip still did not isolate a ply; bias the closure so one jaw is demonstrably beneath the lip and the other above it.",
+      "Jaw alignment: 0, 45, 90 and now 135 deg are all tried, so azimuth-only variation is uninformative and should change only together with the opposition change.",
+      "Anti-slip conditioning: shorten the inboard sweep and add a brief static settle against the lip before closing, since a 25.5 mm low sweep appears to have pushed the garment rather than tunnelled under it.",
+      "Alternative boundary: if single-contact is retained, move to the bottom hem band where two plies and the gap between them are directly visible rather than inferred from relief alone."
+    ],
+    "reason": "This attempt is causally different from the three preceding ones: it is the first that left a persistent garment change, so contact XY on the high-relief cuff region and the sub-plane entry did reach fabric. But the change is whole-garment displacement, not a lifted or isolated ply, which localises the remaining fault to closure geometry and the absence of opposition rather than to contact location, azimuth, or Z. Height remains inadmissible as the next variable: the closure at 4.5 mm sat far inside a 19.60 mm relief lip above a 2.55 mm table and still failed to isolate cloth. Azimuth is also exhausted as a standalone variable with four values tested. The unexplained mechanism is that a single jaw pair closing on an unanchored sheet lets the whole garment slide, so the next experiment must supply opposition or a verifiable two-ply gap, and should shorten the sweep so the tool settles against the lip instead of pushing the garment ahead of it."
+  }
+}

@@ -1,0 +1,272 @@
+{
+  "mode": "ACQUISITION_PROBE",
+  "actions": [
+    {
+      "name": "open_gripper",
+      "args": {},
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        500.0,
+        -7.413035,
+        280.0,
+        178.370814,
+        3.606941,
+        170.569135
+      ],
+      "robot_state": "simulated",
+      "gripper_result": {
+        "position": 850.0,
+        "simulated": true
+      }
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -278.0,
+        "z": 60.0,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -278.0,
+        60.0,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -278.0,
+        "z": 4.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -278.0,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -266.0,
+        "z": 4.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -266.0,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -252.5,
+        "z": 4.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "close_gripper",
+      "args": {},
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": {
+        "position": 0.0,
+        "simulated": true
+      }
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -252.5,
+        "z": 18.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        18.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -252.5,
+        "z": 32.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        32.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -252.5,
+        "z": 18.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        18.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 472.3,
+        "y": -252.5,
+        "z": 4.5,
+        "yaw": 135.0
+      },
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    },
+    {
+      "name": "open_gripper",
+      "args": {},
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        472.3,
+        -252.5,
+        4.5,
+        178.370814,
+        3.606941,
+        -54.43086500000004
+      ],
+      "robot_state": "simulated",
+      "gripper_result": {
+        "position": 850.0,
+        "simulated": true
+      }
+    },
+    {
+      "name": "home",
+      "args": {},
+      "requested_at": "2026-08-28T15:03:47.198+00:00",
+      "completed_at": "2026-08-28T15:03:47.198+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        500.0,
+        -7.413035,
+        280.0,
+        178.370814,
+        3.606941,
+        170.569135
+      ],
+      "robot_state": "simulated",
+      "gripper_result": null
+    }
+  ],
+  "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/workspace/_fold_experiment_001.py",
+  "created_at": "2026-08-28T15:03:47.280+00:00"
+}

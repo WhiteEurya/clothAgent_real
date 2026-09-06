@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-28T13:39:51.011+00:00",
+  "status": "FAILED",
+  "objective": "Fold a T-shirt in five ordered steps with video-backed closed-loop supervision.",
+  "fold_steps": [
+    {
+      "id": "left_sleeve",
+      "label": "image-left sleeve inward"
+    },
+    {
+      "id": "right_sleeve",
+      "label": "image-right sleeve inward"
+    },
+    {
+      "id": "left_side",
+      "label": "first torso side inward"
+    },
+    {
+      "id": "right_side",
+      "label": "second torso side inward"
+    },
+    {
+      "id": "hem_up",
+      "label": "bottom hem upward"
+    }
+  ],
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z",
+  "physical_execution": true,
+  "video_recording": true,
+  "timeouts": {
+    "claude_s": 1800,
+    "supervisor_s": 900,
+    "recording_join_s": 300
+  },
+  "retry_policy": {
+    "max_stage_retries": 1,
+    "retry_backoff_s": 5.0,
+    "supervisor_fallback": true,
+    "evaluation_fallback": true
+  },
+  "persistent_claude_session": {
+    "session_id": "9a9b7a8b-7808-4575-a9d0-6ee925051758",
+    "name": "persistent-fold-agent",
+    "started": true,
+    "turn_count": 12,
+    "stage_counts": {
+      "fold_supervisor": 1,
+      "visual_planning": 4,
+      "final_grounding": 4,
+      "evaluation": 1,
+      "acquisition_evaluation": 2
+    },
+    "state_path": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/workspace/persistent_claude_session.json"
+  },
+  "molmo_sleeve_grounding": {
+    "enabled": true,
+    "role": "fallible_semantic_sleeve_region_before_Claude_Rxxx_selection",
+    "camera": "A",
+    "confidence_threshold": 0.5,
+    "timeout_s": 900,
+    "gpu_max_memory_gib": 17.0,
+    "cpu_offload": false,
+    "load_in_8bit": true,
+    "fallback": "host_validated_outer_sleeve_region_candidates"
+  },
+  "debug": {
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/debug.log",
+    "events": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/debug_events.jsonl"
+  },
+  "viser": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "url": "http://127.0.0.1:8765",
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/viser.log",
+    "read_only": true
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "mode": "FOLD",
+      "next_step": "left_sleeve",
+      "visibility": "PARTIAL",
+      "evaluation_status": "NEUTRAL"
+    },
+    {
+      "iteration": 2,
+      "mode": "ACQUISITION_PROBE",
+      "next_step": "left_sleeve",
+      "visibility": "PARTIAL",
+      "evaluation_status": "NEUTRAL"
+    },
+    {
+      "iteration": 3,
+      "mode": "ACQUISITION_PROBE",
+      "next_step": "left_sleeve",
+      "visibility": "PARTIAL",
+      "evaluation_status": "NEUTRAL"
+    }
+  ],
+  "error": "RuntimeError: Claude fold planning failed after 2 attempt(s): ExplorationPlanningError: Claude visual planning exited with 1: {\"is_error\":true,\"duration_api_ms\":0,\"num_turns\":1,\"stop_reason\":\"stop_sequence\",\"session_id\":\"9a9b7a8b-7808-4575-a9d0-6ee925051758\",\"total_cost_usd\":0,\"usage\":{\"output_tokens_details\":{\"thinking_tokens\":0},\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"\",\"iterations\":[],\"speed\":\"standard\"},\"modelUsage\":{},\"permission_denials\":[],\"terminal_reason\":\"blocking_limit\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"Prompt is too long\",\"type\":\"result\",\"duration_ms\":40,\"uuid\":\"7577e599-0c77-4518-ba53-5727872336c9\"}",
+  "failed_at": "2026-08-28T14:17:16.484+00:00"
+}

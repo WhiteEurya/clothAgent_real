@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T15:26:26.706+00:00",
+  "status": "FAILED",
+  "objective": "Fold a T-shirt in five ordered steps with video-backed closed-loop supervision.",
+  "fold_steps": [
+    {
+      "id": "left_sleeve",
+      "label": "image-left sleeve inward"
+    },
+    {
+      "id": "right_sleeve",
+      "label": "image-right sleeve inward"
+    },
+    {
+      "id": "left_side",
+      "label": "first torso side inward"
+    },
+    {
+      "id": "right_side",
+      "label": "second torso side inward"
+    },
+    {
+      "id": "hem_up",
+      "label": "bottom hem upward"
+    }
+  ],
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z",
+  "physical_execution": true,
+  "video_recording": true,
+  "unattended": false,
+  "unattended_attempt": 1,
+  "unattended_restart_log": null,
+  "timeouts": {
+    "claude_s": 1800,
+    "supervisor_s": 900,
+    "recording_join_s": 300
+  },
+  "retry_policy": {
+    "max_stage_retries": 1,
+    "retry_backoff_s": 5.0,
+    "supervisor_fallback": true,
+    "evaluation_fallback": true
+  },
+  "plan_authority": {
+    "strategy": "Claude",
+    "host_role": "schema, coordinate, safety, preflight, IK, execution",
+    "host_compile_acquisition_probe": false,
+    "silent_plan_rewrite": false
+  },
+  "persistent_claude_session": {
+    "session_id": "8c740c3d-b96b-4932-9a4f-d575054fdaa7",
+    "name": "persistent-fold-agent",
+    "started": true,
+    "turn_count": 5,
+    "generation": 1,
+    "generation_turn_count": 5,
+    "max_generation_turns": 8,
+    "stage_counts": {
+      "fold_supervisor": 1,
+      "visual_planning": 2,
+      "final_grounding": 2
+    },
+    "rollover_count": 0,
+    "last_rollover": null,
+    "state_path": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/workspace/persistent_claude_session.json"
+  },
+  "molmo_sleeve_grounding": {
+    "enabled": true,
+    "role": "fallible_semantic_sleeve_region_before_Claude_Rxxx_selection",
+    "camera": "A",
+    "confidence_threshold": 0.5,
+    "timeout_s": 900,
+    "gpu_max_memory_gib": 17.0,
+    "cpu_offload": false,
+    "load_in_8bit": true,
+    "fallback": "host_validated_outer_sleeve_region_candidates"
+  },
+  "observer_camera": {
+    "enabled": true,
+    "label": "C",
+    "serial": "243722070226",
+    "calibrated": false,
+    "geometry_used": false,
+    "stream": "RGB-only observer for grasp/occlusion evaluation",
+    "resolution": [
+      1280,
+      720
+    ],
+    "fps": 15
+  },
+  "debug": {
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/debug.log",
+    "events": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/debug_events.jsonl"
+  },
+  "viser": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "url": "http://127.0.0.1:8765",
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/viser.log",
+    "read_only": true
+  },
+  "iterations": [],
+  "error": "RuntimeError: Claude fold planning failed after 2 attempt(s): ExplorationPlanningError: final grasp XY does not use the visually selected Rxxx measurement: selected=A/R031 expected_xy=[671.5786743164062, 52.235992431640625] actual_xy=[490.8, -212.0] error=320.2 mm; ordinary tasks allow at most 2.0 mm",
+  "failed_at": "2026-08-29T15:42:45.388+00:00"
+}

@@ -15,6 +15,15 @@
     "table_clearance_mm": 0.0,
     "use_table_clearance_floor": false
   },
+  "support_layer": {
+    "type": "sponge",
+    "confirmed": true,
+    "thickness_mm": 20.0,
+    "press_mm": 6.0,
+    "max_compression_mm": 8.0,
+    "hard_table_clearance_mm": 1.0,
+    "presence_threshold_mm": 3.0
+  },
   "motion": {
     "speed_mm_s": 15.0,
     "acceleration_mm_s2": 30.0,
@@ -24,6 +33,7 @@
   "gripper": {
     "speed": 500,
     "open": 850,
-    "close": 0
+    "close": 0,
+    "width_mm": 86.0
   }
 }

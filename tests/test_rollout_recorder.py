@@ -9,6 +9,8 @@ import pytest
 
 from cloth_agent.rollout_recorder import (
     DualRealSenseRolloutRecorder,
+    ObserverRGBFrame,
+    ObserverRGBRolloutRecorder,
     RolloutRGBDFrame,
     build_rollout_phase_timeline,
     compose_four_panel,
@@ -70,6 +72,26 @@ def test_latest_rgbd_waits_for_both_fresh_camera_frames(tmp_path: Path) -> None:
     assert result["B"].host_monotonic_ns == 12
     result["A"].rgb[0, 0] = 99
     assert np.all(recorder._latest_rgbd["A"].rgb[0, 0] == 2)
+
+
+def test_observer_snapshot_saves_latest_fresh_frame(tmp_path: Path) -> None:
+    recorder = ObserverRGBRolloutRecorder("C", tmp_path / "observer")
+    recorder._latest_rgb = ObserverRGBFrame(
+        label="C",
+        serial="C-serial",
+        rgb=np.full((3, 4, 3), 17, dtype=np.uint8),
+        host_utc="2026-08-23T00:00:00+00:00",
+        host_monotonic_ns=10,
+        color_frame_number=7,
+        color_device_timestamp_ms=12.5,
+    )
+    result = recorder.save_snapshot(
+        tmp_path / "observer" / "hold_check.png",
+        after_monotonic_ns=9,
+    )
+    assert result["status"] == "CAPTURED"
+    assert result["color_frame_number"] == 7
+    assert Path(result["image"]).is_file()
 
 
 def test_depth_to_bgr_uses_fixed_scale_and_masks_invalid() -> None:

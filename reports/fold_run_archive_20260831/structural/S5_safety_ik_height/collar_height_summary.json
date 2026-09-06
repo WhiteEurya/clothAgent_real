@@ -1,0 +1,231 @@
+{
+  "created_at": "2026-08-25T08:50:16.743911+00:00",
+  "status": "FAILED",
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z",
+  "enable_real": true,
+  "physical_commands_sent": false,
+  "perception_position": {
+    "name": "perception_position",
+    "started_at": "2026-08-25T08:50:16.835+00:00",
+    "completed_at": "2026-08-25T08:50:39.182+00:00",
+    "sequence": [
+      "home",
+      "perception_position"
+    ],
+    "target_joint_angles_deg": [
+      13.596346,
+      -6.945108,
+      -11.614542,
+      128.426026,
+      1.351092,
+      70.942374,
+      187.543296
+    ],
+    "recorded_tcp_pose_mm_deg": [
+      478.214813,
+      9.459489,
+      812.595703,
+      159.939106,
+      62.538974,
+      161.782139
+    ],
+    "home_actual_tcp_pose_mm_deg": [
+      499.999908,
+      -7.413318,
+      280.000031,
+      178.370814,
+      3.606941,
+      170.569135
+    ],
+    "home_robot_state": {
+      "state": [
+        0,
+        2
+      ],
+      "error_warn": [
+        0,
+        [
+          0,
+          14
+        ]
+      ],
+      "servo_angles_deg": [
+        13.464737,
+        0.509703,
+        -14.9012,
+        75.235948,
+        1.352009,
+        70.942431,
+        187.551833
+      ]
+    },
+    "actual_tcp_pose_mm_deg": [
+      478.214783,
+      9.459299,
+      812.595703,
+      159.93922,
+      62.538974,
+      161.782196
+    ],
+    "robot_state": {
+      "state": [
+        0,
+        2
+      ],
+      "error_warn": [
+        0,
+        [
+          0,
+          14
+        ]
+      ],
+      "servo_angles_deg": [
+        13.596346,
+        -6.945108,
+        -11.614542,
+        128.426026,
+        1.351092,
+        70.942374,
+        187.543296
+      ],
+      "perception_position_max_joint_error_deg": 0.0
+    }
+  },
+  "perception": {
+    "status": "captured",
+    "result": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/perception/center_20260825T085047130114Z/result.json",
+    "center_base_mm": [
+      513.0130534573898,
+      0.3296690240896308,
+      8.259167001139446
+    ]
+  },
+  "molmo_collar_anchors": {
+    "status": "READY",
+    "anchor_count": 2,
+    "manifest": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/molmo_collar_anchors/molmo_semantic_anchors.json",
+    "reference_anchors": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/molmo_collar_anchors/flat_reference/reference_anchors.json"
+  },
+  "selection": {
+    "status": "SELECTED",
+    "camera": "A",
+    "pixel_xy": [
+      318,
+      418
+    ],
+    "neck_label_pixel_xy": [
+      340,
+      422
+    ],
+    "torso_landmark_pixel_xy": [
+      510,
+      388
+    ],
+    "neck_side_opposition_cosine": 0.929681500465451,
+    "confidence": 0.72,
+    "evidence": [
+      "Current Camera A RGB shows the shirt rotated roughly 90 deg from the flat reference: neck end toward image left, printed chest panel spanning approx x 450-570 / y 295-480 (1280x720), sleeve masses upper-left and lower-left.",
+      "A small bright sewn tag is visible at approx (340,422) in the 1280x720 frame; the Camera A height map shows a matching depth dropout blob there, consistent with a specular label surface rather than knit fabric.",
+      "Molmo axis_top (1050.8,413.2) lies off the garment on the table/tripod side and both shoulder queries collapsed to the same pixel, so the supplied centerline and shoulder anchors are unusable layout hypotheses here.",
+      "Local surface probe at (318,418): height_above_table_median 4.64 mm, p10-p90 spread 2.70 mm, LOW_RELIEF, valid=true, compression_probe_recommended=false - consistent with layered collar fabric, not table and not a depth spike.",
+      "Garment-only mask puts the left silhouette edge near x~280 (1280 space) at this row, so (318,418) sits well inside the fabric with margin from the boundary and from the label patch starting near x~330.",
+      "Chosen point avoids label, neck-hole interior, shoulder/armhole seams, sleeve masses, and the printed graphic."
+    ],
+    "reference_correspondence": [
+      "Flat reference raw/annotated images show an upright shirt with neckline anchor at (597.7,212.0), shoulders at (431.8,245.7) and (739.9,252.4), hem near (653.2,629.3).",
+      "In the flat reference the sewn neck label sits immediately inside/below the neckline on the back-neck facing, giving the label-to-collar topology relation used here.",
+      "Reference topology only was transferred: the label-to-neckline adjacency direction, not any reference pixel value.",
+      "Reference print panel occupies the mid-torso below the neckline; in the current image the analogous print panel lies on the far side of the label from my grasp point, confirming the rotation and which side is collar."
+    ],
+    "molmo_guided_region_evidence": [
+      "Molmo neck_label (339.7,422.0, conf 0.989) - SUPPORTED by my own inspection: a bright tag with a co-located depth dropout is visible at that location, so I used it as topology guide despite its accepted=false invalid_anchor_geometry flag.",
+      "Molmo collar (529.3,475.3, conf 0.778, accepted=true) - REJECTED: that pixel falls inside the printed graphic panel on the chest, which is a torso print region, not collar fabric.",
+      "Molmo left_shoulder (481.9,324.4) - REJECTED as a layout guide: right_shoulder returned the identical pixel (duplicate_semantic_location), so shoulder geometry is degenerate.",
+      "Molmo axis_reference - REJECTED: axis_top (1050.8,413.2) lies outside the garment mask on the table/tripod side, so the reported centerline direction cannot be trusted.",
+      "My selected pixel is near the accepted label rather than the rejected collar point, and was kept only after independent RGB, mask, height-map, and probe evidence supported collar fabric there."
+    ],
+    "grasp_point_evidence": [
+      "Probe at (318,418) returned valid=true with height_above_table_median 4.64 mm - liftable fabric clear of the table plane.",
+      "Local p10-p90 height spread of only 2.70 mm and LOW_RELIEF classification indicate a coherent fabric surface, not an occlusion edge or a spike artifact.",
+      "compression_probe_recommended=false and no high_region peak (center_is_high=false), so this is not a fragile single-point mound.",
+      "Point is offset from the label patch (label starts near x~330) and offset inward from the mask edge near x~280, giving clearance on both sides.",
+      "Direction from label to grasp is outboard toward the neckline rim, directly opposing the label-to-print direction, yielding opposition cosine 0.93 (>= 0.35)."
+    ],
+    "molmo_relation": "CORRECTS_MOLMO_COLLAR_WITH_NECK_LABEL",
+    "reason": "The garment lies rotated about 90 deg from the flat reference, with the neck end toward the image left and the printed chest panel to the right. Molmo's collar point (529,475) sits on that printed torso panel, so it is on the wrong garment part and I corrected it. The sewn neck label at (340,422) is visually real (bright tag plus co-located depth dropout) and, per flat-reference topology where the label sits immediately inside the neckline, the collar rim lies just outboard of it away from the print. I selected (318,418), where the local-surface probe confirms valid layered fabric 4.64 mm above the table with a 2.70 mm spread and LOW_RELIEF shape, clear of the label, the mask edge, seams, sleeves and print. Opposition cosine against the print-center torso landmark is 0.93."
+  },
+  "measurement": {
+    "measurement_kind": "robust_local_calibrated_surface",
+    "camera": "A",
+    "query_pixel_xy": [
+      318,
+      418
+    ],
+    "window_xyxy": [
+      315,
+      415,
+      321,
+      421
+    ],
+    "radius_px": 3,
+    "sample_count": 49,
+    "window_pixel_count": 49,
+    "base_xyz_median_mm": [
+      365.29510498046875,
+      9.011272430419922,
+      6.040964126586914
+    ],
+    "base_xyz_p10_mm": [
+      363.27021484375,
+      6.210885334014892,
+      4.89635009765625
+    ],
+    "base_xyz_p90_mm": [
+      367.5572814941406,
+      11.804392051696777,
+      7.600324821472168
+    ],
+    "base_z_p90_minus_p10_mm": 2.703974723815918,
+    "valid": true,
+    "warning": "Local statistics can mix surfaces across an occlusion edge; compare the reported spread with RGB/depth boundaries.",
+    "height_above_table_median_mm": 4.6423420906066895,
+    "height_above_table_p10_mm": 3.527320194244385,
+    "height_above_table_p90_mm": 6.270645809173584,
+    "surface_shape_diagnostic": {
+      "status": "TRIAGE_ONLY",
+      "diagnostic_radius_px": 6,
+      "height_p10_mm": 1.9844161033630372,
+      "height_p50_mm": 5.042271614074707,
+      "height_p90_mm": 6.879425334930422,
+      "height_spread_mm": 4.895009231567386,
+      "high_region_fraction": 0.005917159763313609,
+      "center_is_high": false,
+      "requires_structure_hold_check": true,
+      "compression_probe_recommended": false,
+      "recommended_press_below_surface_mm": 1.0,
+      "surface_shape": "LOW_RELIEF",
+      "interpretation": "Shape is only a geometric prior; verify independent motion of the intended layer before a long pull."
+    },
+    "nearest_reference": {
+      "reference_id": "R031",
+      "pixel_xy": [
+        311,
+        407
+      ],
+      "pixel_distance": 13.038404810405298,
+      "base_xyz_mm": [
+        359.7417297363281,
+        19.9280948638916,
+        6.221490859985352
+      ],
+      "height_above_table_mm": 4.9478840827941895
+    }
+  },
+  "grasp_height_resolution": {
+    "valid": false,
+    "error": "Claude/reference located collar fabric, but the shared grasp-height policy could not produce a legal engaged grasp: no legal engaged grasp Z exists: surface_z=6.04 mm, local_table_z=1.3986220359802246 mm, plane_table_z=1.36 mm, robot_lower_z=-5.00 mm, table_clearance_lower_z=6.40 mm, required_compression>=0.75 mm"
+  },
+  "error": "CollarLiftRetreatError: Claude/reference located collar fabric, but the shared grasp-height policy could not produce a legal engaged grasp: no legal engaged grasp Z exists: surface_z=6.04 mm, local_table_z=1.3986220359802246 mm, plane_table_z=1.36 mm, robot_lower_z=-5.00 mm, table_clearance_lower_z=6.40 mm, required_compression>=0.75 mm",
+  "completed_at": "2026-08-25T08:57:13.355722+00:00"
+}

@@ -36,6 +36,13 @@ orientation (`yaw=0` keeps the gripper orientation and avoids an unnecessary
 turn before grasping). Roll and pitch are fixed to the configured safe grasp
 orientation. Perception supplies observations and calibrated coordinate guides;
 the fused garment center is a reference rather than a mandatory grasp target.
+The calibrated Y workspace is unchanged at `yaw=0`. When configured with the
+installed gripper's effective width, the host permits a TCP-center Y extension
+of `0.5 * gripper_width_mm * abs(sin(radians(yaw)))` (half the width at +/-90
+degrees). This is only a narrow Y allowance; X/Z limits and controller IK still
+apply to every waypoint. If using the allowance, rotate to the selected yaw
+while still inside the original `yaw=0` Y envelope, then move outward; do not
+cross the original envelope first and rotate afterward.
 The Agent chooses the interaction region and every approach, grasp, lift,
 transfer/release, and yaw waypoint. Do not import anything, access xArm SDK objects,
 use shell or filesystem APIs, add retries, or catch errors. A command failure
@@ -109,6 +116,15 @@ class AgentSession:
                             robot_config.grasp_use_table_clearance_floor
                         ),
                     },
+                    "support_layer": {
+                        "type": robot_config.support_layer_type,
+                        "confirmed": robot_config.support_layer_confirmed,
+                        "thickness_mm": robot_config.support_layer_thickness_mm,
+                        "press_mm": robot_config.support_layer_press_mm,
+                        "max_compression_mm": robot_config.support_layer_max_compression_mm,
+                        "hard_table_clearance_mm": robot_config.support_layer_hard_clearance_mm,
+                        "presence_threshold_mm": robot_config.support_layer_presence_threshold_mm,
+                    },
                     "fixed_orientation_deg": {
                         "roll": robot_config.orientation_roll_deg,
                         "pitch": robot_config.orientation_pitch_deg,
@@ -135,6 +151,15 @@ class AgentSession:
                         "speed": robot_config.gripper_speed,
                         "open": robot_config.gripper_open,
                         "close": robot_config.gripper_close,
+                        "width_mm": robot_config.gripper_width_mm,
+                    },
+                    "yaw_dependent_y_workspace": {
+                        "formula": (
+                            "0.5 * gripper.width_mm * abs(sin(radians(relative_yaw_deg)))"
+                        ),
+                        "extension_at_0_deg_mm": robot_config.y_workspace_extension_mm(0.0),
+                        "extension_at_90_deg_mm": robot_config.y_workspace_extension_mm(90.0),
+                        "relative_yaw_definition": "move() yaw relative to calibrated Home TCP orientation",
                     },
                 },
                 ensure_ascii=False,
@@ -318,6 +343,9 @@ class AgentSession:
                 "height_map_path",
                 "garment_mask",
                 "garment_rgb",
+                "support_ring_mask",
+                "support_ring_stats",
+                "support_ring_overlay",
                 "height_gradient_overlay",
                 "base_xyz_map",
                 "coordinate_guide",
@@ -367,6 +395,9 @@ class AgentSession:
                     "center_is_reference_only": True,
                     "waypoint_authority": "Claude",
                     "table_plane": result.get("depth_fusion", {}).get("table_plane"),
+                    "local_support_by_camera": result.get("depth_fusion", {}).get(
+                        "local_support_by_camera"
+                    ),
                     "coordinate_guides": [
                         {
                             "camera": view.get("label"),
@@ -404,11 +435,18 @@ class AgentSession:
                 f"from {fusion.get('input_point_count')} valid camera points; "
                 f"shared A/B voxels: {fusion.get('source_voxel_counts', {}).get('AB_overlap')}."
             )
+            support_text = (
+                "Local support-ring diagnostics are available in the copied "
+                "camera_*_local_support.json files. A support layer explicitly "
+                "confirmed in robot_config.json activates the configured sponge "
+                "press allowance; otherwise an elevated local ring can activate it."
+            )
             handle.write(
                 "\n## Perception observation\n\n"
                 f"Fused garment center/surface observation in base frame: x={center[0]:.3f}, "
                 f"y={center[1]:.3f}, z={center[2]:.3f} mm.\n\n"
                 f"{validation_text}\n\n"
+                f"{support_text}\n\n"
                 "Reason for experiment coordinates: calibrated A/B RGB-D points were transformed "
                 "to the robot base frame, voxel-fused, and segmented by height above the fitted table. "
                 "The fused center is a reference only. Uniform per-camera coordinate guides map "
@@ -426,6 +464,7 @@ class AgentSession:
         confirmed: bool = False,
         single_view_confirmed: bool = False,
         notes: str = "",
+        action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Execute one rollout, bracketing post-perception motion with Home."""
 
@@ -468,12 +507,16 @@ class AgentSession:
 
         result: dict[str, Any] | None = None
         try:
-            result = self.runner.run_experiment(
-                path,
-                real=real,
-                confirmed=confirmed,
-                notes=notes,
-            )
+            runner_kwargs: dict[str, Any] = {
+                "real": real,
+                "confirmed": confirmed,
+                "notes": notes,
+            }
+            # Keep compatibility with lightweight test doubles and older
+            # runners: the optional hook is passed only when a caller needs it.
+            if action_callback is not None:
+                runner_kwargs["action_callback"] = action_callback
+            result = self.runner.run_experiment(path, **runner_kwargs)
             if pre_run_home is not None:
                 result["mandatory_pre_run_home"] = pre_run_home
             return result
@@ -588,6 +631,7 @@ class AgentSession:
             "result_path": None,
             "error": None,
         }
+        interrupted: KeyboardInterrupt | None = None
         try:
             source_path.write_text("def run():\n    home()\n", encoding="utf-8")
             home_result = self.runner.run_experiment(
@@ -606,6 +650,12 @@ class AgentSession:
                 )
             )
             outcome["robot_errors"] = robot_errors
+        except KeyboardInterrupt as exc:
+            interrupted = exc
+            outcome["error"] = "KeyboardInterrupt: operator interrupted mandatory pre-run Home"
+            expected_result = self.results / f"{Path(source_name).stem}.json"
+            if expected_result.is_file():
+                outcome["result_path"] = str(expected_result.relative_to(self.run_dir))
         except BaseException as exc:
             outcome["error"] = f"{type(exc).__name__}: {exc}"
             expected_result = self.results / f"{Path(source_name).stem}.json"
@@ -619,6 +669,8 @@ class AgentSession:
             (event_dir / f"{stamp}.json").write_text(
                 json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+        if interrupted is not None:
+            raise interrupted
         return outcome
 
     def _attempt_return_home(self, *, notes: str) -> dict[str, Any]:
@@ -633,6 +685,7 @@ class AgentSession:
             "result_path": None,
             "error": None,
         }
+        interrupted: KeyboardInterrupt | None = None
         try:
             source_path.write_text("def run():\n    home()\n", encoding="utf-8")
             home_result = self.runner.run_experiment(
@@ -648,6 +701,12 @@ class AgentSession:
                 )
             )
             outcome["robot_errors"] = list(home_result.get("robot_errors", []))
+        except KeyboardInterrupt as exc:
+            interrupted = exc
+            outcome["error"] = "KeyboardInterrupt: operator interrupted mandatory return Home"
+            expected_result = self.results / f"{Path(source_name).stem}.json"
+            if expected_result.is_file():
+                outcome["result_path"] = str(expected_result.relative_to(self.run_dir))
         except BaseException as exc:
             outcome["error"] = f"{type(exc).__name__}: {exc}"
             expected_result = self.results / f"{Path(source_name).stem}.json"
@@ -661,6 +720,8 @@ class AgentSession:
             (event_dir / f"{stamp}.json").write_text(
                 json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+        if interrupted is not None:
+            raise interrupted
         return outcome
 
     def inspect_result(self, experiment: str | None = None) -> dict[str, Any]:

@@ -751,14 +751,24 @@ def invoke_claude_collar_motion_planner(
         raise CollarLiftRetreatError(f"Claude CLI not found: {binary}")
     bounds = robot_config.boundaries
     margin = float(robot_config.workspace_margin_mm)
+    y_extension = robot_config.y_workspace_extension_mm(COLLAR_GRASP_YAW_DEG)
     hard_bounds = {
         "x_min_mm": float(bounds.x_min + margin),
         "x_max_mm": float(bounds.x_max - margin) if bounds.x_max is not None else None,
-        "y_min_mm": float(bounds.y_min + margin),
-        "y_max_mm": float(bounds.y_max - margin),
+        "y_min_mm": float(bounds.y_min - y_extension + margin),
+        "y_max_mm": float(bounds.y_max + y_extension - margin),
         "z_min_mm": float(bounds.z_min + robot_config.lower_z_margin_mm),
         "z_max_mm": float(bounds.z_max - margin),
     }
+    support_context = ""
+    if grasp_height_plan.get("support_layer_active"):
+        support_context = (
+            " A local sponge support ring is confirmed for this grasp. The measured "
+            f"support top is z={float(grasp_height_plan.get('local_support_z_mm')):.2f} mm "
+            f"and the hard support floor is z={float(grasp_height_plan.get('support_floor_z_mm')):.2f} mm; "
+            "use these local values for the final low release rather than treating the "
+            "distant exposed tabletop as the contact surface."
+        )
     retry_context = ""
     if previous_proposal is not None or validation_error:
         retry_context = (
@@ -793,7 +803,9 @@ def invoke_claude_collar_motion_planner(
         f"Runtime-authoritative grasp TCP XYZ mm: {grasp_target.tolist()}\n"
         f"Grasp-height resolution: {json.dumps(dict(grasp_height_plan), ensure_ascii=False)}\n"
         f"Fitted table plane: z_mm = {plane[0]}*x_mm + {plane[1]}*y_mm + {plane[2]}\n"
-        f"Hard Cartesian bounds after margins: {json.dumps(hard_bounds)}\n"
+        f"Support-layer context:{support_context or ' no confirmed local sponge support.'}\n"
+        f"Hard Cartesian bounds after margins (fixed yaw={COLLAR_GRASP_YAW_DEG:.0f} degrees; Y includes "
+        f"{y_extension:g} mm TCP-center allowance): {json.dumps(hard_bounds)}\n"
         f"Fixed tool roll/pitch deg: [{robot_config.orientation_roll_deg}, "
         f"{robot_config.orientation_pitch_deg}]; action yaw is relative to Home and fixed at "
         f"{COLLAR_GRASP_YAW_DEG:.0f} degrees.\n\n"
@@ -1745,23 +1757,48 @@ def validate_claude_collar_motion_proposal(
         + plane[1] * float(release["y"])
         + plane[2]
     )
-    release_height_above_table = float(release["z"]) - release_table_z
+    support_layer_active = bool(grasp_height_plan.get("support_layer_active"))
+    support_surface_z = grasp_height_plan.get("local_support_z_mm")
+    support_floor_z = grasp_height_plan.get("support_floor_z_mm")
+    support_surface_z = (
+        float(support_surface_z)
+        if isinstance(support_surface_z, (int, float))
+        and math.isfinite(float(support_surface_z))
+        else None
+    )
+    support_floor_z = (
+        float(support_floor_z)
+        if isinstance(support_floor_z, (int, float))
+        and math.isfinite(float(support_floor_z))
+        else None
+    )
+    # When the local ring confirms a sponge, all release/floor checks use that
+    # local support surface.  The exposed global tabletop is not the contact
+    # surface for this trajectory and must not veto a valid low release.
+    release_reference_z = (
+        support_surface_z
+        if support_layer_active and support_surface_z is not None
+        else release_table_z
+    )
+    release_height_above_global_table = float(release["z"]) - release_table_z
+    release_height_above_support = float(release["z"]) - release_reference_z
     use_table_floor = bool(getattr(robot_config, "grasp_use_table_clearance_floor", True))
-    if use_table_floor and release_height_above_table > MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM + 1e-6:
+    enforce_support_floor = support_layer_active and support_floor_z is not None
+    if (use_table_floor or enforce_support_floor) and release_height_above_support > MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM + 1e-6:
         required_total_descent = max(
             0.0,
             float(far["z"])
-            - (release_table_z + MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM),
+            - (release_reference_z + MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM),
         )
         required_far_x = (
             float(bounds.x_min + robot_config.workspace_margin_mm)
             + required_total_descent / MAX_DESCENT_Z_PER_X_RATIO
         )
         raise CollarLiftRetreatError(
-            "final release is still too high above the table and would drop the garment: "
+            "final release is still too high above the support surface and would drop the garment: "
             f"release_z={float(release['z']):.2f} mm, "
-            f"table_z={release_table_z:.2f} mm, "
-            f"height_above_table={release_height_above_table:.2f} mm, "
+            f"support_z={release_reference_z:.2f} mm, "
+            f"height_above_support={release_height_above_support:.2f} mm, "
             f"required<={MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM:.2f} mm. "
             "With the balanced descent/retreat ratio limits and the current far Z, the planner "
             f"needs approximately far_x>={required_far_x:.2f} mm, or it must choose a "
@@ -1780,18 +1817,24 @@ def validate_claude_collar_motion_proposal(
             require_complete=True,
             z_lower_margin_mm=robot_config.lower_z_margin_mm,
         )
-        if use_table_floor:
+        if use_table_floor or enforce_support_floor:
             table_z = float(plane[0] * args["x"] + plane[1] * args["y"] + plane[2])
-            clearance = float(args["z"]) - table_z
-            minimum_table_clearance = min(minimum_table_clearance, clearance)
-            required_table_clearance = max(
-                0.0, float(getattr(robot_config, "grasp_table_clearance_mm", 0.0))
+            floor_z = (
+                support_floor_z
+                if enforce_support_floor
+                else table_z + float(getattr(robot_config, "grasp_table_clearance_mm", 0.0))
             )
-            if clearance < required_table_clearance - 1e-6:
+            clearance = float(args["z"]) - floor_z
+            minimum_table_clearance = min(minimum_table_clearance, clearance)
+            required_floor_clearance = 0.0
+            if clearance < required_floor_clearance - 1e-6:
+                floor_label = (
+                    "local support floor" if enforce_support_floor else "fitted table"
+                )
                 raise CollarLiftRetreatError(
-                    f"move action {index} is too close to/below the fitted table: "
+                    f"move action {index} is too close to/below the {floor_label}: "
                     f"clearance={clearance:.2f} mm, "
-                    f"required_clearance={required_table_clearance:.2f} mm"
+                    f"required_clearance={required_floor_clearance:.2f} mm"
                 )
     if release_index + 2 >= len(actions):
         raise CollarLiftRetreatError("release must be followed by an upward retract and home")
@@ -1817,7 +1860,11 @@ def validate_claude_collar_motion_proposal(
         "pretransport_z_drop_mm": pretransport_drop_mm,
         "claude_chosen_far_transport": dict(far),
         "claude_chosen_release": dict(descent[-1]),
-        "release_height_above_table_mm": release_height_above_table,
+        "release_height_above_table_mm": release_height_above_global_table,
+        "release_height_above_support_mm": release_height_above_support,
+        "support_layer_active": support_layer_active,
+        "support_surface_z_mm": support_surface_z,
+        "support_floor_z_mm": support_floor_z,
         "maximum_release_height_above_table_mm": MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM,
         "minimum_table_clearance_mm": minimum_table_clearance,
         "table_grasp_safety_checks_enabled": use_table_floor,
@@ -1859,13 +1906,12 @@ def validate_grounded_collar_grasp_feasibility(
         # long numeric planner: a measured collar point outside the calibrated
         # Cartesian workspace can never become legal by replanning the retreat.
         try:
-            robot_config.boundaries.validate(
+            robot_config.validate_workspace_pose(
                 resolution.target_xyz_mm[0],
                 resolution.target_xyz_mm[1],
                 resolution.target_xyz_mm[2],
-                robot_config.workspace_margin_mm,
+                relative_yaw_deg=COLLAR_GRASP_YAW_DEG,
                 require_complete=True,
-                z_lower_margin_mm=robot_config.lower_z_margin_mm,
             )
         except Exception as exc:
             # Keep the public error type stable while preserving the exact

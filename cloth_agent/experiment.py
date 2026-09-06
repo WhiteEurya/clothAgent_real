@@ -174,16 +174,31 @@ def validate_experiment_source(source: str, source_path: Path | None = None) -> 
     return tree
 
 
-def _execute(source: str, source_path: Path, robot: RobotAPI) -> tuple[str, str | None]:
+def _execute(
+    source: str,
+    source_path: Path,
+    robot: RobotAPI,
+    *,
+    action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
+) -> tuple[str, str | None]:
     tree = validate_experiment_source(source, source_path)
+
+    def invoke(name: str, method: Callable[..., Any], *args: Any) -> Any:
+        result = method(*args)
+        if action_callback is not None:
+            actions = robot.action_dicts()
+            if actions:
+                action_callback(len(actions) - 1, actions[-1])
+        return result
+
     namespace: dict[str, Any] = {
         "__builtins__": {},
-        "move": robot.move,
-        "open_gripper": robot.open_gripper,
-        "close_gripper": robot.close_gripper,
-        "shake": robot.shake,
-        "shake_open": robot.shake_open,
-        "home": robot.home,
+        "move": lambda x, y, z, yaw: invoke("move", robot.move, x, y, z, yaw),
+        "open_gripper": lambda: invoke("open_gripper", robot.open_gripper),
+        "close_gripper": lambda: invoke("close_gripper", robot.close_gripper),
+        "shake": lambda: invoke("shake", robot.shake),
+        "shake_open": lambda: invoke("shake_open", robot.shake_open),
+        "home": lambda: invoke("home", robot.home),
     }
     stdout, stderr = io.StringIO(), io.StringIO()
     error: str | None = None
@@ -191,6 +206,11 @@ def _execute(source: str, source_path: Path, robot: RobotAPI) -> tuple[str, str 
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compile(tree, str(source_path), "exec"), namespace, namespace)
             namespace["run"]()
+    except KeyboardInterrupt:
+        # Ctrl-C is a control signal, not a rollout result.  Let the caller
+        # close the backend and perform its mandatory return-Home cleanup
+        # instead of converting the interrupt into a normal failed experiment.
+        raise
     except BaseException as exc:  # record the failure and stop; never retry here
         error = f"{type(exc).__name__}: {exc}"
         traceback.print_exc(file=stderr)
@@ -313,7 +333,15 @@ class ExperimentRunner:
         robot.close()
         return Preflight(source_path, source, robot.action_dicts(), output, error)
 
-    def run_experiment(self, path: str | Path, *, real: bool = False, confirmed: bool = False, notes: str = "") -> dict[str, Any]:
+    def run_experiment(
+        self,
+        path: str | Path,
+        *,
+        real: bool = False,
+        confirmed: bool = False,
+        notes: str = "",
+        action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         preflight = self.preflight(path)
         print(preflight.stdout, end="" if preflight.stdout.endswith("\n") or not preflight.stdout else "\n")
         print(format_speed_profile(self.config), flush=True)
@@ -344,7 +372,20 @@ class ExperimentRunner:
         else:
             backend = SimulatedBackend(self.config)
         robot = RobotAPI(self.config, backend)
-        output, error = _execute(preflight.source_path.read_text(encoding="utf-8"), preflight.source_path, robot)
+        interrupted: KeyboardInterrupt | None = None
+        try:
+            output, error = _execute(
+                preflight.source_path.read_text(encoding="utf-8"),
+                preflight.source_path,
+                robot,
+                action_callback=action_callback,
+            )
+        except KeyboardInterrupt as exc:
+            # Persist the partial action trace before re-raising.  AgentSession
+            # will then attempt its mandatory post-rollout Home in ``finally``.
+            interrupted = exc
+            output = ""
+            error = "KeyboardInterrupt: rollout interrupted by operator"
         result = self._result(
             preflight,
             physical=real,
@@ -358,6 +399,8 @@ class ExperimentRunner:
             self._save_result(result)
         finally:
             robot.close()
+        if interrupted is not None:
+            raise interrupted
         return result
 
     def run_checkpointed_experiment(
@@ -478,6 +521,7 @@ class ExperimentRunner:
         robot = RobotAPI(self.config, backend)
         checkpoint: dict[str, Any] = {"status": "NOT_REACHED"}
         error: str | None = None
+        interrupted: KeyboardInterrupt | None = None
         emergency_cleanup: dict[str, Any] | None = None
         try:
             multi_checkpoint = len(indices) > 1
@@ -538,6 +582,9 @@ class ExperimentRunner:
                     robot,
                     continuation if continue_transport else clean_abort,
                 )
+        except KeyboardInterrupt as exc:
+            interrupted = exc
+            error = "KeyboardInterrupt: checkpointed rollout interrupted by operator"
         except BaseException as exc:
             error = f"{type(exc).__name__}: {exc}"
         finally:
@@ -580,6 +627,8 @@ class ExperimentRunner:
             self._save_result(result)
         finally:
             robot.close()
+        if interrupted is not None:
+            raise interrupted
         return result
 
     def _result(self, preflight: Preflight, *, physical: bool, completed: bool, notes: str, error: str | None, actual_actions: list[dict[str, Any]] | None = None, stdout: str | None = None) -> dict[str, Any]:

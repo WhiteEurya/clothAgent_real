@@ -1,0 +1,461 @@
+{
+  "mode": "REPAIR_SLEEVE",
+  "actions": [
+    {
+      "name": "open_gripper",
+      "args": {},
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        500.0,
+        -7.413035,
+        280.0,
+        178.370814,
+        3.606941,
+        170.569135
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": {
+        "position": 850.0,
+        "simulated": true,
+        "feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      }
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 529.32,
+        "y": -129.45,
+        "z": 140.0,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        529.32,
+        -129.45,
+        140.0,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 529.32,
+        "y": -129.45,
+        "z": 75.0,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        529.32,
+        -129.45,
+        75.0,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 529.32,
+        "y": -129.45,
+        "z": 59.5,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        529.32,
+        -129.45,
+        59.5,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "close_gripper",
+      "args": {},
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        529.32,
+        -129.45,
+        59.5,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 0,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": {
+        "position": 0.0,
+        "simulated": true,
+        "feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 0,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      }
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 529.32,
+        "y": -129.45,
+        "z": 94.5,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        529.32,
+        -129.45,
+        94.5,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 0,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 520.36,
+        "y": -152.79,
+        "z": 94.5,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        520.36,
+        -152.79,
+        94.5,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 0,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 520.36,
+        "y": -152.79,
+        "z": 64.0,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        520.36,
+        -152.79,
+        64.0,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 0,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "open_gripper",
+      "args": {},
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        520.36,
+        -152.79,
+        64.0,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": {
+        "position": 850.0,
+        "simulated": true,
+        "feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      }
+    },
+    {
+      "name": "move",
+      "args": {
+        "x": 520.36,
+        "y": -152.79,
+        "z": 150.0,
+        "yaw": 69.0
+      },
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        520.36,
+        -152.79,
+        150.0,
+        178.370814,
+        3.606941,
+        -120.43086500000004
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    },
+    {
+      "name": "home",
+      "args": {},
+      "requested_at": "2026-08-30T12:04:43.936+00:00",
+      "completed_at": "2026-08-30T12:04:43.936+00:00",
+      "success": true,
+      "error": null,
+      "actual_ee_pose": [
+        500.0,
+        -7.413035,
+        280.0,
+        178.370814,
+        3.606941,
+        170.569135
+      ],
+      "robot_state": {
+        "state": "simulated",
+        "gripper_feedback": {
+          "sampled_at": "2026-08-30T12:04:43.936+00:00",
+          "available": true,
+          "status_code": 0,
+          "status_raw": 0,
+          "state_code": 0,
+          "state": "stop",
+          "position_pulse": 850,
+          "error_code": 0,
+          "mechanical_grasp_detected": false,
+          "simulated": true,
+          "read_errors": []
+        }
+      },
+      "gripper_result": null
+    }
+  ],
+  "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/workspace/_fold_experiment_009.py",
+  "authority": "Claude",
+  "host_compilation": {
+    "authority": "Claude",
+    "rewritten": false,
+    "reason": "The validated trajectory is compiled directly from Claude's proposal.",
+    "model_action_count": 11,
+    "execution_action_count": 11
+  },
+  "created_at": "2026-08-30T12:04:44.017+00:00"
+}

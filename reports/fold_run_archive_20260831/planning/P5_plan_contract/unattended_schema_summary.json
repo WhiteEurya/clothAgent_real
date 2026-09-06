@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-27T11:09:30.318+00:00",
+  "status": "FAILED",
+  "objective": "Fold a T-shirt in five ordered steps with video-backed closed-loop supervision.",
+  "fold_steps": [
+    {
+      "id": "left_sleeve",
+      "label": "image-left sleeve inward"
+    },
+    {
+      "id": "right_sleeve",
+      "label": "image-right sleeve inward"
+    },
+    {
+      "id": "left_side",
+      "label": "first torso side inward"
+    },
+    {
+      "id": "right_side",
+      "label": "second torso side inward"
+    },
+    {
+      "id": "hem_up",
+      "label": "bottom hem upward"
+    }
+  ],
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z",
+  "physical_execution": true,
+  "video_recording": true,
+  "timeouts": {
+    "claude_s": 1800,
+    "supervisor_s": 900,
+    "recording_join_s": 300
+  },
+  "retry_policy": {
+    "max_stage_retries": 2,
+    "retry_backoff_s": 5.0,
+    "supervisor_fallback": true,
+    "evaluation_fallback": true
+  },
+  "debug": {
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/debug.log",
+    "events": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/debug_events.jsonl"
+  },
+  "viser": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "url": "http://127.0.0.1:8765",
+    "log": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/viser.log",
+    "read_only": true
+  },
+  "iterations": [],
+  "error": "RuntimeError: Claude fold planning failed after 3 attempt(s): ExplorationPlanningError: selected_reference must contain exactly camera, reference_id, and reason",
+  "failed_at": "2026-08-27T11:19:09.712+00:00"
+}

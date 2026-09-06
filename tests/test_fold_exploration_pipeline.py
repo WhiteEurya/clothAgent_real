@@ -4,6 +4,7 @@ import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -16,17 +17,31 @@ from cloth_agent.fold_exploration_pipeline import (
     FoldExplorationPipeline,
     FoldExperienceStore,
     FoldSupervisor,
+    _acquisition_supervisor_reuse_step,
     assess_screen_visibility,
     build_reverse_trajectory,
     _build_upright_camera_a_planning_images,
     _clockwise90_pixel,
     _compact_history,
+    _confirmed_completion_ledger,
+    _evaluation_reports_unchanged,
     _filter_fold_sleeve_planning_overlay,
     _fold_acquisition_learning_state,
+    _garment_condition_from_history,
+    _is_reference_grounding_mismatch,
+    _normalize_supervisor_current_step,
+    _merge_supervisor_completion_ledger,
     _grasp_strategy_signature,
     _proposal_from_actions,
     _select_fold_planning_images,
+    _select_observer_images,
     _select_supervisor_images,
+    _proposal_action_mode,
+    _validate_action_mode_contract,
+    _validate_fold_evidence_package,
+    _write_fold_evidence_package,
+    _condition_after_action,
+    _validate_model_acquisition_probe,
     _validate_acquisition_strategy_change,
     validate_supervisor_payload,
 )
@@ -78,6 +93,14 @@ def test_upright_camera_a_planning_images_keep_rxxx_identity(tmp_path: Path) -> 
     assert _select_fold_planning_images(images) == images
 
 
+def test_select_observer_images_only_returns_rgb_observer_files(tmp_path: Path) -> None:
+    observer = tmp_path / "camera_C_observer_rgb.png"
+    observer.write_bytes(b"png")
+    ordinary = tmp_path / "camera_0_A.png"
+    ordinary.write_bytes(b"png")
+    assert _select_observer_images([ordinary, observer, observer]) == [observer.resolve()]
+
+
 def test_argument_list_too_long_is_not_retried(tmp_path: Path) -> None:
     images = []
     for name in ("camera_A_rgb_upright.png", "camera_A_rxxx_overlay_upright.png"):
@@ -108,6 +131,74 @@ def test_argument_list_too_long_is_not_retried(tmp_path: Path) -> None:
     assert len(calls) == 1
 
 
+def test_refresh_client_skills_keeps_prompt_and_validator_allow_list_in_sync() -> None:
+    """Reviewed dynamic skills accepted by the store must be accepted by the client."""
+
+    class _Store:
+        def approved(self):
+            return (
+                SimpleNamespace(name="laydown"),
+                SimpleNamespace(name="Null-Change-Missed-Grasp-Recovery"),
+            )
+
+        def prompt(self):
+            return "dynamic skill guidance"
+
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.skill_store = _Store()
+    pipeline.client = SimpleNamespace(skill_guidance=None, skill_names=())
+
+    pipeline._refresh_client_skills()
+
+    assert pipeline.client.skill_guidance == "dynamic skill guidance"
+    assert pipeline.client.skill_names == (
+        "laydown",
+        "null-change-missed-grasp-recovery",
+    )
+
+
+def _probe_proposal(*, lateral_after_close: float = 0.0) -> SimpleNamespace:
+    actions = [
+        {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 50.0, "yaw": 0.0}},
+        {"name": "open_gripper", "args": {}},
+        {"name": "close_gripper", "args": {}},
+        {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 65.0, "yaw": 0.0}},
+    ]
+    if lateral_after_close:
+        actions.append(
+            {
+                "name": "move",
+                "args": {
+                    "x": 500.0,
+                    "y": -100.0 + lateral_after_close,
+                    "z": 65.0,
+                    "yaw": 0.0,
+                },
+            }
+        )
+    actions.extend(
+        [
+            {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 50.0, "yaw": 0.0}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "home", "args": {}},
+        ]
+    )
+    return SimpleNamespace(actions=tuple(actions), requires_lift_checkpoint=True)
+
+
+def test_model_acquisition_probe_is_validated_without_host_rewrite() -> None:
+    result = _validate_model_acquisition_probe(_probe_proposal())
+    assert result["status"] == "VALID"
+    assert result["authority"] == "Claude"
+    assert result["host_rewrite"] is False
+    assert result["max_lift_mm"] == pytest.approx(15.0)
+
+
+def test_model_acquisition_probe_rejects_lateral_transport() -> None:
+    with pytest.raises(Exception, match="lateral transport"):
+        _validate_model_acquisition_probe(_probe_proposal(lateral_after_close=20.0))
+
+
 def test_reference_reselection_exhaustion_is_not_retried(tmp_path: Path) -> None:
     images = []
     for name in ("camera_A_rgb_upright.png", "camera_A_rxxx_overlay_upright.png"):
@@ -136,6 +227,101 @@ def test_reference_reselection_exhaustion_is_not_retried(tmp_path: Path) -> None
             iteration=1,
         )
     assert len(calls) == 1
+
+
+def test_stage2_reference_mismatch_restarts_visual_stage(tmp_path: Path) -> None:
+    images = []
+    for name in ("camera_A_rgb_upright.png", "camera_A_rxxx_overlay_upright.png"):
+        path = tmp_path / name
+        path.write_bytes(b"image")
+        images.append(path)
+    calls: list[dict[str, object]] = []
+    proposal = SimpleNamespace(actions=tuple(), requires_lift_checkpoint=True)
+
+    def plan(*args, **kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise ValueError(
+                "final grasp XY does not use the visually selected Rxxx measurement"
+            )
+        return proposal
+
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.max_stage_retries = 1
+    pipeline.retry_backoff_s = 0.0
+    pipeline.client = SimpleNamespace(plan=plan)
+    pipeline.session = SimpleNamespace()
+    pipeline._debug = lambda *args, **kwargs: None
+    pipeline._debug_exception = lambda *args, **kwargs: None
+
+    result = pipeline._plan_fold_with_retries(
+        images,
+        "objective",
+        [],
+        iteration=1,
+    )
+
+    assert result is proposal
+    assert len(calls) == 2
+    assert "Restart STAGE 1 visual planning" in str(calls[1]["feedback"])
+
+
+def test_reference_grounding_mismatch_classifier() -> None:
+    assert _is_reference_grounding_mismatch(
+        ValueError("final grasp XY does not use the visually selected Rxxx measurement")
+    )
+    assert _is_reference_grounding_mismatch(
+        ValueError("final fold grasp offset from the selected Rxxx anchor is invalid")
+    )
+    assert not _is_reference_grounding_mismatch(ValueError("workspace bound rejected"))
+
+
+def test_unattended_error_policy_retries_nonphysical_stages_only() -> None:
+    assert FoldExplorationPipeline._unattended_error_is_retriable(
+        RuntimeError("Claude visual planning failed"),
+        "planning",
+    )
+    assert FoldExplorationPipeline._unattended_error_is_retriable(
+        RuntimeError("camera socket failed"),
+        "perception",
+    )
+    assert not FoldExplorationPipeline._unattended_error_is_retriable(
+        RuntimeError("xArm execution failed"),
+        "execution",
+    )
+    assert not FoldExplorationPipeline._unattended_error_is_retriable(
+        KeyboardInterrupt(),
+        "planning",
+    )
+    assert not FoldExplorationPipeline._unattended_error_is_retriable(
+        OSError("No space left on device"),
+        "experience",
+    )
+
+
+def test_unattended_wrapper_restarts_after_retriable_failure() -> None:
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.unattended = True
+    pipeline.retry_backoff_s = 0.0
+    pipeline._last_operational_stage = "planning"
+    pipeline._unattended_restart_count = 0
+    pipeline.session = SimpleNamespace(run_dir=Path("/tmp/fold-unattended-test"))
+    pipeline._stop_viser_for_restart = lambda: None
+    recorded = []
+    pipeline._record_unattended_restart = lambda exc, *, operational_stage: recorded.append(
+        (type(exc).__name__, operational_stage)
+    )
+    attempts = iter([RuntimeError("Claude planning failed"), {"status": "COMPLETE"}])
+
+    def run_once():
+        value = next(attempts)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    pipeline._run_once = run_once
+    assert pipeline.run() == {"status": "COMPLETE"}
+    assert recorded == [("RuntimeError", "planning")]
 
 
 def test_fold_planning_overlay_preserves_full_uniform_grid_with_molmo_hint(
@@ -382,6 +568,90 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
     assert (iteration_dir / "molmo_sleeve_hint.json").is_file()
 
 
+def test_molmo_sleeve_locator_reuses_hint_when_scene_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = tmp_path / "run"
+    iteration_dir = run / "results" / "fold" / "iteration_002"
+    iteration_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        "cloth_agent.fold_exploration_pipeline.run_molmo_keypoint_pipeline",
+        lambda **kwargs: pytest.fail("Molmo should not run for an unchanged scene"),
+    )
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.molmo_sleeve_grounding = True
+    pipeline._debug = lambda *args, **kwargs: None
+    pipeline.session = SimpleNamespace(run_dir=run)
+    history = [
+        {
+            "iteration": 1,
+            "planned_step": "left_sleeve",
+            "molmo_sleeve_hint": {
+                "status": "MOLMO_POINT_AVAILABLE",
+                "step": "left_sleeve",
+                "raw_pixel_xy": [418, 688],
+                "upright_pixel_xy": [31, 418],
+                "confidence": 0.74,
+            },
+            "evaluation": {
+                "task_progress": {
+                    "metrics": {
+                        "visible_area_delta": "UNCHANGED",
+                        "overlap_delta": "UNCHANGED",
+                        "relief_delta": "UNCHANGED",
+                    }
+                }
+            },
+        }
+    ]
+
+    hint = pipeline._locate_sleeve_with_molmo(
+        step="left_sleeve",
+        iteration=2,
+        iteration_dir=iteration_dir,
+        history=history,
+    )
+
+    assert hint is not None
+    assert hint["status"] == "MOLMO_POINT_AVAILABLE"
+    assert hint["reused"] is True
+    assert hint["reused_from_iteration"] == 1
+    assert hint["duration_s"] == 0.0
+
+
+def test_acquisition_state_reuses_step_without_visual_supervisor() -> None:
+    record = _failed_acquisition_record(1)
+    record["status"] = "ACQUISITION_PROBE"
+    assert _acquisition_supervisor_reuse_step([record]) == "left_sleeve"
+    assert _evaluation_reports_unchanged(
+        {
+            "task_progress": {
+                "metrics": {
+                    "visible_area_delta": "UNCHANGED",
+                    "overlap_delta": "UNCHANGED",
+                    "relief_delta": "UNCHANGED",
+                }
+            }
+        }
+    )
+
+
+def test_local_acquisition_supervisor_preserves_completed_ledger() -> None:
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    result = pipeline._local_acquisition_supervisor(
+        {"visibility": "PARTIAL"},
+        [],
+        step="right_sleeve",
+        base={"completed_steps": ["left_sleeve"]},
+        reason="probe reversed",
+    )
+    assert result["status"] == "READY"
+    assert result["completed_steps"] == ["left_sleeve"]
+    assert result["current_step"] == "right_sleeve"
+    assert result["local_deterministic"] is True
+
+
 def _robot() -> RobotConfig:
     return RobotConfig(
         robot_ip="127.0.0.1",
@@ -400,7 +670,6 @@ def _valid_supervisor() -> dict:
         "status": "READY",
         "current_step": FOLD_STEP_IDS[0],
         "completed_steps": [],
-        "next_step": FOLD_STEP_IDS[0],
         "garment_visibility": "FULL",
         "trajectory_decision": "CONTINUE",
         "confidence": 0.8,
@@ -454,6 +723,9 @@ def test_supervisor_reads_run_local_context_instead_of_inlining_history(
     prompt = command[command.index("--print") + 1]
     assert len(prompt.encode("utf-8")) < 2_000
     assert huge not in prompt
+    schema = json.loads(command[command.index("--json-schema") + 1])
+    assert "next_step" not in schema["properties"]
+    assert "next_step" not in schema["required"]
     manifest_path = Path(result["context_bundle"]["manifest"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     history_path = tmp_path / manifest["read_order"][2]
@@ -468,9 +740,19 @@ def test_supervisor_reads_run_local_context_instead_of_inlining_history(
 
 def test_supervisor_payload_is_strict() -> None:
     result = validate_supervisor_payload(_valid_supervisor())
-    assert result["next_step"] == "left_sleeve"
+    assert result["current_step"] == "left_sleeve"
     with pytest.raises(Exception):
         validate_supervisor_payload({**_valid_supervisor(), "extra": True})
+
+
+def test_supervisor_current_step_is_host_normalized_from_completed_ledger() -> None:
+    payload = _valid_supervisor()
+    payload["current_step"] = "right_sleeve"
+    validated = validate_supervisor_payload(payload)
+    normalized = _normalize_supervisor_current_step(validated)
+    assert normalized["current_step"] == "left_sleeve"
+    with pytest.raises(Exception):
+        validate_supervisor_payload({**_valid_supervisor(), "next_step": "right_sleeve"})
 
 
 def test_screen_visibility_detects_border_contact(tmp_path: Path) -> None:
@@ -517,11 +799,77 @@ def test_experience_store_summarizes_steps(tmp_path: Path) -> None:
     summary = store.append(
         {
             "status": "FOLD",
+            "planned_step": "left_sleeve",
+            "garment_condition_after": {"condition": "BUNCHED", "source": "test"},
             "supervisor_after": {"completed_steps": ["left_sleeve"]},
         }
     )
     assert summary["next_step"] == "right_sleeve"
     assert json.loads(store.summary_path.read_text())["experience_count"] == 1
+    assert store.condition("left_sleeve")["condition"] == "BUNCHED"
+
+
+def test_preexecution_planning_failure_is_persisted_without_advancing_step(tmp_path: Path) -> None:
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    run_dir = tmp_path / "run"
+    output = run_dir / "results" / "fold_exploration" / "attempt"
+    iteration_dir = output / "iteration_001"
+    iteration_dir.mkdir(parents=True)
+    before = iteration_dir / "before_raw" / "camera_0_A.png"
+    before.parent.mkdir()
+    before.write_bytes(b"rgb")
+    pipeline.client = SimpleNamespace(
+        last_plan_timing={"visual_planning_attempts": 1},
+        last_rejected_visual_references=["A/R033"],
+        last_reference_validation=None,
+        last_visual_plan_result=None,
+        last_plan_result=None,
+    )
+    pipeline.experiences = FoldExperienceStore(run_dir)
+    pipeline.skill_ledger = SimpleNamespace(append_experience=lambda value: None)
+    pipeline._debug = lambda *args, **kwargs: None
+    pipeline._debug_exception = lambda *args, **kwargs: None
+    summary = {"iterations": [], "output_dir": str(output)}
+    history: list[dict[str, Any]] = []
+    supervisor = {
+        "status": "READY",
+        "current_step": "left_sleeve",
+        "completed_steps": [],
+        "garment_visibility": "FULL",
+        "trajectory_decision": "CONTINUE",
+        "confidence": 0.9,
+        "evidence": ["unchanged shirt"],
+        "reason": "left sleeve is next",
+    }
+    record = pipeline._persist_preexecution_planning_failure(
+        output=output,
+        iteration_dir=iteration_dir,
+        iteration=1,
+        current_step="left_sleeve",
+        supervisor_before=supervisor,
+        screen_before={"visibility": "FULL"},
+        before_images=[before],
+        observer_before_images=[],
+        acquisition_learning={"phase": "acquisition"},
+        molmo_hint=None,
+        planning_attempts=[{"attempt": 1, "status": "REJECTED_BEFORE_EXECUTION"}],
+        exc=RuntimeError(
+            "controller IK rejected action 2 segment sample 3/8 "
+            "pose=[727.8, 17.0, 140.6, 178.3, 3.6, 170.5], code=10"
+        ),
+        summary=summary,
+        history=history,
+    )
+    assert record["status"] == "PLANNING_FAILURE"
+    assert record["planning_failure"]["physical_command_sent"] is False
+    assert record["planning_failure"]["failed_pose"] == [727.8, 17.0, 140.6, 178.3, 3.6, 170.5]
+    assert record["supervisor_after"]["current_step"] == "left_sleeve"
+    assert history[-1] is record
+    assert summary["iterations"][0]["planning_status"] == "FAILED_BEFORE_EXECUTION"
+    assert summary["failure_counts"]["planning_before_execution"] == 1
+    assert (iteration_dir / "planning_failure.json").is_file()
+    compact = _compact_history(history)
+    assert compact[-1]["planning_failure"]["failure_kind"] == "CONTROLLER_IK"
 
 
 def test_supervisor_fallback_does_not_advance_failed_confirmed_step() -> None:
@@ -533,7 +881,6 @@ def test_supervisor_fallback_does_not_advance_failed_confirmed_step() -> None:
                 "planned_step": "left_sleeve",
                 "supervisor_after": {
                     "completed_steps": [],
-                    "next_step": "left_sleeve",
                 },
             }
         ],
@@ -541,7 +888,7 @@ def test_supervisor_fallback_does_not_advance_failed_confirmed_step() -> None:
     )
 
     assert result["completed_steps"] == []
-    assert result["next_step"] == "left_sleeve"
+    assert result["current_step"] == "left_sleeve"
 
 
 def test_supervisor_fallback_advances_only_when_after_record_is_missing() -> None:
@@ -553,7 +900,104 @@ def test_supervisor_fallback_advances_only_when_after_record_is_missing() -> Non
     )
 
     assert result["completed_steps"] == ["left_sleeve"]
-    assert result["next_step"] == "right_sleeve"
+    assert result["current_step"] == "right_sleeve"
+
+
+def test_fallback_completion_is_not_visual_ledger() -> None:
+    history = [
+        {
+            "supervisor_after": {
+                "fallback": True,
+                "completed_steps": ["left_sleeve", "right_sleeve"],
+            }
+        }
+    ]
+    assert _confirmed_completion_ledger(history) == []
+    merged = _merge_supervisor_completion_ledger(
+        {
+            "status": "READY",
+            "current_step": "left_side",
+            "completed_steps": ["left_sleeve", "right_sleeve"],
+        },
+        history,
+    )
+    assert merged["completed_steps"] == ["left_sleeve", "right_sleeve"]
+    # Current non-fallback visual evidence is still accepted; only the old
+    # fallback record is ignored.
+    assert merged["current_step"] == "left_side"
+
+
+def test_fallback_cannot_authorize_complete() -> None:
+    merged = _merge_supervisor_completion_ledger(
+        {
+            "status": "COMPLETE",
+            "current_step": "COMPLETE",
+            "completed_steps": list(FOLD_STEP_IDS),
+            "fallback": True,
+        },
+        [],
+    )
+    assert merged["status"] == "READY"
+    assert merged["current_step"] == "left_sleeve"
+    assert merged["completed_steps"] == []
+
+
+def test_partial_complete_status_is_normalized_to_ready() -> None:
+    merged = _merge_supervisor_completion_ledger(
+        {
+            "status": "COMPLETE",
+            "current_step": "COMPLETE",
+            "completed_steps": ["left_sleeve", "right_sleeve"],
+        },
+        [],
+    )
+    assert merged["status"] == "READY"
+    assert merged["current_step"] == "left_side"
+
+
+def test_visual_completion_ledger_is_monotonic_and_advances_to_left_side() -> None:
+    history = [
+        {
+            "supervisor_after": {
+                "fallback": False,
+                "completed_steps": ["left_sleeve", "right_sleeve"],
+            }
+        }
+    ]
+    result = _merge_supervisor_completion_ledger(
+        {
+            "status": "READY",
+            "current_step": "right_sleeve",
+            "completed_steps": ["left_sleeve"],
+        },
+        history,
+    )
+    assert result["completed_steps"] == ["left_sleeve", "right_sleeve"]
+    assert result["current_step"] == "left_side"
+
+
+def test_supervisor_images_prioritize_upright_camera_a(tmp_path: Path) -> None:
+    names = [
+        "camera_0_A.png",
+        "camera_1_B.png",
+        "camera_A_rgb_upright.png",
+        "camera_A_rxxx_overlay_upright.png",
+        "camera_A_garment_only.png",
+        "camera_A_height_map_boundary.png",
+        "camera_A_height_gradient_edges.png",
+        "fused_height_map_preview.png",
+        "extra.png",
+    ]
+    paths = []
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths.append(path)
+    selected = _select_supervisor_images(paths, max_images=4)
+    assert [path.name for path in selected[:2]] == [
+        "camera_A_rgb_upright.png",
+        "camera_A_rxxx_overlay_upright.png",
+    ]
 
 
 def test_compact_history_drops_recursive_claude_command_payloads() -> None:
@@ -718,6 +1162,172 @@ def test_acquisition_probe_requires_observable_short_lift() -> None:
     too_small = _proposal_from_actions(actions, reason="two millimetre lift")
     with pytest.raises(Exception, match="15-30 mm"):
         _validate_acquisition_strategy_change(too_small, learning)
+
+
+def test_garment_condition_detects_bunched_visual_history() -> None:
+    result = _garment_condition_from_history(
+        [
+            {
+                "iteration": 28,
+                "planned_step": "left_sleeve",
+                "proposal": {
+                    "garment_observation": "The image-left sleeve is gathered into a rolled tube.",
+                },
+            }
+        ],
+        step="left_sleeve",
+    )
+    assert result["condition"] == "BUNCHED"
+    assert result["source_iteration"] == 28
+    assert "gathered" in result["matched_terms"]
+
+
+def test_probe_budget_and_bunched_condition_change_action_mode() -> None:
+    first = _proposal_action_mode(
+        {"attempt_count": 0, "use_lift_only_probe": True},
+        {"condition": "UNKNOWN"},
+        step="left_sleeve",
+    )
+    assert first == ("ACQUISITION_PROBE", {"reason": "acquisition evidence is still being gathered", "probe_budget_remaining": 3})
+    exhausted = _proposal_action_mode(
+        {"attempt_count": 3, "use_lift_only_probe": True},
+        {"condition": "FLAT"},
+        step="left_sleeve",
+    )
+    assert exhausted[0] == "FOLD"
+    bunched = _proposal_action_mode(
+        {"attempt_count": 1, "use_lift_only_probe": True},
+        {"condition": "BUNCHED"},
+        step="left_sleeve",
+    )
+    assert bunched[0] == "REPAIR_SLEEVE"
+
+
+def test_unconfirmed_sleeve_repair_keeps_bunched_condition_sticky() -> None:
+    result = _condition_after_action(
+        {"condition": "UNKNOWN"},
+        {"task_progress": {"status": "NEUTRAL", "metrics": {}}},
+        mode="REPAIR_SLEEVE",
+    )
+    assert result["condition"] == "BUNCHED"
+
+
+def test_action_mode_contract_rejects_low_z_preclose_sweep() -> None:
+    proposal = _proposal_from_actions(
+        [
+            {"name": "move", "args": {"x": 500.0, "y": 0.0, "z": 100.0, "yaw": 0.0}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500.0, "y": 0.0, "z": 50.0, "yaw": 0.0}},
+            {"name": "move", "args": {"x": 500.0, "y": 25.0, "z": 50.0, "yaw": 0.0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500.0, "y": 25.0, "z": 75.0, "yaw": 0.0}},
+            {"name": "open_gripper", "args": {}},
+        ],
+        reason="sweep",
+    )
+    with pytest.raises(Exception, match="low-Z pre-close lateral sweep"):
+        _validate_action_mode_contract(proposal, mode="ACQUISITION_PROBE")
+
+
+def test_fold_action_mode_requires_lift_before_transport() -> None:
+    proposal = {
+        "actions": [
+            {"name": "move", "args": {"x": 500.0, "y": 0.0, "z": 80.0, "yaw": 0.0}},
+            {"name": "open_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500.0, "y": 0.0, "z": 30.0, "yaw": 0.0}},
+            {"name": "close_gripper", "args": {}},
+            {"name": "move", "args": {"x": 500.0, "y": 40.0, "z": 30.0, "yaw": 0.0}},
+            {"name": "open_gripper", "args": {}},
+        ]
+    }
+    with pytest.raises(Exception, match="must lift above"):
+        _validate_action_mode_contract(proposal, mode="FOLD")
+
+
+def test_evidence_package_writes_manifest_and_stages(tmp_path: Path) -> None:
+    iteration_dir = tmp_path / "iteration_001"
+    result = _write_fold_evidence_package(
+        iteration_dir,
+        stage="rgb_selection",
+        payload={"schema_version": 1, "step": "left_sleeve"},
+    )
+    assert Path(result["manifest"]).is_file()
+    assert Path(result["files"]["01_rgb_selection.json"]).is_file()
+    manifest = json.loads(Path(result["manifest"]).read_text())
+    assert manifest["current_stage"] == "rgb_selection"
+
+
+def test_evidence_package_gate_requires_all_preexecution_stages(tmp_path: Path) -> None:
+    iteration_dir = tmp_path / "iteration_001"
+    _write_fold_evidence_package(
+        iteration_dir,
+        stage="rgb_selection",
+        payload={
+            "schema_version": 1,
+            "step": "left_sleeve",
+            "action_mode": "FOLD",
+            "images": ["camera_A.png"],
+        },
+    )
+    _write_fold_evidence_package(
+        iteration_dir,
+        stage="metric_grounding",
+        payload={
+            "schema_version": 1,
+            "selected_grasp": {"camera": "A", "reference_id": "R001"},
+            "checks": {"controller_ik": "PASS"},
+        },
+    )
+    with pytest.raises(Exception, match="missing 03_execution_gate"):
+        _validate_fold_evidence_package(iteration_dir)
+    _write_fold_evidence_package(
+        iteration_dir,
+        stage="execution_gate",
+        payload={
+            "schema_version": 1,
+            "decision": "ALLOW",
+            "checks": {
+                "semantic_target": "CLAUDE_SELECTED",
+                "metric_grounding": "PASS",
+                "controller_ik": "PASS",
+                "action_mode_contract": "PASS",
+                "low_z_preclose_sweep": "PASS",
+            },
+        },
+    )
+    result = _validate_fold_evidence_package(iteration_dir)
+    assert result["status"] == "VALID"
+    assert result["execution_decision"] == "ALLOW"
+
+
+def test_evidence_package_gate_rejects_failed_execution_check(tmp_path: Path) -> None:
+    iteration_dir = tmp_path / "iteration_001"
+    for stage, payload in (
+        (
+            "rgb_selection",
+            {"step": "left_sleeve", "action_mode": "FOLD", "images": ["a.png"]},
+        ),
+        (
+            "metric_grounding",
+            {"selected_reference": {"camera": "A", "reference_id": "R001"}, "checks": {"controller_ik": "PASS"}},
+        ),
+        (
+            "execution_gate",
+            {
+                "decision": "ALLOW",
+                "checks": {
+                    "semantic_target": "CLAUDE_SELECTED",
+                    "metric_grounding": "PASS",
+                    "controller_ik": "PASS",
+                    "action_mode_contract": "FAIL",
+                    "low_z_preclose_sweep": "PASS",
+                },
+            },
+        ),
+    ):
+        _write_fold_evidence_package(iteration_dir, stage=stage, payload=payload)
+    with pytest.raises(Exception, match="failed checks"):
+        _validate_fold_evidence_package(iteration_dir)
 
 
 def test_grasp_strategy_signature_distinguishes_lateral_entry() -> None:

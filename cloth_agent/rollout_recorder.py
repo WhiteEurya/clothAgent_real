@@ -896,6 +896,19 @@ class RolloutRGBDFrame:
     valid_depth_fraction: float
 
 
+@dataclass(frozen=True)
+class ObserverRGBFrame:
+    """One RGB frame copied from the uncalibrated Camera-C observer."""
+
+    label: str
+    serial: str
+    rgb: np.ndarray
+    host_utc: str
+    host_monotonic_ns: int
+    color_frame_number: int
+    color_device_timestamp_ms: float
+
+
 class DualRealSenseRolloutRecorder:
     """Own both configured RealSense devices and record one standalone rollout."""
 
@@ -1436,6 +1449,424 @@ class DualRealSenseRolloutRecorder:
             ),
             "composite_encoded_frame_count": self.composite_frame_count,
             "timestamps": "frame_timestamps.csv",
+            "errors": list(self.errors),
+        }
+
+
+def capture_observer_rgb(
+    serial: str,
+    output_dir: Path,
+    *,
+    label: str = "C",
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 15,
+    color_exposure: float | None = 700.0,
+    color_white_balance: float | None = 3800.0,
+    warmup_frames: int = 20,
+) -> dict[str, Any]:
+    """Capture one RGB-only frame from an uncalibrated observer camera.
+
+    The observer is deliberately independent of :class:`PerceptionConfig`:
+    it does not load an extrinsic transform, does not open a depth stream, and
+    never contributes points or robot coordinates to A/B perception.
+    """
+
+    if not str(serial).strip():
+        raise RolloutRecorderError("observer camera serial must be non-empty")
+    if int(width) <= 0 or int(height) <= 0 or int(fps) <= 0:
+        raise RolloutRecorderError("observer RGB width/height/fps must be positive")
+    if int(warmup_frames) < 0:
+        raise RolloutRecorderError("observer warmup_frames must be non-negative")
+    try:
+        import pyrealsense2 as rs
+    except ImportError as exc:
+        raise RolloutRecorderError(
+            "pyrealsense2 is required for the observer RGB camera"
+        ) from exc
+    output = Path(output_dir).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    context = rs.context()
+    available = {
+        device.get_info(rs.camera_info.serial_number)
+        for device in context.query_devices()
+    }
+    serial_text = str(serial).strip()
+    if serial_text not in available:
+        raise RolloutRecorderError(
+            f"observer camera {serial_text} is not connected; available={sorted(available)}"
+        )
+    pipeline = rs.pipeline()
+    camera_config = rs.config()
+    camera_config.enable_device(serial_text)
+    camera_config.enable_stream(
+        rs.stream.color,
+        int(width),
+        int(height),
+        rs.format.rgb8,
+        int(fps),
+    )
+    camera_spec = CameraSpec(
+        str(label),
+        serial_text,
+        Path("."),
+        color_exposure,
+        color_white_balance,
+    )
+    pipeline.start(camera_config)
+    try:
+        _configure_color_exposure(pipeline.get_active_profile().get_device(), camera_spec, rs)
+        for _ in range(int(warmup_frames)):
+            pipeline.wait_for_frames(2000)
+        frames = pipeline.wait_for_frames(2000)
+        color = frames.get_color_frame()
+        if not color:
+            raise RolloutRecorderError(
+                f"observer camera {serial_text} returned no color frame"
+            )
+        rgb = np.asanyarray(color.get_data()).copy()
+        from PIL import Image
+
+        image_path = output / f"camera_{str(label)}_observer_rgb.png"
+        Image.fromarray(rgb).save(image_path)
+        manifest = {
+            "schema_version": 1,
+            "created_at": _now(),
+            "label": str(label),
+            "serial": serial_text,
+            "calibrated": False,
+            "geometry_used": False,
+            "purpose": "uncalibrated RGB observer for grasp/occlusion evaluation",
+            "stream": "color RGB only",
+            "resolution": [int(width), int(height)],
+            "fps": int(fps),
+            "color_frame_number": int(color.get_frame_number()),
+            "color_device_timestamp_ms": float(color.get_timestamp()),
+            "rgb_image": str(image_path.resolve()),
+        }
+        (output / f"camera_{str(label)}_observer_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return manifest
+    finally:
+        pipeline.stop()
+
+
+class ObserverRGBRolloutRecorder:
+    """Record an uncalibrated RGB-only observer during one robot action."""
+
+    def __init__(
+        self,
+        serial: str,
+        output_dir: Path,
+        *,
+        label: str = "C",
+        width: int = 1280,
+        height: int = 720,
+        fps: int = 15,
+        color_exposure: float | None = 700.0,
+        color_white_balance: float | None = 3800.0,
+        codec: str = "mp4v",
+        finalize_h264: bool = True,
+        ffmpeg_binary: str = "ffmpeg",
+        warmup_frames: int = 20,
+    ):
+        self.serial = str(serial).strip()
+        self.label = str(label).strip() or "C"
+        self.output_dir = Path(output_dir).expanduser().resolve()
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = int(fps)
+        self.color_exposure = color_exposure
+        self.color_white_balance = color_white_balance
+        self.codec = str(codec)
+        self.finalize_h264 = bool(finalize_h264)
+        self.ffmpeg_binary = str(ffmpeg_binary)
+        self.warmup_frames = int(warmup_frames)
+        self.pipeline: Any | None = None
+        self.writer: Any | None = None
+        self.started_at_utc: str | None = None
+        self.started_monotonic_ns: int | None = None
+        self.frame_count = 0
+        self.encoded_frame_count = 0
+        self.stop_requested = False
+        self.stop_reason = "not_started"
+        self.errors: list[str] = []
+        self.video_finalization: dict[str, Any] = {}
+        self._closed = False
+        self._snapshot_condition = threading.Condition()
+        self._latest_rgb: ObserverRGBFrame | None = None
+
+    @property
+    def video_path(self) -> Path:
+        return self.output_dir / f"camera_{self.label}_observer_rgb.mp4"
+
+    def start(self) -> None:
+        if self.pipeline is not None:
+            raise RolloutRecorderError("observer recorder has already been started")
+        if not self.serial:
+            raise RolloutRecorderError("observer camera serial must be non-empty")
+        if min(self.width, self.height, self.fps) <= 0:
+            raise RolloutRecorderError("observer RGB width/height/fps must be positive")
+        if self.warmup_frames < 0 or self.warmup_frames > 300:
+            raise RolloutRecorderError("observer warmup_frames must be between 0 and 300")
+        try:
+            import pyrealsense2 as rs
+        except ImportError as exc:
+            raise RolloutRecorderError(
+                "pyrealsense2 is required for the observer RGB camera"
+            ) from exc
+        context = rs.context()
+        available = {
+            device.get_info(rs.camera_info.serial_number)
+            for device in context.query_devices()
+        }
+        if self.serial not in available:
+            raise RolloutRecorderError(
+                f"observer camera {self.serial} is not connected; available={sorted(available)}"
+            )
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        camera_config = rs.config()
+        camera_config.enable_device(self.serial)
+        camera_config.enable_stream(
+            rs.stream.color,
+            self.width,
+            self.height,
+            rs.format.rgb8,
+            self.fps,
+        )
+        pipeline = rs.pipeline()
+        try:
+            profile = pipeline.start(camera_config)
+            camera_spec = CameraSpec(
+                self.label,
+                self.serial,
+                Path("."),
+                self.color_exposure,
+                self.color_white_balance,
+            )
+            _configure_color_exposure(profile.get_device(), camera_spec, rs)
+            for _ in range(self.warmup_frames):
+                pipeline.wait_for_frames(2000)
+            self.writer = _open_writer(
+                self.video_path,
+                self.width,
+                self.height,
+                self.fps,
+                self.codec,
+            )
+            self.pipeline = pipeline
+            self.started_at_utc = _now()
+            self.started_monotonic_ns = time.monotonic_ns()
+            self.stop_reason = "recording"
+        except BaseException:
+            try:
+                pipeline.stop()
+            except Exception:
+                pass
+            if self.writer is not None:
+                try:
+                    self.writer.release()
+                except Exception:
+                    pass
+                self.writer = None
+            raise
+
+    def record(self) -> dict[str, Any]:
+        if self.pipeline is None or self.writer is None or self.started_monotonic_ns is None:
+            raise RolloutRecorderError("call start() before record()")
+        cv2 = _require_cv2()
+        try:
+            while not self.stop_requested:
+                frames = self.pipeline.wait_for_frames(2000)
+                color = frames.get_color_frame()
+                if not color:
+                    raise RolloutRecorderError(
+                        f"observer camera {self.serial} returned no color frame"
+                    )
+                rgb = np.asanyarray(color.get_data()).copy()
+                host_utc = _now()
+                host_monotonic_ns = time.monotonic_ns()
+                with self._snapshot_condition:
+                    self._latest_rgb = ObserverRGBFrame(
+                        label=self.label,
+                        serial=self.serial,
+                        rgb=rgb.copy(),
+                        host_utc=host_utc,
+                        host_monotonic_ns=host_monotonic_ns,
+                        color_frame_number=int(color.get_frame_number()),
+                        color_device_timestamp_ms=float(color.get_timestamp()),
+                    )
+                    self._snapshot_condition.notify_all()
+                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                elapsed_s = (time.monotonic_ns() - self.started_monotonic_ns) / 1e9
+                labelled = _label_frame(
+                    bgr,
+                    f"Camera {self.label} observer RGB",
+                    elapsed_s,
+                )
+                self.writer.write(labelled)
+                self.frame_count += 1
+                self.encoded_frame_count += 1
+        except KeyboardInterrupt:
+            self.stop_reason = "keyboard_interrupt"
+        except BaseException as exc:
+            self.stop_reason = "recording_error"
+            self.errors.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            self.close()
+        return self.manifest()
+
+    def request_stop(self, reason: str = "stop_requested") -> None:
+        self.stop_reason = str(reason)
+        self.stop_requested = True
+        with self._snapshot_condition:
+            self._snapshot_condition.notify_all()
+
+    def wait_for_latest_rgb(
+        self,
+        *,
+        after_monotonic_ns: int = 0,
+        timeout_s: float = 3.0,
+    ) -> ObserverRGBFrame:
+        """Return a fresh observer frame without reopening Camera C.
+
+        The recorder thread remains the sole owner of the RealSense pipeline.
+        This avoids the camera-contention race that would occur if a checkpoint
+        callback opened a second pipeline while the rollout video was running.
+        """
+
+        if timeout_s <= 0:
+            raise ValueError("observer snapshot timeout_s must be positive")
+        deadline = time.monotonic() + float(timeout_s)
+        with self._snapshot_condition:
+            while True:
+                frame = self._latest_rgb
+                if frame is not None and frame.host_monotonic_ns > int(after_monotonic_ns):
+                    return ObserverRGBFrame(
+                        label=frame.label,
+                        serial=frame.serial,
+                        rgb=frame.rgb.copy(),
+                        host_utc=frame.host_utc,
+                        host_monotonic_ns=frame.host_monotonic_ns,
+                        color_frame_number=frame.color_frame_number,
+                        color_device_timestamp_ms=frame.color_device_timestamp_ms,
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    latest = None if frame is None else frame.host_monotonic_ns
+                    raise RolloutRecorderError(
+                        "timed out waiting for a fresh Camera-C observer frame: "
+                        f"after={after_monotonic_ns} latest={latest}"
+                    )
+                if self._closed and frame is None:
+                    raise RolloutRecorderError(
+                        "observer recorder closed before a fresh snapshot became available"
+                    )
+                self._snapshot_condition.wait(timeout=remaining)
+
+    def save_snapshot(
+        self,
+        output_path: Path,
+        *,
+        after_monotonic_ns: int = 0,
+        timeout_s: float = 3.0,
+    ) -> dict[str, Any]:
+        """Save one fresh RGB frame for an action-boundary evidence checkpoint."""
+
+        frame = self.wait_for_latest_rgb(
+            after_monotonic_ns=after_monotonic_ns,
+            timeout_s=timeout_s,
+        )
+        output = Path(output_path).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        from PIL import Image
+
+        Image.fromarray(frame.rgb).save(output)
+        return {
+            "status": "CAPTURED",
+            "label": frame.label,
+            "serial": frame.serial,
+            "image": str(output),
+            "host_utc": frame.host_utc,
+            "host_monotonic_ns": frame.host_monotonic_ns,
+            "color_frame_number": frame.color_frame_number,
+            "color_device_timestamp_ms": frame.color_device_timestamp_ms,
+            "source": "observer_rollout_recorder_latest_frame",
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        with self._snapshot_condition:
+            self._snapshot_condition.notify_all()
+        if self.writer is not None:
+            try:
+                self.writer.release()
+            except Exception:
+                pass
+            self.writer = None
+        if self.pipeline is not None:
+            try:
+                self.pipeline.stop()
+            except Exception as exc:
+                self.errors.append(f"camera stop: {type(exc).__name__}: {exc}")
+            self.pipeline = None
+        if self.finalize_h264 and self.video_path.is_file():
+            try:
+                self.video_finalization[self.video_path.name] = finalize_mp4_h264(
+                    self.video_path,
+                    ffmpeg_binary=self.ffmpeg_binary,
+                )
+            except BaseException as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                self.video_finalization[self.video_path.name] = {
+                    "status": "failed",
+                    "error": message,
+                }
+                self.errors.append(f"{self.video_path.name} finalization: {message}")
+        if self.stop_reason == "recording":
+            self.stop_reason = "closed"
+        if self.output_dir.is_dir():
+            (self.output_dir / "observer_recording_manifest.json").write_text(
+                json.dumps(self.manifest(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    def manifest(self) -> dict[str, Any]:
+        duration_s = (
+            None
+            if self.started_monotonic_ns is None
+            else (time.monotonic_ns() - self.started_monotonic_ns) / 1e9
+        )
+        output_codec = (
+            "h264"
+            if self.video_finalization
+            and all(item.get("status") == "completed" for item in self.video_finalization.values())
+            else self.codec
+        )
+        return {
+            "schema_version": 1,
+            "created_at": self.started_at_utc,
+            "ended_at": _now(),
+            "duration_s": duration_s,
+            "stop_reason": self.stop_reason,
+            "robot_control": False,
+            "calibrated": False,
+            "geometry_used": False,
+            "label": self.label,
+            "serial": self.serial,
+            "resolution": [self.width, self.height],
+            "fps": self.fps,
+            "codec": output_codec,
+            "capture_codec": self.codec,
+            "h264_finalization_enabled": self.finalize_h264,
+            "video_finalization": dict(self.video_finalization),
+            "frame_count": self.frame_count,
+            "encoded_video_frame_count": self.encoded_frame_count,
+            "rgb_video": self.video_path.name,
             "errors": list(self.errors),
         }
 

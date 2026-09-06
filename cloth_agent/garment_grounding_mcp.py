@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -283,6 +283,19 @@ class GarmentGrounding:
             return None
         return mask
 
+    def _support_ring_stats(self, camera: str) -> dict[str, Any] | None:
+        """Load the local support-ring estimate saved by perception, if any."""
+
+        label = self._camera(camera)
+        path = self._path(f"camera_{label}_local_support.json")
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def _minimum_grasp_height_mm(self) -> float:
         """Read the run's shared minimum engagement height when available."""
 
@@ -321,6 +334,19 @@ class GarmentGrounding:
             return bool(value)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return True
+
+    def _support_layer_settings(self) -> dict[str, Any]:
+        """Read the run-local support-layer settings for audit/validation."""
+
+        config_path = self.perception_dir.parent / "robot_config.json"
+        if not config_path.is_file():
+            return {"type": "none"}
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            settings = payload.get("support_layer", {})
+            return dict(settings) if isinstance(settings, dict) else {"type": "none"}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {"type": "none"}
 
     @staticmethod
     def _patch_stats(
@@ -646,6 +672,95 @@ class GarmentGrounding:
             local_table = local_table[np.isfinite(local_table)]
             if len(local_table):
                 result["table_z_median_mm"] = float(np.percentile(local_table, 50))
+        support_settings = self._support_layer_settings()
+        result["support_layer_type"] = str(
+            support_settings.get("type", "none")
+        ).strip().lower()
+        result["support_layer_confirmed"] = bool(
+            support_settings.get("confirmed", False)
+        )
+        for key in (
+            "thickness_mm",
+            "press_mm",
+            "max_compression_mm",
+            "hard_table_clearance_mm",
+            "presence_threshold_mm",
+        ):
+            value = support_settings.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[f"support_layer_{key}"] = float(value)
+        support_ring = self._support_ring_stats(label)
+        if isinstance(support_ring, Mapping):
+            result["local_support_ring"] = dict(support_ring)
+            result["local_support_ring_valid"] = bool(support_ring.get("valid") is True)
+            raw_coefficients = support_ring.get("local_plane_coefficients")
+            if (
+                result["local_support_ring_valid"]
+                and isinstance(raw_coefficients, (list, tuple))
+                and len(raw_coefficients) == 3
+                and all(
+                    isinstance(value, (int, float))
+                    and math.isfinite(float(value))
+                    for value in raw_coefficients
+                )
+            ):
+                surface_xy = result["base_xyz_median_mm"][:2]
+                result["local_support_z_median_mm"] = float(
+                    float(raw_coefficients[0]) * float(surface_xy[0])
+                    + float(raw_coefficients[1]) * float(surface_xy[1])
+                    + float(raw_coefficients[2])
+                )
+                raw_elevation = support_ring.get("ring_elevation_median_mm")
+                if (
+                    isinstance(raw_elevation, (int, float))
+                    and not isinstance(raw_elevation, bool)
+                    and math.isfinite(float(raw_elevation))
+                ):
+                    result["local_support_ring_elevation_mm"] = float(raw_elevation)
+                    raw_threshold = support_settings.get("presence_threshold_mm", 3.0)
+                    threshold = (
+                        float(raw_threshold)
+                        if isinstance(raw_threshold, (int, float))
+                        and not isinstance(raw_threshold, bool)
+                        and math.isfinite(float(raw_threshold))
+                        else 3.0
+                    )
+                    ring_support_confirmed = bool(
+                        result["local_support_ring_elevation_mm"] >= threshold
+                    )
+                    declared_support_confirmed = bool(
+                        result.get("support_layer_confirmed") is True
+                    )
+                    result["support_layer_active"] = bool(
+                        result.get("support_layer_type") == "sponge"
+                        and (declared_support_confirmed or ring_support_confirmed)
+                    )
+                    if result["support_layer_active"]:
+                        result["support_layer_activation_source"] = (
+                            "declared_configuration"
+                            if declared_support_confirmed
+                            else "local_support_ring"
+                        )
+            else:
+                result["local_support_ring_valid"] = False
+            # A confirmed local support layer may be intentionally hidden under
+            # the garment, so an annulus outside the mask can see hard table or
+            # become unusable.  Keep the declaration authoritative for the
+            # compression allowance while preserving the ring diagnostics.
+            if (
+                result.get("support_layer_type") == "sponge"
+                and result.get("support_layer_confirmed") is True
+            ):
+                result["support_layer_active"] = True
+                result["support_layer_activation_source"] = (
+                    "declared_configuration"
+                )
+        elif (
+            result.get("support_layer_type") == "sponge"
+            and result.get("support_layer_confirmed") is True
+        ):
+            result["support_layer_active"] = True
+            result["support_layer_activation_source"] = "declared_configuration"
         # Camera A is still authoritative for the action pixel and XY, but a
         # dense fused cloud can provide a better surface-Z estimate when the
         # two cameras see the same cloth at different heights.  Keep the raw
@@ -816,7 +931,10 @@ PIXEL_TOOLS: list[dict[str, Any]] = [
             "The result includes a triage-only surface_shape_diagnostic; when it sets "
             "compression_probe_recommended=true, close at the recommended shallow depth "
             "and inspect whether the peak collapses toward its neighbours before any "
-            "lateral transport."
+            "lateral transport. When a run config declares a sponge support layer, the "
+            "result also reports the local support-ring estimate; an explicitly confirmed "
+            "support layer or a confirmed elevated ring enables the deeper configured "
+            "press allowance."
         ),
         "inputSchema": {
             "type": "object",

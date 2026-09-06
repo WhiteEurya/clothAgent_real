@@ -130,6 +130,29 @@ def test_zero_relative_yaw_preserves_calibrated_home_gripper_orientation() -> No
     assert config.command_yaw_deg(15) == pytest.approx(-174.430865)
 
 
+def test_yaw_dependent_y_workspace_extension_is_zero_at_home_and_half_width_at_90() -> None:
+    config = RobotConfig(**{**robot_config().__dict__, "gripper_width_mm": 80.0})
+
+    assert config.y_workspace_extension_mm(0.0) == pytest.approx(0.0)
+    assert config.y_workspace_extension_mm(45.0) == pytest.approx(40.0 * 2**-0.5)
+    assert config.y_workspace_extension_mm(90.0) == pytest.approx(40.0)
+    assert config.y_workspace_extension_mm(-90.0) == pytest.approx(40.0)
+    assert config.y_workspace_extension_mm(180.0) == pytest.approx(0.0)
+
+
+def test_robot_move_uses_yaw_dependent_y_workspace_extension() -> None:
+    config = RobotConfig(**{**robot_config().__dict__, "gripper_width_mm": 80.0})
+    api = RobotAPI(config, SimulatedBackend(config))
+
+    with pytest.raises(SafetyError, match="above the safe upper bound"):
+        api.move(500.0, 430.0, 100.0, 0.0)
+
+    # At yaw=90 the TCP-center envelope extends by half the configured width.
+    widened_api = RobotAPI(config, SimulatedBackend(config))
+    widened_api.move(500.0, 430.0, 100.0, 90.0)
+    assert widened_api.actions[-1].success is True
+
+
 def test_viewer_canonical_source_and_waypoints() -> None:
     config = robot_config()
     experiment = ExperimentConfig(500, -20, 40, 100, 200, 5)
@@ -391,6 +414,21 @@ def test_controller_ik_uses_home_yaw_for_zero_relative_yaw() -> None:
     _controller_trajectory_with_arm(arm, config, actions)
 
     assert arm.ik_poses[0][5] == pytest.approx(123)
+
+
+def test_controller_trajectory_uses_yaw_dependent_y_workspace_extension() -> None:
+    config = RobotConfig(**{**robot_config().__dict__, "gripper_width_mm": 80.0})
+    action = {"name": "move", "args": {"x": 500.0, "y": 430.0, "z": 100.0, "yaw": 90.0}}
+
+    validated = _controller_trajectory_with_arm(FakeReadOnlyArm(), config, [action])
+    assert validated.validated_sample_count > 0
+
+    with pytest.raises(SafetyError, match="above the safe upper bound"):
+        _controller_trajectory_with_arm(
+            FakeReadOnlyArm(),
+            config,
+            [{**action, "args": {**action["args"], "yaw": 0.0}}],
+        )
 
 
 def test_controller_ik_deduplicates_repeated_cartesian_targets() -> None:

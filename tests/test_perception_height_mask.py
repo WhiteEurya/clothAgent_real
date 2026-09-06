@@ -18,6 +18,7 @@ from cloth_agent.perception import (
     _occlusion_aware_garment_mask,
     _outer_mask_boundary,
     _require_projected_garment_validation,
+    _estimate_local_support_ring,
     _save_camera_height_heatmap,
 )
 
@@ -374,3 +375,41 @@ def test_coordinate_guide_uses_final_garment_mask_not_sparse_projection(
         and 20 <= sample["pixel_xy"][1] <= 55
         for sample in guide["samples"]
     )
+
+
+def test_local_support_ring_uses_only_pixels_around_garment(tmp_path: Path) -> None:
+    height = width = 80
+    intrinsics = np.asarray(
+        [[80.0, 0.0, 39.5], [0.0, 80.0, 39.5], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    rgb = np.full((height, width, 3), 240, dtype=np.uint8)
+    rgb[24:56, 25:55] = 20
+    depth = np.full((height, width), 1.0, dtype=np.float32)
+    frame = RGBDFrame("A", "A1", rgb, depth, intrinsics, np.eye(4))
+    config = PerceptionConfig(
+        cameras=(
+            CameraSpec("A", "A1", tmp_path / "A.yaml"),
+            CameraSpec("B", "B1", tmp_path / "B.yaml"),
+        ),
+        width=width,
+        height=height,
+        temporal_median_frames=1,
+        support_ring_inner_px=2,
+        support_ring_outer_px=8,
+        support_ring_min_pixels=20,
+    )
+    garment_mask = np.zeros((height, width), dtype=bool)
+    garment_mask[24:56, 25:55] = True
+
+    diagnostics, ring_mask = _estimate_local_support_ring(
+        frame,
+        config,
+        garment_mask,
+        np.asarray([0.0, 0.0, 980.0]),
+    )
+
+    assert diagnostics["valid"] is True
+    assert diagnostics["usable_ring_pixel_count"] >= 20
+    assert diagnostics["ring_elevation_median_mm"] == pytest.approx(20.0)
+    assert not np.any(ring_mask & garment_mask)

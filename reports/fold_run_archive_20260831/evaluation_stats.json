@@ -1,0 +1,19 @@
+{
+  "evaluated_iterations": 97,
+  "counts": {
+    "grasp_acquisition=FAILURE": 83,
+    "target_structure_acquired=CONTRADICTED": 88,
+    "transport=UNKNOWN": 92,
+    "laydown=NOT_REACHED": 87,
+    "task_progress=NEUTRAL": 92,
+    "grasp_acquisition=UNKNOWN": 7,
+    "grasp_acquisition=SUCCESS": 5,
+    "laydown=FAILURE": 4,
+    "task_progress=REGRESSED": 3,
+    "laydown=SUCCESS": 1,
+    "target_structure_acquired=SUPPORTED": 1,
+    "transport=INSUFFICIENT": 3,
+    "target_structure_acquired=UNKNOWN": 6,
+    "laydown=UNKNOWN": 3
+  }
+}

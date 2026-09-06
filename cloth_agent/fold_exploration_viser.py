@@ -258,10 +258,10 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
     lines.append(f"- before visibility: `{screen_before.get('visibility', 'unknown')}`")
     lines.append(f"- after visibility: `{screen_after.get('visibility', 'unknown')}`")
     lines.append(
-        f"- supervisor before: `{before.get('next_step', 'unknown')}` / `{before.get('trajectory_decision', 'unknown')}`"
+        f"- supervisor before: `{before.get('current_step', 'unknown')}` / `{before.get('trajectory_decision', 'unknown')}`"
     )
     lines.append(
-        f"- supervisor after: `{after.get('next_step', 'unknown')}` / `{after.get('trajectory_decision', 'unknown')}`"
+        f"- supervisor after: `{after.get('current_step', 'unknown')}` / `{after.get('trajectory_decision', 'unknown')}`"
     )
     task_progress = evaluation.get("task_progress", {}) if isinstance(evaluation, dict) else {}
     if isinstance(task_progress, dict):

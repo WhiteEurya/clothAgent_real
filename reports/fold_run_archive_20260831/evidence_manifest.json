@@ -1,0 +1,748 @@
+{
+  "files": [
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/before_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/before_camera_A.png",
+      "status": "copied",
+      "bytes": 750210,
+      "sha256": "dfd63ecb20ea344265b6c99451d43a53b0d5ddbc01d3898063ab25d56e699cc2",
+      "source_sha256": "dfd63ecb20ea344265b6c99451d43a53b0d5ddbc01d3898063ab25d56e699cc2",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/after_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/after_camera_A.png",
+      "status": "copied",
+      "bytes": 744404,
+      "sha256": "0bcabad47b109bf4987d4f7de40129e7d9b8be8f2d8597af56d15fce7a3e5bed",
+      "source_sha256": "0bcabad47b109bf4987d4f7de40129e7d9b8be8f2d8597af56d15fce7a3e5bed",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/hold_check/camera_C_observer_rgb_hold_check.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/hold_check_camera_C.png",
+      "status": "copied",
+      "bytes": 811207,
+      "sha256": "67d369ff7fb63cbca18749a8a4027926e598246d34757316a7b1befffce4faa4",
+      "source_sha256": "67d369ff7fb63cbca18749a8a4027926e598246d34757316a7b1befffce4faa4",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/evaluation.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/evaluation.json",
+      "status": "copied",
+      "bytes": 8891,
+      "sha256": "1ee5038ebbb33eeb27fd5f4cfee6486ef51f7f1a92782fa6ba8f6b55d779bbf5",
+      "source_sha256": "1ee5038ebbb33eeb27fd5f4cfee6486ef51f7f1a92782fa6ba8f6b55d779bbf5",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/gripper_telemetry.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/gripper_telemetry.json",
+      "status": "copied",
+      "bytes": 5070,
+      "sha256": "ff2ed66a4c9c3958609c1a0aa64bc16f2dc99454d887a38d452891ae8cc94a9d",
+      "source_sha256": "ff2ed66a4c9c3958609c1a0aa64bc16f2dc99454d887a38d452891ae8cc94a9d",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/debug.log",
+      "status": "copied",
+      "bytes": 453391,
+      "sha256": "323d495d5cc384184bdae7074e940d1100cdf0fefc87d533803d4f28fa76c14f",
+      "source_sha256": "323d495d5cc384184bdae7074e940d1100cdf0fefc87d533803d4f28fa76c14f",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/evaluator_video_evidence/camera_C_rgb_contact_sheet.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/camera_C_contact_sheet.png",
+      "status": "copied",
+      "bytes": 2189512,
+      "sha256": "fab5215571326c0ccba96a179fd33576df45678c9d8e3d17e32df4a44436d48d",
+      "source_sha256": "fab5215571326c0ccba96a179fd33576df45678c9d8e3d17e32df4a44436d48d",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/evaluator_video_evidence/camera_AB_DEPTH_rgb_contact_sheet.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/camera_AB_contact_sheet.png",
+      "status": "copied",
+      "bytes": 2587523,
+      "sha256": "488ab6e4a5e3c3ad02efc38dfa5123c91508c0a6292cafe05b0bdad738925a89",
+      "source_sha256": "488ab6e4a5e3c3ad02efc38dfa5123c91508c0a6292cafe05b0bdad738925a89",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/camera_C_observer_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/camera_C_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 366125,
+      "sha256": "b0610bb8c563218b059da1c728522e9e71c8eeaff756b55177de8a6258d29b4f",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/composite_AB_depth.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S1_acquisition_empty_grasp/composite_AB_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 2264088,
+      "sha256": "6c9a98684f0af7c5d3415982f75283ca7891c372d1604e23544ddf64f1139c83",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/before_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/before_camera_A.png",
+      "status": "copied",
+      "bytes": 664759,
+      "sha256": "69723acda169f31f5993ba68982d439d1cbbc1b8be0bd5fb6e51b82a5efe337a",
+      "source_sha256": "69723acda169f31f5993ba68982d439d1cbbc1b8be0bd5fb6e51b82a5efe337a",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/before_raw/camera_1_B.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/before_camera_B.png",
+      "status": "copied",
+      "bytes": 898435,
+      "sha256": "bbf5b68214b2083673659ae4f886decf9038f41387da71d4d3c0e889f5ed28aa",
+      "source_sha256": "bbf5b68214b2083673659ae4f886decf9038f41387da71d4d3c0e889f5ed28aa",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/after_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/after_camera_A.png",
+      "status": "copied",
+      "bytes": 672139,
+      "sha256": "486f20a1bc327b1c4b2f76f04e4bac59991891a6fa6a6ec76e45458c6acbe2e1",
+      "source_sha256": "486f20a1bc327b1c4b2f76f04e4bac59991891a6fa6a6ec76e45458c6acbe2e1",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/after_raw/camera_1_B.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/after_camera_B.png",
+      "status": "copied",
+      "bytes": 891253,
+      "sha256": "4d75b334b51f266ea8ecfcb80f897ac1481fcb7aeb457ff8cc91d31361f53b59",
+      "source_sha256": "4d75b334b51f266ea8ecfcb80f897ac1481fcb7aeb457ff8cc91d31361f53b59",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/evaluation.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/evaluation.json",
+      "status": "copied",
+      "bytes": 5606,
+      "sha256": "dcce514fa3188b04b500c26d1f62e3b1cb31376e56589266a6ce4acc45640c47",
+      "source_sha256": "dcce514fa3188b04b500c26d1f62e3b1cb31376e56589266a6ce4acc45640c47",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/trajectory.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/trajectory.json",
+      "status": "copied",
+      "bytes": 6088,
+      "sha256": "c783dbf01776176bda015cf4accaa6de550f5374b8d6b3d6245e7d1cda35a3c5",
+      "source_sha256": "c783dbf01776176bda015cf4accaa6de550f5374b8d6b3d6245e7d1cda35a3c5",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/evaluator_video_evidence/camera_AB_DEPTH_rgb_contact_sheet.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/camera_AB_contact_sheet.png",
+      "status": "copied",
+      "bytes": 2629688,
+      "sha256": "f203c0e1f55c560a46b0af5cc1571fcc90289d7e26ecf834180e76b1530b770e",
+      "source_sha256": "f203c0e1f55c560a46b0af5cc1571fcc90289d7e26ecf834180e76b1530b770e",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/camera_A_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/camera_A_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 738584,
+      "sha256": "fc8282a219d0f2483c0b54c861d70e554f313d9e91ee7134b0ab88e9e1efbb35",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/composite_AB_depth.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S2_whole_bundle_drag_roll/composite_AB_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 5324427,
+      "sha256": "cb5c1accb14338b58ca8fea16ae56ee9f5f798852b081beee66eb2bbf1459958",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/single_sleeve_camera_A.png",
+      "status": "copied",
+      "bytes": 651362,
+      "sha256": "6b2de483b8077f7557e14237f1797d98c2e961f54b08e22b47944cbdff15c5bc",
+      "source_sha256": "6b2de483b8077f7557e14237f1797d98c2e961f54b08e22b47944cbdff15c5bc",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/claude_rgb_input/camera_A_Rxxx_overlay.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/single_sleeve_rxxx_overlay.png",
+      "status": "copied",
+      "bytes": 678076,
+      "sha256": "410aa8c3e6c6668fe5807ed4d1ac58310576efcd9f9b67fe26394c0aa82fffb0",
+      "source_sha256": "410aa8c3e6c6668fe5807ed4d1ac58310576efcd9f9b67fe26394c0aa82fffb0",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/selected_point_vs_production_mask.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/selected_point_vs_mask.png",
+      "status": "copied",
+      "bytes": 649182,
+      "sha256": "14e848c857df0006d43283925c18ba724386a24c5095f0024c1ab9b42da85422",
+      "source_sha256": "14e848c857df0006d43283925c18ba724386a24c5095f0024c1ab9b42da85422",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/single_sleeve_summary.json",
+      "status": "copied",
+      "bytes": 51141,
+      "sha256": "7db3fed1336506e36a4120427a8c87887b40995122d26798f0fc8b7d51f218a4",
+      "source_sha256": "7db3fed1336506e36a4120427a8c87887b40995122d26798f0fc8b7d51f218a4",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/holdcheck_320mm_debug.log",
+      "status": "copied",
+      "bytes": 11411,
+      "sha256": "de526a8603fc5e22f85686f2807455ea8d7a778808e5881a1fae107df025dc7b",
+      "source_sha256": "de526a8603fc5e22f85686f2807455ea8d7a778808e5881a1fae107df025dc7b",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/holdcheck_320mm_summary.json",
+      "status": "copied",
+      "bytes": 3630,
+      "sha256": "7d1b24b8de33a10ccaea4d4ca39c35b40dc93f74852e27c4d0f5be1068316891",
+      "source_sha256": "7d1b24b8de33a10ccaea4d4ca39c35b40dc93f74852e27c4d0f5be1068316891",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/before_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_before_A.png",
+      "status": "copied",
+      "bytes": 774047,
+      "sha256": "4924958de595d53c2f9a9957c069d9a83915a3643c48686795b345b284521c76",
+      "source_sha256": "4924958de595d53c2f9a9957c069d9a83915a3643c48686795b345b284521c76",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/after_raw/camera_A_rgb_upright.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_after_A.png",
+      "status": "copied",
+      "bytes": 767755,
+      "sha256": "8a8529d7155e84429046913d0b3e8df5b72a3302e384d6a38707dbb563fa89d0",
+      "source_sha256": "8a8529d7155e84429046913d0b3e8df5b72a3302e384d6a38707dbb563fa89d0",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/evaluation.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_evaluation.json",
+      "status": "copied",
+      "bytes": 15323,
+      "sha256": "1a9e1b1b2ec27737c283fcb5ebe887f4004d12fb3d1d41ba3c74055dfd019546",
+      "source_sha256": "1a9e1b1b2ec27737c283fcb5ebe887f4004d12fb3d1d41ba3c74055dfd019546",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/trajectory.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_trajectory.json",
+      "status": "copied",
+      "bytes": 11738,
+      "sha256": "7597a90f887b73b62a4dac342b5d3e803d8390dcdd632cb66f40117bd79480cb",
+      "source_sha256": "7597a90f887b73b62a4dac342b5d3e803d8390dcdd632cb66f40117bd79480cb",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/rollout_recording/camera_C_observer_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_camera_C_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 466753,
+      "sha256": "6740cd5147826bb0d8ffd80aacb2e697126d6778c7f6899d43e0c7e7a878ad8e",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/rollout_recording/composite_AB_depth.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S3_grounding_mask_mismatch/night_iter009_composite_AB_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 3203753,
+      "sha256": "d500cd14d7f805726afffdc310c09d3ebffb13ad87c058d2f799500788a6824e",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S4_latency_context/debug.log",
+      "status": "copied",
+      "bytes": 40574,
+      "sha256": "9a585537076a36a55bd9a2e03ba03cde5123ffbe33b2d24d7b87a7ff6954f934",
+      "source_sha256": "9a585537076a36a55bd9a2e03ba03cde5123ffbe33b2d24d7b87a7ff6954f934",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S4_latency_context/summary.json",
+      "status": "copied",
+      "bytes": 4245,
+      "sha256": "99a264603ce31147c1d716da76c04866dda1dc234a1c5bc8c60dfa82658c27e6",
+      "source_sha256": "99a264603ce31147c1d716da76c04866dda1dc234a1c5bc8c60dfa82658c27e6",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/workspace/persistent_claude_session.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S4_latency_context/persistent_claude_session.json",
+      "status": "copied",
+      "bytes": 311,
+      "sha256": "3100eb037ae340c4afdc2dd1e6b349e56a6e605fd05c62d8bf8ceee16a9f2e0b",
+      "source_sha256": "3100eb037ae340c4afdc2dd1e6b349e56a6e605fd05c62d8bf8ceee16a9f2e0b",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S4_latency_context/night_debug_timing.log",
+      "status": "copied",
+      "bytes": 453391,
+      "sha256": "323d495d5cc384184bdae7074e940d1100cdf0fefc87d533803d4f28fa76c14f",
+      "source_sha256": "323d495d5cc384184bdae7074e940d1100cdf0fefc87d533803d4f28fa76c14f",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/iteration_001/rollout_recording/composite_AB_depth.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S4_latency_context/context_iter001_composite_AB_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 2576012,
+      "sha256": "c30412c34fad440cda641d52c432e2584ff44f3733c5316637288d76a47f4898",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S5_safety_ik_height/collar_height_summary.json",
+      "status": "copied",
+      "bytes": 10444,
+      "sha256": "289f67aa52d1b25c7d4b79052f149f41d6b703e5c9e950b4ed0e77f816069c87",
+      "source_sha256": "289f67aa52d1b25c7d4b79052f149f41d6b703e5c9e950b4ed0e77f816069c87",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/collar_grasp_overlay.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S5_safety_ik_height/collar_grasp_overlay.png",
+      "status": "copied",
+      "bytes": 514254,
+      "sha256": "a8181260f24d8972454f6b363c1da3df8992e2d950df1c0f577229256ed7d3df",
+      "source_sha256": "a8181260f24d8972454f6b363c1da3df8992e2d950df1c0f577229256ed7d3df",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260830_004839/results/fold_exploration/20260829T164839247141Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S5_safety_ik_height/ik_rejection_debug.log",
+      "status": "copied",
+      "bytes": 13289,
+      "sha256": "10ee1e858fcfd73f8cf1a47703a71a358119eecf4821606e2bd53087732b1a05",
+      "source_sha256": "10ee1e858fcfd73f8cf1a47703a71a358119eecf4821606e2bd53087732b1a05",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260830_004839/results/fold_exploration/20260829T164839247141Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S5_safety_ik_height/ik_rejection_summary.json",
+      "status": "copied",
+      "bytes": 3527,
+      "sha256": "d1742d83da5a71356a91f28f100e37d9e53234bd9ab574ac633336e22571b271",
+      "source_sha256": "d1742d83da5a71356a91f28f100e37d9e53234bd9ab574ac633336e22571b271",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153000/results/single_sleeve_grasp/20260827T073000560573Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S5_safety_ik_height/workspace_lower_bound_summary.json",
+      "status": "copied",
+      "bytes": 54385,
+      "sha256": "cb3419ce00e4229b83f7494493f0c548ea8b408504ba214d495de2994be4e6dd",
+      "source_sha256": "cb3419ce00e4229b83f7494493f0c548ea8b408504ba214d495de2994be4e6dd",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/before_raw/camera_C_observer_rgb.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/camC_before.png",
+      "status": "copied",
+      "bytes": 943764,
+      "sha256": "349e1903579d1c8cf165be29b8accf8ae409819022b15f219d7150744d2fa0e5",
+      "source_sha256": "349e1903579d1c8cf165be29b8accf8ae409819022b15f219d7150744d2fa0e5",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/after_raw/camera_C_observer_rgb.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/camC_after.png",
+      "status": "copied",
+      "bytes": 945967,
+      "sha256": "4f784fea025251c2109a179d0258cbf84df1fabaad41c76e8d4e520e9f44bf29",
+      "source_sha256": "4f784fea025251c2109a179d0258cbf84df1fabaad41c76e8d4e520e9f44bf29",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/gripper_telemetry.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/camC_gripper_telemetry.json",
+      "status": "copied",
+      "bytes": 4216,
+      "sha256": "9332eb2b4767c3b06dc3e284d5ccfd235f0882d3100be72b680fd6eff60d17b5",
+      "source_sha256": "9332eb2b4767c3b06dc3e284d5ccfd235f0882d3100be72b680fd6eff60d17b5",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/evaluation.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/camC_evaluation.json",
+      "status": "copied",
+      "bytes": 10764,
+      "sha256": "149c9ec9416a82b16b48501cc92b709eefbb0b1cda250bcd2265d40538b05412",
+      "source_sha256": "149c9ec9416a82b16b48501cc92b709eefbb0b1cda250bcd2265d40538b05412",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/hold_check/camera_C_observer_rgb_hold_check.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/night_hold_check.png",
+      "status": "copied",
+      "bytes": 811207,
+      "sha256": "67d369ff7fb63cbca18749a8a4027926e598246d34757316a7b1befffce4faa4",
+      "source_sha256": "67d369ff7fb63cbca18749a8a4027926e598246d34757316a7b1befffce4faa4",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/gripper_telemetry.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/night_gripper_telemetry.json",
+      "status": "copied",
+      "bytes": 5070,
+      "sha256": "ff2ed66a4c9c3958609c1a0aa64bc16f2dc99454d887a38d452891ae8cc94a9d",
+      "source_sha256": "ff2ed66a4c9c3958609c1a0aa64bc16f2dc99454d887a38d452891ae8cc94a9d",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/rollout_recording/camera_C_observer_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/camC_rollout_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 535955,
+      "sha256": "a0244b9fd310e60e3691e67c17f6a5e487e23c41459640c5c89636e36af336e5",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/camera_C_observer_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S6_observability_telemetry/night_camC_rollout_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 366125,
+      "sha256": "b0610bb8c563218b059da1c728522e9e71c8eeaff756b55177de8a6258d29b4f",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S7_unattended_state_loop/summary.json",
+      "status": "copied",
+      "bytes": 34116,
+      "sha256": "52f0567926d99df8d7bd8865f360d59a03ee8ed81f5b2910cf9c6baeeaaaee09",
+      "source_sha256": "52f0567926d99df8d7bd8865f360d59a03ee8ed81f5b2910cf9c6baeeaaaee09",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S7_unattended_state_loop/debug.log",
+      "status": "copied",
+      "bytes": 215141,
+      "sha256": "5bf59f1cf247eaa9f0b9571b20b26cb3c7c654c88303005a55de6501aafaaef0",
+      "source_sha256": "5bf59f1cf247eaa9f0b9571b20b26cb3c7c654c88303005a55de6501aafaaef0",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/evaluation.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S7_unattended_state_loop/iteration009_evaluation.json",
+      "status": "copied",
+      "bytes": 15323,
+      "sha256": "1a9e1b1b2ec27737c283fcb5ebe887f4004d12fb3d1d41ba3c74055dfd019546",
+      "source_sha256": "1a9e1b1b2ec27737c283fcb5ebe887f4004d12fb3d1d41ba3c74055dfd019546",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/rollout_recording/camera_C_observer_rgb.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S7_unattended_state_loop/iteration009_camC_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 466753,
+      "sha256": "6740cd5147826bb0d8ffd80aacb2e697126d6778c7f6899d43e0c7e7a878ad8e",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/table_luma_debug.log",
+      "status": "copied",
+      "bytes": 3767,
+      "sha256": "98c9a10a4fbccc5208cdeb70600ca1232a5b2ff5ea223171642379e0d4fe2c87",
+      "source_sha256": "98c9a10a4fbccc5208cdeb70600ca1232a5b2ff5ea223171642379e0d4fe2c87",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/table_luma_summary.json",
+      "status": "copied",
+      "bytes": 4184,
+      "sha256": "5bc1ab04fe78134218b729fd4f75e994eec8ff350c9ef7ef47722ca7bc0deb10",
+      "source_sha256": "5bc1ab04fe78134218b729fd4f75e994eec8ff350c9ef7ef47722ca7bc0deb10",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/iteration_001/before_raw_attempts.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/before_raw_attempts.json",
+      "status": "copied",
+      "bytes": 534,
+      "sha256": "b6003338ac3bc73cb84da34f1acd0120db5ef2799973e8253b841b0914e13848",
+      "source_sha256": "b6003338ac3bc73cb84da34f1acd0120db5ef2799973e8253b841b0914e13848",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260826_002554/results/molmo_keypoint_cli/20260825T162555245893Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/mask_coverage_summary.json",
+      "status": "copied",
+      "bytes": 3290,
+      "sha256": "8a63df925ac2acf01538e23b9f1edd23c54b586f547cb73973927702eba75fab",
+      "source_sha256": "8a63df925ac2acf01538e23b9f1edd23c54b586f547cb73973927702eba75fab",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/iteration_001/lift_checkpoints/LIFT_CHECKPOINT_01/LIFT_CHECKPOINT_01_camera_A_rgb.png",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/overnight_camera_A_reference.png",
+      "status": "copied",
+      "bytes": 664659,
+      "sha256": "4d82dda7624ab015772a9de965ec2b284b4d4dae5b90cb20ddc0185178a74d0c",
+      "source_sha256": "4d82dda7624ab015772a9de965ec2b284b4d4dae5b90cb20ddc0185178a74d0c",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/combined_rollout.mp4",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/structural/S8_capture_quality/overnight_combined_32x.mp4",
+      "speed": 32.0,
+      "status": "copied_32x",
+      "bytes": 886321,
+      "sha256": "3353b5b80c5efd616e98048283478849100869144348da0706836ef888c46a38",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N1_schema_contract/unattended_schema_debug.log",
+      "status": "copied",
+      "bytes": 4375,
+      "sha256": "3aab22adbf2f344c05ab59a4f9620d17adb9743b6f3a0749731b7ae899cf90b6",
+      "source_sha256": "3aab22adbf2f344c05ab59a4f9620d17adb9743b6f3a0749731b7ae899cf90b6",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N1_schema_contract/unattended_schema_summary.json",
+      "status": "copied",
+      "bytes": 2012,
+      "sha256": "feb70f1a95d3e493213cf490c47487dd2eefd3423e1a3a6d7b80f081306edcac",
+      "source_sha256": "feb70f1a95d3e493213cf490c47487dd2eefd3423e1a3a6d7b80f081306edcac",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_molmo_20260828_021707/results/fold_exploration/20260827T181708015508Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N1_schema_contract/molmo_schema_debug.log",
+      "status": "copied",
+      "bytes": 38968,
+      "sha256": "06d19ac395739891e911ef461fb225e7ea036e5a861ecd5d3f76cba913ccf7e8",
+      "source_sha256": "06d19ac395739891e911ef461fb225e7ea036e5a861ecd5d3f76cba913ccf7e8",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_molmo_20260828_021707/results/fold_exploration/20260827T181708015508Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N1_schema_contract/molmo_schema_summary.json",
+      "status": "copied",
+      "bytes": 2694,
+      "sha256": "b7335f7fe2428ff26dfcbfc0c383303da67653f7746a361b0ef83506e631b98e",
+      "source_sha256": "b7335f7fe2428ff26dfcbfc0c383303da67653f7746a361b0ef83506e631b98e",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N1_schema_contract/night_schema_debug.log",
+      "status": "copied",
+      "bytes": 215141,
+      "sha256": "5bf59f1cf247eaa9f0b9571b20b26cb3c7c654c88303005a55de6501aafaaef0",
+      "source_sha256": "5bf59f1cf247eaa9f0b9571b20b26cb3c7c654c88303005a55de6501aafaaef0",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N2_infra_transient/socket_debug.log",
+      "status": "copied",
+      "bytes": 2544,
+      "sha256": "d06f11b0bd2899b501fca00840b7118eca224dffed6c8ecc8be0e25ef33a4b0b",
+      "source_sha256": "d06f11b0bd2899b501fca00840b7118eca224dffed6c8ecc8be0e25ef33a4b0b",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N2_infra_transient/socket_summary.json",
+      "status": "copied",
+      "bytes": 2786,
+      "sha256": "87f1e2c943bd6c72f075ec400911f257eab701a94173ee7c388e32f309a05b29",
+      "source_sha256": "87f1e2c943bd6c72f075ec400911f257eab701a94173ee7c388e32f309a05b29",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021511/results/fold_exploration/20260828T181749340433Z/debug.log",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N2_infra_transient/debug_exception_typeerror.log",
+      "status": "copied",
+      "bytes": 1817,
+      "sha256": "b6a9702c33b90ba3e64cf83bdca5111528c41445688f365681ae936cc205bf19",
+      "source_sha256": "b6a9702c33b90ba3e64cf83bdca5111528c41445688f365681ae936cc205bf19",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_grasp_dry_smoke_20260827/results/single_sleeve_grasp/20260827T063731775651Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N2_infra_transient/api_dns_summary.json",
+      "status": "copied",
+      "bytes": 2614,
+      "sha256": "69f513fe8eb5e4a77ea691392a3cd2c9b247fad993c9f6105ed6f10de78f2115",
+      "source_sha256": "69f513fe8eb5e4a77ea691392a3cd2c9b247fad993c9f6105ed6f10de78f2115",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260825_211257/results/molmo_keypoint_cli/20260825T131258334092Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N3_interruptions_limits/interrupted_summary.json",
+      "status": "copied",
+      "bytes": 1656,
+      "sha256": "b90d085fcaa3a0dd9dbad57805e6d6f68536da7975d8948997439ce57675f817",
+      "source_sha256": "b90d085fcaa3a0dd9dbad57805e6d6f68536da7975d8948997439ce57675f817",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N3_interruptions_limits/max_or_perception_summary.json",
+      "status": "copied",
+      "bytes": 3389,
+      "sha256": "5f0427ea4edfe1b25bf9c9cff6de04d1ad1a8b287860bd52238e46c82c1baa6c",
+      "source_sha256": "5f0427ea4edfe1b25bf9c9cff6de04d1ad1a8b287860bd52238e46c82c1baa6c",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_02/results/collar_lift_retreat/20260824T182117527427Z/summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N3_interruptions_limits/collar_keyboardinterrupt_summary.json",
+      "status": "copied",
+      "bytes": 440,
+      "sha256": "bb59da186f3397ea504cd202f359dc2d54c3d9ce3a8142b390afdf85f5c358a4",
+      "source_sha256": "bb59da186f3397ea504cd202f359dc2d54c3d9ce3a8142b390afdf85f5c358a4",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/unattended_restarts.jsonl",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/nonstructural/N3_interruptions_limits/night_restart_log.jsonl",
+      "status": "copied",
+      "bytes": 93610,
+      "sha256": "0dc3b09b6d52f2426d3c4b3c0062482c8edbd2415b29e1cab037afcb6c0ea93b",
+      "source_sha256": "0dc3b09b6d52f2426d3c4b3c0062482c8edbd2415b29e1cab037afcb6c0ea93b",
+      "source_deleted": true
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/workspace/fold_experience/experience_summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/preserved_experience/fold_night_20260829T173728412271Z/experience_summary.json",
+      "status": "copied",
+      "bytes": 2846214,
+      "sha256": "e1f43cff0a7cfe944dd9fd2d36fa5fad9141ce29cd86d741112f94006a169981",
+      "source_sha256": "e1f43cff0a7cfe944dd9fd2d36fa5fad9141ce29cd86d741112f94006a169981"
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/workspace/fold_experience/experience_summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/preserved_experience/fold_inherit_20260828_225638/experience_summary.json",
+      "status": "copied",
+      "bytes": 1219500,
+      "sha256": "f5a03bc60b81e2ac612f22a4e50d19b279b7d0b575ef4df12f7b5352ef1dffee",
+      "source_sha256": "f5a03bc60b81e2ac612f22a4e50d19b279b7d0b575ef4df12f7b5352ef1dffee"
+    },
+    {
+      "source": "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_grasp_learning_20260828_153842/workspace/fold_experience/experience_summary.json",
+      "destination": "/home/CNS2026330003/agentAuto/clothAgent/reports/fold_run_archive_20260831/preserved_experience/fold_grasp_learning_20260828_153842/experience_summary.json",
+      "status": "copied",
+      "bytes": 965306,
+      "sha256": "62c5d7146142898223144b38f99c362f00c88576f130afe24ce969b6d6e4241c",
+      "source_sha256": "62c5d7146142898223144b38f99c362f00c88576f130afe24ce969b6d6e4241c"
+    }
+  ],
+  "deleted_sources": [
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260825_211257/results/molmo_keypoint_cli/20260825T131258334092Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260826_002554/results/molmo_keypoint_cli/20260825T162555245893Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_02/results/collar_lift_retreat/20260824T182117527427Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/collar_grasp_overlay.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_05/results/collar_lift_retreat/20260825T085016743826Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/after_raw/camera_C_observer_rgb.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/before_raw/camera_C_observer_rgb.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/evaluation.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/gripper_telemetry.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_camC_20260829_031316/results/fold_exploration/20260828T191316890565Z/iteration_001/rollout_recording/camera_C_observer_rgb.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021511/results/fold_exploration/20260828T181749340433Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_gripper_sdk_20260829_021819/results/fold_exploration/20260828T181826742662Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260829_232626/results/fold_exploration/20260829T152626706046Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260830_004839/results/fold_exploration/20260829T164839247141Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_holdcheck_20260830_004839/results/fold_exploration/20260829T164839247141Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/after_raw/camera_1_B.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/after_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/before_raw/camera_1_B.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/before_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/evaluation.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/camera_A_rgb.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/composite_AB_depth.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/rollout_recording/evaluator_video_evidence/camera_AB_DEPTH_rgb_contact_sheet.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_inherit_20260828_225638/results/fold_exploration/20260828T145638429755Z/iteration_001/trajectory.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_molmo_20260828_021707/results/fold_exploration/20260827T181708015508Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_molmo_20260828_021707/results/fold_exploration/20260827T181708015508Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/iteration_001/before_raw_attempts.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260829T194442350392Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/after_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/before_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/evaluation.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/gripper_telemetry.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/hold_check/camera_C_observer_rgb_hold_check.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/camera_C_observer_rgb.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/composite_AB_depth.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/evaluator_video_evidence/camera_AB_DEPTH_rgb_contact_sheet.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/results/fold_exploration/20260830T012849445077Z/iteration_014/rollout_recording/evaluator_video_evidence/camera_C_rgb_contact_sheet.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260829T173728412271Z/unattended_restarts.jsonl",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/after_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/before_raw/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/evaluation.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/rollout_recording/camera_C_observer_rgb.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/rollout_recording/composite_AB_depth.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/iteration_009/trajectory.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_night_20260830T100630383895Z/results/fold_exploration/20260830T100630512236Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/iteration_001/rollout_recording/composite_AB_depth.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/results/fold_exploration/20260828T133951009663Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_persistent_20260828_213950/workspace/persistent_claude_session.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/debug.log",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/fold_unattended_20260827_190930/results/fold_exploration/20260827T110930317675Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/combined_rollout.mp4",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/iteration_001/lift_checkpoints/LIFT_CHECKPOINT_01/LIFT_CHECKPOINT_01_camera_A_rgb.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153000/results/single_sleeve_grasp/20260827T073000560573Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/camera_A_rgb_upright.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/claude_rgb_input/camera_A_Rxxx_overlay.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/selected_point_vs_production_mask.png",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_absolute_depth_20260827_153311/results/single_sleeve_grasp/20260827T073311260124Z/summary.json",
+    "/home/CNS2026330003/agentAuto/clothAgent/runs/single_sleeve_grasp_dry_smoke_20260827/results/single_sleeve_grasp/20260827T063731775651Z/summary.json"
+  ],
+  "preserved_experience": [
+    "preserved_experience/fold_night_20260829T173728412271Z/experience_summary.json",
+    "preserved_experience/fold_inherit_20260828_225638/experience_summary.json",
+    "preserved_experience/fold_grasp_learning_20260828_153842/experience_summary.json"
+  ]
+}

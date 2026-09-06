@@ -1,0 +1,98 @@
+{
+  "target_selection": {
+    "status": "CONTRADICTED",
+    "confidence": 0.76,
+    "evidence": [
+      "The named target is the outer-distal image-left sleeve, but the anchor actually used for this closure resolved to base XY (529.32, -129.45), roughly 70 mm from the validated garment centre (554.77, -63.68) and markedly inboard of every previously grounded sleeve anchor on this lobe, so it sits in the shoulder/armhole region rather than the distal sleeve.",
+      "The grounded measurement returned 61.52 mm fabric top over a 60.98 mm table plane, i.e. about 0.5 mm of relief, which is indistinguishable from bare tabletop and inconsistent with the gathered/rolled mound the repair objective names.",
+      "In the Camera C contact sheet the tool descends and dwells over the mid/upper garment region, not out at the distal end of the image-left sleeve lobe, and the sleeve lobe stays far from the jaws throughout.",
+      "In the before and after canonical upright Camera A RGB the image-left sleeve lobe is a short foreshortened stub with a soft low-contrast distal edge; nothing in either frame shows a raised roll at the location that was actually contacted."
+    ]
+  },
+  "grasp_acquisition": {
+    "status": "FAILURE",
+    "confidence": 0.9,
+    "evidence": [
+      "The Camera C lift hold-check still, captured immediately after the first post-close 35 mm vertical lift, shows the T-shirt flat and fully seated with both sleeves extended and no tent, lifted lip, hanging patch, or independent cloth anywhere.",
+      "In that hold-check still the gripper and its dark vertical shaft are plainly visible above the garment against a bright background with clear cloth/table separation, so the view is not occlusion-limited: nothing is suspended between the jaws.",
+      "Across all 16 Camera C contact-sheet tiles the garment silhouette stays static while the arm enters, descends, dwells, translates, and withdraws; the cloth never deforms, tents, or lifts.",
+      "The Camera AB RGB and depth contact-sheet tiles show the same static garment outline throughout the rollout, with no cloth motion accompanying the tool.",
+      "Telemetry shows position_pulse 0 at close_gripper and through the lift and transport with mechanical_grasp_detected false, consistent with a full-travel close; this telemetry is flagged simulated and never reports state=grasp, so it corroborates rather than establishes the visual verdict."
+    ]
+  },
+  "target_structure_acquired": {
+    "status": "CONTRADICTED",
+    "confidence": 0.88,
+    "evidence": [
+      "The hold-check frame shows no independent hanging material anywhere while every far landmark stays seated on the table, so no separable overlapping layer was isolated.",
+      "The collar, white size label, all chest print tiles, and the bottom hem occupy identical positions in the before and after Camera A upright RGB, so whole-garment drag did not occur either.",
+      "The rolled-wrinkle/curl alternative produced none of its signature: between the before and after garment-only masks the image-left lobe did not become taller, narrower, or more tightly curled, and its footprint did not extend.",
+      "The before and after Camera A garment-only masks show the same contiguous silhouette with both sleeve lobes intact and the same interior print-region holes, so no layer identity change is visible."
+    ]
+  },
+  "transport": {
+    "status": "UNKNOWN",
+    "confidence": 0.87,
+    "evidence": [
+      "The commanded 25 mm outward move executed with empty jaws (position_pulse 0, mechanical_grasp_detected false), so it carried no fabric and tested neither the outward heading nor the distance.",
+      "Camera C contact-sheet tiles show the arm translating at height while the garment remains flat and motionless on the table.",
+      "Because target identity and acquisition failed first, both the outward repair heading and the deferred inward fold heading remain untested and must not be recorded as wrong."
+    ]
+  },
+  "laydown": {
+    "status": "NOT_REACHED",
+    "confidence": 0.88,
+    "evidence": [
+      "No fabric was held, so the descent to z=64.0 mm and the release deposited nothing.",
+      "Telemetry shows position_pulse returning from 0 to 850 at the open_gripper following an empty transport, confirming nothing was released.",
+      "The after Camera A upright RGB shows no new fabric near the image-left sleeve or torso and no crease at the armhole, so the deposit region, controlled descent, and slow near-surface release remain untested on cloth."
+    ]
+  },
+  "task_progress": {
+    "status": "NEUTRAL",
+    "confidence": 0.9,
+    "metrics": {
+      "visible_area_delta": "UNCHANGED",
+      "overlap_delta": "UNCHANGED",
+      "relief_delta": "UNCHANGED",
+      "boundary_change": "No detectable change. The image-left sleeve lobe protrudes with the same outline and the same soft, low-contrast distal edge; it did not become longer, flatter, or narrower, and no distal cuff line became newly resolvable. The garment retains the full contiguous T shape, the collar, size label, print tiles and hem are unmoved, and before/after garment-only mask differences are ragged boundary pixels and interior print-region holes rather than outline motion. The sleeve did not become flatter and its free edge did not become more visible, so the repair objective was not advanced; no inward-fold progress is credited and the ordered ledger stays on left_sleeve."
+    }
+  },
+  "earliest_failure_stage": "TARGET",
+  "next_experiment": {
+    "keep": [
+      "current_step left_sleeve with completed_steps empty, since no repair and no fold occurred and the ordered fold ledger did not advance",
+      "the image-left sleeve lobe as the named target region, still visibly free and unoccluded in the canonical upright frame",
+      "near-vertical entry with zero pre-close lateral travel at low Z and no sweep or scrub, which again left the garment completely undisturbed",
+      "requires_lift_checkpoint=true with a pure vertical first post-close move, which produced a clean, unambiguous acquisition verdict once again",
+      "the short reversible transport cap and the controlled descent with near-surface slow release, which were never exercised on cloth and carry no negative evidence",
+      "all waypoints inside the workspace bounds, which kept the garment away from the table edge and caused no visible disturbance or surface damage"
+    ],
+    "change": [
+      "Anchor identity gate before descending: the anchor used here resolved about 70 mm from the validated garment centre with only ~0.5 mm of relief, i.e. inboard shoulder/armhole cloth at effectively tabletop height, not the outer-distal gathered sleeve the objective names. Require that the resolved metric position lie in the outer-distal sleeve band consistent with previously grounded sleeve anchors, and that engaged height fall inside measured relief of the chosen structure, before any closure.",
+      "Retire the sub-table closing plane as an experimental dimension: this closure was commanded 1.5 mm below the measured table plane and still produced a full-travel empty close with no cloth rising and no visible surface disturbance, so driving the closing plane under a flat seated ply does not create capture.",
+      "Retire single-anchor pinching of this sleeve as a contact family: seven closures across featureless interior, outer band, inclined outboard edge-straddle, an off-target torso-side bite, the thickest measured stack on the garment, and now a sub-table plane all produced identical empty jaws, so height, relief magnitude, contact location, and closing-plane depth are all excluded.",
+      "Escalate to two-contact opposition, where one contact immobilizes cloth well away from the separation point by weight, pinning, or downward hold so opposition exists before any peel or lift, or target a mechanically verified free fabric boundary with visible interior passage or light between plies on both sides.",
+      "Gate closure on positive real-time capture evidence and abort immediately on a full-travel close, instead of executing the remaining lift, transport, laydown, and release on empty jaws as happened in every attempt so far. Note the gripper telemetry here is flagged simulated and never reports state=grasp, so it cannot serve as that gate on its own and must be paired with a visual hold check.",
+      "Re-examine the premise that this sleeve is bunched at all: the condition ledger has carried BUNCHED from a keyword match since the first iteration, while every supervisor reading of the current images describes both sleeves extended with one continuous single-layer thickness gradient and no stacked plateau. If no gathered structure actually exists, REPAIR_SLEEVE has no target and the correct next action is the ordered inward fold attempt rather than an eighth repair variant.",
+      "If two-contact opposition cannot be expressed with the available single-arm move/open_gripper/close_gripper/home primitives, state that infrastructure limit explicitly rather than spending another iteration on a further single-anchor variant."
+    ],
+    "reason": "The earliest failure is target identity, which precedes acquisition, so nothing downstream carries evidence. The anchor actually closed on sat about 70 mm from the validated garment centre with roughly 0.5 mm of measured relief over the table plane, far inboard of every prior sleeve anchor on this lobe and indistinguishable in height from bare tabletop; the Camera C tiles confirm the tool dwelt over the mid/upper garment rather than the distal sleeve. That fails the pre-closure consistency gate, so this iteration did not test the sleeve repair hypothesis at all and its null result is evidence about anchor identity and closure geometry only. Acquisition then failed for the seventh consecutive time: the hold-check still shows the shirt flat and fully seated with the gripper unoccluded above it and nothing suspended, all 16 Camera C tiles show a static silhouette, and telemetry reads full jaw travel with no contact. Both structural hypotheses are contradicted rather than unknown, because a separable layer would have tented while far landmarks stayed seated, and a rolled curl would have tightened or extended its footprint; neither appears. The one fresh hypothesis this action did test, a closing plane below the table plane, is falsified, which together with the previously excluded height, relief magnitude, and contact location leaves no untested single-anchor variable. Transport and laydown ran on empty jaws and must not be re-tuned. Because a genuinely different and safely grounded experiment still exists, correcting anchor identity to the outer-distal sleeve band while escalating to two-contact opposition or a mechanically verified free boundary, the change list is non-empty; but if opposition is not expressible with the available primitives, the honest conclusion is an infrastructure limit rather than another variant."
+  },
+  "skill_update": {
+    "operation": "modify",
+    "name": "null-change-missed-grasp-recovery",
+    "purpose": "Recognise a near-null garment action, separate a clean miss from a contact-without-hold on a compressible pile, reject a closure whose resolved anchor or engaged height is inconsistent with the visually chosen structure, and additionally retire driving the closing plane beneath the support surface as a way to capture a flat seated ply.",
+    "guidance": "Keep the existing null-change and contact-without-hold checks, the escalation rule, and the pre-closure consistency gate on resolved anchor identity and engaged height. Add this lesson about closure depth on thin, flat, fully seated cloth. When a chosen reference measures only a fraction of a millimetre above the support surface, the temptation is to reason that no plane above the surface can enclose the ply and therefore to command closure below the surface plane. Treat that as a dead end rather than a remaining degree of freedom: a single ply pressed flat against a hard surface offers no opposition, so jaws arriving at or beneath its top face still sweep across it and meet with nothing between them, and the attempt adds surface-contact risk without adding diagnostic value. Record such an outcome as evidence that closure depth is exhausted as a dimension, not as evidence about the pull direction, pull distance, deposit region, or release, all of which remain untested. More importantly, treat a near-surface measurement at the intended anchor as a signal that the visually chosen raised structure was never actually resolved: re-ground onto a location whose measured relief matches the structure seen in the images, and if no such location exists, question whether the raised structure exists at all before planning another closure. Once closure depth, contact location, relief magnitude, and entry axis have all been varied without any independent cloth rising in a post-close hold check, stop varying single-contact parameters and require either opposition supplied by immobilizing material well away from the separation point, or a mechanically verified free fabric boundary with visible interior passage between plies.",
+    "rationale": "This iteration contributes a genuinely new and reusable negative result that the existing skill does not cover. The existing guidance stops at rejecting a closure whose engaged height collapses onto the surface plane; it does not say what to do when a planner reasons past that gate and deliberately closes below the surface. That reasoning is superficially compelling and will recur, so the library should record that it was tried and produced the identical empty-jaws outcome, closing off the last single-contact parameter rather than leaving it to be rediscovered. The addition stays high-level, names no coordinates or API calls, and does not duplicate hold-checkpoint-timeout-recovery, which governs escalation thresholds and infrastructure acknowledgement rather than closure-depth reasoning.",
+    "evidence": [
+      "The closure was commanded 1.5 mm below the measured table plane at an anchor whose fabric top sat only about 0.5 mm above that plane, and the Camera C hold-check still after the vertical lift shows the shirt flat and fully seated with the gripper unoccluded above it and nothing suspended between the jaws.",
+      "All 16 Camera C contact-sheet tiles and the Camera AB RGB and depth tiles show a static garment silhouette while the arm enters, descends, dwells, translates, and withdraws.",
+      "Telemetry reports position_pulse 0 at close and through the lift and transport with mechanical_grasp_detected false, consistent with full jaw travel and no captured material.",
+      "The before and after Camera A upright RGB and garment-only masks are indistinguishable apart from ragged boundary pixels and interior print-region holes, so no cloth moved and no surface disturbance resulted.",
+      "The anchor resolved roughly 70 mm from the validated garment centre with about 0.5 mm of relief, far inboard of the previously grounded outer-distal sleeve anchor that measured about 27 mm of relief, showing the visually chosen raised structure was never resolved at this contact."
+    ],
+    "base_skill": "null-change-missed-grasp-recovery",
+    "confidence": 0.72
+  }
+}

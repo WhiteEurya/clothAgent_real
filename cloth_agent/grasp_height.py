@@ -33,6 +33,14 @@ class GraspHeightResolution:
     minimum_compression_mm: float
     maximum_compression_mm: float
     local_surface_z_spread_mm: float | None
+    local_support_z_mm: float | None = None
+    local_support_ring_valid: bool = False
+    local_support_ring_elevation_mm: float | None = None
+    support_layer_active: bool = False
+    support_layer_confirmed: bool = False
+    support_layer_activation_source: str | None = None
+    support_floor_z_mm: float | None = None
+    support_layer_type: str = "none"
     policy: str = "runtime_authoritative_surface_compression"
     valid: bool = True
 
@@ -69,7 +77,10 @@ def resolve_grasp_height(
     The measured surface is the observation. The commanded grasp TCP height is a
     runtime decision and is never delegated to a model. The target presses below
     the measured median surface by the configured amount, unless the robot lower
-    bound or table-clearance floor makes that impossible.
+    bound or support/table safety floor makes that impossible. A configured
+    sponge allowance is considered when the local support-ring diagnostic
+    confirms an elevated compliant layer or the operator has explicitly
+    confirmed the support layer in the robot configuration.
     """
 
     if measurement.get("valid") is not True:
@@ -152,6 +163,32 @@ def resolve_grasp_height(
         robot_config.grasp_table_clearance_mm,
         "robot_config.grasp_table_clearance_mm",
     )
+    support_layer_type = str(
+        getattr(robot_config, "support_layer_type", "none")
+    ).strip().lower()
+    support_layer_thickness_mm = _finite_number(
+        getattr(robot_config, "support_layer_thickness_mm", 0.0),
+        "robot_config.support_layer_thickness_mm",
+    )
+    support_layer_press_mm = _finite_number(
+        getattr(robot_config, "support_layer_press_mm", 0.0),
+        "robot_config.support_layer_press_mm",
+    )
+    support_layer_max_compression_mm = _finite_number(
+        getattr(robot_config, "support_layer_max_compression_mm", 0.0),
+        "robot_config.support_layer_max_compression_mm",
+    )
+    support_layer_hard_clearance_mm = _finite_number(
+        getattr(robot_config, "support_layer_hard_clearance_mm", 0.0),
+        "robot_config.support_layer_hard_clearance_mm",
+    )
+    support_layer_presence_threshold_mm = _finite_number(
+        getattr(robot_config, "support_layer_presence_threshold_mm", 3.0),
+        "robot_config.support_layer_presence_threshold_mm",
+    )
+    support_layer_confirmed = bool(
+        getattr(robot_config, "support_layer_confirmed", False)
+    )
     if minimum_compression_mm <= 0 or maximum_compression_mm < minimum_compression_mm:
         raise GraspHeightError("configured grasp compression interval is invalid")
     if not minimum_compression_mm <= configured_compression_mm <= maximum_compression_mm:
@@ -160,6 +197,32 @@ def resolve_grasp_height(
         )
     if table_clearance_mm < 0:
         raise GraspHeightError("configured grasp table clearance must be non-negative")
+    if support_layer_type not in {"none", "sponge"}:
+        raise GraspHeightError(
+            "configured support layer type must be either 'none' or 'sponge'"
+        )
+    if any(
+        value < 0
+        for value in (
+            support_layer_thickness_mm,
+            support_layer_press_mm,
+            support_layer_max_compression_mm,
+            support_layer_hard_clearance_mm,
+            support_layer_presence_threshold_mm,
+        )
+    ):
+        raise GraspHeightError(
+            "configured support layer values must be finite and non-negative"
+        )
+    if support_layer_type == "sponge":
+        if support_layer_thickness_mm <= 0:
+            raise GraspHeightError("sponge support layer thickness must be positive")
+        if support_layer_press_mm <= 0:
+            raise GraspHeightError("sponge support layer press depth must be positive")
+        if support_layer_max_compression_mm < support_layer_press_mm:
+            raise GraspHeightError(
+                "sponge support layer maximum compression must be at least its press depth"
+            )
     robot_lower_z_mm = float(bounds.z_min + robot_config.lower_z_margin_mm)
     if use_table_floor and math.isfinite(authoritative_table_z_mm):
         table_clearance_lower_z_mm = authoritative_table_z_mm + table_clearance_mm
@@ -170,7 +233,64 @@ def resolve_grasp_height(
         table_clearance_lower_z_mm = float("nan")
         lower_z_mm = robot_lower_z_mm
 
+    local_support_z_mm: float | None = None
+    local_support_ring_valid = bool(
+        measurement.get("local_support_ring_valid") is True
+    )
+    raw_support_z = measurement.get("local_support_z_median_mm")
+    if raw_support_z is not None:
+        local_support_z_mm = _finite_number(
+            raw_support_z,
+            "measurement.local_support_z_median_mm",
+        )
+    local_support_ring_elevation_mm: float | None = None
+    raw_support_elevation = measurement.get("local_support_ring_elevation_mm")
+    if raw_support_elevation is not None:
+        local_support_ring_elevation_mm = _finite_number(
+            raw_support_elevation,
+            "measurement.local_support_ring_elevation_mm",
+        )
+    ring_support_confirmed = bool(
+        local_support_ring_valid
+        and local_support_z_mm is not None
+        and local_support_ring_elevation_mm is not None
+        and local_support_ring_elevation_mm >= support_layer_presence_threshold_mm
+    )
+    support_layer_active = bool(
+        support_layer_type == "sponge"
+        and (support_layer_confirmed or ring_support_confirmed)
+    )
+    support_layer_activation_source: str | None = None
+    if support_layer_active:
+        support_layer_activation_source = (
+            "declared_configuration"
+            if support_layer_confirmed
+            else "local_support_ring"
+        )
+    support_floor_z_mm: float | None = None
+    if support_layer_active and local_support_z_mm is not None:
+        # The ring measures the compliant support's top surface.  Convert it to
+        # a conservative hard-table floor, retaining the robot z_min as an
+        # independent absolute safety gate.
+        support_floor_z_mm = (
+            local_support_z_mm
+            - support_layer_thickness_mm
+            + support_layer_hard_clearance_mm
+        )
+        # Once the local ring confirms the sponge, replace (rather than stack
+        # on top of) the global tabletop floor.  The latter may be the exposed
+        # hard table several centimetres away and must not veto a valid press
+        # into the local compliant patch.
+        lower_z_mm = max(robot_lower_z_mm, support_floor_z_mm)
+
     desired_compression_mm = configured_compression_mm
+    effective_maximum_compression_mm = maximum_compression_mm
+    if support_layer_active:
+        effective_maximum_compression_mm = max(
+            effective_maximum_compression_mm,
+            support_layer_max_compression_mm,
+        )
+        desired_compression_mm = max(desired_compression_mm, support_layer_press_mm)
     diagnostic = measurement.get("surface_shape_diagnostic")
     if isinstance(diagnostic, Mapping):
         raw_recommended = diagnostic.get("recommended_press_below_surface_mm")
@@ -189,7 +309,7 @@ def resolve_grasp_height(
             )
     desired_compression_mm = min(
         max(desired_compression_mm, minimum_compression_mm),
-        maximum_compression_mm,
+        effective_maximum_compression_mm,
     )
 
     target_z_mm = max(surface_z_mm - desired_compression_mm, lower_z_mm)
@@ -202,6 +322,8 @@ def resolve_grasp_height(
             f"plane_table_z={plane_table_z_mm:.2f} mm, "
             f"robot_lower_z={robot_lower_z_mm:.2f} mm, "
             f"table_clearance_lower_z={table_clearance_lower_z_mm:.2f} mm, "
+            f"support_floor_z={support_floor_z_mm!r}, "
+            f"support_layer_active={support_layer_active}, "
             f"required_compression>={minimum_compression_mm:.2f} mm"
         )
 
@@ -226,11 +348,23 @@ def resolve_grasp_height(
         desired_compression_mm=desired_compression_mm,
         achieved_compression_mm=achieved_compression_mm,
         minimum_compression_mm=minimum_compression_mm,
-        maximum_compression_mm=maximum_compression_mm,
+        maximum_compression_mm=effective_maximum_compression_mm,
         local_surface_z_spread_mm=local_surface_z_spread_mm,
+        local_support_z_mm=local_support_z_mm,
+        local_support_ring_valid=local_support_ring_valid,
+        local_support_ring_elevation_mm=local_support_ring_elevation_mm,
+        support_layer_active=support_layer_active,
+        support_layer_confirmed=support_layer_confirmed,
+        support_layer_activation_source=support_layer_activation_source,
+        support_floor_z_mm=support_floor_z_mm,
+        support_layer_type=support_layer_type,
         policy=(
-            "runtime_authoritative_absolute_camera_surface_no_table_floor"
-            if not use_table_floor
-            else "runtime_authoritative_surface_compression"
+            "runtime_authoritative_surface_compression_with_local_sponge_support"
+            if support_layer_active
+            else (
+                "runtime_authoritative_absolute_camera_surface_no_table_floor"
+                if not use_table_floor
+                else "runtime_authoritative_surface_compression"
+            )
         ),
     )

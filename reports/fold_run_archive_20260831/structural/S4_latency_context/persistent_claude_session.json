@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "session_id": "9a9b7a8b-7808-4575-a9d0-6ee925051758",
+  "name": "persistent-fold-agent",
+  "started": true,
+  "turn_count": 12,
+  "stage_counts": {
+    "fold_supervisor": 1,
+    "visual_planning": 4,
+    "final_grounding": 4,
+    "evaluation": 1,
+    "acquisition_evaluation": 2
+  }
+}

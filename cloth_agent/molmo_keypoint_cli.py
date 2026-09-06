@@ -3100,12 +3100,11 @@ def run_keypoint_cli_loop(
                 try:
                     for action in capability_actions:
                         args = action["args"]
-                        session.robot_config.boundaries.validate(
+                        session.robot_config.validate_workspace_pose(
                             args["x"],
                             args["y"],
                             args["z"],
-                            session.robot_config.workspace_margin_mm,
-                            z_lower_margin_mm=session.robot_config.lower_z_margin_mm,
+                            relative_yaw_deg=args["yaw"],
                         )
                     if options.skip_controller_ik:
                         checked["controller_reachability"] = "SKIPPED_DRY_RUN"

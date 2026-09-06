@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-08-24T18:21:17.527490+00:00",
+  "status": "FAILED",
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_02",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/collar_high_lift_02/results/collar_lift_retreat/20260824T182117527427Z",
+  "enable_real": true,
+  "physical_commands_sent": false,
+  "error": "KeyboardInterrupt: ",
+  "completed_at": "2026-08-24T18:21:18.609846+00:00"
+}

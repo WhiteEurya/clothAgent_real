@@ -73,6 +73,7 @@ from .perception import (
     capture_two_view_rgbd,
     load_extrinsics,
 )
+from .persistent_claude import PersistentClaudeSession
 from .robot_api import RobotExecutionError, validate_controller_trajectory
 from .rollout_recorder import DualRealSenseRolloutRecorder
 from .report_figure import compose_camera_perception_report
@@ -255,6 +256,31 @@ AUTO_EVALUATION_JSON_SCHEMA["properties"].update(
         },
     }
 )
+ACQUISITION_EVALUATION_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "grasp_acquisition": AUTO_EVALUATION_JSON_SCHEMA["properties"][
+            "grasp_acquisition"
+        ],
+        "target_structure_acquired": AUTO_EVALUATION_JSON_SCHEMA["properties"][
+            "target_structure_acquired"
+        ],
+        "garment_state_change": {
+            "type": "string",
+            "enum": ["CHANGED", "UNCHANGED", "UNKNOWN"],
+        },
+        "next_experiment": AUTO_EVALUATION_JSON_SCHEMA["properties"][
+            "next_experiment"
+        ],
+    },
+    "required": [
+        "grasp_acquisition",
+        "target_structure_acquired",
+        "garment_state_change",
+        "next_experiment",
+    ],
+}
 VISUAL_PLAN_REQUIRED_FIELDS = frozenset(
     {
         "garment_observation",
@@ -272,8 +298,8 @@ VISUAL_PLAN_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "garment_observation": {"type": "string", "minLength": 1},
-        "opening_strategy": {"type": "string", "minLength": 1},
+        "garment_observation": {"type": "string", "minLength": 1, "maxLength": 1600},
+        "opening_strategy": {"type": "string", "minLength": 1, "maxLength": 1800},
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "selected_reference": {
             "type": "object",
@@ -281,17 +307,17 @@ VISUAL_PLAN_JSON_SCHEMA: dict[str, Any] = {
             "properties": {
                 "camera": {"type": "string", "enum": ["A", "B"]},
                 "reference_id": {"type": "string", "pattern": "^R[0-9]{3,}$"},
-                "reason": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 1400},
             },
             "required": ["camera", "reference_id", "reason"],
         },
-        "motion_intent": {"type": "string", "minLength": 1},
-        "expected_observation": {"type": "string", "minLength": 1},
+        "motion_intent": {"type": "string", "minLength": 1, "maxLength": 1800},
+        "expected_observation": {"type": "string", "minLength": 1, "maxLength": 1400},
         "safety_notes": {
             "type": "array",
             "minItems": 1,
             "maxItems": 10,
-            "items": {"type": "string", "minLength": 1},
+            "items": {"type": "string", "minLength": 1, "maxLength": 400},
         },
         "skill_invocations": {
             "type": "array",
@@ -301,7 +327,7 @@ VISUAL_PLAN_JSON_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
                 "properties": {
                     "name": {"type": "string", "minLength": 1},
-                    "reason": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 500},
                 },
                 "required": ["name", "reason"],
             },
@@ -1105,6 +1131,84 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _support_layer_context(session: AgentSession) -> dict[str, Any]:
+    """Build a compact, auditable support-layer context for Claude.
+
+    The physical support setup is configuration, not something Claude should
+    have to infer from an RGB image.  Include both the operator declaration and
+    the latest local-ring diagnostics so the model understands why a deeper
+    press is or is not authorized.  The host remains authoritative for the
+    final numeric grasp height.
+    """
+
+    robot = session.robot_config
+    configured = str(getattr(robot, "support_layer_type", "none")).strip().lower()
+    confirmed = bool(getattr(robot, "support_layer_confirmed", False))
+    threshold = float(
+        getattr(robot, "support_layer_presence_threshold_mm", 3.0)
+    )
+    ring_by_camera: dict[str, Any] = {}
+    ring_confirmed = False
+    workspace = getattr(session, "workspace", None)
+    if workspace is None:
+        workspace = Path(session.run_dir) / "workspace"
+    perception_dir = Path(workspace) / "perception_views"
+    for label in ("A", "B"):
+        path = perception_dir / f"camera_{label}_local_support.json"
+        payload: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    payload = raw
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+        elevation = payload.get("ring_elevation_median_mm")
+        detected = bool(
+            payload.get("valid") is True
+            and isinstance(elevation, (int, float))
+            and not isinstance(elevation, bool)
+            and math.isfinite(float(elevation))
+            and float(elevation) >= threshold
+        )
+        ring_confirmed = ring_confirmed or detected
+        ring_by_camera[label] = {
+            "valid": payload.get("valid") is True,
+            "ring_elevation_median_mm": elevation,
+            "presence_threshold_mm": threshold,
+            "detected": detected,
+            "source": path.name if path.is_file() else None,
+        }
+    active = bool(configured == "sponge" and (confirmed or ring_confirmed))
+    activation_source = None
+    if active:
+        activation_source = "declared_configuration" if confirmed else "local_support_ring"
+    return {
+        "type": configured,
+        "declared_present": bool(configured == "sponge"),
+        "confirmed": confirmed,
+        "active": active,
+        "activation_source": activation_source,
+        "thickness_mm": float(getattr(robot, "support_layer_thickness_mm", 0.0)),
+        "press_mm": float(getattr(robot, "support_layer_press_mm", 0.0)),
+        "max_compression_mm": float(
+            getattr(robot, "support_layer_max_compression_mm", 0.0)
+        ),
+        "hard_table_clearance_mm": float(
+            getattr(robot, "support_layer_hard_clearance_mm", 0.0)
+        ),
+        "presence_threshold_mm": threshold,
+        "ring_by_camera": ring_by_camera,
+        "policy": (
+            "A confirmed sponge permits the configured deeper press; the host "
+            "computes the final grasp Z from the selected local surface and keeps "
+            "the robot lower bound authoritative."
+            if active
+            else "No deeper sponge allowance is active; retain the ordinary grasp policy."
+        ),
+    }
+
+
 def _command_argument_diagnostics(command: Sequence[str]) -> dict[str, Any]:
     """Return byte-size diagnostics for an argv before spawning a process."""
 
@@ -1187,8 +1291,8 @@ def _write_final_grounding_context(
         grasp_anchor_lines.extend(
             [
                 f"For this {fold_step} sleeve step, Rxxx is a calibrated semantic anchor, not a mandatory closure center.",
-                f"A deliberate learned contact offset up to {_FOLD_GRASP_ANCHOR_OFFSET_MAX_MM:.1f} mm from the anchor is allowed, but only inward toward garment fabric, never outward toward bare table.",
-                "Keep the offset small and explicit in reveal_strategy/safety_notes; the host will map the closure Base XY back into Camera A and require it to remain inside the garment mask.",
+                f"A deliberate learned contact offset up to {_FOLD_GRASP_ANCHOR_OFFSET_MAX_MM:.1f} mm from the anchor is allowed on either side of the observed garment-mask boundary.",
+                "The garment mask is perceptual evidence, not a robot safety boundary: an edge-straddle hypothesis may place the TCP center slightly over visible table so one jaw is outside cloth and one jaw is inside. Keep the offset small and explicit in reveal_strategy/safety_notes; the host still requires a calibrated Camera-A pixel, robot workspace validity, safe Z, preflight, and controller IK.",
                 "Approach and pre-scuff waypoints may shape the entry, but the bounded offset rule applies to the final move immediately before close_gripper.",
             ]
         )
@@ -1201,7 +1305,21 @@ def _write_final_grounding_context(
                 f"Call `lookup_reference` exactly once with camera={selected_camera} and reference_id={selected_id}.",
                 "Use that returned measurement to ground the grasp and compose the final numeric RobotAPI proposal.",
                 "Do not call any other MCP tool.",
+                "The supplied support-layer context is physical setup information, not a visual hypothesis. If it is active or explicitly confirmed, a deeper compressive bite up to the configured press/max-compression values is allowed; do not reject it using a hard-table assumption.",
+                "The host will replace the move immediately before close_gripper with the shared grasp-height resolution from the selected local surface. Treat the host-resolved Z as authoritative and do not compensate by inventing a second Z elsewhere in the trajectory.",
+                "Y workspace is yaw-dependent: action yaw is relative to Home; yaw=0 keeps "
+                "the configured Y bounds unchanged, while the outward allowance is "
+                "0.5 * gripper_width_mm * abs(sin(radians(yaw))) (at +/-90 degrees this "
+                "is half the effective gripper width). This allowance applies only to "
+                "the TCP center and only in Y; host validation recomputes it from every "
+                "actual waypoint and controller IK remains authoritative.",
+                "If using the yaw-dependent Y extension, rotate to the chosen relative yaw "
+                "at an in-bounds waypoint before crossing the original yaw=0 Y limit; "
+                "never move outside the yaw=0 envelope and rotate afterward. Interpolated "
+                "waypoints are checked with their instantaneous yaw allowance.",
                 "Always release before the action list ends and keep at most 12 actions.",
+                "By default, the first move after close_gripper must be a vertical lift for a hold check. If the proposal explicitly sets requires_lift_checkpoint=false, it may instead close while translating for a clearly stated rolling/buckling experiment; this opts out only of the hold-ordering rule, not workspace, Z-range, preflight, or IK validation.",
+                "If the objective contains the explicit ACQUISITION PROBE contract, the returned action list must itself contain only a reversible near-vertical lift probe with no post-close lateral transport; the host will not silently rewrite a full fold plan.",
                 "The objective file is authoritative; do not replace the requested task with generic garment opening.",
                 "",
                 "Return exactly these fields and no others:",
@@ -1212,6 +1330,7 @@ def _write_final_grounding_context(
                 "- expected_observation: string",
                 "- safety_notes: list containing 1 to 10 non-empty strings",
                 "- optional skill_invocations: list of {name,reason}",
+                "- requires_lift_checkpoint: boolean; set false only when this experiment intentionally closes while translating (for example a rolling/buckling bite) and explain that choice in reveal_strategy or safety_notes",
                 "",
                 "For move, args must contain exactly numeric x,y,z,yaw in millimetres/degrees.",
                 "The only permitted actions are move, open_gripper, close_gripper, and home.",
@@ -1603,14 +1722,21 @@ def validate_visual_plan_payload(
     )
 
 
+# The fold pipeline used to describe the supervisor output as
+# ``next incomplete step is left_sleeve``.  The supervisor contract now uses
+# ``current_step`` to mean the action that should be executed immediately, so
+# the parser must accept both forms.  Keep the accepted syntax deliberately
+# narrow: this value is used to activate deterministic sleeve-reference
+# prevalidation before spending a Claude planning call.
 _FOLD_NEXT_STEP_RE = re.compile(
-    r"next incomplete step is\s+(left_sleeve|right_sleeve)\b",
+    r"(?:next\s+incomplete\s+step\s+is|current_step\s*[\"']?\s*(?:is|=|:))"
+    r"\s*[\"']?"
+    r"(left_sleeve|right_sleeve)\b",
     re.IGNORECASE,
 )
 _EXACT_REFERENCE_GRASP_TOLERANCE_MM = 2.0
 _FOLD_GRASP_ANCHOR_OFFSET_MAX_MM = 10.0
 _FOLD_GRASP_OFFSET_PIXEL_MATCH_MAX_MM = 2.0
-_FOLD_GRASP_OUTWARD_PIXEL_TOLERANCE = 2.0
 
 
 def _fold_sleeve_step_from_objective(objective: str | None) -> str | None:
@@ -1774,12 +1900,14 @@ def _validate_fold_grasp_anchor_offset(
     step: str,
     max_offset_mm: float = _FOLD_GRASP_ANCHOR_OFFSET_MAX_MM,
 ) -> dict[str, Any]:
-    """Validate a small inboard closure offset from a calibrated sleeve anchor.
+    """Validate a small closure offset from a calibrated sleeve anchor.
 
     Rxxx remains the measured semantic anchor. A fold planner may use a small,
     deliberate contact offset supported by its physical-outcome history, but
-    the offset must map back to visible garment pixels and may not move outward
-    toward bare table.
+    the offset must map back to a calibrated Camera-A pixel and remain within
+    the bounded physical radius. The garment mask is diagnostic rather than a
+    safety boundary: a closure center just outside cloth is legal for an
+    edge-straddle experiment and may simply produce an observable empty grasp.
     """
 
     if step not in {"left_sleeve", "right_sleeve"}:
@@ -1842,10 +1970,13 @@ def _validate_fold_grasp_anchor_offset(
             f"{_FOLD_GRASP_OFFSET_PIXEL_MATCH_MAX_MM:.1f} mm; nearest error is "
             f"{map_match_error_mm:.1f} mm"
         )
-    if not bool(garment_mask[actual_y, actual_x]):
-        raise ValueError(
-            f"offset closure maps to raw Camera-A pixel [{actual_x}, {actual_y}] "
-            "outside the garment mask"
+    closure_inside_mask = bool(garment_mask[actual_y, actual_x])
+    closure_outside_distance_px = 0.0
+    if not closure_inside_mask:
+        from scipy.ndimage import distance_transform_edt
+
+        closure_outside_distance_px = float(
+            distance_transform_edt(~garment_mask)[actual_y, actual_x]
         )
 
     selected_upright_x = float(height - 1 - selected_y)
@@ -1856,13 +1987,8 @@ def _validate_fold_grasp_anchor_offset(
     else:
         inboard_delta_px = selected_upright_x - actual_upright_x
         inboard_rule = "upright -x toward garment center"
-    if inboard_delta_px < -_FOLD_GRASP_OUTWARD_PIXEL_TOLERANCE:
-        raise ValueError(
-            f"closure offset moves outward by {-inboard_delta_px:.1f} px; "
-            f"{step} requires {inboard_rule}"
-        )
     return {
-        "mode": "bounded_inboard_anchor_offset",
+        "mode": "bounded_sleeve_anchor_offset",
         "step": step,
         "anchor_reference_id": measurement.get("reference_id"),
         "anchor_base_xy_mm": expected_xy.tolist(),
@@ -1875,7 +2001,9 @@ def _validate_fold_grasp_anchor_offset(
         "closure_pixel_map_error_mm": map_match_error_mm,
         "inboard_delta_upright_px": inboard_delta_px,
         "inboard_rule": inboard_rule,
-        "closure_inside_garment_mask": True,
+        "closure_inside_garment_mask": closure_inside_mask,
+        "closure_outside_mask_distance_px": closure_outside_distance_px,
+        "mask_policy": "DIAGNOSTIC_ONLY_EDGE_STRADDLE_ALLOWED",
     }
 
 
@@ -1890,6 +2018,7 @@ class ClaudeAutoClient:
         max_reference_reselections: int = 2,
         skill_guidance: str | None = None,
         skill_names: Sequence[str] | None = None,
+        persistent_session: PersistentClaudeSession | None = None,
     ):
         if max_reference_reselections < 0 or max_reference_reselections > 10:
             raise ValueError("max_reference_reselections must be between 0 and 10")
@@ -1899,6 +2028,7 @@ class ClaudeAutoClient:
         self.max_reference_reselections = max_reference_reselections
         self.skill_guidance = skill_guidance
         self.skill_names = tuple(skill_names or available_skill_names())
+        self.persistent_session = persistent_session
         self.planner = ClaudeExplorationClient(binary=binary, timeout_s=timeout_s)
         self.last_plan_result: ClaudeExplorationResult | None = None
         self.last_visual_plan_result: ClaudeVisualPlanResult | None = None
@@ -1908,6 +2038,15 @@ class ClaudeAutoClient:
         self.last_reference_candidate_report: dict[str, Any] | None = None
         self.last_grounding_verification: dict[str, Any] | None = None
         self.last_evaluation_result: ClaudeEvaluationResult | None = None
+
+    def _prepare_command(self, command: Sequence[str], *, stage: str) -> list[str]:
+        if self.persistent_session is None:
+            return [str(item) for item in command]
+        return self.persistent_session.prepare_command(command, stage=stage)
+
+    def _record_successful_turn(self, *, stage: str, stdout: str) -> None:
+        if self.persistent_session is not None:
+            self.persistent_session.record_success(stage=stage, stdout=stdout)
 
     @staticmethod
     def _save_evaluation_log(root: Path, payload: dict[str, Any], *, failed: bool = False) -> None:
@@ -1991,7 +2130,10 @@ class ClaudeAutoClient:
             f"Garment images to inspect:\n{image_text}\n\n"
             "When the canonical upright Camera-A RGB and Rxxx overlay are supplied, "
             "they are the only authoritative frame for image-left/image-right garment "
-            "semantics. They show the same rotated pixels and the same Rxxx identities. "
+            "semantics: LEFT means the viewer's left side of the displayed image "
+            "(smaller upright x), and RIGHT means the viewer's right side (larger "
+            "upright x). Do not use the wearer's anatomical left/right and do not "
+            "mirror the image. They show the same rotated pixels and the same Rxxx identities. "
             "Do not reinterpret an Rxxx from a sideways/raw orientation. Before naming "
             "a sleeve reference, visually verify that its marker is on the requested "
             "sleeve fabric, not the torso interior, chest print, opposite sleeve, label, "
@@ -2042,6 +2184,7 @@ class ClaudeAutoClient:
                 "write files, execute commands, call MCP tools, or control a robot."
             ),
         ]
+        command = self._prepare_command(command, stage="visual_planning")
         started = time.monotonic()
         try:
             completed = subprocess.run(
@@ -2055,6 +2198,10 @@ class ClaudeAutoClient:
             )
         except subprocess.TimeoutExpired as exc:
             duration_s = time.monotonic() - started
+            if self.persistent_session is not None:
+                self.persistent_session.rollover(
+                    reason="claude_timeout", stage="visual_planning"
+                )
             error = (
                 f"ExplorationTimeoutError: Claude visual planning timed out after "
                 f"{self.timeout_s} seconds"
@@ -2082,6 +2229,19 @@ class ClaudeAutoClient:
             ) from exc
         duration_s = time.monotonic() - started
         if completed.returncode != 0:
+            if self.persistent_session is not None:
+                if self.persistent_session.is_session_conflict_error(
+                    completed.stdout, completed.stderr
+                ):
+                    self.persistent_session.rollover(
+                        reason="claude_session_conflict", stage="visual_planning"
+                    )
+                elif self.persistent_session.is_context_limit_error(
+                    completed.stdout, completed.stderr
+                ):
+                    self.persistent_session.rollover(
+                        reason="claude_context_limit", stage="visual_planning"
+                    )
             self._save_visual_log(
                 root,
                 {
@@ -2100,6 +2260,10 @@ class ClaudeAutoClient:
                 f"Claude visual planning exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
+        self._record_successful_turn(
+            stage="visual_planning",
+            stdout=completed.stdout,
+        )
         try:
             decision = validate_visual_plan_payload(
                 _json_from_claude_text(completed.stdout),
@@ -2155,12 +2319,22 @@ class ClaudeAutoClient:
                 measurement=measurement,
             )
 
-        bounds = session.robot_config.boundaries
-        margin = float(session.robot_config.workspace_margin_mm)
+        robot_config = session.robot_config
+        bounds = robot_config.boundaries
+        margin = float(robot_config.workspace_margin_mm)
+        # Stage 2 runs before Claude has supplied action waypoints/yaw.  Do
+        # not reject an otherwise valid edge reference merely because the
+        # eventual gripper orientation may permit the configured maximum
+        # half-width extension.  The final action is rechecked with its actual
+        # relative yaw by RobotAPI and the controller trajectory validator.
+        potential_y_low, potential_y_high = robot_config.y_workspace_bounds_mm(90.0)
         violations: list[str] = []
         for axis, value in (("x", float(xyz[0])), ("y", float(xyz[1]))):
             low = getattr(bounds, f"{axis}_min")
             high = getattr(bounds, f"{axis}_max")
+            if axis == "y":
+                low = potential_y_low
+                high = potential_y_high
             if low is not None and value < float(low) + margin:
                 violations.append(
                     f"{axis}={value:.3f} is below the safe lower bound "
@@ -2178,6 +2352,14 @@ class ClaudeAutoClient:
                 "; ".join(violations),
                 measurement=measurement,
             )
+
+        measurement["workspace_candidate_validation"] = {
+            "mode": "maximum_yaw_extension_before_final_action_yaw_is_known",
+            "relative_yaw_deg_assumed": 90.0,
+            "y_extension_mm": robot_config.y_workspace_extension_mm(90.0),
+            "effective_y_bounds_mm": [potential_y_low, potential_y_high],
+            "final_action_validation": "actual relative yaw is checked by host and controller IK",
+        }
 
         fold_step = _fold_sleeve_step_from_objective(objective)
         if fold_step is not None:
@@ -2356,6 +2538,11 @@ class ClaudeAutoClient:
         return {
             "step": step,
             "reference_mode": "uniform_full_garment",
+            "workspace_y_extension_policy": {
+                "candidate_prevalidation": "maximum possible extension at |yaw|=90; final action yaw is revalidated",
+                "gripper_width_mm": session.robot_config.gripper_width_mm,
+                "maximum_extension_mm": session.robot_config.y_workspace_extension_mm(90.0),
+            },
             "visible_reference_count": len(accepted) + len(rejected),
             "executable_reference_count": len(accepted),
             "executable_reference_ids": [
@@ -2399,9 +2586,34 @@ class ClaudeAutoClient:
                 "surface_z_mm": session.experiment_config.grasp_z,
             },
             "workspace_bounds_mm": asdict(session.robot_config.boundaries),
+            "yaw_dependent_workspace": {
+                "relative_yaw_definition": (
+                    "action yaw is relative to the calibrated Home TCP orientation"
+                ),
+                "gripper_width_mm": float(session.robot_config.gripper_width_mm),
+                "y_extension_formula": (
+                    "0.5 * gripper_width_mm * abs(sin(radians(relative_yaw_deg)))"
+                ),
+                "y_extension_at_0_deg_mm": session.robot_config.y_workspace_extension_mm(0.0),
+                "y_extension_at_90_deg_mm": session.robot_config.y_workspace_extension_mm(90.0),
+                "policy": (
+                    "yaw=0 keeps the calibrated Y bounds; +/-90 degrees permits "
+                    "up to half the configured effective gripper width for the TCP "
+                    "center only. Final host and controller validation remain required."
+                ),
+            },
             "fixed_orientation_deg": {
                 "roll": session.robot_config.orientation_roll_deg,
                 "pitch": session.robot_config.orientation_pitch_deg,
+            },
+            "support_layer": _support_layer_context(session),
+            "grasp_height_policy": {
+                "surface_compression_mm": session.robot_config.grasp_surface_compression_mm,
+                "min_compression_mm": session.robot_config.grasp_min_compression_mm,
+                "max_compression_mm": session.robot_config.grasp_max_compression_mm,
+                "table_clearance_mm": session.robot_config.grasp_table_clearance_mm,
+                "use_table_clearance_floor": session.robot_config.grasp_use_table_clearance_floor,
+                "final_z_authority": "host_resolve_grasp_height",
             },
         }
         if workspace_recovery is not None:
@@ -2424,6 +2636,15 @@ class ClaudeAutoClient:
                 "After the target is validated, preserve that target and make meaningful progress "
                 "toward the requested state. Do not turn the user task into a generic garment "
                 "opening, spreading, or outward-transport objective."
+            )
+        if "EXECUTION CONTRACT — ACQUISITION PROBE" in objective:
+            mode_action_instruction = (
+                "Follow the explicit ACQUISITION PROBE contract in the objective. "
+                "Claude must return the reversible probe directly: approach/open/close, "
+                "one or more near-vertical post-close lift checkpoints, reversal, "
+                "release, and optional home. Do not include post-close lateral transport "
+                "or fold laydown. The host will validate this contract but will not "
+                "rewrite a full fold trajectory into a different probe."
             )
         context_bundle = _write_final_grounding_context(
             root,
@@ -2470,6 +2691,7 @@ class ClaudeAutoClient:
                 "Do not read images, write files, execute commands, or control a robot."
             ),
         ]
+        command = self._prepare_command(command, stage="final_grounding")
         command_diagnostics = _command_argument_diagnostics(command)
         if command_diagnostics["largest_argument_bytes"] >= 120_000:
             raise ExplorationPlanningError(
@@ -2492,6 +2714,10 @@ class ClaudeAutoClient:
                 f"ExplorationTimeoutError: Claude final grounding timed out after "
                 f"{self.grounding_timeout_s} seconds"
             )
+            if self.persistent_session is not None:
+                self.persistent_session.rollover(
+                    reason="claude_timeout", stage="final_grounding"
+                )
             self.planner._save_invocation_log(
                 root,
                 {
@@ -2515,6 +2741,19 @@ class ClaudeAutoClient:
             ) from exc
         duration_s = time.monotonic() - started
         if completed.returncode != 0:
+            if self.persistent_session is not None:
+                if self.persistent_session.is_session_conflict_error(
+                    completed.stdout, completed.stderr
+                ):
+                    self.persistent_session.rollover(
+                        reason="claude_session_conflict", stage="final_grounding"
+                    )
+                elif self.persistent_session.is_context_limit_error(
+                    completed.stdout, completed.stderr
+                ):
+                    self.persistent_session.rollover(
+                        reason="claude_context_limit", stage="final_grounding"
+                    )
             self.planner._save_invocation_log(
                 root,
                 {
@@ -2536,6 +2775,10 @@ class ClaudeAutoClient:
                 f"Claude final grounding exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
+        self._record_successful_turn(
+            stage="final_grounding",
+            stdout=completed.stdout,
+        )
         payload_normalizations: list[str] = []
         try:
             grounded_payload, payload_normalizations = (
@@ -2663,6 +2906,53 @@ class ClaudeAutoClient:
         self.planner._save_invocation_log(root, payload)
         return result
 
+    def repair_last_grounding_plan(
+        self,
+        session: AgentSession,
+        objective: str,
+        *,
+        feedback: str,
+        history: Sequence[dict[str, Any]] | None = None,
+    ) -> ExplorationProposal:
+        """Recompile the last visual decision once after a host rejection.
+
+        A failure discovered after visual selection usually requires a compact
+        trajectory correction, not another image-reasoning pass. The selected
+        Rxxx stays fixed for this repair. If it still fails, the pipeline asks
+        for a fresh visual plan on the following attempt.
+        """
+
+        visual_result = self.last_visual_plan_result
+        if visual_result is None:
+            raise ExplorationPlanningError(
+                "cannot repair final grounding without a previous visual decision"
+            )
+        repair_objective = (
+            f"{objective}\n\n"
+            "HOST VALIDATION CORRECTION. No physical command was sent. Keep the "
+            "previous visual Rxxx decision fixed for this single compiler repair, "
+            "and change only the grounded contact/trajectory fields needed to fix:\n"
+            f"{feedback}"
+        )
+        started = time.monotonic()
+        response = self._ground_final_plan(
+            visual_result.decision,
+            session,
+            repair_objective,
+            history=list(history or []),
+        )
+        duration_s = time.monotonic() - started
+        self.last_plan_result = response
+        self.last_plan_timing = {
+            "visual_planning_s": 0.0,
+            "visual_planning_attempts": 0,
+            "visual_reselection_count": 0,
+            "final_grounding_s": duration_s,
+            "total_planning_s": duration_s,
+            "repair_only": True,
+        }
+        return response.proposal
+
     def plan(
         self,
         image_paths: list[Path],
@@ -2789,7 +3079,10 @@ class ClaudeAutoClient:
             fold_reference_instruction = (
                 "\nFor this sleeve step, image-left/image-right refer only to the "
                 "clockwise-90 canonical upright Camera-A RGB and matching upright Rxxx "
-                "overlay. Select Camera A only. The cyan Rxxx markers are the original "
+                "overlay: image-left is the viewer's left side (smaller upright x), "
+                "image-right is the viewer's right side (larger upright x); never use "
+                "wearer-left/wearer-right or mirror the view. Select Camera A only. "
+                "The cyan Rxxx markers are the original "
                 "uniform calibrated references spread across the entire visible garment; "
                 "they are not pre-ranked contact candidates. Select exactly "
                 "one Rxxx that is visibly shown on the requested sleeve region and "
@@ -2806,7 +3099,10 @@ class ClaudeAutoClient:
                 "not reveal a preferred edge/interior/seam/wrinkle answer. "
                 "The host has already applied the current workspace, outer-side, "
                 "sleeve-height, and region-membership gates to every visible "
-                "uniform marker. The full cyan grid remains visible for context, but the "
+                "uniform marker. Workspace candidate gating uses the maximum possible "
+                "Y extension at |yaw|=90 because Stage 1 has not chosen a yaw yet; "
+                "Stage 2 and the controller revalidate the actual yaw at every waypoint. "
+                "The full cyan grid remains visible for context, but the "
                 f"only references executable for this step are: {allowed_text}. Select "
                 "exactly one ID from that list; every other visible Rxxx is deterministically "
                 "invalid and must not be selected."
@@ -2826,6 +3122,31 @@ class ClaudeAutoClient:
             f"expansion.{fold_reference_instruction}\n\n"
             "Approved procedural skill library:\n"
             f"{self.skill_guidance or 'No dynamic skill updates are active.'}"
+        )
+        visual_prompt += (
+            "\n\nYAW-DEPENDENT Y WORKSPACE CONTEXT (host-enforced): action yaw is a "
+            "relative delta from the calibrated Home TCP orientation. At yaw=0 "
+            "the configured Y safe zone is unchanged. The TCP-center allowance "
+            "is `0.5 * gripper_width_mm * abs(sin(radians(yaw)))`; with the current "
+            f"configured width {session.robot_config.gripper_width_mm:g} mm, the "
+            f"maximum at +/-90 degrees is {session.robot_config.y_workspace_extension_mm(90.0):g} mm. "
+            "This can make an edge reference potentially executable, but the final "
+            "waypoint's actual yaw is revalidated by the host and controller IK; it "
+            "does not relax X/Z or authorize moving the whole gripper through the boundary. "
+            "When extra Y travel is needed, rotate while still inside the original yaw=0 "
+            "Y envelope, then move outward; crossing that envelope before rotating is invalid."
+        )
+        support_context = _support_layer_context(session)
+        visual_prompt += (
+            "\n\nPHYSICAL SUPPORT-LAYER CONTEXT (configuration, not an RGB inference):\n"
+            f"{json.dumps(support_context, ensure_ascii=False, indent=2)}\n"
+            "The garment is placed over the configured support layer when the context "
+            "marks it active/confirmed. A deeper compressive bite is then physically "
+            "permitted up to press_mm (and never beyond max_compression_mm), while the "
+            "host still computes and validates the final TCP Z. Do not assume a hard "
+            "table merely because the RGB view shows a tabletop; do not invent a deeper "
+            "Z value yourself. Use this context when describing whether a thin sleeve "
+            "needs a real compressive engagement, but keep the target choice grounded in RGB."
         )
         if workspace_recovery is not None and workspace_recovery.required:
             recovery_payload = workspace_recovery.as_dict()
@@ -3044,6 +3365,8 @@ class ClaudeAutoClient:
         skill_guidance: str | None = None,
         workspace_recovery: GarmentWorkspaceRecovery | None = None,
         hold_checkpoint: dict[str, Any] | None = None,
+        gripper_telemetry: Mapping[str, Any] | None = None,
+        observer_images: Sequence[Path] = (),
     ) -> ExplorationEvaluation:
         self.last_evaluation_result = None
         root = run_dir.resolve()
@@ -3093,6 +3416,31 @@ class ClaudeAutoClient:
         if video_evidence_errors:
             image_lines.append("Video evidence extraction caveats:")
             image_lines.extend(f"- {message}" for message in video_evidence_errors)
+        if isinstance(gripper_telemetry, Mapping):
+            image_lines.append("Host xArm gripper telemetry (action-boundary samples):")
+            image_lines.append(
+                json.dumps(dict(gripper_telemetry), ensure_ascii=False, indent=2)
+            )
+        observer_paths = [
+            Path(path).resolve()
+            for path in observer_images
+            if Path(path).expanduser().is_file()
+        ]
+        if observer_paths:
+            image_lines.append(
+                "Uncalibrated Camera C observer RGB images (visual evidence only; no geometry):"
+            )
+            hold_paths = [path for path in observer_paths if "hold_check" in path.name.lower()]
+            other_paths = [path for path in observer_paths if path not in hold_paths]
+            if hold_paths:
+                image_lines.append(
+                    "Camera C lift hold-check still(s), captured immediately after the first "
+                    "post-close lift action (primary evidence for short-term acquisition):"
+                )
+                image_lines.extend(f"- {path}" for path in hold_paths)
+            if other_paths:
+                image_lines.append("Other Camera C observer stills:")
+                image_lines.extend(f"- {path}" for path in other_paths)
         evaluation_mode_instruction = (
             ""
             if workspace_recovery is None or not workspace_recovery.required
@@ -3173,6 +3521,23 @@ class ClaudeAutoClient:
             "lower graspability confidence, and do not credit target-layer acquisition. If far "
             "landmarks move with the gripper, classify it as whole-garment drag rather than "
             "successful ply isolation. "
+            "The host xArm gripper telemetry is an independent mechanical signal. A sample "
+            "with state=grasp (status low bits=2) after close and during/after lift is positive "
+            "evidence that the gripper controller detected contact. It is not proof that the "
+            "intended sleeve or garment ply was acquired, and it can be triggered by the table "
+            "or an obstacle. If the gripper is visually occluded but telemetry reports grasp, "
+            "do not call acquisition a visual failure solely because no hanging cloth is visible; "
+            "use SUCCESS when the mechanical signal is consistent with the rollout, or UNKNOWN "
+            "when visual and mechanical evidence conflict. Conversely, unavailable telemetry or "
+            "state=stop must not be treated as proof of an empty grasp. "
+            "Camera C is an uncalibrated side observer: use its RGB image/video only to resolve "
+            "gripper occlusion and temporal cloth motion. Never derive pixels, depth, or robot "
+            "coordinates from Camera C. A still labelled as a Camera C lift hold-check was "
+            "captured immediately after the first post-close lift; inspect it as the primary "
+            "acquisition witness. If that still shows an independent sleeve patch rising with "
+            "the gripper, mark grasp_acquisition SUCCESS even when the later release leaves the "
+            "final after image unchanged. Do not use an unchanged after image to negate a "
+            "reversible short hold. "
             f"{task_evaluation_instruction} Do not invent numeric measurements. For "
             "visible_area_delta, overlap_delta, and relief_delta, use INCREASED, DECREASED, "
             "UNCHANGED, or UNKNOWN unless an exact numeric measurement is explicitly supplied.\n\n"
@@ -3264,6 +3629,7 @@ class ClaudeAutoClient:
                 "Do not edit files, execute commands, or control a robot."
             ),
         ]
+        command = self._prepare_command(command, stage="evaluation")
         import subprocess
 
         try:
@@ -3277,6 +3643,10 @@ class ClaudeAutoClient:
                 shell=False,
             )
         except subprocess.TimeoutExpired as exc:
+            if self.persistent_session is not None:
+                self.persistent_session.rollover(
+                    reason="claude_timeout", stage="evaluation"
+                )
             self._save_evaluation_log(
                 root,
                 {
@@ -3314,6 +3684,15 @@ class ClaudeAutoClient:
                 f"Claude evaluation invocation failed: {exc}"
             ) from exc
         if completed.returncode != 0:
+            if (
+                self.persistent_session is not None
+                and self.persistent_session.is_session_conflict_error(
+                    completed.stdout, completed.stderr
+                )
+            ):
+                self.persistent_session.rollover(
+                    reason="claude_session_conflict", stage="evaluation"
+                )
             self._save_evaluation_log(
                 root,
                 {
@@ -3331,6 +3710,7 @@ class ClaudeAutoClient:
                 f"Claude evaluation exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
+        self._record_successful_turn(stage="evaluation", stdout=completed.stdout)
         try:
             evaluation = validate_evaluation_payload(_json_from_claude_text(completed.stdout))
         except BaseException as exc:
@@ -3358,13 +3738,329 @@ class ClaudeAutoClient:
             evaluation=evaluation,
             evidence_images=tuple(
                 str(path.resolve())
-                for path in [*before_images, *after_images, *video_evidence_images]
+                for path in [
+                    *before_images,
+                    *after_images,
+                    *video_evidence_images,
+                    *observer_paths,
+                ]
             ),
             video_references=tuple(str(path.resolve()) for path in video_references),
             video_evidence_errors=tuple(video_evidence_errors),
         )
         self.last_evaluation_result = result
         self._save_evaluation_log(root, result.as_dict())
+        return evaluation
+
+    def evaluate_acquisition_probe(
+        self,
+        before_images: Sequence[Path],
+        after_images: Sequence[Path],
+        *,
+        proposal: ExplorationProposal,
+        run_dir: Path,
+        rollout_recording_dir: Path | None = None,
+        rollout_evidence_images: Sequence[Path] = (),
+        rollout_video_references: Sequence[Path] = (),
+        rollout_evidence_errors: Sequence[str] = (),
+        gripper_telemetry: Mapping[str, Any] | None = None,
+        observer_images: Sequence[Path] = (),
+    ) -> ExplorationEvaluation:
+        """Judge only grasp acquisition from compact RGB/video evidence.
+
+        Acquisition probes intentionally reverse and release at the original
+        contact, so transport, laydown, and fold-state supervision are not
+        useful questions.  This compact contract keeps the expensive model
+        turn focused on the physical uncertainty that the probe was designed
+        to resolve.
+        """
+
+        self.last_evaluation_result = None
+        root = Path(run_dir).resolve()
+
+        def select_rgb(paths: Sequence[Path]) -> list[Path]:
+            selected: list[Path] = []
+            for camera_name in ("camera_0_A.png", "camera_1_B.png"):
+                matches = [
+                    Path(path).resolve()
+                    for path in paths
+                    if Path(path).name == camera_name and Path(path).is_file()
+                ]
+                if matches:
+                    # Iteration-local before_raw/after_raw images are the
+                    # direct captures; prefer them over duplicate workspace
+                    # copies when both are present.
+                    matches.sort(
+                        key=lambda path: (
+                            0
+                            if path.parent.name in {"before_raw", "after_raw"}
+                            else 1,
+                            str(path),
+                        )
+                    )
+                    selected.append(matches[0])
+            return selected
+
+        before_rgb = select_rgb(before_images)
+        after_rgb = select_rgb(after_images)
+        if not before_rgb or not after_rgb:
+            raise AutoExplorationError(
+                "compact acquisition evaluation requires Camera-A/B RGB evidence"
+            )
+        video_images = [Path(path).resolve() for path in rollout_evidence_images]
+        video_references = [
+            Path(path).resolve() for path in rollout_video_references
+        ]
+        video_errors = [str(item) for item in rollout_evidence_errors]
+        if not video_images and rollout_recording_dir is not None:
+            try:
+                video_images, video_references, video_errors = (
+                    prepare_rollout_video_evidence(rollout_recording_dir)
+                )
+            except Exception as exc:
+                video_errors.append(f"{type(exc).__name__}: {exc}")
+
+        evidence_lines = ["Before RGB:"]
+        evidence_lines.extend(f"- {path}" for path in before_rgb)
+        evidence_lines.append("After RGB:")
+        evidence_lines.extend(f"- {path}" for path in after_rgb)
+        if video_images:
+            evidence_lines.append(
+                "Chronological rollout contact sheets (left-to-right, top-to-bottom):"
+            )
+            evidence_lines.extend(f"- {path}" for path in video_images)
+        else:
+            evidence_lines.append(
+                "Rollout contact sheet unavailable; use UNKNOWN where the static RGB cannot decide."
+            )
+        if video_errors:
+            evidence_lines.append("Video caveats:")
+            evidence_lines.extend(f"- {item}" for item in video_errors)
+        if isinstance(gripper_telemetry, Mapping):
+            evidence_lines.append("Host xArm gripper telemetry (action-boundary samples):")
+            evidence_lines.append(
+                json.dumps(dict(gripper_telemetry), ensure_ascii=False, indent=2)
+            )
+        observer_paths = [
+            Path(path).resolve()
+            for path in observer_images
+            if Path(path).expanduser().is_file()
+        ]
+        if observer_paths:
+            evidence_lines.append(
+                "Uncalibrated Camera C observer RGB images (visual evidence only; no geometry):"
+            )
+            hold_paths = [path for path in observer_paths if "hold_check" in path.name.lower()]
+            other_paths = [path for path in observer_paths if path not in hold_paths]
+            if hold_paths:
+                evidence_lines.append(
+                    "Camera C lift hold-check still(s), captured immediately after the first "
+                    "post-close lift action (primary acquisition evidence):"
+                )
+                evidence_lines.extend(f"- {path}" for path in hold_paths)
+            if other_paths:
+                evidence_lines.append("Other Camera C observer stills:")
+                evidence_lines.extend(f"- {path}" for path in other_paths)
+
+        prompt = (
+            "ACQUISITION-PROBE EVALUATION ONLY. This robot action closed the gripper, "
+            "made two short lift checkpoints, then reversed to the original contact and "
+            "released. Inspect only the labelled RGB files and chronological rollout "
+            "contact sheets below. Decide whether cloth visibly followed and remained "
+            "supported by the gripper during the lift, and whether the intended local "
+            "garment structure rather than empty space or whole-garment drag was acquired. "
+            "Do not evaluate fold transport, laydown, final garment shape, or overall task "
+            "progress. Never infer success from the command. The next_experiment decision "
+            "must be causal: after an empty close, consider contact XY, jaw alignment, "
+            "pre-close entry path, closure geometry, and Z as competing hypotheses; after "
+            "repeated similar failures, include a non-height contact change. Do not name a "
+            "privileged grasp solution without visible evidence. Also report whether the "
+            "garment's persistent after-state visibly changed; use UNKNOWN when the RGB is "
+            "ambiguous. Return exactly the compact "
+            "JSON schema.\n\n"
+            "The host xArm telemetry is an independent mechanical signal. A sample with "
+            "state=grasp (status low bits=2) after close and during/after lift is positive "
+            "evidence that the gripper controller detected an object. It is not proof that "
+            "the object is the intended sleeve, and it can be triggered by a table/obstacle. "
+            "If telemetry says grasp while the target is fully occluded in the video, do not "
+            "call it a visual empty grasp: use SUCCESS when the mechanical evidence is "
+            "consistent, or UNKNOWN when it conflicts with visible contact. Do not use an "
+            "unchanged after image to negate a reversible probe, because the probe intentionally "
+            "returns and releases at the original pose.\n\n"
+            "Camera C is an uncalibrated side observer. Use its RGB/video only for visual "
+            "occlusion and cloth-motion evidence; never infer depth, pixels, or robot coordinates "
+            "from it. A still labelled as a Camera C lift hold-check was captured immediately "
+            "after the first post-close lift action and is the primary acquisition witness. If it "
+            "shows an independent sleeve patch elevated with the gripper, classify grasp_acquisition "
+            "as SUCCESS even if the reversible probe later releases and the final after image is "
+            "unchanged.\n\n"
+            f"Selected grasp: {json.dumps(proposal.selected_grasp, ensure_ascii=False)}\n"
+            f"Action program: {json.dumps(proposal.actions, ensure_ascii=False)}\n"
+            f"Expected observation: {proposal.expected_observation}\n\n"
+            + "\n".join(evidence_lines)
+        )
+        command = [
+            self._binary(),
+            "--print",
+            prompt,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(ACQUISITION_EVALUATION_JSON_SCHEMA, separators=(",", ":")),
+            "--permission-mode",
+            "plan",
+            "--allowedTools",
+            "Read",
+            "--tools",
+            "Read",
+            "--add-dir",
+            str(root),
+            "--safe-mode",
+            "--effort",
+            "low",
+            "--system-prompt",
+            (
+                "You are the acquisition-inspection turn of one persistent garment "
+                "robotics agent. Read only the supplied visual evidence and return the "
+                "compact machine-validated judgement. Do not edit files or control a robot."
+            ),
+        ]
+        command = self._prepare_command(command, stage="acquisition_evaluation")
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_s,
+                check=False,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if self.persistent_session is not None:
+                self.persistent_session.rollover(
+                    reason="claude_timeout", stage="acquisition_evaluation"
+                )
+            raise ExplorationTimeoutError(
+                f"Claude acquisition evaluation timed out after {self.timeout_s} seconds"
+            ) from exc
+        except OSError as exc:
+            raise AutoExplorationError(
+                f"Claude acquisition evaluation invocation failed: {exc}"
+            ) from exc
+        if completed.returncode != 0:
+            if (
+                self.persistent_session is not None
+                and self.persistent_session.is_session_conflict_error(
+                    completed.stdout, completed.stderr
+                )
+            ):
+                self.persistent_session.rollover(
+                    reason="claude_session_conflict", stage="acquisition_evaluation"
+                )
+            raise AutoExplorationError(
+                f"Claude acquisition evaluation exited with {completed.returncode}: "
+                f"{completed.stderr.strip() or completed.stdout.strip()}"
+            )
+        self._record_successful_turn(
+            stage="acquisition_evaluation",
+            stdout=completed.stdout,
+        )
+        compact = _json_from_claude_text(completed.stdout)
+        if not isinstance(compact, Mapping):
+            raise AutoExplorationError(
+                "Claude acquisition evaluation must return a JSON object"
+            )
+        acquisition = compact.get("grasp_acquisition")
+        target = compact.get("target_structure_acquired")
+        garment_state_change = compact.get("garment_state_change")
+        next_experiment = compact.get("next_experiment")
+        if garment_state_change not in {"CHANGED", "UNCHANGED", "UNKNOWN"}:
+            raise AutoExplorationError(
+                "compact acquisition evaluation garment_state_change must be "
+                "CHANGED, UNCHANGED, or UNKNOWN"
+            )
+        acquisition_status = (
+            acquisition.get("status") if isinstance(acquisition, Mapping) else None
+        )
+        target_status = target.get("status") if isinstance(target, Mapping) else None
+        if acquisition_status == "FAILURE":
+            failure_stage = "ACQUISITION"
+        elif acquisition_status == "SUCCESS" and target_status == "CONTRADICTED":
+            failure_stage = "TARGET"
+        elif acquisition_status == "SUCCESS" and target_status == "SUPPORTED":
+            failure_stage = "NONE"
+        else:
+            failure_stage = "UNKNOWN"
+        state_unchanged = garment_state_change == "UNCHANGED"
+        synthesized = {
+            "target_selection": {
+                "status": "UNKNOWN",
+                "confidence": 0.0,
+                "evidence": [
+                    "Acquisition-only evaluation did not reassess semantic target selection."
+                ],
+            },
+            "grasp_acquisition": acquisition,
+            "target_structure_acquired": target,
+            "transport": {
+                "status": "UNKNOWN",
+                "confidence": 0.0,
+                "evidence": [
+                    "Transport was intentionally not executed in the reversible acquisition probe."
+                ],
+            },
+            "laydown": {
+                "status": "NOT_REACHED",
+                "confidence": 1.0,
+                "evidence": [
+                    "The probe reversed and released at the original contact instead of laying down a fold."
+                ],
+            },
+            "task_progress": {
+                "status": "NEUTRAL",
+                "confidence": 1.0,
+                "metrics": {
+                    "visible_area_delta": "UNCHANGED" if state_unchanged else "UNKNOWN",
+                    "overlap_delta": "UNCHANGED" if state_unchanged else "UNKNOWN",
+                    "relief_delta": "UNCHANGED" if state_unchanged else "UNKNOWN",
+                    "boundary_change": (
+                        "The compact evaluator directly reported no persistent garment-state change."
+                        if state_unchanged
+                        else f"Compact acquisition evaluator reported garment_state_change={garment_state_change}."
+                    ),
+                },
+            },
+            "earliest_failure_stage": failure_stage,
+            "next_experiment": next_experiment,
+        }
+        evaluation = validate_evaluation_payload(synthesized)
+        result = ClaudeEvaluationResult(
+            prompt=prompt,
+            command=tuple(command),
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            created_at=_now(),
+            evaluation=evaluation,
+            evidence_images=tuple(
+                str(path)
+                for path in [*before_rgb, *after_rgb, *video_images, *observer_paths]
+            ),
+            video_references=tuple(str(path) for path in video_references),
+            video_evidence_errors=tuple(video_errors),
+        )
+        self.last_evaluation_result = result
+        self._save_evaluation_log(
+            root,
+            {
+                **result.as_dict(),
+                "stage": "acquisition_evaluation",
+                "duration_s": time.monotonic() - started,
+                "compact_payload": compact,
+            },
+        )
         return evaluation
 
 
@@ -3595,7 +4291,7 @@ def _video_contact_sheet(
 def prepare_rollout_video_evidence(
     recording_dir: Path,
 ) -> tuple[list[Path], list[Path], list[str]]:
-    """Build Camera A/B temporal evidence while preserving original MP4 references."""
+    """Build temporal evidence for calibrated A/B and optional RGB observers."""
 
     recording_dir = recording_dir.resolve()
     manifest_path = recording_dir / "recording_manifest.json"
@@ -3620,6 +4316,26 @@ def prepare_rollout_video_evidence(
         candidates = [
             (label, recording_dir / f"camera_{label}_rgb.mp4") for label in ("A", "B")
         ]
+    observer_manifest_path = recording_dir / "observer_recording_manifest.json"
+    if observer_manifest_path.is_file():
+        try:
+            observer_manifest = json.loads(
+                observer_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            observer_manifest = {}
+        if isinstance(observer_manifest, Mapping):
+            observer_label = str(observer_manifest.get("label", "C")).upper() or "C"
+            observer_video = observer_manifest.get("rgb_video")
+            if isinstance(observer_video, str) and observer_video.strip():
+                candidate = (observer_label, recording_dir / observer_video)
+                if candidate not in candidates:
+                    candidates.append(candidate)
+    else:
+        for observer_video in sorted(recording_dir.glob("camera_*_observer_rgb.mp4")):
+            stem = observer_video.stem
+            observer_label = stem.removeprefix("camera_").removesuffix("_observer_rgb")
+            candidates.append((observer_label.upper() or "C", observer_video))
 
     output_dir = recording_dir / "evaluator_video_evidence"
     contact_sheets: list[Path] = []
@@ -3873,6 +4589,11 @@ def run_auto_exploration_viewer(
             "out-of-range perception forces the next rollout into WORKSPACE_RECOVERY"
         )
     )
+    yaw_workspace_line = (
+        "- TCP Y workspace allowance: "
+        f"`0.5 * {robot.gripper_width_mm:g} mm * |sin(yaw)|`; "
+        f"0 mm at yaw=0, {robot.y_workspace_extension_mm(90.0):g} mm at +/-90"
+    )
     controls = server.gui.add_markdown(
         f"### Loop contract\n\n- max iterations: `{'continuous' if max_iterations is None else max_iterations}`\n"
         f"- settle time after motion: `{settle_s:.1f}s`\n"
@@ -3884,6 +4605,7 @@ def run_auto_exploration_viewer(
         f"{reference_policy_line}\n"
         "- grasp target visualization: Base XYZ/yaw, Viser 3-D marker, and Camera A/B projection overlays\n"
         f"{garment_workspace_line}\n"
+        f"{yaw_workspace_line}\n"
         f"- rollout A/B RGB-D recording: `{'enabled' if record_rollouts else 'disabled'}`\n"
         "- stop takes effect between phases; it cannot interrupt a command already sent"
     )

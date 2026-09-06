@@ -1,0 +1,13 @@
+{
+  "stage": "before perception",
+  "attempts": [
+    {
+      "attempt": 1,
+      "error": "PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: table luma 4.4 is below 90.0; camera B: table luma 3.7 is below 90.0"
+    },
+    {
+      "attempt": 2,
+      "error": "PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: table luma 4.4 is below 90.0; camera B: table luma 2.5 is below 90.0"
+    }
+  ]
+}

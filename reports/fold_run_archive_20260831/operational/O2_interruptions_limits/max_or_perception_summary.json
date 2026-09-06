@@ -1,0 +1,110 @@
+{
+  "created_at": "2026-08-26T18:07:28.581+00:00",
+  "status": "FAILED",
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z",
+  "enable_real": true,
+  "planning_policy": "claude_global",
+  "rgb_only_comparison": false,
+  "combined_rollout_video": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/combined_rollout.mp4",
+  "combined_video_speed": 32.0,
+  "hold_checkpoint": {
+    "mandatory": false,
+    "replaced_by": "LIFT_CHECKPOINT_EXPERIMENT",
+    "min_lift_mm": 40.0,
+    "max_lateral_mm": 5.0,
+    "settle_s": 0.75,
+    "claude_timeout_s": null
+  },
+  "lift_checkpoint": {
+    "mandatory": false,
+    "decision_policy": "CLAUDE_DECIDES; at most one physical experiment per run, then direct execution",
+    "checkpoint_count": 3,
+    "max_physical_experiments_per_run": 1,
+    "used_at_start": false,
+    "used": true,
+    "remaining_experiments": 0,
+    "capture_settle_s": 0.75,
+    "transport_decision": "DISABLED; reverse lift and release"
+  },
+  "confidence_threshold": 0.8,
+  "max_iterations": null,
+  "evaluation_retry": {
+    "max_retries": "unlimited",
+    "backoff_s": 2.0,
+    "timeout_only": true,
+    "reuses_saved_before_after": true,
+    "sends_robot_commands": false
+  },
+  "perception_position": {
+    "sequence": [
+      "home",
+      "perception_position"
+    ],
+    "target_joint_angles_deg": [
+      13.596346,
+      -6.945108,
+      -11.614542,
+      128.426026,
+      1.351092,
+      70.942374,
+      187.543296
+    ],
+    "recorded_tcp_pose_mm_deg": [
+      478.214813,
+      9.459489,
+      812.595703,
+      159.939106,
+      62.538974,
+      161.782139
+    ],
+    "enabled": true
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "status": "COMPLETED",
+      "task_progress": "NEUTRAL",
+      "confidence": 0.85
+    },
+    {
+      "iteration": 2,
+      "status": "COMPLETED",
+      "task_progress": "NEUTRAL",
+      "confidence": 0.9
+    },
+    {
+      "iteration": 3,
+      "status": "COMPLETED",
+      "task_progress": "NEUTRAL",
+      "confidence": 0.86
+    },
+    {
+      "iteration": 4,
+      "status": "COMPLETED",
+      "task_progress": "NEUTRAL",
+      "confidence": 0.85
+    },
+    {
+      "iteration": 5,
+      "status": "COMPLETED",
+      "task_progress": "NEUTRAL",
+      "confidence": 0.85
+    },
+    {
+      "iteration": 6,
+      "status": "COMPLETED",
+      "task_progress": "REGRESSED",
+      "confidence": 0.45
+    },
+    {
+      "iteration": 7,
+      "status": "FAILED",
+      "error": "PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: table luma 6.7 is below 90.0; camera B: table luma 4.1 is below 90.0"
+    }
+  ],
+  "error": "PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: table luma 6.7 is below 90.0; camera B: table luma 4.1 is below 90.0",
+  "run_skill_synthesis": "/home/CNS2026330003/agentAuto/clothAgent/runs/neat_fold_overnight_20260827_020727/results/molmo_keypoint_cli/20260826T180728581036Z/run_skill_synthesis.json",
+  "completed_at": "2026-08-26T20:13:07.851+00:00",
+  "iteration_count": 7
+}

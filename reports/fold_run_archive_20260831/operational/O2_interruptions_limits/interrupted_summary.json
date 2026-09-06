@@ -1,0 +1,60 @@
+{
+  "created_at": "2026-08-25T13:12:58.334+00:00",
+  "status": "INTERRUPTED",
+  "run_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260825_211257",
+  "output_dir": "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260825_211257/results/molmo_keypoint_cli/20260825T131258334092Z",
+  "enable_real": true,
+  "planning_policy": "claude_global",
+  "rgb_only_comparison": true,
+  "combined_rollout_video": null,
+  "combined_video_speed": 32.0,
+  "hold_checkpoint": {
+    "mandatory": true,
+    "min_lift_mm": 40.0,
+    "max_lateral_mm": 5.0,
+    "settle_s": 0.75,
+    "claude_timeout_s": 90
+  },
+  "confidence_threshold": 0.8,
+  "max_iterations": null,
+  "evaluation_retry": {
+    "max_retries": "unlimited",
+    "backoff_s": 2.0,
+    "timeout_only": true,
+    "reuses_saved_before_after": true,
+    "sends_robot_commands": false
+  },
+  "perception_position": {
+    "sequence": [
+      "home",
+      "perception_position"
+    ],
+    "target_joint_angles_deg": [
+      13.596346,
+      -6.945108,
+      -11.614542,
+      128.426026,
+      1.351092,
+      70.942374,
+      187.543296
+    ],
+    "recorded_tcp_pose_mm_deg": [
+      478.214813,
+      9.459489,
+      812.595703,
+      159.939106,
+      62.538974,
+      161.782139
+    ],
+    "enabled": true
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "status": "INTERRUPTED"
+    }
+  ],
+  "run_skill_synthesis": "/home/CNS2026330003/agentAuto/clothAgent/runs/claude_global_cli_real_20260825_211257/results/molmo_keypoint_cli/20260825T131258334092Z/run_skill_synthesis.json",
+  "completed_at": "2026-08-25T13:20:47.473+00:00",
+  "iteration_count": 1
+}

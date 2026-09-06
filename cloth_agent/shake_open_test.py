@@ -262,23 +262,21 @@ def build_shake_open_plan(
         )
     )
 
-    config.boundaries.validate(
+    config.validate_workspace_pose(
         x,
         y,
         z,
-        config.workspace_margin_mm,
+        relative_yaw_deg=config.relative_yaw_from_absolute_deg(current[5]),
         require_complete=True,
-        z_lower_margin_mm=config.lower_z_margin_mm,
     )
     for step in steps:
         target = step.target_pose_mm_deg
-        config.boundaries.validate(
+        config.validate_workspace_pose(
             target[0],
             target[1],
             target[2],
-            config.workspace_margin_mm,
+            relative_yaw_deg=config.relative_yaw_from_absolute_deg(target[5]),
             require_complete=True,
-            z_lower_margin_mm=config.lower_z_margin_mm,
         )
         if target[3:] != current[3:]:
             raise SafetyError(f"{step.name} changed the fixed TCP orientation")

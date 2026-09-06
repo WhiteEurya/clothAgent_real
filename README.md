@@ -232,6 +232,22 @@ The measured lower TCP boundary may be used for the grasp descent with the
 configured `0 mm` workspace margin, and no command is allowed below the
 recorded `z_min`.
 
+#### Local sponge support
+
+`config/robot.example.json` now describes the optional sponge layer used under
+the garment (`support_layer`). Perception estimates support height only from a
+small annulus outside each camera's final garment mask and saves a magenta
+`camera_*_support_ring_overlay.png` plus JSON diagnostics. The example marks the
+support layer as operator-confirmed (`"confirmed": true`), because a sponge
+that exists only under the garment can be hidden from an annulus outside the
+mask. Without that declaration, the allowance is activated only when the local
+ring is measurably elevated above the global table plane; otherwise the legacy
+3 mm grasp compression remains in force.
+When active, the example policy permits a 6 mm press (8 mm hard cap) while
+retaining the robot's absolute `z_min` and controller IK checks. The global table
+plane is still retained for segmentation and diagnostics, but it is not allowed
+to veto a grasp into a confirmed local sponge patch.
+
 ## What must be configured
 
 The workspace measurement is already present for the current machine. If the
@@ -262,6 +278,9 @@ Only one-time hardware facts remain:
 - home/observation pose in `data/robot/xarm_init_pose.json` (already present);
 - controller TCP offset `[0, 0, 172, 0, 0, 0]` and gripper pulse values
   (already recorded in `config/robot.example.json`);
+- effective gripper jaw width for the yaw-dependent Y allowance. The standard
+  xArm Gripper example uses the conservative nominal opening `86.0 mm`; change
+  `gripper.width_mm` if the installed tool is different;
 - camera serials and calibrated extrinsics (already recorded in
   `config/perception.example.json`).
 
@@ -463,6 +482,47 @@ add:
   --recovery-backoff-s 2
 ```
 
+For the video-backed five-step fold pipeline, an outer watchdog can start a
+new timestamped child run after a safe process-level failure while carrying
+forward the previous child's `workspace/fold_experience` ledger:
+
+```bash
+bash scripts/start_fold_exploration_watchdog.sh
+```
+
+The watchdog defaults to a continuous real run with unattended retries and a
+read-only Viser viewer. Use `--dry-run` (or `--no-real`), `--no-unattended`, or
+`--no-viser` to disable those defaults. Watchdog options such as
+`--run-prefix`, `--restart-delay-s`, and `--max-restarts` remain available when
+you need to override them; pipeline-specific options can follow `--`.
+
+The fold pipeline uses the full `--claude-timeout-s` for final Rxxx grounding
+by default; the old 400-second grounding cap has been removed. To run a
+longer boundary experiment, pass an explicit override after the watchdog's
+`--`, for example `-- --grounding-timeout-s 1800`.
+
+The watchdog writes its own `watchdog_events.jsonl` and experience snapshots
+under a `_fold_night_watchdog_*` directory in `runs/`. It restarts after
+planning/perception/evaluation process failures, but stops on a clean terminal
+status, Ctrl-C, or evidence that a real execution failure may have left the
+robot in an unknown state. `--max-restarts 0` means unlimited safe restarts.
+When `--viser` is used, child runs receive increasing viewer ports by default
+so an old read-only viewer does not block the new run.
+
+Each fold iteration also writes a local evidence package under
+`iteration_NNN/evidence/`. The package is filled in order: RGB target
+selection, metric grounding, execution gate, post-grasp/video evidence, and
+experience update. Physical execution is allowed only when the first three
+stages are present and marked as passing by the host. If saved visual/evaluation
+evidence reports a sleeve as gathered or rolled, the next sleeve iteration is
+forced into `REPAIR_SLEEVE` (lift, move outward, and flatten) before another
+probe or inward fold is allowed. Acquisition-only probes are capped at three
+per fold step; once exhausted, the planner must propose the actual fold.
+The condition ledger is stored beside `experiences.jsonl` as
+`garment_condition.json`, so a later child run launched with
+`--experience-dir` inherits the sleeve-repair state as well as the textual
+experience history.
+
 Claude evaluation timeouts are handled separately because the physical rollout,
 mandatory return-Home, and after-state capture have already completed. The CLI
 retries evaluation against the same saved before/after evidence until it
@@ -478,6 +538,13 @@ Cartesian action `yaw` is interpreted as a wrist-yaw delta relative to the
 calibrated Home TCP orientation. Therefore `yaw=0` preserves the Home gripper
 orientation instead of rotating the wrist by the roughly 170-degree Euler yaw
 difference present in the xArm home joint report.
+
+The host also computes a yaw-dependent Y workspace allowance for the TCP
+center: `0.5 * gripper.width_mm * abs(sin(radians(yaw)))`. It is zero at
+`yaw=0` and reaches half the configured effective gripper width at `+/-90`
+degrees. The standard xArm Gripper example therefore allows `43.0 mm` at
+`yaw=+/-90`; X/Z limits and controller IK remain authoritative for every
+waypoint.
 
 The built-in procedural skill library now also includes `flatten-garment`: when
 the evidence supports a whole-garment opening maneuver, Claude may lift a
@@ -514,6 +581,19 @@ For a zero-GUI snapshot instead, add:
 ```bash
 --page 1 --snapshot /tmp/clothagent_artifacts.png
 ```
+
+For a manually triggered RGB photo from Camera C, use the standalone capture
+utility. It opens the uncalibrated observer, warms it up, saves a timestamped
+PNG and manifest, then closes the camera without moving the robot:
+
+```bash
+/home/CNS2026330003/miniconda3/envs/cali/bin/python \
+  scripts/capture_camera_photo.py
+```
+
+Use `--count N --interval-s S` for a short burst, `--output-dir DIR` to choose
+the parent directory, or `--serial SERIAL` for another RealSense device. See
+`scripts/capture_camera_photo.py --help` for all camera controls.
 
 The dashboard launcher can enable both recovery and a browser-based, read-only
 Viser point-cloud view in one command.  In real mode both are enabled by
