@@ -55,14 +55,28 @@ Historical configurations without a mode retain `bright_table` behaviour.
 
 The current wrist configuration sets `table_plane_mode: "camera_parallel"`.
 This fixes the table normal to the camera optical axis and estimates its distance
-from valid bare-background pixels on the inner ROI border. It transforms this
+from valid bare-background patches inside the ROI. It transforms this
 plane into robot-base coordinates with the capture's saved extrinsics. It does
 not assume the robot base Z axis is perfectly aligned with the camera.
 
-Samples must cover at least three image quadrants, and their 95th percentile
+An RGB garment silhouette is computed before the plane fit (so it does not depend
+on the fitted heights). Enclosed dark print is included in that exclusion, and
+`table_reference_clearance_px` expands it by 12 pixels by default. The remaining
+background is divided into a 6×8 grid. Each cell contributes at most one 3×3
+depth patch, entirely outside the excluded region. Patch depth medians receive
+equal weight in the table-distance estimate. At least six consistent patches
+are required; there is no fallback to points on the garment.
+
+Samples must cover at least three ROI quadrants, and their 95th percentile
 depth residual must be at most 15 mm. Inconsistent data stops the fit rather
 than falling back to unrelated picture corners. `camera_A_table_references.png`
-now displays the background samples used by this fit. If the camera is no longer
+now displays the actual patches considered by this fit: green for used patches,
+orange for depth outliers. A red tint shows the excluded silhouette and clearance.
+`camera_A_table_references.json` records each grid cell, patch depth, `used_in_fit`,
+and the estimated plane. `camera_A_table_garment_exclusion.png` and
+`camera_A_table_background_candidates.png` show the exact exclusion and available
+background masks. These are appearance-based exclusions, not a semantic guarantee
+when garment and background colors are indistinguishable. If the camera is no longer
 perpendicular to the table, this mode's assumption does not apply; check the
 observation pose before using it. Historical configurations default to
 `reference_fit`.

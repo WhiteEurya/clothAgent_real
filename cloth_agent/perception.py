@@ -219,6 +219,7 @@ class PerceptionConfig:
     # Normalized bounds of the visible work surface, excluding rails/floor.
     table_roi_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     table_plane_mode: str = "reference_fit"
+    table_reference_clearance_px: int = 12
 
     @classmethod
     def load(cls, project_root: Path, path: Path) -> "PerceptionConfig":
@@ -274,6 +275,7 @@ class PerceptionConfig:
             table_appearance_mode=raw.get("table_appearance_mode", "bright_table"),
             table_roi_xyxy=tuple(raw.get("table_roi_xyxy", [0, 0, 1, 1])),
             table_plane_mode=raw.get("table_plane_mode", "reference_fit"),
+            table_reference_clearance_px=raw.get("table_reference_clearance_px", 12),
             molmo=None,
             active_camera_labels=active_camera_labels,
             width=int(raw.get("width", 640)),
@@ -301,6 +303,8 @@ class PerceptionConfig:
         return config
 
     def validate(self) -> None:
+        if type(self.table_reference_clearance_px) is not int or self.table_reference_clearance_px < 1:
+            raise PerceptionError("table_reference_clearance_px must be a positive integer")
         if self.table_plane_mode not in {"reference_fit", "camera_parallel"}:
             raise PerceptionError("unknown table_plane_mode")
         if self.table_plane_mode == "camera_parallel" and (
@@ -846,10 +850,32 @@ def _fit_table_plane(
     return coefficients, residual, diagnostics
 
 
+def _table_background_candidates(
+    frame: RGBDFrame, config: PerceptionConfig, appearance: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Exclude RGB garment silhouette plus a clearance before table fitting.
+
+    This preliminary RGB mask deliberately precedes the geometric garment mask
+    to avoid making table estimation depend on its own fitted heights.
+    """
+    from scipy.ndimage import binary_closing, binary_dilation, binary_fill_holes
+
+    roi, _ = _table_roi_masks(frame.depth_m.shape, config.table_roi_xyxy)
+    color_error = np.linalg.norm(
+        frame.rgb.astype(np.float64) - np.asarray(appearance["table_rgb_median"]), axis=2,
+    )
+    foreground = roi & (color_error >= appearance["applied_color_distance"])
+    silhouette = binary_fill_holes(binary_closing(foreground, iterations=2)) | foreground
+    excluded = binary_dilation(silhouette, iterations=config.table_reference_clearance_px)
+    depth = np.asarray(frame.depth_m, dtype=np.float64)
+    valid = np.isfinite(depth) & (depth > config.min_depth_m) & (depth < config.max_depth_m)
+    return roi & valid & ~excluded, excluded & roi
+
+
 def _camera_parallel_table(
     frame: RGBDFrame, config: PerceptionConfig, base_z_offset_mm: float = 0.0,
 ) -> tuple[np.ndarray, dict[str, Any], np.ndarray, list[dict[str, Any]]]:
-    """Fit constant camera Z from bare ROI border, then transform the plane.
+    """Fit constant camera Z from evenly spaced bare-background patches.
 
     The opt-in assumption is a flat table perpendicular to the optical axis,
     not a zero slope in robot-base coordinates. No missing depth is filled.
@@ -862,27 +888,53 @@ def _camera_parallel_table(
     )
     if not appearance["confident"]:
         raise PerceptionError(f"camera_parallel background rejected: {appearance['reason']}")
-    _, border = _table_roi_masks(depth.shape, config.table_roi_xyxy)
-    color_error = np.linalg.norm(
-        frame.rgb.astype(np.float64) - np.asarray(appearance["table_rgb_median"]), axis=2,
-    )
-    samples = valid & border & (color_error < appearance["applied_color_distance"])
-    if int(samples.sum()) < 100:
+    candidates, excluded = _table_background_candidates(frame, config, appearance)
+    if int(candidates.sum()) < 100:
         raise PerceptionError("camera_parallel requires at least 100 bare table depth samples")
-    distance_m = float(np.median(depth[samples]))
-    residual_mm = np.abs(depth-distance_m) * 1000.
-    p95_mm = float(np.percentile(residual_mm[samples], 95))
+    # One 3x3 depth patch per ROI grid cell. Every pixel of a patch must be
+    # outside the garment clearance. Equal patch weights prevent a large
+    # background region at the top of the image from dominating the fit.
+    from scipy.ndimage import binary_erosion
+
+    patch_centers = binary_erosion(candidates, structure=np.ones((3, 3), dtype=bool))
+    h, w = depth.shape
+    roi = config.table_roi_xyxy
+    x_edges = np.linspace(int(roi[0]*w), int(roi[2]*w), 9, dtype=int)
+    y_edges = np.linspace(int(roi[1]*h), int(roi[3]*h), 7, dtype=int)
+    references = []
+    for row, (y0, y1) in enumerate(zip(y_edges[:-1], y_edges[1:])):
+        for col, (x0, x1) in enumerate(zip(x_edges[:-1], x_edges[1:])):
+            ys, xs = np.nonzero(patch_centers[y0:y1, x0:x1])
+            if not len(xs):
+                continue
+            xs, ys = xs+x0, ys+y0
+            nearest = np.argmin((xs-(x0+x1-1)/2)**2 + (ys-(y0+y1-1)/2)**2)
+            x, y = int(xs[nearest]), int(ys[nearest])
+            references.append({"name": f"BG{row}_{col}", "grid_cell": [row, col],
+                               "pixel_xy": [x, y], "valid": True, "sample_count": 9,
+                               "depth_median_m": float(np.median(depth[y-1:y+2, x-1:x+2]))})
+    if len(references) < 6:
+        raise PerceptionError("camera_parallel requires at least six background reference patches after garment clearance")
+    patch_depths = np.array([r["depth_median_m"] for r in references])
+    distance_m = float(np.median(patch_depths))
+    p95_mm = float(np.percentile(np.abs(patch_depths-distance_m)*1000., 95))
     if p95_mm > 15.:
         raise PerceptionError(
             f"camera_parallel table depths disagree (p95={p95_mm:.1f} mm > 15 mm); "
             "check ROI, camera perpendicularity and depth quality"
         )
-    samples &= residual_mm <= 15.
-    h, w = depth.shape
-    quadrant_counts = [int(samples[ys, xs].sum())
-                       for ys in (slice(0, h//2), slice(h//2, h))
-                       for xs in (slice(0, w//2), slice(w//2, w))]
-    if sum(count >= 25 for count in quadrant_counts) < 3:
+    for record in references:
+        record["plane_inlier"] = abs(record["depth_median_m"]-distance_m)*1000. <= 15.
+        record["used_in_fit"] = record["plane_inlier"]
+    inliers = [r for r in references if r["plane_inlier"]]
+    if len(inliers) < 6:
+        raise PerceptionError("camera_parallel has fewer than six consistent reference patches")
+    distance_m = float(np.median([r["depth_median_m"] for r in inliers]))
+    quadrant_counts = [0, 0, 0, 0]
+    for record in inliers:
+        x, y = record["pixel_xy"]
+        quadrant_counts[2*int(y >= (y_edges[0]+y_edges[-1])/2) + int(x >= (x_edges[0]+x_edges[-1])/2)] += 1
+    if sum(count > 0 for count in quadrant_counts) < 3:
         raise PerceptionError("camera_parallel requires table depth support in at least three image quadrants")
     transform = np.asarray(frame.X_base_camera, dtype=np.float64)
     normal = transform[:3, 2]
@@ -891,22 +943,25 @@ def _camera_parallel_table(
     constant = distance_m * 1000. + float(normal @ (transform[:3, 3] * 1000.))
     coefficients = np.array([-normal[0]/normal[2], -normal[1]/normal[2],
                              constant/normal[2] + base_z_offset_mm])
-    xyz, _ = camera_base_xyz_map_mm(frame, config)
-    y, x = np.nonzero(samples)
-    chosen = np.linspace(0, len(x)-1, min(32, len(x)), dtype=int)
-    points = xyz[y[chosen], x[chosen]].astype(np.float64)
-    points[:, 2] += base_z_offset_mm
-    records = [
-        {"name": f"BG{i:02d}", "pixel_xy": [int(x[j]), int(y[j])], "valid": True,
-         "base_xyz_mm": point.tolist(), "depth_median_m": float(depth[y[j], x[j]])}
-        for i, (j, point) in enumerate(zip(chosen, points))
-    ]
+    points = []
+    for record in references:
+        x, y = record["pixel_xy"]
+        d = record["depth_median_m"]
+        k = frame.intrinsics
+        camera_point = np.array([(x-k[0, 2])*d/k[0, 0], (y-k[1, 2])*d/k[1, 1], d])
+        point = (transform[:3, :3] @ camera_point + transform[:3, 3])*1000.
+        point[2] += base_z_offset_mm
+        record["base_xyz_mm"] = point.tolist()
+        record["plane_residual_mm"] = float(point[2] - np.array([point[0], point[1], 1.]) @ coefficients)
+        points.append(point)
     stats = {"mode": "camera_parallel", "camera_table_depth_m": distance_m,
              "normal_base": normal.tolist(), "background": appearance,
-             "reference_count": int(samples.sum()), "inlier_count": int(samples.sum()),
-             "quadrant_sample_counts": quadrant_counts,
+             "reference_count": len(references), "inlier_count": len(inliers),
+             "grid_shape": [6, 8], "reference_clearance_px": config.table_reference_clearance_px,
+             "background_candidate_pixels": int(candidates.sum()), "garment_exclusion_pixels": int(excluded.sum()),
+             "quadrant_reference_counts": quadrant_counts,
              "residual_p95_abs_mm": p95_mm / abs(float(normal[2]))}
-    return coefficients, stats, points, records
+    return coefficients, stats, np.asarray(points), references
 
 
 def _sample_table_reference_points(
@@ -3043,11 +3098,17 @@ def _save_camera_height_heatmap(
     Image.fromarray(garment_rgb).save(output_dir / garment_rgb_name)
     # Save the actual table references used by the corner/edge interpolation
     # so the zero surface can be audited independently of the color image.
-    _, table_reference_records = _sample_table_reference_points(
-        frame,
-        config,
-        base_z_offset_mm=base_z_offset_mm,
-    )
+    reference_selection = None
+    table_excluded = None
+    if config.table_plane_mode == "camera_parallel":
+        _, reference_selection, _, table_reference_records = _camera_parallel_table(frame, config, base_z_offset_mm)
+        table_candidates, table_excluded = _table_background_candidates(frame, config, reference_selection["background"])
+        for name, mask in (("table_background_candidates", table_candidates), ("table_garment_exclusion", table_excluded)):
+            Image.fromarray((mask*255).astype(numpy.uint8)).save(output_dir / f"camera_{frame.label}_{name}.png")
+    else:
+        _, table_reference_records = _sample_table_reference_points(
+            frame, config, base_z_offset_mm=base_z_offset_mm,
+        )
     for record in table_reference_records:
         if record.get("valid") and "base_xyz_mm" in record:
             base_x, base_y, base_z = record["base_xyz_mm"]
@@ -3060,13 +3121,20 @@ def _save_camera_height_heatmap(
                 )
             )
             record["plane_residual_mm"] = residual_mm
-            record["plane_inlier"] = abs(residual_mm) <= 15.0
+            record.setdefault("plane_inlier", abs(residual_mm) <= 15.0)
     table_reference_name = f"camera_{frame.label}_table_references.json"
     table_reference_overlay_name = f"camera_{frame.label}_table_references.png"
     table_reference_overlay = Image.fromarray(
         numpy.asarray(frame.rgb, dtype=numpy.uint8)
     ).convert("RGB")
+    if table_excluded is not None:
+        overlay_rgb = numpy.asarray(table_reference_overlay).copy()
+        overlay_rgb[table_excluded] = (overlay_rgb[table_excluded]*0.8 + numpy.array([255, 0, 0])*0.2).astype(numpy.uint8)
+        table_reference_overlay = Image.fromarray(overlay_rgb)
     reference_draw = ImageDraw.Draw(table_reference_overlay)
+    if table_excluded is not None:
+        reference_draw.text((8, 8), "Red tint: excluded cloth + clearance. Green: used patch. Orange: rejected.",
+                            fill="yellow", stroke_width=2, stroke_fill="black")
     for record in table_reference_records:
         x_px, y_px = record["pixel_xy"]
         color = (
@@ -3096,6 +3164,7 @@ def _save_camera_height_heatmap(
                 "method": "camera_parallel" if config.table_plane_mode == "camera_parallel" else "corner_edge_depth_interpolation",
                 "table_plane_coefficients": [float(value) for value in table_coefficients],
                 "samples": table_reference_records,
+                "reference_selection": reference_selection,
             },
             ensure_ascii=False,
             indent=2,
