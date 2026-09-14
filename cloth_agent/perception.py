@@ -13,7 +13,7 @@ import json
 import math
 import subprocess
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -3822,6 +3822,49 @@ class ClothCenterPerception:
             camera_heatmaps,
             source_support_counts,
         )
+
+        # Persist the workspace decision before derive_grasp_plan can reject
+        # an out-of-bounds center. This is the most useful evidence for wrist
+        # camera calibration and garment placement debugging.
+        center_debug = {
+            "center_base_mm": [float(value) for value in center],
+            "table_plane_coefficients": [float(value) for value in coefficients],
+            "active_cameras": list(self.config.active_camera_labels),
+            "source_support_counts": source_support_counts,
+            "camera_z_offsets_mm": camera_z_offsets_mm,
+            "robot_boundaries": self.robot_config.boundaries.as_dict(),
+            "garment_center_workspace": (
+                asdict(self.config.garment_center_workspace)
+                if self.config.garment_center_workspace is not None else None
+            ),
+            "fused_point_count": int(len(fused_points)),
+            "garment_point_count": int(len(garment_points)),
+            "perception_validation": perception_validation,
+        }
+        (output_dir / "center_workspace_diagnostics.json").write_text(
+            json.dumps(center_debug, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        try:
+            from PIL import Image, ImageDraw
+            for frame in frames:
+                image_path = output_dir / f"camera_{frame.label}_center_debug.png"
+                image = Image.fromarray(numpy.asarray(frame.rgb, dtype=numpy.uint8)).convert("RGB")
+                draw = ImageDraw.Draw(image)
+                px, py, visible = _project_base_points_to_frame(
+                    numpy.asarray([center], dtype=numpy.float64), frame
+                )
+                if bool(visible[0]):
+                    x, y = int(px[0]), int(py[0])
+                    draw.ellipse((x - 12, y - 12, x + 12, y + 12), outline=(255, 0, 0), width=4)
+                    draw.line((x - 18, y, x + 18, y), fill=(255, 0, 0), width=2)
+                    draw.line((x, y - 18, x, y + 18), fill=(255, 0, 0), width=2)
+                    draw.text((x + 16, y + 8), f"center ({center[0]:.0f},{center[1]:.0f})mm", fill=(255, 0, 0))
+                image.save(image_path)
+        except Exception as exc:
+            center_debug["overlay_error"] = f"{type(exc).__name__}: {exc}"
+            (output_dir / "center_workspace_diagnostics.json").write_text(
+                json.dumps(center_debug, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
         observation_plan, motion_derivation = derive_grasp_plan(
             center, self.robot_config, self.config
