@@ -18,4 +18,10 @@ if __name__ == "__main__":  # pragma: no cover
         # Keep terminal Ctrl-C quiet and return the conventional shell status.
         # The pipeline/session cleanup has already run in their finally blocks.
         print("[fold-debug] operator interrupt received; stopping", file=sys.stderr, flush=True)
+        try:
+            from scripts.upload_fold_debug import main as upload_debug
+            print("[fold-debug] packaging and uploading lightweight diagnostics...", file=sys.stderr, flush=True)
+            upload_debug(["--project-root", str(PROJECT_ROOT)])
+        except Exception as exc:
+            print(f"[fold-debug] diagnostic upload failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(130)
