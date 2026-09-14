@@ -44,7 +44,8 @@ def test_background_requires_depth_support_and_rejects_ambiguous_colors():
                                          np.array([1], dtype=np.uint8), ("A",), {"A": estimate})
 
 
-def test_complete_single_camera_perception_keeps_white_cloth_and_excludes_rails(tmp_path):
+@pytest.mark.parametrize("plane_mode", ["reference_fit", "camera_parallel"])
+def test_complete_single_camera_perception_keeps_white_cloth_and_excludes_rails(tmp_path, plane_mode):
     root = Path(__file__).resolve().parents[1]
     robot = RobotConfig.load(root, root / "config/robot.example.json")
     robot = replace(robot, boundaries=WorkspaceBounds(x_min=0, x_max=800, y_min=-400,
@@ -53,12 +54,14 @@ def test_complete_single_camera_perception_keeps_white_cloth_and_excludes_rails(
         cameras=(CameraSpec("A", "offline", tmp_path / "unused.yaml"),),
         width=200, height=200, active_camera_labels=("A",), table_appearance_mode="border_background",
         table_roi_xyxy=(0.15, 0.1, 0.85, 0.9),
+        table_plane_mode=plane_mode,
     )
     rgb = np.full((200, 200, 3), 30, dtype=np.uint8)
     rgb[:, :15] = 255  # bright rail outside the work surface
     rgb[60:140, 60:140] = 245
     depth = np.full((200, 200), 0.6, dtype=np.float32)
     depth[60:140, 60:140] = 0.595
+    depth[95:100, 95:100] = np.nan
     transform = np.diag([1., -1., -1., 1.])
     transform[:3, 3] = [0.4, 0., 0.6]
     frame = RGBDFrame("A", "offline", rgb, depth,
@@ -73,3 +76,10 @@ def test_complete_single_camera_perception_keeps_white_cloth_and_excludes_rails(
     assert abs(result["center_base_mm"][1]) < 10
     assert (output / "camera_A_appearance_overlay.png").is_file()
     assert (output / "camera_A_background_diagnostics.json").is_file()
+    reasons = np.load(output / "camera_A_mask_rejections.npz")
+    assert reasons["missing_or_out_of_range_depth"][95:100, 95:100].all()
+    assert not mask[95:100, 95:100].any()
+    height_map = np.load(output / "camera_A_height_above_table_mm.npy")
+    assert np.isnan(height_map[95:100, 95:100]).all()
+    if plane_mode == "camera_parallel":
+        assert np.nanmedian(height_map[65:135, 65:135]) == pytest.approx(5., abs=.01)

@@ -139,14 +139,15 @@ def _save_contact_sheet(
         label = str(view.get("label", "?"))
         for key, title in (
             ("image", "RGB"),
-            ("height_map", f"garment-focused height heatmap{scale_suffix}"),
+            ("height_map", "garment height (contrast enhanced; not global scale)"),
             ("height_map_global", f"global height heatmap{scale_suffix}"),
-            ("height_map_boundary", f"height heatmap + garment boundary{scale_suffix}"),
+            ("height_map_boundary", "enhanced height + garment boundary"),
             ("height_gradient_overlay", "height-gradient/occlusion edges"),
-            ("table_reference_overlay", "table corner/edge depth references"),
+            ("table_reference_overlay", "table depth reference samples"),
+            ("mask_rejection_legend", "why pixels are missing from the mask"),
             ("coordinate_overlay", "base-XYZ coordinate references"),
         ):
-            path = result_dir / str(view.get(key, ""))
+            path = result_dir / str(view.get(key) or "")
             if path.is_file():
                 items.append((f"Camera {label}: {title}", path))
 
@@ -190,13 +191,13 @@ This directory was generated without commanding the robot.
 
 Pipeline:
 
-1. Capture/reload calibrated A/B RGB-D frames.
-2. Transform both point clouds into the robot base frame.
-3. Sample table depths at four corners and four edge midpoints in each view,
-   reject robot/fixture outliers, and interpolate `table_z = a*x + b*y + c`.
+1. Capture/reload configured RGB-D frames.
+2. Transform measured points into the robot base frame.
+3. Fit the configured table model: camera_parallel uses bare ROI background
+   depth and the calibrated camera axis; reference_fit uses legacy edge patches.
 4. Segment the garment from table-relative height and appearance evidence.
 5. Compute every height value as `surface_z_mm - table_z_mm`.
-6. Render every heatmap against one signed table-zero scale (`-range..+range mm`),
+6. Render global heatmaps on a physical scale and garment-focused maps with contrast enhancement,
    and save camera-pixel height maps, focused/global heatmaps, boundaries,
    height-gradient overlays, coordinate maps, and the fused top-down map.
 7. Assemble `heatmap_contact_sheet.png` for visual inspection.

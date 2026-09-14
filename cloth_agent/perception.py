@@ -218,6 +218,7 @@ class PerceptionConfig:
     table_appearance_mode: str = "bright_table"
     # Normalized bounds of the visible work surface, excluding rails/floor.
     table_roi_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
+    table_plane_mode: str = "reference_fit"
 
     @classmethod
     def load(cls, project_root: Path, path: Path) -> "PerceptionConfig":
@@ -272,6 +273,7 @@ class PerceptionConfig:
             cameras=tuple(cameras),
             table_appearance_mode=raw.get("table_appearance_mode", "bright_table"),
             table_roi_xyxy=tuple(raw.get("table_roi_xyxy", [0, 0, 1, 1])),
+            table_plane_mode=raw.get("table_plane_mode", "reference_fit"),
             molmo=None,
             active_camera_labels=active_camera_labels,
             width=int(raw.get("width", 640)),
@@ -299,6 +301,12 @@ class PerceptionConfig:
         return config
 
     def validate(self) -> None:
+        if self.table_plane_mode not in {"reference_fit", "camera_parallel"}:
+            raise PerceptionError("unknown table_plane_mode")
+        if self.table_plane_mode == "camera_parallel" and (
+            len(self.active_camera_labels) != 1 or self.table_appearance_mode != "border_background"
+        ):
+            raise PerceptionError("camera_parallel requires one active camera and border_background appearance")
         if self.table_appearance_mode not in {"bright_table", "border_background"}:
             raise PerceptionError("unknown table_appearance_mode")
         roi = self.table_roi_xyxy
@@ -838,6 +846,69 @@ def _fit_table_plane(
     return coefficients, residual, diagnostics
 
 
+def _camera_parallel_table(
+    frame: RGBDFrame, config: PerceptionConfig, base_z_offset_mm: float = 0.0,
+) -> tuple[np.ndarray, dict[str, Any], np.ndarray, list[dict[str, Any]]]:
+    """Fit constant camera Z from bare ROI border, then transform the plane.
+
+    The opt-in assumption is a flat table perpendicular to the optical axis,
+    not a zero slope in robot-base coordinates. No missing depth is filled.
+    """
+    depth = np.asarray(frame.depth_m, dtype=np.float64)
+    valid = np.isfinite(depth) & (depth > config.min_depth_m) & (depth < config.max_depth_m)
+    # Bootstrap color from the ROI border before a table height is known.
+    appearance = _estimate_border_background(
+        frame.rgb, np.zeros(depth.shape), valid, 24., config.table_roi_xyxy,
+    )
+    if not appearance["confident"]:
+        raise PerceptionError(f"camera_parallel background rejected: {appearance['reason']}")
+    _, border = _table_roi_masks(depth.shape, config.table_roi_xyxy)
+    color_error = np.linalg.norm(
+        frame.rgb.astype(np.float64) - np.asarray(appearance["table_rgb_median"]), axis=2,
+    )
+    samples = valid & border & (color_error < appearance["applied_color_distance"])
+    if int(samples.sum()) < 100:
+        raise PerceptionError("camera_parallel requires at least 100 bare table depth samples")
+    distance_m = float(np.median(depth[samples]))
+    residual_mm = np.abs(depth-distance_m) * 1000.
+    p95_mm = float(np.percentile(residual_mm[samples], 95))
+    if p95_mm > 15.:
+        raise PerceptionError(
+            f"camera_parallel table depths disagree (p95={p95_mm:.1f} mm > 15 mm); "
+            "check ROI, camera perpendicularity and depth quality"
+        )
+    samples &= residual_mm <= 15.
+    h, w = depth.shape
+    quadrant_counts = [int(samples[ys, xs].sum())
+                       for ys in (slice(0, h//2), slice(h//2, h))
+                       for xs in (slice(0, w//2), slice(w//2, w))]
+    if sum(count >= 25 for count in quadrant_counts) < 3:
+        raise PerceptionError("camera_parallel requires table depth support in at least three image quadrants")
+    transform = np.asarray(frame.X_base_camera, dtype=np.float64)
+    normal = transform[:3, 2]
+    if not np.all(np.isfinite(transform)) or normal[2] >= -0.5:
+        raise PerceptionError("camera_parallel expects a downward-looking calibrated camera")
+    constant = distance_m * 1000. + float(normal @ (transform[:3, 3] * 1000.))
+    coefficients = np.array([-normal[0]/normal[2], -normal[1]/normal[2],
+                             constant/normal[2] + base_z_offset_mm])
+    xyz, _ = camera_base_xyz_map_mm(frame, config)
+    y, x = np.nonzero(samples)
+    chosen = np.linspace(0, len(x)-1, min(32, len(x)), dtype=int)
+    points = xyz[y[chosen], x[chosen]].astype(np.float64)
+    points[:, 2] += base_z_offset_mm
+    records = [
+        {"name": f"BG{i:02d}", "pixel_xy": [int(x[j]), int(y[j])], "valid": True,
+         "base_xyz_mm": point.tolist(), "depth_median_m": float(depth[y[j], x[j]])}
+        for i, (j, point) in enumerate(zip(chosen, points))
+    ]
+    stats = {"mode": "camera_parallel", "camera_table_depth_m": distance_m,
+             "normal_base": normal.tolist(), "background": appearance,
+             "reference_count": int(samples.sum()), "inlier_count": int(samples.sum()),
+             "quadrant_sample_counts": quadrant_counts,
+             "residual_p95_abs_mm": p95_mm / abs(float(normal[2]))}
+    return coefficients, stats, points, records
+
+
 def _sample_table_reference_points(
     frame: RGBDFrame,
     config: PerceptionConfig,
@@ -853,6 +924,9 @@ def _sample_table_reference_points(
     cross-camera plane RANSAC.
     """
 
+    if config.table_plane_mode == "camera_parallel":
+        _, _, points, records = _camera_parallel_table(frame, config, base_z_offset_mm)
+        return points, records
     numpy = _require_numpy()
     if not math.isfinite(float(base_z_offset_mm)):
         raise PerceptionError("base Z offset must be finite")
@@ -950,6 +1024,14 @@ def _fit_table_plane_from_references(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Fit the table from sampled edge/corner depths with deterministic RANSAC."""
 
+    if config.table_plane_mode == "camera_parallel":
+        if len(frames) != 1:
+            raise PerceptionError("camera_parallel table fit requires exactly one captured frame")
+        frame = frames[0]
+        coefficients, stats, _, records = _camera_parallel_table(
+            frame, config, float((camera_z_offsets_mm or {}).get(frame.label, 0.0))
+        )
+        return coefficients, {**stats, "cameras": {frame.label: records}}
     numpy = _require_numpy()
     import itertools
 
@@ -2094,6 +2176,7 @@ def _occlusion_aware_garment_mask(
     minimum_table_color_distance: float | None = None,
     table_appearance: dict[str, Any] | None = None,
     cross_view_support_points_base_mm: np.ndarray | None = None,
+    rejection_masks: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Rasterize garment points without coloring nearer robot/fixture pixels.
 
@@ -2269,6 +2352,20 @@ def _occlusion_aware_garment_mask(
         closing_iterations=0,
         fill_holes=False,
     )
+    if rejection_masks is not None:
+        # Mutually exclusive reasons in pipeline order. Include RGB foreground
+        # outside the projection so a depth hole is still visible in diagnostics
+        # even when it never entered the fused cloud in the first place.
+        domain = silhouette | (appearance_mask if appearance_diagnostics.get("applied") else False)
+        has_depth = valid_depth & numpy.isfinite(observed) & (observed > 0.)
+        rejection_masks.update({
+            "missing_or_out_of_range_depth": domain & ~has_depth,
+            "outside_projected_silhouette": domain & has_depth & ~silhouette,
+            "depth_mismatch": silhouette & has_depth & ~depth_consistent,
+            "height_rejected": silhouette & depth_consistent & ~plausible_height,
+            "appearance_rejected": silhouette & depth_consistent & plausible_height & ~appearance_mask,
+            "disconnected_component": unconnected_mask & ~garment_mask,
+        })
     diagnostics = {
         "projected_point_count": int(numpy.count_nonzero(visible)),
         "sparse_mask_pixels": int(numpy.count_nonzero(sparse_mask)),
@@ -2364,12 +2461,12 @@ def camera_height_map_mm(
             numpy.asarray([0.0, 0.0, 0.0], dtype=numpy.float64),
             camera_z_offsets_mm={frame.label: float(base_z_offset_mm)},
         )
-        if reference_stats.get("mode") == "corner_edge_depth_interpolation":
+        if reference_stats.get("mode") in {"corner_edge_depth_interpolation", "camera_parallel"}:
             coefficients = reference_coefficients
         else:
             coefficients, _, _ = _fit_table_plane(base_points_mm, colors)
         slope = float(numpy.linalg.norm(coefficients[:2]))
-        if not math.isfinite(slope) or slope > 0.12:
+        if not math.isfinite(slope) or (config.table_plane_mode != "camera_parallel" and slope > 0.12):
             raise PerceptionError(
                 "single-camera table fit is not geometrically plausible; "
                 "use a validated A/B table plane before rendering height"
@@ -2823,6 +2920,7 @@ def _save_camera_height_heatmap(
         table_coefficients,
         base_z_offset_mm=base_z_offset_mm,
     )
+    rejection_masks: dict[str, np.ndarray] = {}
     garment_mask, coordinate_reference_mask, projection_diagnostics = (
         _occlusion_aware_garment_mask(
             garment_points_base_mm,
@@ -2832,11 +2930,13 @@ def _save_camera_height_heatmap(
             minimum_table_color_distance=minimum_table_color_distance,
             table_appearance=table_appearance,
             cross_view_support_points_base_mm=cross_view_support_points_base_mm,
+            rejection_masks=rejection_masks,
         )
     )
     garment_mask_pixels_before_fixture_filter = int(
         numpy.count_nonzero(garment_mask)
     )
+    before_fixture_mask = garment_mask.copy()
     if len(config.active_camera_labels) == 1:
         # A wrist camera commonly frames the garment against the image border;
         # the multi-camera edge-fixture heuristic would classify that entire
@@ -2862,6 +2962,41 @@ def _save_camera_height_heatmap(
     projection_diagnostics["garment_mask_pixels"] = int(
         numpy.count_nonzero(garment_mask)
     )
+    rejection_masks["fixture_rejected"] = before_fixture_mask & ~garment_mask
+    rejection_colors = {
+        "missing_or_out_of_range_depth": (255, 0, 255),
+        "outside_projected_silhouette": (0, 160, 255),
+        "depth_mismatch": (255, 60, 0),
+        "height_rejected": (255, 255, 0),
+        "appearance_rejected": (160, 80, 255),
+        "disconnected_component": (255, 160, 0),
+        "fixture_rejected": (255, 255, 255),
+    }
+    reason_rgb = numpy.zeros_like(frame.rgb)
+    reason_rgb[garment_mask] = (0, 170, 0)
+    legend = {}
+    for name, mask in rejection_masks.items():
+        reason_rgb[mask] = rejection_colors[name]
+        legend[name] = {"color_rgb": list(rejection_colors[name]), "pixels": int(mask.sum())}
+    Image.fromarray(reason_rgb).save(output_dir / f"camera_{frame.label}_mask_rejection_map.png")
+    numpy.savez_compressed(output_dir / f"camera_{frame.label}_mask_rejections.npz", **rejection_masks)
+    # A legend beneath the image leaves original pixel coordinates unchanged.
+    panel = Image.new("RGB", (max(reason_rgb.shape[1], 560), reason_rgb.shape[0] + 160), (20, 20, 20))
+    panel.paste(Image.fromarray(reason_rgb), (0, 0))
+    painter = ImageDraw.Draw(panel)
+    for i, (name, color) in enumerate([("accepted", (0, 170, 0)), *rejection_colors.items()]):
+        painter.text((10, reason_rgb.shape[0] + 5 + i*19), name, fill=color)
+    panel.save(output_dir / f"camera_{frame.label}_mask_rejection_legend.png")
+    projection_diagnostics["rejection_legend"] = legend
+    finite_depth = numpy.isfinite(depth)
+    projection_diagnostics["raw_depth_quality"] = {
+        "total_pixels": int(depth.size),
+        "nonfinite_pixels": int((~finite_depth).sum()),
+        "zero_or_negative_pixels": int((finite_depth & (depth <= 0.)).sum()),
+        "positive_below_min_pixels": int((finite_depth & (depth > 0.) & (depth <= config.min_depth_m)).sum()),
+        "above_max_pixels": int((finite_depth & (depth >= config.max_depth_m)).sum()),
+        "configured_depth_range_m": [config.min_depth_m, config.max_depth_m],
+    }
     # Persist before validation can abort the run. result.json is only written
     # on success, so keeping diagnostics there loses the evidence we need most.
     (output_dir / f"camera_{frame.label}_mask_diagnostics.json").write_text(
@@ -2958,7 +3093,7 @@ def _save_camera_height_heatmap(
         json.dumps(
             {
                 "camera_label": frame.label,
-                "method": "corner_edge_depth_interpolation",
+                "method": "camera_parallel" if config.table_plane_mode == "camera_parallel" else "corner_edge_depth_interpolation",
                 "table_plane_coefficients": [float(value) for value in table_coefficients],
                 "samples": table_reference_records,
             },
@@ -3048,6 +3183,7 @@ def _save_camera_height_heatmap(
         "heatmap_normalization": "fixed_physical_-5_to_40mm",
         "base_z_offset_mm": float(base_z_offset_mm),
         "projection_diagnostics": projection_diagnostics,
+        "mask_rejection_legend": f"camera_{frame.label}_mask_rejection_legend.png",
         "height_min_mm": float(numpy.percentile(height_above_table_mm[garment_valid], 2))
         if garment_valid.any()
         else None,
@@ -3061,6 +3197,7 @@ def _camera_height_view_artifacts(artifacts: dict[str, Any]) -> dict[str, Any]:
     """Expose every per-camera artifact required by workspace consumers."""
 
     return {
+        "mask_rejection_legend": artifacts.get("mask_rejection_legend"),
         "height_map": artifacts["height_map"],
         "height_map_global": artifacts["height_map_global"],
         "height_map_boundary": artifacts["height_map_boundary"],
@@ -3632,9 +3769,11 @@ class ClothCenterPerception:
             self.config,
             self.robot_config,
         )
-        coefficients, table_residual, table_stats = _fit_table_plane(
-            fused_points, fused_colors
-        )
+        if self.config.table_plane_mode == "camera_parallel":
+            coefficients = numpy.zeros(3)
+            table_stats = {"model": "camera_z = constant transformed to robot base"}
+        else:
+            coefficients, _, table_stats = _fit_table_plane(fused_points, fused_colors)
         coefficients, table_reference_stats = _fit_table_plane_from_references(
             frames,
             self.config,

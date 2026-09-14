@@ -50,3 +50,49 @@ The geometric table fit, depth consistency checks, workspace checks and robot
 execution checks still apply. The supplied photograph alone has no depth and
 cannot establish whether its final 3-D center is inside the robot workspace.
 Historical configurations without a mode retain `bright_table` behaviour.
+
+## Flat table perpendicular to the camera
+
+The current wrist configuration sets `table_plane_mode: "camera_parallel"`.
+This fixes the table normal to the camera optical axis and estimates its distance
+from valid bare-background pixels on the inner ROI border. It transforms this
+plane into robot-base coordinates with the capture's saved extrinsics. It does
+not assume the robot base Z axis is perfectly aligned with the camera.
+
+Samples must cover at least three image quadrants, and their 95th percentile
+depth residual must be at most 15 mm. Inconsistent data stops the fit rather
+than falling back to unrelated picture corners. `camera_A_table_references.png`
+now displays the background samples used by this fit. If the camera is no longer
+perpendicular to the table, this mode's assumption does not apply; check the
+observation pose before using it. Historical configurations default to
+`reference_fit`.
+
+Missing depth is never replaced by table height or interpolated into grounding.
+`camera_A_mask_rejection_legend.png` explains black holes in the height image:
+
+| Color | Meaning |
+| --- | --- |
+| Green | Accepted garment pixels |
+| Magenta | Depth missing or outside the configured range |
+| Blue | RGB foreground with depth, outside projected garment silhouette |
+| Red | Depth disagrees with projected surface |
+| Yellow | Height outside the permitted garment envelope |
+| Purple | Appearance filter rejection |
+| Orange | Disconnected component removed |
+| White | Fixture filter rejection |
+
+The unlabelled map preserves RGB dimensions in `camera_A_mask_rejection_map.png`.
+Exact boolean masks are in `camera_A_mask_rejections.npz`; stage counts, colors
+and nonfinite/zero/out-of-range depth counts are in `camera_A_mask_diagnostics.json`.
+The contact sheet includes the legend image. Background outside the diagnostic
+domain stays black; black is not itself a rejection classification.
+
+Replay an existing capture without any camera or robot connection:
+
+```bash
+python scripts/test_height_map_pipeline.py --input-capture path/to/raw_capture
+```
+
+The directory must contain `capture_manifest.json`, RGB and depth arrays from
+the standalone perception test. The configured mode and saved camera transform
+are used. The new output contains the table references and hole diagnostics.
