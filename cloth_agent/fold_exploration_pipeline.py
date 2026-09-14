@@ -3494,7 +3494,7 @@ class FoldExplorationPipeline:
         if self.real:
             self._debug("perception", "moving robot to calibrated perception pose")
             move_robot_to_perception_position(self.session.robot_config)
-        self._debug("perception", "capturing synchronized Camera A/B RGB-D")
+            self._debug("perception", "capturing synchronized configured RGB-D cameras")
         frames = capture_two_view_rgbd(config)
         self._debug("perception", "running garment localization and depth fusion", frames=len(frames))
         self.session.locate_cloth_center(config, frames=frames)

@@ -1899,8 +1899,17 @@ def _require_projected_garment_validation(
         "failures": failures,
     }
     if failures:
+        diagnostic_text = "; ".join(
+            f"camera {label}: projected={int(artifacts.get('projection_diagnostics', {}).get('projected_point_count') or 0)}, "
+            f"silhouette={camera_diagnostics[label]['silhouette_pixels']}, "
+            f"depth_consistent={int(artifacts.get('projection_diagnostics', {}).get('depth_consistent_pixels') or 0)}, "
+            f"mask={camera_diagnostics[label]['garment_mask_pixels']}"
+            for label, artifacts in camera_artifacts.items()
+        )
         raise PerceptionError(
-            "perception validation blocked Molmo/Claude/robot: " + "; ".join(failures)
+            "perception validation blocked Molmo/Claude/robot: "
+            + "; ".join(failures)
+            + (f"; diagnostics: {diagnostic_text}" if diagnostic_text else "")
         )
     return validation
 
