@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cloth_agent.planner_backend import RemoteClaudeBackend  # noqa: E402
+from cloth_agent.planner_backend import RemoteClaudeBackend, parse_claude_json  # noqa: E402
 
 
 SCHEMA = {
@@ -42,44 +41,17 @@ SCHEMA = {
 def _check_payload(stdout: str) -> dict:
     # Keep this smoke test usable on a minimal checkout without importing the
     # perception stack (and its NumPy/OpenCV dependencies).
-    candidates = [stdout.strip()]
-    try:
-        outer = json.loads(stdout)
-        if isinstance(outer, dict) and isinstance(outer.get("result"), str):
-            candidates = [outer["result"]]
-        elif isinstance(outer, dict):
-            candidates = [json.dumps(outer)]
-    except json.JSONDecodeError:
-        pass
-    payload = None
-    decoder = json.JSONDecoder()
-    for candidate in candidates + re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", candidates[0], re.S):
-        try:
-            value = json.loads(candidate)
-            if isinstance(value, dict):
-                payload = value
-                break
-        except json.JSONDecodeError:
-            for match in re.finditer(r"\{", candidate):
-                try:
-                    value, _ = decoder.raw_decode(candidate[match.start():])
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(value, dict):
-                    payload = value
-                    break
-        if payload is not None:
-            break
-    if payload is None:
-        raise RuntimeError("Claude response did not contain a JSON object")
+    payload = parse_claude_json(stdout)
     missing = [key for key in SCHEMA["required"] if key not in payload]
     if missing:
         raise RuntimeError(f"Claude JSON is missing fields: {', '.join(missing)}")
     if payload["ok"] is not True or payload["image_read"] is not True:
         raise RuntimeError(f"Claude did not confirm image reading: {payload}")
     confidence = payload["confidence"]
-    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise RuntimeError(f"invalid confidence: {confidence!r}")
+    if set(payload) != set(SCHEMA["required"]) or not isinstance(payload["observation"], str) or not payload["observation"].strip():
+        raise RuntimeError("invalid smoke observation schema")
     return payload
 
 
@@ -106,7 +78,7 @@ def run(image: Path, *, mock: bool, host: str, timeout_s: int) -> dict:
                 "stderr": "",
             }
         )()
-        with patch("cloth_agent.planner_backend.subprocess.run", side_effect=[fake_upload, fake_ssh]):
+        with patch("cloth_agent.planner_backend.subprocess.run", side_effect=[fake_upload, fake_ssh, fake_ssh]):
             result = backend.invoke(
                 prompt=prompt, image_paths=[image], schema=SCHEMA,
                 system_prompt="Return only the requested JSON.",

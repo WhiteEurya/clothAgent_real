@@ -83,6 +83,8 @@ from .free_exploration import (
 )
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
+from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
+from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .perception import PerceptionConfig, RGBDFrame, capture_two_view_rgbd
 from .persistent_claude import PersistentClaudeSession
 from .molmo_keypoint_pipeline import (
@@ -2477,10 +2479,12 @@ class FoldSupervisor:
         binary: str = "claude",
         timeout_s: int = 900,
         persistent_session: PersistentClaudeSession | None = None,
+        backend: RemoteClaudeBackend | None = None,
     ):
         self.binary = binary
         self.timeout_s = int(timeout_s)
         self.persistent_session = persistent_session
+        self.backend = backend
 
     @staticmethod
     def _write_context_bundle(
@@ -2599,6 +2603,28 @@ class FoldSupervisor:
             history=history,
             screen=screen,
         )
+        if self.backend is not None:
+            images_remote = rgb_evidence([*safe_images, *safe_video], root)
+            if not images_remote:
+                raise ExplorationPlanningError("remote supervisor requires RGB evidence")
+            # Only the static rubric is read from the local bundle. Robot/screen
+            # measurements and local manifests are never sent to the company.
+            instructions = (Path(context_bundle["directory"]) / "01_instructions.md").read_text(encoding="utf-8")
+            instructions = instructions.replace("04_evidence_manifest.json", "the inline image_index list below")
+            prompt_remote = instructions + "\n" + json.dumps({
+                "images": image_manifest(images_remote, "current RGB or chronological rollout"),
+                "recent_experiences": semantic_history(history),
+            }, ensure_ascii=False)
+            started = time.monotonic()
+            completed = self.backend.invoke(prompt=prompt_remote,
+                image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
+                system_prompt="Read-only fold state supervisor. Read the supplied RGB and return the requested JSON. No robot access.")
+            result = _normalize_supervisor_current_step(
+                validate_supervisor_payload(parse_claude_json(completed.stdout)))
+            result.update(duration_s=time.monotonic() - started,
+                context_bundle=context_bundle, command=list(completed.command),
+                raw_stdout=completed.stdout, raw_stderr=completed.stderr, backend="remote")
+            return result
         prompt = (
             "Read the run-local folding-supervisor context manifest at "
             f"{context_bundle['manifest_relative']}. Read every file in its read_order, "
@@ -2702,6 +2728,8 @@ class FoldExplorationPipeline:
         *,
         perception_config: Path,
         claude_binary: str = "claude",
+        planner_backend: str = "remote",
+        remote_planner_host: str = "company-planner",
         claude_timeout_s: int = 1800,
         grounding_timeout_s: int | None = None,
         supervisor_timeout_s: int = 900,
@@ -2740,6 +2768,10 @@ class FoldExplorationPipeline:
         self.project_root = session.project_root
         self.perception_config = Path(perception_config).resolve()
         self.claude_binary = claude_binary
+        if planner_backend not in {"local", "remote"}:
+            raise ValueError("planner_backend must be local or remote")
+        self.planner_backend = planner_backend
+        self.remote_planner_host = remote_planner_host
         self.claude_timeout_s = int(claude_timeout_s)
         # Final grounding is a separate Claude turn, but it must not have a
         # smaller hidden ceiling than the user-configured Claude timeout.  A
@@ -2812,7 +2844,10 @@ class FoldExplorationPipeline:
         # but still rejectable at validation time.
         self.skill_store = SkillStore(self.project_root / "data" / "skills")
         approved_skills = self.skill_store.approved()
-        self.client = ClaudeAutoClient(
+        client_type = RemoteFoldClient if planner_backend == "remote" else ClaudeAutoClient
+        backend_options = ({"backend": RemoteClaudeBackend(ssh_host=remote_planner_host,
+                            timeout_s=self.claude_timeout_s)} if planner_backend == "remote" else {})
+        self.client = client_type(
             binary=claude_binary,
             timeout_s=self.claude_timeout_s,
             grounding_timeout_s=self.grounding_timeout_s,
@@ -2821,11 +2856,14 @@ class FoldExplorationPipeline:
                 sorted({str(skill.name).strip().lower() for skill in approved_skills})
             ),
             persistent_session=self.persistent_claude,
+            **backend_options,
         )
         self.supervisor = FoldSupervisor(
             claude_binary,
             supervisor_timeout_s,
             persistent_session=self.persistent_claude,
+            backend=(RemoteClaudeBackend(ssh_host=remote_planner_host, timeout_s=supervisor_timeout_s)
+                     if planner_backend == "remote" else None),
         )
         self.experiences = FoldExperienceStore(session.run_dir)
         self.skill_ledger = RunSkillLedger(session.workspace)
@@ -4375,6 +4413,8 @@ class FoldExplorationPipeline:
                         self._debug("supervisor", "waiting before supervisor retry", delay_s=delay)
                         time.sleep(delay)
         else:
+            if getattr(self, "planner_backend", "local") == "remote":
+                raise PlannerBackendError("remote supervisor failed after retries; no fallback decision") from last_error
             result = self._fallback_supervisor(screen, history, last_error)
             self._debug(
                 "supervisor",
@@ -4610,6 +4650,8 @@ class FoldExplorationPipeline:
                     if delay:
                         self._debug("evaluation", "waiting before evaluation retry", delay_s=delay)
                         time.sleep(delay)
+        if getattr(self, "planner_backend", "local") == "remote":
+            raise PlannerBackendError("remote evaluation failed after retries; no fallback outcome") from last_error
         error_text = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown evaluation failure"
         self._debug("evaluation", "using UNKNOWN evaluation fallback", iteration=iteration, attempts=attempts)
         return {
@@ -4702,7 +4744,9 @@ class FoldExplorationPipeline:
             retry_backoff_s=self.retry_backoff_s,
             claude_timeout_s=self.claude_timeout_s,
             supervisor_timeout_s=self.supervisor.timeout_s,
-            persistent_claude_session=self.persistent_claude.session_id,
+            planner_backend=self.planner_backend,
+            remote_planner_host=self.remote_planner_host if self.planner_backend == "remote" else None,
+            persistent_claude_session=self.persistent_claude.session_id if self.planner_backend == "local" else None,
         )
         self._start_viser(output)
         try:
@@ -4749,11 +4793,13 @@ class FoldExplorationPipeline:
                     if self.unattended
                     else "fail_fast"
                 ),
-                "supervisor_fallback": True,
-                "evaluation_fallback": True,
+                "supervisor_fallback": self.planner_backend == "local",
+                "evaluation_fallback": self.planner_backend == "local",
             },
             "plan_authority": {
                 "strategy": "Claude",
+                "backend": self.planner_backend,
+                "remote_host": self.remote_planner_host if self.planner_backend == "remote" else None,
                 "host_role": "schema, coordinate, safety, preflight, IK, execution",
                 "host_compile_acquisition_probe": self.host_compile_acquisition_probe,
                 "silent_plan_rewrite": False,
@@ -5964,6 +6010,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-config", type=Path, default=Path("config/robot.example.json"))
     parser.add_argument("--perception-config", type=Path, default=Path("config/perception.free_exploration.json"))
     parser.add_argument("--claude-binary", default="claude")
+    parser.add_argument("--planner-backend", choices=("remote", "local"), default="remote",
+                        help="fold model calls use the HTTPS/SSH bridge by default")
+    parser.add_argument("--remote-planner-host", default="company-planner", help="SSH config host for company Claude")
     parser.add_argument("--claude-timeout-s", type=int, default=1800)
     parser.add_argument(
         "--grounding-timeout-s",
@@ -6079,6 +6128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         session,
         perception_config=perception.resolve(),
         claude_binary=args.claude_binary,
+        planner_backend=args.planner_backend,
+        remote_planner_host=args.remote_planner_host,
         claude_timeout_s=args.claude_timeout_s,
         grounding_timeout_s=args.grounding_timeout_s,
         supervisor_timeout_s=args.supervisor_timeout_s,
