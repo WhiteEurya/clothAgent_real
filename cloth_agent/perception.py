@@ -3832,7 +3832,7 @@ class ClothCenterPerception:
             "active_cameras": list(self.config.active_camera_labels),
             "source_support_counts": source_support_counts,
             "camera_z_offsets_mm": camera_z_offsets_mm,
-            "robot_boundaries": self.robot_config.boundaries.as_dict(),
+            "robot_boundaries": asdict(self.robot_config.boundaries),
             "garment_center_workspace": (
                 asdict(self.config.garment_center_workspace)
                 if self.config.garment_center_workspace is not None else None
