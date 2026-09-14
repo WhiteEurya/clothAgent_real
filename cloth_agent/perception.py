@@ -2763,10 +2763,17 @@ def _save_camera_height_heatmap(
     garment_mask_pixels_before_fixture_filter = int(
         numpy.count_nonzero(garment_mask)
     )
-    fixture_mask, fixture_diagnostics = _edge_connected_fixture_mask(
-        garment_mask,
-        height_above_table_mm,
-    )
+    if len(config.active_camera_labels) == 1:
+        # A wrist camera commonly frames the garment against the image border;
+        # the multi-camera edge-fixture heuristic would classify that entire
+        # connected garment component as a robot fixture.
+        fixture_mask = numpy.zeros_like(garment_mask)
+        fixture_diagnostics = {"applied": False, "reason": "single_camera_wrist_view"}
+    else:
+        fixture_mask, fixture_diagnostics = _edge_connected_fixture_mask(
+            garment_mask,
+            height_above_table_mm,
+        )
     if fixture_mask.any():
         garment_mask = _solidify_largest_mask(
             garment_mask & ~fixture_mask,
