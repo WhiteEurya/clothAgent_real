@@ -228,6 +228,7 @@ class FoldDebugLogger:
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.started = time.monotonic()
+        self._last_event_elapsed = 0.0
         self.log_path = self.output_dir / "debug.log"
         self.events_path = self.output_dir / "debug_events.jsonl"
         self._lock = threading.Lock()
@@ -236,13 +237,21 @@ class FoldDebugLogger:
 
     def log(self, stage: str, message: str, **fields: Any) -> None:
         elapsed = time.monotonic() - self.started
-        line = f"[fold-debug +{elapsed:8.1f}s] {stage}: {message}"
+        gap = elapsed - self._last_event_elapsed
+        self._last_event_elapsed = elapsed
+        # Console is a summary; the JSONL retains full measurements and payloads.
+        def preview(value):
+            text = repr(value).replace("\n", " ")
+            return text if len(text) <= 180 else text[:177] + "..."
+        short_message = message if len(message) <= 420 else message[:417] + "..."
+        line = f"[fold-debug +{elapsed:8.1f}s | +{gap:6.1f}s] {stage}: {short_message}"
         if fields:
-            compact = ", ".join(f"{key}={value!r}" for key, value in fields.items())
+            compact = ", ".join(f"{key}={preview(value)}" for key, value in fields.items())
             line += f" | {compact}"
         event = {
             "timestamp": _now(),
             "elapsed_s": elapsed,
+            "since_previous_event_s": gap,
             "stage": str(stage),
             "message": str(message),
             "fields": fields,
@@ -2623,7 +2632,9 @@ class FoldSupervisor:
                 validate_supervisor_payload(parse_claude_json(completed.stdout)))
             result.update(duration_s=time.monotonic() - started,
                 context_bundle=context_bundle, command=list(completed.command),
-                raw_stdout=completed.stdout, raw_stderr=completed.stderr, backend="remote")
+                raw_stdout=completed.stdout, raw_stderr=completed.stderr, backend="remote",
+                evidence_images=[str(p) for p in images_remote],
+                backend_timings=getattr(completed, "timings", {}))
             return result
         prompt = (
             "Read the run-local folding-supervisor context manifest at "
@@ -3531,11 +3542,23 @@ class FoldExplorationPipeline:
             return saved, saved_path, images
         if self.real:
             self._debug("perception", "moving robot to calibrated perception pose")
-            move_robot_to_perception_position(self.session.robot_config)
+            pose_started = time.monotonic()
+            try:
+                move_robot_to_perception_position(self.session.robot_config)
+            finally:
+                self._debug("perception-timing", "move to observation pose finished", duration_s=round(time.monotonic()-pose_started, 3))
             self._debug("perception", "capturing synchronized configured RGB-D cameras")
-        frames = capture_two_view_rgbd(config)
+        capture_started = time.monotonic()
+        try:
+            frames = capture_two_view_rgbd(config)
+        finally:
+            self._debug("perception-timing", "RGB-D capture finished", duration_s=round(time.monotonic()-capture_started, 3))
         self._debug("perception", "running garment localization and depth fusion", frames=len(frames))
-        self.session.locate_cloth_center(config, frames=frames)
+        fusion_started = time.monotonic()
+        try:
+            self.session.locate_cloth_center(config, frames=frames)
+        finally:
+            self._debug("perception-timing", "localization and fusion finished", duration_s=round(time.monotonic()-fusion_started, 3))
         saved, saved_path = _load_latest_perception(self.session)
         if saved is None or saved_path is None:
             raise RuntimeError("perception completed without saved result")
@@ -4005,7 +4028,11 @@ class FoldExplorationPipeline:
         def worker_line(line: str) -> None:
             message = str(line).strip()
             if message:
-                self._debug("molmo-worker", message, iteration=iteration, step=step)
+                if message.startswith('{"schema_version"'):
+                    self._debug("molmo-worker", "structured result received; full output saved in Molmo artifacts",
+                                iteration=iteration, step=step, result_json=message)
+                else:
+                    self._debug("molmo-worker", message, iteration=iteration, step=step)
 
         try:
             orientation = _stage_upright_molmo_perception(
@@ -4314,6 +4341,9 @@ class FoldExplorationPipeline:
         for attempt in range(1, attempts + 1):
             started = time.monotonic()
             try:
+                if isinstance(self.client, RemoteFoldClient) and getattr(self, "_debug_logger", None) is not None:
+                    self.client.diagnostics_dir = (self._debug_logger.output_dir /
+                        f"iteration_{iteration:03d}" / f"planning_attempt_{attempt_kind}_{attempt:02d}")
                 proposal = self.client.plan(
                     planning_images,
                     self.session,
@@ -4321,6 +4351,9 @@ class FoldExplorationPipeline:
                     feedback=feedback,
                     history=_compact_history(history),
                     reference_policy="uniform",
+                    phase_callback=lambda phase, event, value: self._debug(
+                        "planning-phase", f"{phase}: {event}", iteration=iteration, attempt=attempt,
+                        **({"timeout_s": value} if event == "started" else {"duration_s": round(value, 3)})),
                 )
                 self._debug(
                     "planning",
@@ -4405,6 +4438,14 @@ class FoldExplorationPipeline:
                         "current deterministic gates; this unchanged frame will not be "
                         f"retried: {exc}"
                     ) from exc
+                if isinstance(exc, SafetyError):
+                    # Requerying the same frame with no new constraints cannot
+                    # repair a deterministic workspace failure. Keep diagnostics
+                    # and stop; never reuse a rejected or previous action program.
+                    raise RuntimeError(
+                        "Local safety validation rejected the proposal; unchanged input will not be "
+                        f"retried. Inspect planning_attempt_*/workspace diagnostics: {exc}"
+                    ) from exc
                 if attempt < attempts:
                     delay = self.retry_backoff_s * attempt
                     if delay:
@@ -4418,12 +4459,15 @@ class FoldExplorationPipeline:
     def _supervisor(self, images: Sequence[Path], screen: Mapping[str, Any], history: Sequence[Mapping[str, Any]], *, video: Sequence[Path] = ()) -> dict[str, Any]:
         started = time.monotonic()
         selected_images = _select_supervisor_images(images)
+        actual_remote = (rgb_evidence([*selected_images, *video], self.session.run_dir)
+                         if getattr(self.supervisor, "backend", None) is not None else None)
         self._debug(
             "supervisor",
             "inspection started",
             images=len(images),
-            selected_images=len(selected_images),
-            selected_image_names=[path.name for path in selected_images],
+            selected_images=len(actual_remote if actual_remote is not None else selected_images),
+            selected_image_names=[path.name for path in (actual_remote if actual_remote is not None else selected_images)],
+            input_filter="RGB-only relay" if actual_remote is not None else "local",
             video_images=len(video),
             visibility=screen.get("visibility"),
         )
@@ -4775,6 +4819,12 @@ class FoldExplorationPipeline:
         output = self.session.results / "fold_exploration" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         output.mkdir(parents=True, exist_ok=False)
         self._debug_logger = FoldDebugLogger(output)
+        for label, owner in (("planner", self.client), ("supervisor", self.supervisor)):
+            backend = getattr(owner, "backend", None)
+            if backend is not None:
+                backend.progress_callback = lambda phase, event, duration=None, _label=label, **fields: self._debug(
+                    f"remote-{_label}", f"{phase}: {event}", phase=phase, event=event,
+                    **({"duration_s": round(duration, 3)} if duration is not None else {}), **fields)
         self._debug(
             "run",
             "created output directory",

@@ -2,7 +2,7 @@
 
 `scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 Claude。Alienware 不需要本机 Claude。显式指定 `--planner-backend local` 可以使用旧调用链。
 
-公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout` 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
+公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date` 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
 
 ## 快速测试
 
@@ -53,6 +53,21 @@ python scripts/remote_fold_smoke.py \
 原有 Rxxx 可执行性、任务模式、工作区、IK 和执行校验继续生效。网络/Claude/schema/grounding 失败不返回 Proposal；重试耗尽后远程 supervisor/evaluator 不使用旧的默认状态 fallback。每个远端 job 使用 UUID 临时目录、远端 EXIT trap 和本地 finally 的有界尽力清理。公网中转服务的文件按一小时有效期处理，删除远端目录不会删除公网副本。
 
 ## 离线回归
+
+## 越界点离线诊断
+
+每次远程规划尝试会在 `iteration_*/planning_attempt_*/` 下保存 `workspace_diagnostics.json`、`workspace_targets_raw.png`、`workspace_targets_upright.png` 和 `workspace_base_xy.png`。红色点表示本地工作区检查拒绝；JSON 同时给出动作编号、当前 upright 像素、标定后的机器人 Base XYZ（毫米）和左右边界有符号距离。图像只用于 Alienware 本地调试，不会上传给 Claude。基坐标图使用保存的标定结果，不能代替 IK 或标定精度验证。
+
+也可以对历史失败调用完全离线重绘：
+
+```bash
+python scripts/debug_workspace_targets.py \
+  --run-dir runs/<run> \
+  --motion-json runs/<run>/results/fold_exploration/<stamp>/iteration_001/planning_attempt_fold_01/pixel_motion_invocation.json \
+  --visual-json runs/<run>/results/fold_exploration/<stamp>/iteration_001/planning_attempt_fold_01/visual_planning_invocation.json
+```
+
+Viser 会按“Before / Workspace targets / Actual Claude RGB inputs / Rollout”分组显示图片；顶部 timing 面板显示每个阶段的细分耗时。日志里的 `+Xs` 是从运行开始的累计时间，`+Ys` 是相邻事件间隔，嵌套阶段不要相加。
 
 ```bash
 python -m pytest -q tests/test_remote_fold.py tests/test_fold_exploration_pipeline.py tests/test_auto_exploration.py

@@ -7,9 +7,11 @@ heights, never measured XYZ. No local Claude process or remote MCP is needed.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,6 +31,8 @@ from .free_exploration import (
 from .garment_grounding_mcp import GarmentGrounding
 from .grasp_height import resolve_grasp_height
 from .planner_backend import RemoteClaudeBackend, parse_claude_json
+from .config import SafetyError
+from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
 
 
 # Explicit allow-list of RGB artifacts produced by the fold pipeline. Never
@@ -45,13 +49,18 @@ RGB_NAMES = frozenset({
 
 def rgb_evidence(paths: Sequence[Path], root: Path) -> list[Path]:
     result: list[Path] = []
+    seen: set[tuple[str, str]] = set()
     for raw in paths:
         path = Path(raw).resolve()
         if path.name.lower() not in RGB_NAMES:
             continue
         if root.resolve() not in path.parents or not path.is_file():
             raise ExplorationPlanningError("RGB evidence is missing or outside the run")
-        if path not in result:
+        # The pipeline stages copies of the same named RGB in multiple folders.
+        # Keep distinct roles/names; before and after are filtered separately.
+        identity = (path.name.lower(), hashlib.sha256(path.read_bytes()).hexdigest())
+        if identity not in seen:
+            seen.add(identity)
             result.append(path)
     return result
 
@@ -165,7 +174,9 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
     if not all(math.isfinite(float(v)) for v in grasp_xyz):
         raise ExplorationPlanningError("non-finite local grasp geometry")
     actions = []
-    for action in raw_actions:
+    trace = {"selected_reference": dict(selected), "moves": [], "status": "COMPILING",
+             "remote_motion": payload, "visual_plan": visual.as_dict()}
+    for action_index, action in enumerate(raw_actions, 1):
         if not isinstance(action, dict) or set(action) != {"name", "args"}:
             raise ExplorationPlanningError("invalid remote action object")
         name, args = action["name"], action["args"]
@@ -184,6 +195,8 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
             raise ExplorationPlanningError("remote motion cannot descend below the local grasp height")
         if args["target"] == "grasp" and args["pixel_xy"] is None:
             x, y = grasp_xyz[:2]
+            raw_pixel = list(measurement["pixel_xy"])
+            upright_pixel = [upright_size[0] - 1 - raw_pixel[1], raw_pixel[0]]
         elif args["target"] == "pixel":
             pixel = args["pixel_xy"]
             if (not isinstance(pixel, list) or len(pixel) != 2 or
@@ -198,11 +211,25 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
             if len(xyz) != 3 or not all(math.isfinite(float(v)) for v in xyz):
                 raise ExplorationPlanningError("remote target pixel has invalid XYZ")
             x, y = xyz[:2]
+            upright_pixel = list(pixel)
+            raw_pixel = [pixel[1], upright_size[0] - 1 - pixel[0]]
         else:
             raise ExplorationPlanningError("remote target must be grasp/null or pixel/[u,v]")
         z = grasp_xyz[2] + offset
-        robot_config.validate_workspace_pose(x, y, z, yaw)
+        point = {"action_index": action_index, "target": args["target"],
+                 "raw_pixel_xy": raw_pixel, "upright_pixel_xy": upright_pixel,
+                 "base_xyz_mm": [float(x), float(y), float(z)], "yaw_deg": yaw,
+                 "effective_y_limits_mm": list(robot_config.y_workspace_bounds_mm(yaw)),
+                 "lateral": lateral_clearance(robot_config.boundaries, x, y, robot_config.workspace_margin_mm)}
+        trace["moves"].append(point)
+        try:
+            robot_config.validate_workspace_pose(x, y, z, yaw)
+        except SafetyError as exc:
+            point["error"] = str(exc)
+            trace["status"] = "REJECTED"
         actions.append({"name": "move", "args": {"x": x, "y": y, "z": z, "yaw": yaw}})
+    if trace["status"] == "REJECTED":
+        raise WorkspaceTargetError(trace)
     proposal = validate_exploration_payload({
         "garment_observation": visual.garment_observation,
         "reveal_strategy": visual.opening_strategy, "confidence": visual.confidence,
@@ -216,7 +243,8 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
             contact["args"]["height_above_grasp_mm"] != 0):
         raise ExplorationPlanningError("closure must use the selected reference at locally resolved grasp height")
     proposal = replace(proposal, skill_invocations=visual.skill_invocations)
-    return proposal, {"measurement": measurement, "grasp_xy_error_mm": 0.0,
+    trace["status"] = "WORKSPACE_VALIDATED_NOT_EXECUTED"
+    return proposal, {"measurement": measurement, "grasp_xy_error_mm": 0.0, "workspace_trace": trace,
                       "height_resolution": height.as_dict(), "authority": "local_pixel_compiler"}
 
 
@@ -229,11 +257,12 @@ class RemoteFoldClient(ClaudeAutoClient):
         self.backend = backend
         self._remote_context: dict[str, Any] | None = None
         self._remote_images: list[Path] = []
+        self.diagnostics_dir: Path | None = None
 
     def plan(self, image_paths, session, objective, feedback=None, history=None,
              phase_callback=None, reference_policy="uniform", workspace_recovery=None):
         self.last_plan_result = None
-        self.last_visual_plan_result = None
+        self.last_grounding_verification = None
         self._remote_context = None
         self._remote_images = []
         if workspace_recovery is not None and workspace_recovery.required:
@@ -249,23 +278,65 @@ class RemoteFoldClient(ClaudeAutoClient):
             if current.size != expected.size or current.convert("RGB").tobytes() != expected.tobytes():
                 raise ExplorationPlanningError("upright RGB does not match the current local grounding capture")
         self._remote_images = images
+        self._phase_callback = phase_callback
+        self._call_diagnostics = (self.diagnostics_dir or
+            by_name["camera_a_rgb_upright.png"].parent / "remote_diagnostics") / uuid.uuid4().hex[:12]
+        views = session.run_dir / "workspace" / "perception_views"
+        precheck_started = time.monotonic()
+        precheck = save_workspace_debug(self._call_diagnostics, views, session.robot_config)
+        if phase_callback is not None:
+            phase_callback("workspace_precheck_and_images", "completed", time.monotonic() - precheck_started)
+        # This context contains only image-plane coordinates. The metric report
+        # and all diagnostic images remain on the host.
+        transport_pixels = [[int(expected.width - 1 - r["pixel_xy"][1]), int(r["pixel_xy"][0])]
+                            for r in precheck.get("references", []) if r["xy_eligible"]]
         self._remote_context = {**semantic_task(objective), "recent_outcomes": semantic_history(history or []),
-                                "previous_candidate_rejected": rejection_category(feedback)}
-        return super().plan(image_paths, session, objective, feedback, history,
-                            phase_callback, reference_policy, workspace_recovery)
+                                "previous_candidate_rejected": rejection_category(feedback),
+                                "xy_eligible_transport_pixels_upright": transport_pixels}
+        try:
+            return super().plan(image_paths, session, objective, feedback, history,
+                                phase_callback, reference_policy, workspace_recovery)
+        except Exception as exc:
+            path = self._call_diagnostics / "workspace_diagnostics.json"
+            report = json.loads(path.read_text(encoding="utf-8"))
+            report["plan_error"] = f"{type(exc).__name__}: {exc}"
+            if report.get("status") != "REJECTED":
+                report["status"] = "PLANNING_FAILED_NO_ACTION"
+            path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            raise
+        finally:
+            (self._call_diagnostics / "reference_prevalidation.json").write_text(
+                json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
     def _ask(self, stage, context, schema, images, root, instructions):
         prompt = instructions + "\n" + json.dumps(context, ensure_ascii=False)
         started = time.monotonic()
+        diagnostics = getattr(self, "_call_diagnostics", None)
+        invocation = {"stage": stage, "evidence_images": [str(p) for p in images], "status": "RUNNING"}
+        manifest = diagnostics / f"{stage}_invocation.json" if diagnostics is not None else None
+        if manifest is not None:
+            manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
         try:
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
                 system_prompt="You are a read-only garment reasoning assistant. Read the supplied RGB files. Return only the requested JSON. No tools except Read; no robot access.")
             payload = parse_claude_json(result.stdout)
         except Exception as exc:
+            invocation.update(status="FAILED", error=f"{type(exc).__name__}: {exc}",
+                              timings=getattr(exc, "timings", {}), duration_s=time.monotonic() - started)
+            if manifest is not None:
+                manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
             self._save_visual_log(root, {"stage": stage, "backend": "remote",
-                "error": f"{type(exc).__name__}: {exc}", "created_at": _now()}, failed=True)
+                **invocation, "created_at": _now()}, failed=True)
             raise
+        self._save_visual_log(root, {"stage": stage, "backend": "remote", "created_at": _now(),
+            "evidence_images": [str(p) for p in images], "timings": getattr(result, "timings", {}),
+            "duration_s": time.monotonic() - started})
+        if manifest is not None:
+            manifest.write_text(json.dumps({
+                "stage": stage, "evidence_images": [str(p) for p in images],
+                "timings": getattr(result, "timings", {}), "duration_s": time.monotonic() - started,
+                "status": "COMPLETED", "response": payload}, indent=2), encoding="utf-8")
         return payload, result, prompt, time.monotonic() - started
 
     def _visual_plan(self, image_paths, base_prompt, run_dir):
@@ -295,21 +366,38 @@ class RemoteFoldClient(ClaudeAutoClient):
             "repair_requested": "HOST VALIDATION CORRECTION" in objective,
             "repair_category": rejection_category(objective.split("HOST VALIDATION CORRECTION", 1)[1])
                                if "HOST VALIDATION CORRECTION" in objective else None}
+        context["transport_guidance"] = (
+            "Prefer xy_eligible_transport_pixels_upright for transport destinations. These are image-plane "
+            "samples which passed local XY limits only, not final height, yaw or IK approval. "
+            "Do not assume the entire visible garment is reachable. Choose a semantically suitable inward "
+            "destination for FOLD, or outward destination for REPAIR_SLEEVE; do not change the task to fit a point.")
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
             "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. Do not send measured XYZ or code.")
         rgb = next(p for p in self._remote_images if p.name.lower() == "camera_a_rgb_upright.png")
         with Image.open(rgb) as image:
             size = image.size
+        compile_started = time.monotonic()
         try:
             proposal, verification = compile_pixel_motion(payload, visual,
                 GarmentGrounding(session.run_dir / "workspace" / "perception_views"),
                 session.robot_config, size)
         except Exception as exc:
+            if isinstance(exc, WorkspaceTargetError):
+                save_workspace_debug(self._call_diagnostics,
+                    session.run_dir / "workspace" / "perception_views", session.robot_config, exc.trace)
             self.planner._save_invocation_log(session.run_dir, {
                 "stage": "local_pixel_grounding", "remote_motion": payload,
+                "diagnostics_directory": str(self._call_diagnostics),
                 "error": f"{type(exc).__name__}: {exc}"}, failed=True)
             raise
+        finally:
+            callback = getattr(self, "_phase_callback", None)
+            if callback is not None:
+                callback("local_pixel_grounding_and_failure_artifacts", "finished", time.monotonic() - compile_started)
+        save_workspace_debug(self._call_diagnostics,
+            session.run_dir / "workspace" / "perception_views", session.robot_config,
+            verification["workspace_trace"])
         # The same downstream mode, grounding, IK and execution checks still run.
         record = ClaudeExplorationResult(prompt, result.command, result.returncode,
             result.stdout, result.stderr, _now(), proposal)

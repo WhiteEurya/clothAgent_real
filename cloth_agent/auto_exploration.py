@@ -2329,6 +2329,10 @@ class ClaudeAutoClient:
         # relative yaw by RobotAPI and the controller trajectory validator.
         potential_y_low, potential_y_high = robot_config.y_workspace_bounds_mm(90.0)
         violations: list[str] = []
+        try:
+            bounds.validate_lateral(float(xyz[0]), float(xyz[1]), margin)
+        except SafetyError as exc:
+            violations.append(str(exc))
         for axis, value in (("x", float(xyz[0])), ("y", float(xyz[1]))):
             low = getattr(bounds, f"{axis}_min")
             high = getattr(bounds, f"{axis}_max")
@@ -3053,7 +3057,7 @@ class ClaudeAutoClient:
                 reason_counts: dict[str, int] = {}
                 for item in rejected:
                     reason = str(item.get("reason", "unknown rejection"))
-                    if "safe upper bound" in reason or "safe lower bound" in reason:
+                    if "safe upper bound" in reason or "safe lower bound" in reason or "left/right boundaries" in reason:
                         key = "workspace"
                     elif "RGB edge contrast" in reason:
                         key = "rgb_edge_contrast"

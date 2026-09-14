@@ -4,6 +4,7 @@ import json
 import subprocess
 import shutil
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,8 @@ from cloth_agent.planner_backend import BackendResult, PlannerBackendError, Remo
 from cloth_agent.remote_fold import RemoteFoldClient, compile_pixel_motion
 from cloth_agent.auto_exploration import validate_visual_plan_payload
 from cloth_agent.garment_grounding_mcp import GarmentGrounding
+from cloth_agent.workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
+from cloth_agent.auto_exploration import ClaudeAutoClient, SelectedReferenceNotExecutableError, ReferenceReselectionExhaustedError
 
 
 def visual_payload():
@@ -244,6 +247,22 @@ def test_repair_failure_clears_previous_proposal(saved_scene):
     assert client.last_grounding_verification is None
 
 
+def test_feedback_keeps_previous_visual_reference_excluded(saved_scene):
+    session, images, grounding = saved_scene
+    guide_path = grounding.perception_dir / "camera_A_coordinate_guide.json"
+    guide = json.loads(guide_path.read_text())
+    guide["samples"].append({**guide["samples"][0], "reference_id": "R002"})
+    guide_path.write_text(json.dumps(guide))
+    visual = visual_payload()
+    visual["selected_reference"]["reference_id"] = "R002"
+    backend = FakeBackend(visual_payload(), motion_payload(), visual, motion_payload())
+    client = RemoteFoldClient(backend=backend)
+    client.plan(images, session, "Fold garment")
+    client.plan(images, session, "Fold garment", feedback="selected reference is inconsistent with the final grasp")
+    context = json.loads(backend.calls[2]["prompt"].split("\n", 1)[1])
+    assert context["rejected_references"] == [{"camera": "A", "reference_id": "R001"}]
+
+
 def test_mismatched_rgb_blocked_before_upload(saved_scene):
     session, images, _ = saved_scene
     Image.new("RGB", (30, 40), (0, 0, 0)).save(images[0])
@@ -251,6 +270,101 @@ def test_mismatched_rgb_blocked_before_upload(saved_scene):
     with pytest.raises(ExplorationPlanningError, match="does not match"):
         RemoteFoldClient(backend=backend).plan(images, session, "Probe garment")
     assert not backend.calls
+
+
+def test_lateral_strip_rejected_before_remote_call(saved_scene):
+    session, images, grounding = saved_scene
+    session.robot_config = replace(session.robot_config, boundaries=WorkspaceBounds(
+        lateral_points_mm=((400, -20), (400, 20)), z_min=0))
+    with pytest.raises(SelectedReferenceNotExecutableError, match="left/right"):
+        ClaudeAutoClient._validate_measurement_for_stage2("A", "R001",
+            grounding.lookup_reference("A", "R001"), session)
+    backend = FakeBackend()
+    with pytest.raises(ReferenceReselectionExhaustedError):
+        RemoteFoldClient(backend=backend).plan(images, session,
+            "Fold the shirt. The requested smoke-test current_step is left_sleeve. Plan exactly this step.")
+    assert backend.calls == []
+    report_path = next(session.run_dir.glob("remote_diagnostics/*/workspace_diagnostics.json"))
+    report = json.loads(report_path.read_text())
+    assert report["references"][0]["xy_eligible"] is False
+    assert "render_error" not in report
+
+
+def test_rotated_strip_signed_distances_and_local_failure_images(saved_scene):
+    session, images, grounding = saved_scene
+    bounds = WorkspaceBounds(lateral_points_mm=((0, 0), (100, 100)))
+    clearances = lateral_clearance(bounds, 150, 100, 5)["signed_clearance_mm"]
+    assert clearances[1] == pytest.approx(-50 / 2**.5 - 5)
+    session.robot_config = replace(session.robot_config, boundaries=WorkspaceBounds(
+        lateral_points_mm=((400, 0), (400, 60)), z_min=0))
+    motion = motion_payload()
+    motion["actions"][5]["args"].update(target="pixel", pixel_xy=[9, 10], height_above_grasp_mm=30)
+    with pytest.raises(WorkspaceTargetError) as failure:
+        compile_pixel_motion(motion, validate_visual_plan_payload(visual_payload()),
+                             grounding, session.robot_config, (30, 40))
+    point = next(p for p in failure.value.trace["moves"] if p.get("error"))
+    assert point["action_index"] == 6
+    assert point["raw_pixel_xy"] == [10, 20]
+    assert point["base_xyz_mm"] == [550, 80, 57]
+    assert point["lateral"]["signed_clearance_mm"] == [80, -20]
+    directory = session.run_dir / "diagnostic_test"
+    report = save_workspace_debug(directory, grounding.perception_dir, session.robot_config, failure.value.trace)
+    assert "render_error" not in report
+    assert len(report["moves"]) == 5  # Includes waypoints after the rejection, never executed.
+    for name in ("workspace_targets_raw.png", "workspace_targets_upright.png", "workspace_base_xy.png"):
+        with Image.open(directory / name) as im:
+            assert im.width >= 780
+            assert np.any(np.asarray(im)[..., 0] > np.asarray(im)[..., 1])
+    backend = FakeBackend(visual_payload(), motion)
+    client = RemoteFoldClient(backend=backend)
+    with pytest.raises(WorkspaceTargetError):
+        client.plan(images, session, "Fold the garment")
+    assert client.last_plan_result is None
+    assert client.last_grounding_verification is None
+    for call in backend.calls:
+        assert "signed_clearance" not in call["prompt"]
+        assert all(not p.name.startswith("workspace_") for p in call["image_paths"])
+    context = json.loads(backend.calls[1]["prompt"].split("\n", 1)[1])
+    assert context["xy_eligible_transport_pixels_upright"] == [[14, 15]]
+
+
+def test_workspace_failure_not_blindly_retried(saved_scene):
+    session, images, _ = saved_scene
+    pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"),
+        max_stage_retries=4, retry_backoff_s=0)
+    motion = motion_payload()
+    motion["actions"][0]["args"]["height_above_grasp_mm"] = 1000
+    backend = FakeBackend(visual_payload(), motion)
+    pipeline.client.backend = backend
+    with pytest.raises(RuntimeError, match="will not be retried"):
+        pipeline._plan_fold_with_retries(images, "Fold garment", [], iteration=1)
+    assert len(backend.calls) == 2  # One selection + one motion call, not a second attempt.
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_remote_timing_and_failure_snapshot(saved_scene, monkeypatch, failed):
+    _, images, _ = saved_scene
+    def run(command, **kwargs):
+        if command[0] == "curl":
+            return SimpleNamespace(returncode=0, stdout='{"id":"timed"}', stderr="")
+        if command[-1].startswith("rm -rf"):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=int(failed), stdout='{"result":"{}"}',
+            stderr="__CLOTH_TIMING__ download_0 2500000000\n__CLOTH_TIMING__ hash_0 1000000\n__CLOTH_TIMING__ claude 7000000000\n")
+    monkeypatch.setattr(subprocess, "run", run)
+    backend = RemoteClaudeBackend()
+    events = []
+    backend.progress_callback = lambda *a, **k: events.append((a, k))
+    if failed:
+        with pytest.raises(PlannerBackendError) as error:
+            backend.invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+        timing = error.value.timings
+    else:
+        timing = backend.invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read").timings
+    assert timing["remote_download_0_s"] == 2.5
+    assert timing["remote_claude_s"] == 7
+    assert {"upload_0_s", "ssh_download_and_claude_s", "cleanup_s", "total_s"} <= timing.keys()
+    assert any(e[0][:2] == ("cleanup", "started") for e in events)
 
 
 @pytest.mark.parametrize("failure", ["upload", "ssh", "claude", "json", "success"])
@@ -302,6 +416,16 @@ def test_saved_run_smoke_uses_production_path_without_hardware(saved_scene, monk
     assert result["hardware_connected"] is False
     assert result["proposal"]["actions"][2]["args"]["z"] == 27
     assert len(backend.calls) == 3
+    # The offline visualizer can replay these exact saved payloads without a
+    # fourth remote call, using the saved run's effective robot configuration.
+    from scripts.debug_workspace_targets import main as debug_main
+    motion_log = next(session.results.glob("remote_fold_smoke/*/remote_diagnostics/*/pixel_motion_invocation.json"))
+    visual_log = motion_log.with_name("visual_planning_invocation.json")
+    output = session.results / "offline_workspace_debug"
+    assert debug_main(["--project-root", str(project), "--run-dir", str(session.run_dir),
+        "--motion-json", str(motion_log), "--visual-json", str(visual_log), "--output-dir", str(output)]) == 0
+    assert (output / "workspace_base_xy.png").is_file()
+    assert len(backend.calls) == 3
 
 
 @pytest.mark.parametrize("download_succeeds", [False, True])
@@ -330,3 +454,27 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
         RemoteClaudeBackend().invoke(prompt="RGB only", image_paths=images[:2], schema={}, system_prompt="read")
     assert len(called) == 1
     assert "CLAUDE_WAS_CALLED" not in called[0].stdout
+
+
+def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, monkeypatch):
+    session, images, _ = saved_scene
+    real_run = subprocess.run
+    stub = session.run_dir / "claude_stub.sh"
+    stub.write_text("printf '%s' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+    def run(command, **kwargs):
+        if command[0] == "curl":
+            return SimpleNamespace(returncode=0, stdout='{"id":"relay"}', stderr="")
+        remote = command[-1]
+        if not remote.startswith("rm -rf"):
+            import re
+            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
+                lambda m: f"cp {shlex.quote(str(images[0]))} {m[1]}", remote)
+            remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
+        return real_run(["sh", "-c", remote], **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+    result = RemoteClaudeBackend().invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+    assert parse_claude_json(result.stdout) == {"ok": True}
+    assert {"remote_download_0_s", "remote_hash_0_s", "remote_claude_s"} <= result.timings.keys()
+    import re
+    job = re.search(r"/tmp/cloth_remote_[a-f0-9]+", result.command[-1]).group()
+    assert not Path(job).exists()

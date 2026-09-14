@@ -11,8 +11,9 @@ import hashlib
 import re
 import shlex
 import subprocess
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -56,6 +57,7 @@ class BackendResult:
     stderr: str
     returncode: int
     command: tuple[str, ...]
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 class LocalClaudeBackend:
@@ -104,6 +106,8 @@ class RemoteClaudeBackend:
         self.timeout_s = int(timeout_s)
         self.ssh_binary = ssh_binary
         self.curl_binary = curl_binary
+        self.progress_callback = None
+        self.last_timings: dict[str, float] = {}
         if self.timeout_s <= 0 or not ssh_host or ssh_host.startswith("-"):
             raise ValueError("positive timeout and a valid SSH host are required")
 
@@ -173,6 +177,38 @@ class RemoteClaudeBackend:
     def invoke(self, *, prompt: str, image_paths: Iterable[Path],
                schema: dict[str, Any], system_prompt: str,
                timeout_s: int | None = None) -> BackendResult:
+        self.last_timings = {}
+        started = time.monotonic()
+        try:
+            result = self._invoke(prompt=prompt, image_paths=image_paths, schema=schema,
+                                  system_prompt=system_prompt, timeout_s=timeout_s)
+        except Exception as exc:
+            self.last_timings["total_s"] = time.monotonic() - started
+            exc.timings = dict(self.last_timings)
+            self._progress("call", "failed", self.last_timings["total_s"])
+            raise
+        self.last_timings["total_s"] = time.monotonic() - started
+        self._progress("call", "completed", self.last_timings["total_s"])
+        return replace(result, timings=dict(self.last_timings))
+
+    def _progress(self, stage, event, duration_s=None, **details):
+        if self.progress_callback is not None:
+            self.progress_callback(stage, event, duration_s, **details)
+
+    def _finish_phase(self, stage, started):
+        duration = time.monotonic() - started
+        self.last_timings[f"{stage}_s"] = duration
+        self._progress(stage, "finished", duration)
+
+    def _remote_timings(self, stderr):
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        for stage, ns in re.findall(r"^__CLOTH_TIMING__ (download_\d+|hash_\d+|claude) (\d+)$", stderr or "", re.M):
+            value = int(ns) / 1e9
+            self.last_timings[f"remote_{stage}_s"] = value
+            self._progress(f"remote_{stage}", "measured", value)
+
+    def _invoke(self, *, prompt, image_paths, schema, system_prompt, timeout_s):
         call_timeout = self.timeout_s if timeout_s is None else int(timeout_s)
         if call_timeout <= 0:
             raise PlannerBackendError("remote timeout must be positive")
@@ -187,21 +223,37 @@ class RemoteClaudeBackend:
                     raise PlannerBackendError("remote planner image is not a PNG")
         # Uploading is intentionally sequential: each URL is short-lived and the
         # relay service has a small request quota.
-        urls = [self._upload(path) for path in images]
+        urls = []
+        for i, path in enumerate(images):
+            started = time.monotonic()
+            self._progress(f"upload_{i}", "started", image_name=path.name,
+                           bytes=path.stat().st_size, image_count=len(images))
+            try:
+                urls.append(self._upload(path))
+            finally:
+                self._finish_phase(f"upload_{i}", started)
         job = f"/tmp/cloth_remote_{uuid.uuid4().hex}"
         quoted_job = shlex.quote(job)
         downloads = " && ".join(
+            f"cloth_stage=download_{i} && cloth_begin=$(date +%s%N) && "
             f"curl -fsSL --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
-            f"-o {quoted_job}/image_{i}.png && "
+            f"-o {quoted_job}/image_{i}.png && cloth_done && "
+            f"cloth_stage=hash_{i} && cloth_begin=$(date +%s%N) && "
             f"printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} "
-            f"{quoted_job}/image_{i}.png | sha256sum -c - >&2"
+            f"{quoted_job}/image_{i}.png | sha256sum -c - >&2 && cloth_done"
             for i, url in enumerate(urls)
         )
         # Claude receives the prompt through stdin.  This avoids putting a large
         # prompt or image paths into the SSH command line.
         remote = (
-            f"set -eu; trap 'rm -rf {quoted_job}' EXIT; "
+            "set -eu; cloth_begin=0; cloth_stage=init; "
+            "cloth_done() { if [ \"$cloth_begin\" != 0 ]; then "
+            "cloth_end=$(date +%s%N); "
+            "printf '__CLOTH_TIMING__ %s %s\\n' \"$cloth_stage\" \"$((cloth_end-cloth_begin))\" >&2; "
+            "cloth_begin=0; fi; }; "
+            f"trap 'cloth_rc=$?; cloth_done; rm -rf {quoted_job}; exit $cloth_rc' EXIT; "
             f"mkdir -p {quoted_job}; {downloads} || exit $?; "
+            "cloth_stage=claude; cloth_begin=$(date +%s%N); "
             f"timeout {call_timeout}s claude -p --output-format json --permission-mode dontAsk "
             f"--allowedTools Read --tools Read --no-session-persistence "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
@@ -217,25 +269,42 @@ class RemoteClaudeBackend:
         ssh = [self.ssh_binary, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", self.ssh_host]
         command = [*ssh, remote]
+        started = time.monotonic()
+        self._progress("ssh_download_and_claude", "started", image_count=len(images))
+        completed = None
         try:
             completed = subprocess.run(
                 command, input=remote_prompt, text=True, capture_output=True,
                 timeout=call_timeout, check=False, shell=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
+            self._remote_timings(getattr(exc, "stderr", ""))
             raise PlannerBackendError(f"remote Claude SSH invocation failed: {exc}") from exc
         finally:
+            self._finish_phase("ssh_download_and_claude", started)
+            if completed is not None:
+                self._remote_timings(completed.stderr)
             # A local SSH timeout may prevent the remote shell's EXIT trap.
             # The independent best-effort cleanup is bounded and job-specific.
+            cleanup_started = time.monotonic()
+            self._progress("cleanup", "started")
             try:
-                subprocess.run([*ssh, f"rm -rf -- {quoted_job}"], input="", text=True,
+                cleanup = subprocess.run([*ssh, f"rm -rf -- {quoted_job}"], input="", text=True,
                                capture_output=True, timeout=25, check=False, shell=False)
+                if cleanup.returncode:
+                    self._progress("cleanup", "failed", returncode=cleanup.returncode)
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                self._progress("cleanup", "failed")
+            finally:
+                self._finish_phase("cleanup", cleanup_started)
         if completed.returncode != 0:
             raise PlannerBackendError(
                 f"remote Claude exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
-        parse_claude_json(completed.stdout)
+        parse_started = time.monotonic()
+        try:
+            parse_claude_json(completed.stdout)
+        finally:
+            self._finish_phase("json_parse", parse_started)
         return BackendResult(completed.stdout, completed.stderr, completed.returncode, tuple(command))

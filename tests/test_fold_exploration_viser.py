@@ -7,7 +7,37 @@ from cloth_agent.fold_exploration_viser import (
     _claude_input_groups,
     _planning_images_from_prompt,
     _run_root,
+    _debug_markdown, _workspace_markdown, _iter_images,
 )
+
+
+def test_remote_failure_manifest_and_workspace_are_visible_without_trajectory(tmp_path):
+    iteration = tmp_path / "iteration_001"
+    diagnostics = iteration / "planning_attempt_fold_01" / "job"
+    diagnostics.mkdir(parents=True)
+    rgb = _touch_image(iteration / "before_raw" / "camera_A_rgb_upright.png")
+    world = _touch_image(diagnostics / "workspace_base_xy.png")
+    (diagnostics / "pixel_motion_invocation.json").write_text(json.dumps({
+        "stage": "pixel_motion", "status": "FAILED", "evidence_images": [str(rgb)]}))
+    (diagnostics / "workspace_diagnostics.json").write_text(json.dumps({
+        "status": "REJECTED", "moves": [{"action_index": 6, "target": "pixel",
+            "upright_pixel_xy": [9, 10], "base_xyz_mm": [550, 80, 57],
+            "error": "outside left/right boundaries", "lateral": {"signed_clearance_mm": [80, -20]}}]}))
+    groups = _claude_input_groups(iteration, tmp_path)
+    assert groups["planning_attempt_fold_01/pixel_motion"] == [rgb]
+    assert _iter_images(iteration)[0] == world
+    summary = _workspace_markdown(iteration)
+    assert "#6" in summary and "-20" in summary and "REJECTED" in summary
+
+
+def test_timing_panel_handles_partial_json_and_nested_durations(tmp_path):
+    (tmp_path / "debug_events.jsonl").write_text(json.dumps({
+        "timestamp": "2026-09-14T00:00:00+00:00", "elapsed_s": 12.5,
+        "stage": "remote-planner", "message": "remote_claude: measured",
+        "fields": {"duration_s": 8.2}}) + '\n{"unfinished":')
+    panel = _debug_markdown(tmp_path)
+    assert "8.200s" in panel and "12.5s" in panel
+    assert "do not sum" in panel
 
 
 def _touch_image(path: Path) -> Path:
@@ -101,4 +131,3 @@ def test_claude_input_groups_follow_actual_stage_manifests(tmp_path: Path) -> No
     assert groups["planning_stage1"] == [planning_rgb, planning_overlay]
     assert groups["supervisor_before"] == [supervisor_a, supervisor_b]
     assert groups["evaluation"] == [evaluation_image]
-

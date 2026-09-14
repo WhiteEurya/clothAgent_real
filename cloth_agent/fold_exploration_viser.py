@@ -14,6 +14,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -138,6 +139,9 @@ def _supervisor_input_images(
     run_root: Path,
 ) -> list[Path]:
     payload = _load_json(iteration_dir / f"{stage}.json")
+    if "evidence_images" in payload:
+        return _unique_existing_images([path for value in payload["evidence_images"]
+            if (path := _resolve_run_path(value, run_root)) is not None])
     bundle = payload.get("context_bundle")
     if not isinstance(bundle, Mapping):
         return _image_paths_from_text(_prompt_from_payload(payload))
@@ -183,9 +187,17 @@ def _claude_input_groups(iteration_dir: Path, run_root: Path) -> dict[str, list[
         if paths:
             groups[stage] = paths
     evaluation = _load_json(iteration_dir / "claude_evaluation_result.json")
-    paths = _image_paths_from_text(_prompt_from_payload(evaluation))
+    paths = (_unique_existing_images([path for value in evaluation["evidence_images"]
+             if (path := _resolve_run_path(value, run_root)) is not None])
+             if "evidence_images" in evaluation else _image_paths_from_text(_prompt_from_payload(evaluation)))
     if paths:
         groups["evaluation"] = paths
+    for manifest in sorted(iteration_dir.glob("planning_attempt_*/*/*_invocation.json")):
+        data = _load_json(manifest)
+        paths = _unique_existing_images([path for value in data.get("evidence_images", [])
+                 if (path := _resolve_run_path(value, run_root)) is not None])
+        if paths:
+            groups[f"{manifest.parent.parent.name}/{data.get('stage', manifest.stem)}"] = paths
     return groups
 
 
@@ -200,7 +212,9 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
 
     def order(path: Path) -> tuple[int, str]:
         text = str(path.relative_to(iteration_dir)).lower()
-        if "before_raw" in text:
+        if "workspace_" in path.name:
+            rank = -1
+        elif "before_raw" in text:
             rank = 0
         elif "trajectory" in text or "proposal" in text:
             rank = 1
@@ -213,6 +227,58 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
         return rank, text
 
     return sorted(set(paths), key=order)
+
+
+def _debug_markdown(source: Path) -> str:
+    """Compact live phase and timing table, backed by structured events."""
+    events = []
+    try:
+        for line in (source / "debug_events.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # Writer may be halfway through its last line.
+    except OSError:
+        return "Waiting for structured debug events."
+    if not events:
+        return "Waiting for structured debug events."
+    last = events[-1]
+    try:
+        age = max(0., (datetime.now(timezone.utc) - datetime.fromisoformat(last["timestamp"].replace("Z", "+00:00"))).total_seconds())
+    except (KeyError, ValueError, TypeError):
+        age = 0.
+    lines = [f"Current / last event: **{last.get('stage')} — {_short(last.get('message'), 300)}**",
+             f"\nRun elapsed at last event: {last.get('elapsed_s', 0):.1f} s · last update {age:.1f} s ago",
+             "\nSSH active includes downloads and Claude. Remote subphase durations arrive when SSH returns.",
+             "\nRecent timed stages (nested durations overlap; do not sum rows):\n",
+             "| Run time | Stage | Event | Duration |", "| ---: | --- | --- | ---: |"]
+    timed = [e for e in events if isinstance(e.get("fields", {}).get("duration_s"), (float, int))]
+    for e in timed[-18:]:
+        fields = e["fields"]
+        lines.append(f"| {e['elapsed_s']:.1f}s | {e['stage']} | {_short(e['message'], 90)} | {fields['duration_s']:.3f}s |")
+    failures = [e for e in events if e.get("fields", {}).get("exception_type")]
+    if failures:
+        lines += ["\nLatest error:\n", _short(failures[-1]["message"], 1400)]
+    return "\n".join(lines)
+
+
+def _workspace_markdown(iteration_dir: Path) -> str:
+    lines = []
+    for path in sorted(iteration_dir.glob("planning_attempt_*/*/workspace_diagnostics.json")):
+        data = _load_json(path)
+        lines.extend([f"\nWorkspace: **{data.get('status', 'UNKNOWN')}**", f"\n`{path.relative_to(iteration_dir)}`\n"])
+        if data.get("render_error"):
+            lines.append(f"Image generation failed: {data['render_error']}")
+        if data.get("plan_error"):
+            lines.append(f"\n{data['plan_error']}")
+        for p in data.get("moves", []):
+            if p.get("error"):
+                lines.extend([f"Rejected action **#{p['action_index']}** ({p['target']})",
+                    f"\nUpright pixel `{p['upright_pixel_xy']}` → base XYZ `{p['base_xyz_mm']}` mm.",
+                    f"\n{p['error']}"])
+                if p.get("lateral"):
+                    lines.append(f"\nSigned side clearances: `{p['lateral']['signed_clearance_mm']}` mm; negative means outside.")
+    return "\n".join(lines)
 
 
 def _trajectory_points(iteration_dir: Path) -> np.ndarray:
@@ -248,6 +314,7 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
         _run_root(iteration_dir.parent),
     )
     lines = [f"### {iteration_dir.name}", ""]
+    lines.append(_workspace_markdown(iteration_dir))
     lines.append(f"- mode: `{record.get('status', trajectory.get('mode', 'RUNNING'))}`")
     lines.append(f"- images displayed: `{len(_iter_images(iteration_dir))}`")
     lines.append(f"- trajectory actions: `{len(trajectory.get('actions', []))}`")
@@ -306,10 +373,20 @@ class _FoldViserState:
         self.iteration_panels: dict[Path, Any] = {}
         self.path_handles: dict[Path, Any] = {}
         self.path_mtimes: dict[Path, int] = {}
+        self.image_folders: dict[tuple[Path, str], Any] = {}
         self.status = server.gui.add_markdown(
             f"### Folding exploration dashboard\n\nFollowing `{source}`. Waiting for iteration artifacts."
         )
-        self.debug_panel = server.gui.add_markdown("### Debug tail\n\nWaiting for debug.log.")
+        self.timing_panel = server.gui.add_markdown("Waiting for timing events.")
+        with server.gui.add_folder("Raw debug log", expand_by_default=False):
+            self.debug_panel = server.gui.add_markdown("Waiting for debug.log.")
+
+    def _folder(self, iteration_dir, group):
+        key = (iteration_dir, group)
+        if key not in self.image_folders:
+            self.image_folders[key] = self.server.gui.add_folder(
+                f"{iteration_dir.name} | {group}", expand_by_default=group == "Workspace targets")
+        return self.image_folders[key]
 
     def _relative_to_run(self, path: Path) -> str:
         try:
@@ -344,11 +421,8 @@ class _FoldViserState:
             f"CLAUDE INPUT | {iteration_dir.name} | {','.join(stages)} | "
             f"{self._relative_to_run(path)}"
         )
-        self.claude_image_handles[key] = (
-            mtime,
-            stage_key,
-            self.server.gui.add_image(image, label=label),
-        )
+        with self._folder(iteration_dir, "Actual Claude RGB inputs"):
+            self.claude_image_handles[key] = (mtime, stage_key, self.server.gui.add_image(image, label=label))
 
     def _render_image(self, path: Path, iteration_dir: Path) -> None:
         try:
@@ -368,7 +442,12 @@ class _FoldViserState:
             return
         relative = path.relative_to(iteration_dir)
         label = f"{iteration_dir.name} | {relative}"
-        self.image_handles[path] = (mtime, self.server.gui.add_image(image, label=label))
+        group = ("Workspace targets" if path.name.startswith("workspace_") else
+                 "After observation" if "after_raw" in str(relative) else
+                 "Before observation" if "before_raw" in str(relative) else
+                 "Rollout" if "rollout" in str(relative) else "Other diagnostics")
+        with self._folder(iteration_dir, group):
+            self.image_handles[path] = (mtime, self.server.gui.add_image(image, label=label))
 
     def _render_path(self, iteration_dir: Path) -> None:
         trajectory_path = iteration_dir / "trajectory.json"
@@ -446,6 +525,7 @@ class _FoldViserState:
             else:
                 panel.content = _markdown_for_iteration(iteration_dir)
         summary = _load_json(self.source / "summary.json")
+        self.timing_panel.content = _debug_markdown(self.source)
         debug_path = self.source / "debug.log"
         if debug_path.is_file():
             try:
