@@ -14,6 +14,8 @@ import json
 import re
 import threading
 import time
+import hashlib
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -99,6 +101,20 @@ def _unique_existing_images(paths: list[Path]) -> list[Path]:
             continue
         seen.add(resolved)
         result.append(resolved)
+    return result
+
+
+def _unique_images_by_content(paths: list[Path]) -> list[Path]:
+    result, seen = [], set()
+    for path in _unique_existing_images(paths):
+        try:
+            key = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
     return result
 
 
@@ -226,7 +242,7 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
             rank = 4
         return rank, text
 
-    return sorted(set(paths), key=order)
+    return sorted(_unique_images_by_content(paths), key=order)
 
 
 def _debug_markdown(source: Path) -> str:
@@ -490,6 +506,8 @@ class _FoldViserState:
         claude_group_count = 0
         for iteration_dir in iteration_dirs:
             claude_groups = _claude_input_groups(iteration_dir, self.run_root)
+            claude_groups = {stage: _unique_images_by_content(paths)
+                             for stage, paths in claude_groups.items()}
             claude_group_count += len(claude_groups)
             path_stages: dict[Path, list[str]] = {}
             for stage, paths in claude_groups.items():
@@ -514,7 +532,10 @@ class _FoldViserState:
                     panel.content = content
                 for image_path, stages in path_stages.items():
                     self._render_claude_image(image_path, iteration_dir, stages)
+            claude_paths = set(path_stages)
             for image_path in _iter_images(iteration_dir):
+                if image_path in claude_paths:
+                    continue
                 self._render_image(image_path, iteration_dir)
                 displayed += 1
             self._render_path(iteration_dir)
@@ -548,7 +569,7 @@ class _FoldViserState:
         self.debug_panel.content = "### Debug tail\n\n```text\n" + _short(debug_tail, 12000) + "\n```"
 
 
-def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refresh_s: float = 0.5) -> int:
+def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refresh_s: float = 0.5, open_browser: bool = True) -> int:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise PermissionError("fold exploration Viser must bind to loopback")
     if not 0.1 <= float(refresh_s) <= 30.0:
@@ -578,6 +599,11 @@ def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refre
     thread.start()
     print(f"Fold exploration Viser: http://{host}:{port}", flush=True)
     print(f"Following run output: {source}", flush=True)
+    if open_browser:
+        try:
+            webbrowser.open(f"http://{host}:{port}", new=2)
+        except Exception as exc:
+            print(f"Browser auto-open skipped: {type(exc).__name__}: {exc}", flush=True)
     try:
         while True:
             time.sleep(0.5)
@@ -596,8 +622,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--refresh-s", type=float, default=0.5)
+    parser.add_argument("--no-open-browser", action="store_true")
     args = parser.parse_args(argv)
-    return run_viewer(args.source, host=args.host, port=args.port, refresh_s=args.refresh_s)
+    return run_viewer(args.source, host=args.host, port=args.port, refresh_s=args.refresh_s,
+                      open_browser=not args.no_open_browser)
 
 
 if __name__ == "__main__":  # pragma: no cover
