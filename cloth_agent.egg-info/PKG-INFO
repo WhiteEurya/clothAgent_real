@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: cloth-agent
+Version: 0.1.0
+Summary: Safety-gated minimal xArm Agent experimentation loop
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: Pillow>=9
+Requires-Dist: PyYAML>=6
+Requires-Dist: scipy>=1.10
+Requires-Dist: viser<2,>=1.0
+Requires-Dist: yourdfpy>=0.0.56

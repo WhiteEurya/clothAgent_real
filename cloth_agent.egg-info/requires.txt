@@ -1,0 +1,6 @@
+numpy>=1.24
+Pillow>=9
+PyYAML>=6
+scipy>=1.10
+viser<2,>=1.0
+yourdfpy>=0.0.56

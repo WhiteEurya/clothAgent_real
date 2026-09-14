@@ -1,0 +1,998 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.21, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/sja/clothAgent_real
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1
+collected 414 items
+
+tests/test_analyze_claude_timing.py ..                                   [  0%]
+tests/test_auto_exploration.py ......................................... [ 10%]
+........                                                                 [ 12%]
+tests/test_camera_table_offset.py .                                      [ 12%]
+tests/test_canonical_area_annotate.py .......                            [ 14%]
+tests/test_canonical_area_graph.py .................                     [ 18%]
+tests/test_capture_camera_photo.py ..                                    [ 18%]
+tests/test_claude_condition_ablation.py ......                           [ 20%]
+tests/test_claude_fold_segmentation.py .                                 [ 20%]
+tests/test_collar_lift_retreat.py ....FF.......                          [ 23%]
+tests/test_diagnose_claude_rgb_selection.py .......                      [ 25%]
+tests/test_dinov3_annotate_points.py .....                               [ 26%]
+tests/test_dinov3_correspondence.py .                                    [ 26%]
+tests/test_evidence_ledger.py .                                          [ 27%]
+tests/test_fold_exploration_pipeline.py ................................ [ 34%]
+...............                                                          [ 38%]
+tests/test_fold_exploration_viser.py ..                                  [ 38%]
+tests/test_fold_watchdog.py ...........                                  [ 41%]
+tests/test_free_exploration.py ......F........................           [ 49%]
+tests/test_garment_grounding_mcp.py .......                              [ 50%]
+tests/test_grasp_height.py ..........                                    [ 53%]
+tests/test_language_skill_pipeline.py .......                            [ 54%]
+tests/test_loop.py ..................................................... [ 67%]
+.....FF.FFFF                                                             [ 70%]
+tests/test_molmo_artifact_viewer.py ....                                 [ 71%]
+tests/test_molmo_artifact_viser.py ....                                  [ 72%]
+tests/test_molmo_keypoint_cli.py ..F..........                           [ 75%]
+tests/test_molmo_keypoint_pipeline.py ...............                    [ 79%]
+tests/test_molmo_report.py .                                             [ 79%]
+tests/test_neat_fold_pipeline.py ......                                  [ 80%]
+tests/test_perception_height_mask.py .............                       [ 84%]
+tests/test_persistent_claude.py ...                                      [ 84%]
+tests/test_report_figure.py ...                                          [ 85%]
+tests/test_rollout_recorder.py ........                                  [ 87%]
+tests/test_segment_garment_folds.py .                                    [ 87%]
+tests/test_semantic_pipeline.py .................                        [ 91%]
+tests/test_shake_once.py .......                                         [ 93%]
+tests/test_shake_open_test.py .........                                  [ 95%]
+tests/test_single_sleeve_grasp_diagnostic.py ....                        [ 96%]
+tests/test_skill_lifecycle.py ............                               [ 99%]
+tests/test_sleeve_pull.py ..                                             [100%]
+
+=================================== FAILURES ===================================
+___ test_claude_chosen_collar_motion_preserves_grounded_grasp_and_task_shape ___
+
+    def test_claude_chosen_collar_motion_preserves_grounded_grasp_and_task_shape() -> None:
+        robot = _robot_config()
+        selection = validate_collar_selection_payload(
+            {
+                "status": "SELECTED",
+                "camera": "A",
+                "pixel_xy": [520, 180],
+                "neck_label_pixel_xy": [540, 200],
+                "torso_landmark_pixel_xy": [600, 400],
+                "neck_side_opposition_cosine": 0.88,
+                "confidence": 0.72,
+                "evidence": ["Visible doubled collar rim."],
+                "reference_correspondence": ["Reference neckline topology matches."],
+                "molmo_guided_region_evidence": ["Molmo plus current RGB/depth identify the collar neighborhood."],
+                "grasp_point_evidence": ["The selected point is nearby dark collar fabric away from the tag."],
+                "molmo_relation": "USES_MOLMO_COLLAR_REGION",
+                "reason": "Point lies inside the collar fabric.",
+            },
+            image_width=1280,
+            image_height=720,
+        )
+        actions = _valid_claude_actions()
+        proposal = insert_runtime_shake_open_after_y0_center(validate_global_exploration_payload(
+            {
+                "selected_grasp": {
+                    "camera": "A",
+                    "pixel_xy": [520, 180],
+                    "reason": "collar rim",
+                },
+                "garment_observation": "The collar rim is graspable.",
+                "reveal_strategy": "Lift high, move toward +X, and gradually lay down.",
+                "confidence": 0.72,
+                "actions": actions,
+                "expected_observation": "The shirt spreads during the descending retreat.",
+                "safety_notes": ["All Claude-selected waypoints require validation."],
+            },
+            max_actions=14,
+        ))
+    
+>       contract = validate_claude_collar_motion_proposal(
+            proposal,
+            selection=selection,
+            grasp_height_plan=_grasp_height_plan(),
+            table_plane_abc=[0.0, 0.0, 5.0],
+            robot_config=robot,
+        )
+
+tests/test_collar_lift_retreat.py:377: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+proposal = ExplorationProposal(garment_observation='The collar rim is graspable.', reveal_strategy='Lift high, move toward +X, an...ions=(), selected_grasp={'camera': 'A', 'pixel_xy': [520, 180], 'reason': 'collar rim'}, requires_lift_checkpoint=True)
+selection = CollarSelection(status='SELECTED', camera='A', pixel_xy=(520, 180), neck_label_pixel_xy=(540, 200), torso_landmark_pix...fabric away from the tag.',), molmo_relation='USES_MOLMO_COLLAR_REGION', reason='Point lies inside the collar fabric.')
+grasp_height_plan = {'surface_xyz_mm': (500.0, 40.0, 30.0), 'target_xyz_mm': (500.0, 40.0, 27.0), 'surface_z_mm': 30.0, 'local_table_z_mm': 5.0, ...}
+table_plane_abc = [0.0, 0.0, 5.0]
+robot_config = RobotConfig(robot_ip='127.0.0.1', boundaries=WorkspaceBounds(x_min=350, x_max=800, y_min=-300, y_max=170, z_min=6, z_m...s=5.0, home_acceleration_deg_s2=10.0, gripper_speed=500.0, gripper_open=850.0, gripper_close=0.0, gripper_width_mm=0.0)
+
+    def validate_claude_collar_motion_proposal(
+        proposal: ExplorationProposal,
+        *,
+        selection: CollarSelection,
+        grasp_height_plan: Mapping[str, Any],
+        table_plane_abc: Sequence[float],
+        robot_config: Any,
+    ) -> dict[str, Any]:
+        """Enforce task shape and physical envelopes without supplying Claude's numbers."""
+    
+        if selection.pixel_xy is None or proposal.selected_grasp is None:
+            raise CollarLiftRetreatError("collar motion proposal is missing its selected grasp")
+        if proposal.selected_grasp.get("camera") != "A" or proposal.selected_grasp.get(
+            "pixel_xy"
+        ) != list(selection.pixel_xy):
+            raise CollarLiftRetreatError(
+                "motion planner changed the collar pixel selected by the perception stage"
+            )
+        surface = np.asarray(grasp_height_plan.get("surface_xyz_mm"), dtype=np.float64)
+        grasp = np.asarray(grasp_height_plan.get("target_xyz_mm"), dtype=np.float64)
+        plane = np.asarray(table_plane_abc, dtype=np.float64)
+        if surface.shape != (3,) or not np.all(np.isfinite(surface)):
+            raise CollarLiftRetreatError("collar motion requires a finite measured surface XYZ")
+        if grasp.shape != (3,) or not np.all(np.isfinite(grasp)):
+            raise CollarLiftRetreatError("collar motion requires a finite authoritative grasp XYZ")
+        actions = list(proposal.actions)
+        close_indices = [i for i, action in enumerate(actions) if action["name"] == "close_gripper"]
+        if len(close_indices) != 1:
+            raise CollarLiftRetreatError("collar motion must close the gripper exactly once")
+        close_index = close_indices[0]
+        release_indices = [
+            i
+            for i, action in enumerate(actions[close_index + 1 :], start=close_index + 1)
+            if action["name"] == "open_gripper"
+        ]
+        if len(release_indices) != 1:
+            raise CollarLiftRetreatError("collar motion must release exactly once after grasping")
+        release_index = release_indices[0]
+        grasp_move_index = next(
+            (i for i in range(close_index - 1, -1, -1) if actions[i]["name"] == "move"),
+            None,
+        )
+        if grasp_move_index is None:
+            raise CollarLiftRetreatError("collar motion requires a grounded grasp move before close")
+        grasp_args = actions[grasp_move_index]["args"]
+        commanded_grasp = np.asarray(
+            [float(grasp_args["x"]), float(grasp_args["y"]), float(grasp_args["z"])],
+            dtype=np.float64,
+        )
+        grounded_xyz_error = float(np.linalg.norm(commanded_grasp - grasp))
+        if grounded_xyz_error > 0.25:
+>           raise CollarLiftRetreatError(
+                "collar grasp move does not use the runtime-authoritative XYZ: "
+                f"target={grasp.tolist()}, commanded={commanded_grasp.tolist()}, "
+                f"error={grounded_xyz_error:.2f} mm"
+            )
+E           cloth_agent.collar_lift_retreat.CollarLiftRetreatError: collar grasp move does not use the runtime-authoritative XYZ: target=[500.0, 40.0, 27.0], commanded=[500.0, 40.0, 27.5], error=0.50 mm
+
+cloth_agent/collar_lift_retreat.py:1607: CollarLiftRetreatError
+___________ test_claude_collar_motion_rejects_non_descending_retreat ___________
+
+    def test_claude_collar_motion_rejects_non_descending_retreat() -> None:
+        robot = _robot_config()
+        selection = validate_collar_selection_payload(
+            {
+                "status": "SELECTED",
+                "camera": "A",
+                "pixel_xy": [520, 180],
+                "neck_label_pixel_xy": [540, 200],
+                "torso_landmark_pixel_xy": [600, 400],
+                "neck_side_opposition_cosine": 0.88,
+                "confidence": 0.72,
+                "evidence": ["Visible collar rim."],
+                "reference_correspondence": ["Reference neckline topology matches."],
+                "molmo_guided_region_evidence": ["Molmo plus current RGB/depth identify the collar neighborhood."],
+                "grasp_point_evidence": ["The selected point is nearby dark collar fabric away from the tag."],
+                "molmo_relation": "USES_MOLMO_COLLAR_REGION",
+                "reason": "Point lies inside collar fabric.",
+            },
+            image_width=1280,
+            image_height=720,
+        )
+        actions = _valid_claude_actions()
+        actions[8]["args"]["x"] = actions[7]["args"]["x"] + 5.0
+        proposal = insert_runtime_shake_open_after_y0_center(validate_global_exploration_payload(
+            {
+                "selected_grasp": {
+                    "camera": "A",
+                    "pixel_xy": [520, 180],
+                    "reason": "collar rim",
+                },
+                "garment_observation": "The collar rim is graspable.",
+                "reveal_strategy": "Attempt a gradual laydown.",
+                "confidence": 0.72,
+                "actions": actions,
+                "expected_observation": "The shirt spreads.",
+                "safety_notes": ["Validate every waypoint."],
+            },
+            max_actions=14,
+        ))
+    
+>       with pytest.raises(CollarLiftRetreatError, match="backward toward -X"):
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'backward toward -X'
+E         Actual message: 'collar grasp move does not use the runtime-authoritative XYZ: target=[500.0, 40.0, 27.0], commanded=[500.0, 40.0, 27.5], error=0.50 mm'
+
+tests/test_collar_lift_retreat.py:443: AssertionError
+_______ test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy _______
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_global_proposal_grounds_a0')
+
+    def test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy(
+        tmp_path: Path,
+    ) -> None:
+        perception_dir = tmp_path / "perception_views"
+        perception_dir.mkdir()
+        xyz = np.zeros((5, 6, 3), dtype=np.float32)
+        xyz[:, :, 0] = 520.0
+        xyz[:, :, 1] = -40.0
+        xyz[:, :, 2] = 18.0
+        np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+        np.save(
+            perception_dir / "camera_A_height_above_table_mm.npy",
+            np.full((5, 6), 8.0, dtype=np.float32),
+        )
+        guide = {
+            "samples": [
+                {
+                    "reference_id": "R001",
+                    "pixel_xy": [2, 2],
+                    "base_xyz_mm": [520.0, -40.0, 18.0],
+                    "height_above_table_mm": 8.0,
+                }
+            ]
+        }
+        (perception_dir / "camera_A_coordinate_guide.json").write_text(
+            json.dumps(guide), encoding="utf-8"
+        )
+        proposal = validate_global_exploration_payload(
+            {
+                "selected_grasp": {
+                    "camera": "A",
+                    "pixel_xy": [2, 2],
+                    "reason": "Claude sees a useful free boundary here.",
+                },
+                "garment_observation": "One raised boundary overlaps the main sheet.",
+                "reveal_strategy": "Probe the selected boundary and lift it outward.",
+                "confidence": 0.7,
+                "actions": [
+                    {"name": "move", "args": {"x": 520, "y": -40, "z": 60, "yaw": 0}},
+                    {"name": "move", "args": {"x": 520, "y": -40, "z": 20, "yaw": 0}},
+                    {"name": "close_gripper", "args": {}},
+                    {"name": "move", "args": {"x": 530, "y": -40, "z": 40, "yaw": 0}},
+                    {"name": "open_gripper", "args": {}},
+                ],
+                "expected_observation": "The selected boundary follows the grasp.",
+                "safety_notes": ["Use the runtime workspace and IK gates."],
+            }
+        )
+    
+        result = validate_global_grasp_grounding(proposal, perception_dir)
+        assert result["valid"] is True
+        assert result["measurement"]["query_pixel_xy"] == [2, 2]
+        assert result["xy_error_mm"] == pytest.approx(0.0)
+    
+        offset_payload = proposal.as_dict()
+        offset_payload["actions"][0]["args"]["x"] = 530.0
+        offset_payload["actions"][0]["args"]["y"] = -35.0
+        offset_payload["actions"][1]["args"]["x"] = 530.0
+        offset_payload["actions"][1]["args"]["y"] = -35.0
+        offset_payload["actions"][3]["args"]["x"] = 530.0
+        offset_payload["actions"][3]["args"]["y"] = -35.0
+        offset = validate_global_exploration_payload(offset_payload)
+    
+        grounded, grounding = ground_global_grasp_target(
+            offset,
+            perception_dir,
+            robot_config=_robot_config(),
+        )
+    
+        assert grounding["claude_requested_grasp_xy_mm"] == pytest.approx([530.0, -35.0])
+        assert grounding["commanded_grasp_xy_mm"] == pytest.approx([520.0, -40.0])
+        assert grounding["xy_correction_mm"] == pytest.approx(np.hypot(10.0, 5.0))
+        assert grounding["post_grounding_xy_error_mm"] == pytest.approx(0.0)
+        assert grounding["claude_requested_grasp_z_mm"] == pytest.approx(20.0)
+>       assert grounding["commanded_grasp_z_mm"] == pytest.approx(15.5)
+E       assert 15.0 == 15.5 ± 1.6e-05
+E         
+E         comparison failed
+E         Obtained: 15.0
+E         Expected: 15.5 ± 1.6e-05
+
+tests/test_free_exploration.py:217: AssertionError
+________________ test_two_view_molmo_center_updates_experiment _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_two_view_molmo_center_upd0')
+
+    def test_two_view_molmo_center_updates_experiment(tmp_path: Path) -> None:
+        config = perception_config(tmp_path)
+        molmo = FakeMolmo([[0, 0, 5, 5]])
+        service = ClothCenterPerception(
+            tmp_path,
+            robot_config(),
+            config,
+            capture=lambda _: make_frames(primary_depth_m=1.03, auxiliary_depth_m=1.0),
+            molmo_client=molmo,
+        )
+        initial = ExperimentConfig()
+>       result, updated = service.locate(tmp_path / "perception", initial)
+
+tests/test_loop.py:1291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cloth_agent/perception.py:3456: in locate
+    return self._locate_dense_ab(output_dir, experiment, frames=frames)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <cloth_agent.perception.ClothCenterPerception object at 0x7f0a10e82560>
+output_dir = PosixPath('/tmp/pytest-of-sja/pytest-3/test_two_view_molmo_center_upd0/perception')
+experiment = ExperimentConfig(cloth_center_x=None, cloth_center_y=None, grasp_z=None, approach_z=None, lift_z=None, yaw_deg=None)
+frames = [RGBDFrame(label='A', serial='A1', rgb=array([[[0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+   ....5 ],
+       [ 0.  ,  1.  ,  0.  ,  0.  ],
+       [ 0.  ,  0.  ,  1.  , -0.98],
+       [ 0.  ,  0.  ,  0.  ,  1.  ]]))]
+
+    def _locate_dense_ab(
+        self,
+        output_dir: Path,
+        experiment: ExperimentConfig,
+        frames: list[RGBDFrame] | None = None,
+    ) -> tuple[dict[str, Any], ExperimentConfig]:
+        numpy = _require_numpy()
+        from PIL import Image
+    
+        output_dir.mkdir(parents=True, exist_ok=False)
+        temporal_median_applied = frames is None and self.capture is capture_two_view_rgbd
+        frames = self.capture(self.config) if frames is None else frames
+        expected_labels = set(self.config.active_camera_labels)
+        frame_labels = {frame.label for frame in frames}
+        if len(frames) != 2 or frame_labels != expected_labels:
+            raise PerceptionError(
+                f"dense AB fusion expected frames {sorted(expected_labels)}, got {sorted(frame_labels)}"
+            )
+    
+        views: list[dict[str, Any]] = []
+        for index, frame in enumerate(frames):
+            if frame.rgb.shape[:2] != frame.depth_m.shape[:2]:
+                raise PerceptionError(f"camera {frame.label} RGB/depth shapes do not match")
+            image_name = f"camera_{index}_{frame.label}.png"
+            Image.fromarray(frame.rgb.astype(numpy.uint8)).save(output_dir / image_name)
+            numpy.save(output_dir / f"camera_{index}_{frame.label}_depth_m.npy", frame.depth_m)
+            valid = numpy.isfinite(frame.depth_m) & (
+                (frame.depth_m > self.config.min_depth_m)
+                & (frame.depth_m < self.config.max_depth_m)
+            )
+            views.append(
+                {
+                    "label": frame.label,
+                    "role": "rgbd_fusion_source",
+                    "serial": frame.serial,
+                    "image": image_name,
+                    "depth_m": f"camera_{index}_{frame.label}_depth_m.npy",
+                    "intrinsics": frame.intrinsics.tolist(),
+                    "X_base_camera": frame.X_base_camera.tolist(),
+                    "valid_depth_fraction": float(valid.mean()),
+                    "temporal_median_frames": int(self.config.temporal_median_frames)
+                    if temporal_median_applied
+                    else 1,
+                }
+            )
+    
+        fused_points, fused_colors, source_mask, fusion_stats = _voxel_fuse_base_points(
+            frames,
+            self.config,
+            self.robot_config,
+        )
+        coefficients, table_residual, table_stats = _fit_table_plane(
+            fused_points, fused_colors
+        )
+        coefficients, table_reference_stats = _fit_table_plane_from_references(
+            frames,
+            self.config,
+            coefficients,
+        )
+        initial_table_coefficients = coefficients.copy()
+        camera_z_offsets_mm: dict[str, float] = {}
+        camera_z_offset_diagnostics: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            if bool(getattr(self.robot_config, "online_camera_z_bias_correction", True)):
+                offset_mm, offset_diagnostics = _estimate_camera_table_z_offset_mm(
+                    frame,
+                    self.config,
+                    initial_table_coefficients,
+                )
+                camera_z_offsets_mm[frame.label] = float(offset_mm)
+                camera_z_offset_diagnostics[frame.label] = offset_diagnostics
+            else:
+                camera_z_offsets_mm[frame.label] = 0.0
+                camera_z_offset_diagnostics[frame.label] = {
+                    "applied": False,
+                    "method": "disabled_static_camera_calibration",
+                    "reason": "online camera Z bias correction disabled by robot configuration",
+                }
+        if any(abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()):
+            fused_points, fused_colors, source_mask, fusion_stats = (
+                _voxel_fuse_base_points(
+                    frames,
+                    self.config,
+                    self.robot_config,
+                    camera_z_offsets_mm=camera_z_offsets_mm,
+                )
+            )
+        table_stats["reference_interpolation"] = table_reference_stats
+        table_stats["camera_z_bias_correction"] = {
+            "applied": any(
+                abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()
+            ),
+            "enabled": bool(
+                getattr(self.robot_config, "online_camera_z_bias_correction", True)
+            ),
+            "initial_coefficients": {
+                "a": float(initial_table_coefficients[0]),
+                "b": float(initial_table_coefficients[1]),
+                "c_mm": float(initial_table_coefficients[2]),
+            },
+            "offsets_mm": camera_z_offsets_mm,
+            "cameras": camera_z_offset_diagnostics,
+        }
+        design = numpy.column_stack(
+            (fused_points[:, 0], fused_points[:, 1], numpy.ones(len(fused_points)))
+        )
+        table_z = design @ coefficients
+        height_above_table = fused_points[:, 2] - table_z
+        table_residual = fused_points[:, 2] - table_z
+        table_stats["coefficients"] = {
+            "a": float(coefficients[0]),
+            "b": float(coefficients[1]),
+            "c_mm": float(coefficients[2]),
+        }
+        table_stats["coefficient_source"] = table_reference_stats.get(
+            "mode", "fused_cloud"
+        )
+        geometric_inlier_appearance = {
+            "authoritative": False,
+            "reason": "flat garment can be a geometric table-plane inlier",
+            "table_luma_median": table_stats.pop("table_luma_median", None),
+            "table_rgb_median": table_stats.pop("table_rgb_median", None),
+            "table_color_distance_p50": table_stats.pop(
+                "table_color_distance_p50", None
+            ),
+        }
+        table_stats["geometric_inlier_appearance_diagnostic"] = (
+            geometric_inlier_appearance
+        )
+        table_noise_mm = float(
+            table_reference_stats.get("residual_p95_abs_mm")
+            or table_stats.get("residual_p95_abs_mm")
+            or (numpy.percentile(numpy.abs(table_residual), 90) if len(table_residual) else 5.0)
+        )
+        point_cloud_clip_tolerance_mm = table_clip_tolerance_mm(table_noise_mm)
+        fused_point_count_before_table_clip = int(len(fused_points))
+        height_above_table, table_clip_mask = table_height_and_clip_mask(
+            fused_points,
+            coefficients,
+            tolerance_mm=point_cloud_clip_tolerance_mm,
+        )
+        fused_points = fused_points[table_clip_mask]
+        fused_colors = fused_colors[table_clip_mask]
+        source_mask = source_mask[table_clip_mask]
+        height_above_table = height_above_table[table_clip_mask]
+        table_z = table_z[table_clip_mask]
+        table_residual = table_residual[table_clip_mask]
+        if len(fused_points) < 100:
+            raise PerceptionError(
+                "table clipping left fewer than 100 fused points above the validated table"
+            )
+        fusion_stats["fused_point_count_before_table_clip"] = (
+            fused_point_count_before_table_clip
+        )
+        fusion_stats["fused_point_count"] = int(len(fused_points))
+        fusion_stats["source_voxel_counts"] = {
+            "A": int(numpy.count_nonzero(source_mask & 1)),
+            "B": int(numpy.count_nonzero(source_mask & 2)),
+            "AB_overlap": int(numpy.count_nonzero(source_mask == 3)),
+        }
+        fusion_stats["table_clip"] = {
+            "applied": True,
+            "height_definition": "base_z_mm - (a*base_x_mm + b*base_y_mm + c_mm)",
+            "tolerance_mm": point_cloud_clip_tolerance_mm,
+            "input_point_count": fused_point_count_before_table_clip,
+            "retained_point_count": int(len(fused_points)),
+            "removed_below_table_count": int(
+                fused_point_count_before_table_clip - len(fused_points)
+            ),
+        }
+        relief_threshold_mm = max(5.0, min(15.0, table_noise_mm * 2.5))
+        table_appearances: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            frame_height_mm, frame_valid, _ = camera_height_map_mm(
+                frame,
+                self.config,
+                coefficients,
+                base_z_offset_mm=camera_z_offsets_mm.get(frame.label, 0.0),
+            )
+            appearance = _estimate_camera_table_appearance(
+                frame.rgb,
+                frame_height_mm,
+                frame_valid,
+                minimum_color_distance=24.0,
+            )
+            table_appearances[frame.label] = appearance
+        invalid_table_appearances = {
+            label: appearance.get("reason") or "unknown confidence failure"
+            for label, appearance in table_appearances.items()
+            if not appearance.get("confident")
+        }
+        if invalid_table_appearances:
+>           raise PerceptionError(
+                "perception validation blocked Molmo/Claude/robot because table "
+                "appearance is not trustworthy: "
+                + "; ".join(
+                    f"camera {label}: {reason}"
+                    for label, reason in invalid_table_appearances.items()
+                )
+            )
+E           cloth_agent.perception.PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: fewer than 100 near-table pixels; camera B: table luma 0.0 is below 90.0
+
+cloth_agent/perception.py:3650: PerceptionError
+_________________ test_single_camera_a_rgbd_updates_experiment _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_single_camera_a_rgbd_upda0')
+
+    def test_single_camera_a_rgbd_updates_experiment(tmp_path: Path) -> None:
+        base = perception_config(tmp_path)
+        config = PerceptionConfig(
+            **{**base.__dict__, "active_camera_labels": ("A",)}
+        )
+        service = ClothCenterPerception(
+            tmp_path,
+            robot_config(),
+            config,
+            capture=lambda _: make_frames()[:1],
+            molmo_client=FakeMolmo([[0, 0, 5, 5]]),
+        )
+>       result, updated = service.locate(tmp_path / "single_a", ExperimentConfig())
+
+tests/test_loop.py:1326: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cloth_agent/perception.py:3456: in locate
+    return self._locate_dense_ab(output_dir, experiment, frames=frames)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <cloth_agent.perception.ClothCenterPerception object at 0x7f0a10e80eb0>
+output_dir = PosixPath('/tmp/pytest-of-sja/pytest-3/test_single_camera_a_rgbd_upda0/single_a')
+experiment = ExperimentConfig(cloth_center_x=None, cloth_center_y=None, grasp_z=None, approach_z=None, lift_z=None, yaw_deg=None)
+frames = [RGBDFrame(label='A', serial='A1', rgb=array([[[0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+   ....5 ],
+       [ 0.  ,  1.  ,  0.  ,  0.  ],
+       [ 0.  ,  0.  ,  1.  , -0.98],
+       [ 0.  ,  0.  ,  0.  ,  1.  ]]))]
+
+    def _locate_dense_ab(
+        self,
+        output_dir: Path,
+        experiment: ExperimentConfig,
+        frames: list[RGBDFrame] | None = None,
+    ) -> tuple[dict[str, Any], ExperimentConfig]:
+        numpy = _require_numpy()
+        from PIL import Image
+    
+        output_dir.mkdir(parents=True, exist_ok=False)
+        temporal_median_applied = frames is None and self.capture is capture_two_view_rgbd
+        frames = self.capture(self.config) if frames is None else frames
+        expected_labels = set(self.config.active_camera_labels)
+        frame_labels = {frame.label for frame in frames}
+        if len(frames) != 2 or frame_labels != expected_labels:
+>           raise PerceptionError(
+                f"dense AB fusion expected frames {sorted(expected_labels)}, got {sorted(frame_labels)}"
+            )
+E           cloth_agent.perception.PerceptionError: dense AB fusion expected frames ['A'], got ['A']
+
+cloth_agent/perception.py:3473: PerceptionError
+________________ test_automatic_plan_caps_lift_at_safe_upper_z _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_automatic_plan_caps_lift_0')
+
+    def test_automatic_plan_caps_lift_at_safe_upper_z(tmp_path: Path) -> None:
+        config = perception_config(tmp_path)
+        config = PerceptionConfig(
+            **{
+                **config.__dict__,
+                "approach_clearance_mm": 40.0,
+                "lift_clearance_mm": 160.0,
+            }
+        )
+        plan, derivation = derive_grasp_plan(
+            np.asarray([500.0, 0.0, 250.0]), robot_config(), config
+        )
+        assert plan.grasp_z == pytest.approx(250)
+>       assert plan.approach_z == pytest.approx(290)
+E       assert None == 290 ± 2.9e-04
+E         
+E         comparison failed
+E         Obtained: None
+E         Expected: 290 ± 2.9e-04
+
+tests/test_loop.py:1364: AssertionError
+___________________ test_two_view_disagreement_blocks_center ___________________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_two_view_disagreement_blo0')
+
+    def test_two_view_disagreement_blocks_center(tmp_path: Path) -> None:
+        config = perception_config(tmp_path, disagreement_mm=50)
+        service = ClothCenterPerception(
+            tmp_path,
+            robot_config(),
+            config,
+            capture=lambda _: make_frames(primary_depth_m=1.0, auxiliary_depth_m=0.9),
+            molmo_client=FakeMolmo([[0, 0, 5, 5]]),
+        )
+>       with pytest.raises(PerceptionError, match="disagree"):
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'disagree'
+E         Actual message: 'perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: fewer than 100 near-table pixels; camera B: table luma 0.0 is below 90.0'
+
+tests/test_loop.py:1378: AssertionError
+________ test_auxiliary_occlusion_uses_validated_primary_depth_fallback ________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_auxiliary_occlusion_uses_0')
+
+    def test_auxiliary_occlusion_uses_validated_primary_depth_fallback(tmp_path: Path) -> None:
+        config = perception_config(tmp_path, disagreement_mm=50)
+        service = ClothCenterPerception(
+            tmp_path,
+            robot_config(),
+            config,
+            capture=lambda _: make_frames(second_offset_m=0.1),
+            molmo_client=FakeMolmo([[0, 0, 5, 5]]),
+        )
+>       result, updated = service.locate(tmp_path / "fallback", ExperimentConfig())
+
+tests/test_loop.py:1391: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cloth_agent/perception.py:3456: in locate
+    return self._locate_dense_ab(output_dir, experiment, frames=frames)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <cloth_agent.perception.ClothCenterPerception object at 0x7f0a10bc1630>
+output_dir = PosixPath('/tmp/pytest-of-sja/pytest-3/test_auxiliary_occlusion_uses_0/fallback')
+experiment = ExperimentConfig(cloth_center_x=None, cloth_center_y=None, grasp_z=None, approach_z=None, lift_z=None, yaw_deg=None)
+frames = [RGBDFrame(label='A', serial='A1', rgb=array([[[0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+   ....6 ],
+       [ 0.  ,  1.  ,  0.  ,  0.  ],
+       [ 0.  ,  0.  ,  1.  , -0.98],
+       [ 0.  ,  0.  ,  0.  ,  1.  ]]))]
+
+    def _locate_dense_ab(
+        self,
+        output_dir: Path,
+        experiment: ExperimentConfig,
+        frames: list[RGBDFrame] | None = None,
+    ) -> tuple[dict[str, Any], ExperimentConfig]:
+        numpy = _require_numpy()
+        from PIL import Image
+    
+        output_dir.mkdir(parents=True, exist_ok=False)
+        temporal_median_applied = frames is None and self.capture is capture_two_view_rgbd
+        frames = self.capture(self.config) if frames is None else frames
+        expected_labels = set(self.config.active_camera_labels)
+        frame_labels = {frame.label for frame in frames}
+        if len(frames) != 2 or frame_labels != expected_labels:
+            raise PerceptionError(
+                f"dense AB fusion expected frames {sorted(expected_labels)}, got {sorted(frame_labels)}"
+            )
+    
+        views: list[dict[str, Any]] = []
+        for index, frame in enumerate(frames):
+            if frame.rgb.shape[:2] != frame.depth_m.shape[:2]:
+                raise PerceptionError(f"camera {frame.label} RGB/depth shapes do not match")
+            image_name = f"camera_{index}_{frame.label}.png"
+            Image.fromarray(frame.rgb.astype(numpy.uint8)).save(output_dir / image_name)
+            numpy.save(output_dir / f"camera_{index}_{frame.label}_depth_m.npy", frame.depth_m)
+            valid = numpy.isfinite(frame.depth_m) & (
+                (frame.depth_m > self.config.min_depth_m)
+                & (frame.depth_m < self.config.max_depth_m)
+            )
+            views.append(
+                {
+                    "label": frame.label,
+                    "role": "rgbd_fusion_source",
+                    "serial": frame.serial,
+                    "image": image_name,
+                    "depth_m": f"camera_{index}_{frame.label}_depth_m.npy",
+                    "intrinsics": frame.intrinsics.tolist(),
+                    "X_base_camera": frame.X_base_camera.tolist(),
+                    "valid_depth_fraction": float(valid.mean()),
+                    "temporal_median_frames": int(self.config.temporal_median_frames)
+                    if temporal_median_applied
+                    else 1,
+                }
+            )
+    
+        fused_points, fused_colors, source_mask, fusion_stats = _voxel_fuse_base_points(
+            frames,
+            self.config,
+            self.robot_config,
+        )
+        coefficients, table_residual, table_stats = _fit_table_plane(
+            fused_points, fused_colors
+        )
+        coefficients, table_reference_stats = _fit_table_plane_from_references(
+            frames,
+            self.config,
+            coefficients,
+        )
+        initial_table_coefficients = coefficients.copy()
+        camera_z_offsets_mm: dict[str, float] = {}
+        camera_z_offset_diagnostics: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            if bool(getattr(self.robot_config, "online_camera_z_bias_correction", True)):
+                offset_mm, offset_diagnostics = _estimate_camera_table_z_offset_mm(
+                    frame,
+                    self.config,
+                    initial_table_coefficients,
+                )
+                camera_z_offsets_mm[frame.label] = float(offset_mm)
+                camera_z_offset_diagnostics[frame.label] = offset_diagnostics
+            else:
+                camera_z_offsets_mm[frame.label] = 0.0
+                camera_z_offset_diagnostics[frame.label] = {
+                    "applied": False,
+                    "method": "disabled_static_camera_calibration",
+                    "reason": "online camera Z bias correction disabled by robot configuration",
+                }
+        if any(abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()):
+            fused_points, fused_colors, source_mask, fusion_stats = (
+                _voxel_fuse_base_points(
+                    frames,
+                    self.config,
+                    self.robot_config,
+                    camera_z_offsets_mm=camera_z_offsets_mm,
+                )
+            )
+        table_stats["reference_interpolation"] = table_reference_stats
+        table_stats["camera_z_bias_correction"] = {
+            "applied": any(
+                abs(offset) >= 0.5 for offset in camera_z_offsets_mm.values()
+            ),
+            "enabled": bool(
+                getattr(self.robot_config, "online_camera_z_bias_correction", True)
+            ),
+            "initial_coefficients": {
+                "a": float(initial_table_coefficients[0]),
+                "b": float(initial_table_coefficients[1]),
+                "c_mm": float(initial_table_coefficients[2]),
+            },
+            "offsets_mm": camera_z_offsets_mm,
+            "cameras": camera_z_offset_diagnostics,
+        }
+        design = numpy.column_stack(
+            (fused_points[:, 0], fused_points[:, 1], numpy.ones(len(fused_points)))
+        )
+        table_z = design @ coefficients
+        height_above_table = fused_points[:, 2] - table_z
+        table_residual = fused_points[:, 2] - table_z
+        table_stats["coefficients"] = {
+            "a": float(coefficients[0]),
+            "b": float(coefficients[1]),
+            "c_mm": float(coefficients[2]),
+        }
+        table_stats["coefficient_source"] = table_reference_stats.get(
+            "mode", "fused_cloud"
+        )
+        geometric_inlier_appearance = {
+            "authoritative": False,
+            "reason": "flat garment can be a geometric table-plane inlier",
+            "table_luma_median": table_stats.pop("table_luma_median", None),
+            "table_rgb_median": table_stats.pop("table_rgb_median", None),
+            "table_color_distance_p50": table_stats.pop(
+                "table_color_distance_p50", None
+            ),
+        }
+        table_stats["geometric_inlier_appearance_diagnostic"] = (
+            geometric_inlier_appearance
+        )
+        table_noise_mm = float(
+            table_reference_stats.get("residual_p95_abs_mm")
+            or table_stats.get("residual_p95_abs_mm")
+            or (numpy.percentile(numpy.abs(table_residual), 90) if len(table_residual) else 5.0)
+        )
+        point_cloud_clip_tolerance_mm = table_clip_tolerance_mm(table_noise_mm)
+        fused_point_count_before_table_clip = int(len(fused_points))
+        height_above_table, table_clip_mask = table_height_and_clip_mask(
+            fused_points,
+            coefficients,
+            tolerance_mm=point_cloud_clip_tolerance_mm,
+        )
+        fused_points = fused_points[table_clip_mask]
+        fused_colors = fused_colors[table_clip_mask]
+        source_mask = source_mask[table_clip_mask]
+        height_above_table = height_above_table[table_clip_mask]
+        table_z = table_z[table_clip_mask]
+        table_residual = table_residual[table_clip_mask]
+        if len(fused_points) < 100:
+            raise PerceptionError(
+                "table clipping left fewer than 100 fused points above the validated table"
+            )
+        fusion_stats["fused_point_count_before_table_clip"] = (
+            fused_point_count_before_table_clip
+        )
+        fusion_stats["fused_point_count"] = int(len(fused_points))
+        fusion_stats["source_voxel_counts"] = {
+            "A": int(numpy.count_nonzero(source_mask & 1)),
+            "B": int(numpy.count_nonzero(source_mask & 2)),
+            "AB_overlap": int(numpy.count_nonzero(source_mask == 3)),
+        }
+        fusion_stats["table_clip"] = {
+            "applied": True,
+            "height_definition": "base_z_mm - (a*base_x_mm + b*base_y_mm + c_mm)",
+            "tolerance_mm": point_cloud_clip_tolerance_mm,
+            "input_point_count": fused_point_count_before_table_clip,
+            "retained_point_count": int(len(fused_points)),
+            "removed_below_table_count": int(
+                fused_point_count_before_table_clip - len(fused_points)
+            ),
+        }
+        relief_threshold_mm = max(5.0, min(15.0, table_noise_mm * 2.5))
+        table_appearances: dict[str, dict[str, Any]] = {}
+        for frame in frames:
+            frame_height_mm, frame_valid, _ = camera_height_map_mm(
+                frame,
+                self.config,
+                coefficients,
+                base_z_offset_mm=camera_z_offsets_mm.get(frame.label, 0.0),
+            )
+            appearance = _estimate_camera_table_appearance(
+                frame.rgb,
+                frame_height_mm,
+                frame_valid,
+                minimum_color_distance=24.0,
+            )
+            table_appearances[frame.label] = appearance
+        invalid_table_appearances = {
+            label: appearance.get("reason") or "unknown confidence failure"
+            for label, appearance in table_appearances.items()
+            if not appearance.get("confident")
+        }
+        if invalid_table_appearances:
+>           raise PerceptionError(
+                "perception validation blocked Molmo/Claude/robot because table "
+                "appearance is not trustworthy: "
+                + "; ".join(
+                    f"camera {label}: {reason}"
+                    for label, reason in invalid_table_appearances.items()
+                )
+            )
+E           cloth_agent.perception.PerceptionError: perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: table luma 0.0 is below 90.0; camera B: table luma 0.0 is below 90.0
+
+cloth_agent/perception.py:3650: PerceptionError
+____________ test_auxiliary_occlusion_blocks_unstable_primary_depth ____________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_auxiliary_occlusion_block0')
+
+    def test_auxiliary_occlusion_blocks_unstable_primary_depth(tmp_path: Path) -> None:
+        config = perception_config(tmp_path, disagreement_mm=50)
+        frames = make_frames(second_offset_m=0.1)
+        frames[0].depth_m[:, :5] = 0.8
+        frames[0].depth_m[:, 5:] = 1.2
+        service = ClothCenterPerception(
+            tmp_path,
+            robot_config(),
+            config,
+            capture=lambda _: frames,
+            molmo_client=FakeMolmo([[0, 0, 5, 5]]),
+        )
+>       with pytest.raises(PerceptionError, match="unstable fold/edge"):
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'unstable fold/edge'
+E         Actual message: 'perception validation blocked Molmo/Claude/robot because table appearance is not trustworthy: camera A: fewer than 100 near-table pixels; camera B: table luma 0.0 is below 90.0'
+
+tests/test_loop.py:1414: AssertionError
+_______________ test_global_cli_skips_molmo_and_local_candidates _______________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-3/test_global_cli_skips_molmo_an0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0a10e9ba90>
+
+    def test_global_cli_skips_molmo_and_local_candidates(tmp_path: Path, monkeypatch) -> None:
+        proposal_payload = json.loads(json.dumps(_global_proposal().as_dict()))
+        proposal_payload["actions"][1]["args"].update({"x": 535.0, "y": -30.0})
+        proposal_payload["actions"][2]["args"].update({"x": 535.0, "y": -30.0})
+        proposal = validate_global_exploration_payload(proposal_payload)
+        session = _Session(tmp_path, list(proposal.actions))
+        saved, result_path, _ = _saved_perception(tmp_path)
+        monkeypatch.setattr(
+            "cloth_agent.molmo_keypoint_cli._load_latest_perception",
+            lambda session: (saved, result_path),
+        )
+        perception_dir = session.workspace / "perception_views"
+        xyz = np.zeros((6, 8, 3), dtype=np.float32)
+        xyz[:, :, :] = [520.0, -40.0, 18.0]
+        np.save(perception_dir / "camera_A_base_xyz_mm.npy", xyz)
+        np.save(
+            perception_dir / "camera_A_height_above_table_mm.npy",
+            np.full((6, 8), 8.0, dtype=np.float32),
+        )
+        (perception_dir / "camera_A_coordinate_guide.json").write_text(
+            json.dumps(
+                {
+                    "samples": [
+                        {
+                            "reference_id": "R001",
+                            "pixel_xy": [4, 3],
+                            "base_xyz_mm": [520.0, -40.0, 18.0],
+                            "height_above_table_mm": 8.0,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        keypoint_started = False
+        gpu_probed = False
+    
+        def forbidden_keypoints(**kwargs):
+            nonlocal keypoint_started
+            keypoint_started = True
+            raise AssertionError("global planning must not start Molmo")
+    
+        def forbidden_gpu_probe():
+            nonlocal gpu_probed
+            gpu_probed = True
+            raise AssertionError("global planning does not need a Molmo GPU gate")
+    
+        global_client = _GlobalClient(proposal)
+        output = tmp_path / "global_cli"
+        stream = StringIO()
+        code = run_keypoint_cli_loop(
+            session,  # type: ignore[arg-type]
+            SimpleNamespace(),  # type: ignore[arg-type]
+            output,
+            KeypointCliOptions(
+                max_iterations=1,
+                enable_real=False,
+                skip_controller_ik=True,
+                keypoint_specs=(),
+            ),
+            capture=lambda config: [object(), object()],
+            keypoint_runner=forbidden_keypoints,
+            global_client=global_client,  # type: ignore[arg-type]
+            global_evaluator=object(),  # type: ignore[arg-type]
+            gpu_memory_probe=forbidden_gpu_probe,
+            stream=stream,
+        )
+    
+        assert code == 0
+        assert keypoint_started is False
+        assert gpu_probed is False
+        result = json.loads((output / "iteration_001" / "result.json").read_text())
+        assert result["candidate_policy"] == "NONE_CLAUDE_SELECTS_ARBITRARY_PIXEL"
+        assert result["proposal"]["selected_grasp"]["pixel_xy"] == [4, 3]
+        assert result["proposal"]["actions"][1]["args"]["x"] == 520.0
+        assert result["proposal"]["actions"][1]["args"]["y"] == -40.0
+        assert result["proposal"]["actions"][2]["args"]["x"] == 520.0
+        assert result["proposal"]["actions"][2]["args"]["y"] == -40.0
+>       assert result["proposal"]["actions"][2]["args"]["z"] == 15.5
+E       assert 15.0 == 15.5
+
+tests/test_molmo_keypoint_cli.py:583: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_collar_lift_retreat.py::test_claude_chosen_collar_motion_preserves_grounded_grasp_and_task_shape
+FAILED tests/test_collar_lift_retreat.py::test_claude_collar_motion_rejects_non_descending_retreat
+FAILED tests/test_free_exploration.py::test_global_proposal_grounds_arbitrary_pixel_and_checks_grasp_xy
+FAILED tests/test_loop.py::test_two_view_molmo_center_updates_experiment - cl...
+FAILED tests/test_loop.py::test_single_camera_a_rgbd_updates_experiment - clo...
+FAILED tests/test_loop.py::test_automatic_plan_caps_lift_at_safe_upper_z - as...
+FAILED tests/test_loop.py::test_two_view_disagreement_blocks_center - Asserti...
+FAILED tests/test_loop.py::test_auxiliary_occlusion_uses_validated_primary_depth_fallback
+FAILED tests/test_loop.py::test_auxiliary_occlusion_blocks_unstable_primary_depth
+FAILED tests/test_molmo_keypoint_cli.py::test_global_cli_skips_molmo_and_local_candidates
+======================== 10 failed, 404 passed in 2.18s ========================
