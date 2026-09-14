@@ -215,6 +215,9 @@ class PerceptionConfig:
     support_ring_outer_px: int = 16
     support_ring_min_pixels: int = 100
     garment_center_workspace: GarmentCenterWorkspace | None = None
+    table_appearance_mode: str = "bright_table"
+    # Normalized bounds of the visible work surface, excluding rails/floor.
+    table_roi_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
 
     @classmethod
     def load(cls, project_root: Path, path: Path) -> "PerceptionConfig":
@@ -267,6 +270,8 @@ class PerceptionConfig:
             )
         config = cls(
             cameras=tuple(cameras),
+            table_appearance_mode=raw.get("table_appearance_mode", "bright_table"),
+            table_roi_xyxy=tuple(raw.get("table_roi_xyxy", [0, 0, 1, 1])),
             molmo=None,
             active_camera_labels=active_camera_labels,
             width=int(raw.get("width", 640)),
@@ -294,6 +299,13 @@ class PerceptionConfig:
         return config
 
     def validate(self) -> None:
+        if self.table_appearance_mode not in {"bright_table", "border_background"}:
+            raise PerceptionError("unknown table_appearance_mode")
+        roi = self.table_roi_xyxy
+        if (len(roi) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                                or not math.isfinite(v) for v in roi)
+                or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)):
+            raise PerceptionError("table_roi_xyxy must be normalized [left, top, right, bottom]")
         configured_labels = {camera.label for camera in self.cameras}
         if not self.active_camera_labels:
             raise PerceptionError("at least one active camera is required")
@@ -1551,20 +1563,70 @@ def _projected_voxel_support_radius_px(
     return int(max(1, min(6, math.ceil(projected_spacing_px * 0.5))))
 
 
+def _table_roi_masks(shape: tuple[int, int], roi: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:
+    """Work surface and its inner 10% border, in the original camera raster."""
+    h, w = shape
+    x0, y0, x1, y1 = (int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h))
+    mask = np.zeros(shape, dtype=bool)
+    mask[y0:y1, x0:x1] = True
+    border = mask.copy()
+    dx, dy = max(1, (x1-x0)//10), max(1, (y1-y0)//10)
+    border[y0+dy:y1-dy, x0+dx:x1-dx] = False
+    return mask, border
+
+
+def _estimate_border_background(
+    rgb: np.ndarray, heights: np.ndarray, valid: np.ndarray,
+    minimum_color_distance: float, roi: tuple[float, ...],
+) -> dict[str, Any]:
+    """Estimate the dominant near-table border color without a light/dark prior.
+
+    A visible strip of bare work surface must surround the garment. Ambiguous
+    or missing background samples fail validation instead of using cloth color.
+    """
+    _, border = _table_roi_masks(valid.shape, roi)
+    samples = border & valid & np.isfinite(heights) & (np.abs(heights) <= 15.)
+    values = np.asarray(rgb[samples], dtype=np.float64)
+    diagnostics = {"method": "near_table_border_dominant_color", "confident": False,
+                   "table_roi_xyxy": list(roi), "near_table_pixel_count": int(samples.sum())}
+    if len(values) < 100:
+        return {**diagnostics, "reason": "fewer than 100 near-table border pixels"}
+    # Quantization selects a mode, rather than averaging floor/rails/cloth into
+    # a color that belongs to none of them. Refine with nearby original pixels.
+    _, inverse, counts = np.unique(
+        (values // 24).astype(int), axis=0, return_inverse=True, return_counts=True,
+    )
+    seed = np.median(values[inverse == counts.argmax()], axis=0)
+    selected = np.linalg.norm(values-seed, axis=1) <= 45.
+    table_rgb = np.median(values[selected], axis=0)
+    noise = float(np.percentile(np.linalg.norm(values[selected]-table_rgb, axis=1), 90))
+    support = selected.sum() / len(values)
+    threshold = max(45., float(minimum_color_distance), 3.0 * noise)
+    diagnostics.update({
+        "confident": bool(support >= 0.5),
+        "reason": None if support >= 0.5 else "no dominant background color in near-table border",
+        "table_sample_count": int(selected.sum()), "border_support_fraction": float(support),
+        "table_rgb_median": table_rgb.tolist(),
+        "table_luma_median": float(table_rgb @ np.array([.2126, .7152, .0722])),
+        "table_color_distance_p90": noise, "applied_color_distance": threshold,
+    })
+    return diagnostics
+
+
 def _estimate_camera_table_appearance(
     rgb: np.ndarray,
     height_above_table_mm: np.ndarray,
     valid_depth: np.ndarray,
     *,
     minimum_color_distance: float,
+    mode: str = "bright_table",
+    table_roi_xyxy: tuple[float, ...] = (0., 0., 1., 1.),
 ) -> dict[str, Any]:
-    """Estimate a bright tabletop appearance without sampling flat dark cloth.
+    """Estimate per-camera background using the configured scene assumption.
 
-    Cameras A and B can have materially different white balance and lighting.
-    The tabletop is therefore estimated independently in each image.  Only the
-    high-luma tail of geometrically near-table pixels is used: a percentile near
-    the middle of that population is unsafe when a flat garment covers most of
-    the image.
+    border_background estimates a dominant color from near-table border pixels
+    inside the work surface ROI. bright_table retains the historical high-luma
+    estimator for old fixed-camera configurations.
     """
 
     numpy = _require_numpy()
@@ -1573,6 +1635,11 @@ def _estimate_camera_table_appearance(
     valid_depth = numpy.asarray(valid_depth, dtype=bool)
     if rgb.shape[:2] != height_above_table_mm.shape:
         raise PerceptionError("RGB and height map shapes do not match")
+    if mode == "border_background":
+        return _estimate_border_background(rgb, height_above_table_mm, valid_depth,
+                                           minimum_color_distance, table_roi_xyxy)
+    if mode != "bright_table":
+        raise PerceptionError("unknown table appearance mode")
     luma = (
         0.2126 * rgb[..., 0].astype(numpy.float64)
         + 0.7152 * rgb[..., 1].astype(numpy.float64)
@@ -1677,6 +1744,11 @@ def _camera_table_appearance_mask(
         rgb.astype(numpy.float64) - table_rgb[None, None, :],
         axis=2,
     )
+    if diagnostics.get("method") == "near_table_border_dominant_color":
+        roi, _ = _table_roi_masks(rgb.shape[:2], tuple(diagnostics["table_roi_xyxy"]))
+        mask = (color_distance >= threshold) & roi
+        diagnostics.update(applied=True, appearance_pixel_count=int(mask.sum()))
+        return mask, diagnostics
     rgb_float = rgb.astype(numpy.float64)
     table_chromaticity = table_rgb / max(float(numpy.sum(table_rgb)), 1.0)
     pixel_sum = numpy.maximum(numpy.sum(rgb_float, axis=2, keepdims=True), 1.0)
@@ -1833,6 +1905,8 @@ def _fused_source_appearance_mask(
             )
             | (luma < DARK_GARMENT_LUMA_CUT)
         )
+        if all(a.get("method") == "near_table_border_dominant_color" for a in appearances):
+            distinct[selected] = distances >= threshold
         source_diagnostics["".join(labels)] = {
             "source_bits": source_bits,
             "point_count": int(numpy.count_nonzero(selected)),
@@ -3691,8 +3765,31 @@ class ClothCenterPerception:
                 frame_height_mm,
                 frame_valid,
                 minimum_color_distance=24.0,
+                mode=self.config.table_appearance_mode,
+                table_roi_xyxy=self.config.table_roi_xyxy,
             )
             table_appearances[frame.label] = appearance
+            (output_dir / f"camera_{frame.label}_background_diagnostics.json").write_text(
+                json.dumps(appearance, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            if appearance.get("confident"):
+                mask, _ = _camera_table_appearance_mask(
+                    frame.rgb, frame_height_mm, frame_valid,
+                    minimum_color_distance=24.0, table_appearance=appearance,
+                )
+                Image.fromarray((mask * 255).astype(numpy.uint8)).save(
+                    output_dir / f"camera_{frame.label}_appearance_mask.png"
+                )
+                overlay = numpy.asarray(frame.rgb, dtype=numpy.uint8).copy()
+                overlay[mask] = (overlay[mask] * 0.5 + numpy.array([0, 255, 0]) * 0.5).astype(numpy.uint8)
+                debug_image = Image.fromarray(overlay)
+                from PIL import ImageDraw
+                draw = ImageDraw.Draw(debug_image)
+                if self.config.table_appearance_mode == "border_background":
+                    h, w = mask.shape
+                    roi = self.config.table_roi_xyxy
+                    draw.rectangle((int(roi[0]*w), int(roi[1]*h), int(roi[2]*w)-1, int(roi[3]*h)-1), outline="yellow", width=3)
+                debug_image.save(output_dir / f"camera_{frame.label}_appearance_overlay.png")
         invalid_table_appearances = {
             label: appearance.get("reason") or "unknown confidence failure"
             for label, appearance in table_appearances.items()
@@ -3729,6 +3826,14 @@ class ClothCenterPerception:
             & (height_above_table >= -lower_surface_tolerance_mm)
             & (height_above_table <= 160.0)
         )
+        if self.config.table_appearance_mode == "border_background":
+            roi_support = numpy.zeros(len(fused_points), dtype=bool)
+            for index, frame in enumerate(frames):
+                x, y, visible = _project_base_points_to_frame(fused_points, frame)
+                roi, _ = _table_roi_masks(frame.depth_m.shape, self.config.table_roi_xyxy)
+                supported = visible & ((source_mask & (1 << index)) != 0)
+                roi_support[supported] |= roi[y[supported], x[supported]]
+            garment_candidate &= roi_support
         garment_candidate = _largest_xy_component(fused_points, garment_candidate)
         garment_indices = numpy.flatnonzero(garment_candidate)
         if len(garment_indices) < 100:

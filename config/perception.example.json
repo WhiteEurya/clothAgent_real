@@ -9,6 +9,8 @@
     }
   ],
   "active_cameras": ["A"],
+  "table_appearance_mode": "border_background",
+  "table_roi_xyxy": [0.18, 0.03, 0.77, 0.98],
   "width": 1280,
   "height": 720,
   "fps": 30,
