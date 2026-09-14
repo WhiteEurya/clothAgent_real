@@ -50,6 +50,10 @@ from .viewer import (
     _view_point_cloud,
     path_waypoints_mm,
 )
+from .planner_backend import (
+    PlannerBackendError,
+    RemoteClaudeBackend,
+)
 
 
 DEFAULT_EXPLORATION_OBJECTIVE = (
@@ -1346,10 +1350,12 @@ class ClaudeExplorationClient:
         binary: str = "claude",
         timeout_s: int = 900,
         skill_names: Sequence[str] | None = None,
+        backend: Any | None = None,
     ):
         self.binary = binary
         self.timeout_s = timeout_s
         self.skill_names = tuple(skill_names or available_skill_names())
+        self.backend = backend
 
     @staticmethod
     def _save_invocation_log(root: Path, payload: dict[str, Any], *, failed: bool = False) -> None:
@@ -1679,16 +1685,47 @@ class ClaudeExplorationClient:
             ]
         completed = None
         try:
-            completed = subprocess.run(
-                command,
-                cwd=root,
-                text=True,
-                input=None if direct_prompt else bootstrap_prompt,
-                capture_output=True,
-                timeout=self.timeout_s,
-                check=False,
-                shell=False,
+            if isinstance(self.backend, RemoteClaudeBackend):
+                # Remote planning is RGB-only by contract.  Geometry artifacts
+                # remain local and are never uploaded to the company machine.
+                excluded_tokens = (
+                    "depth", "height", "heatmap", "gradient", "pointcloud",
+                    "coordinate", "mask", "xyz", "overlay",
+                )
+                rgb_images = [
+                    path for path in safe_images
+                    if path.suffix.lower() == ".png"
+                    and not any(token in path.name.lower() for token in excluded_tokens)
+                ]
+                result = self.backend.invoke(
+                    prompt=full_prompt,
+                    image_paths=rgb_images,
+                    schema=schema,
+                    system_prompt=system_prompt,
+                )
+                completed = subprocess.CompletedProcess(
+                    args=list(result.command), returncode=result.returncode,
+                    stdout=result.stdout, stderr=result.stderr,
+                )
+            else:
+                completed = subprocess.run(
+                    command,
+                    cwd=root,
+                    text=True,
+                    input=None if direct_prompt else bootstrap_prompt,
+                    capture_output=True,
+                    timeout=self.timeout_s,
+                    check=False,
+                    shell=False,
+                )
+        except PlannerBackendError as exc:
+            self._save_invocation_log(
+                root,
+                {"prompt": full_prompt, "error": f"{type(exc).__name__}: {exc}",
+                 "created_at": _now(), "backend": type(self.backend).__name__},
+                failed=True,
             )
+            raise ExplorationPlanningError(str(exc)) from exc
         except subprocess.TimeoutExpired as exc:
             self._save_invocation_log(
                 root,
