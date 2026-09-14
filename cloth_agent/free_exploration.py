@@ -37,7 +37,7 @@ from .config import ExperimentConfig, RobotConfig
 from .experiment import ExperimentValidationError, Preflight
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
-from .kinematics import AnimationFrame, XArm7Kinematics
+from .kinematics import AnimationFrame, XArm6Kinematics
 from .perception import PerceptionConfig, capture_two_view_rgbd
 from .robot_api import ControllerTrajectoryValidation, validate_controller_trajectory
 from .session import AgentSession
@@ -2871,7 +2871,7 @@ def run_exploration_viewer(
         perception_config_path
         or root / "config" / "perception.free_exploration.json"
     ).expanduser().resolve()
-    urdf = (urdf_path or root / "assets" / "robots" / "xarm7" / "xarm7.urdf").resolve()
+    urdf = (urdf_path or root / "assets" / "robots" / "xarm6" / "xarm6_wo_ee.urdf").resolve()
     robot = session.robot_config
     state = _ExplorationState()
     latest, latest_path = _load_latest_perception(session)
@@ -2886,7 +2886,7 @@ def run_exploration_viewer(
     server.scene.add_frame("/robot_base", axes_length=0.15, axes_radius=0.006)
     server.scene.add_frame("/xarm", show_axes=False)
     robot_model = ViserUrdf(server, urdf, root_node_name="/xarm", load_meshes=True, load_collision_meshes=False)
-    kinematics = XArm7Kinematics(urdf)
+    kinematics = XArm6Kinematics(urdf)
     home_cfg = np.concatenate([np.radians(np.asarray(robot.init_joints_deg, dtype=np.float64)), [0.0]])
     robot_model.update_cfg(home_cfg)
 

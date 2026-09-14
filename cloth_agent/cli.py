@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     viewer.add_argument("--run-id", help="new run directory name when --run-dir is omitted")
     viewer.add_argument("--robot-config")
     viewer.add_argument("--perception-config")
-    viewer.add_argument("--urdf", help="defaults to assets/robots/xarm7/xarm7.urdf")
+    viewer.add_argument("--urdf", help="defaults to assets/robots/xarm6/xarm6_wo_ee.urdf")
     viewer.add_argument("--experiment", help="experiment_*.py; defaults to latest or a safe canonical plan")
     viewer.add_argument("--host", default="127.0.0.1")
     viewer.add_argument("--port", type=int, default=8080)

@@ -1,4 +1,4 @@
-"""Dense two-camera RGB-D perception in the robot base frame.
+"""RGB-D perception in the robot base frame.
 
 Both calibrated cameras contribute depth points to one voxelized base-frame
 cloud.  A robust table plane is estimated from the fused cloud, garment points
@@ -193,9 +193,9 @@ class PerceptionConfig:
     into grasp, lift, transfer, or release waypoints.
     """
 
-    cameras: tuple[CameraSpec, CameraSpec]
+    cameras: tuple[CameraSpec, ...]
     molmo: MolmoConfig | None = None
-    active_camera_labels: tuple[str, ...] = ("A", "B")
+    active_camera_labels: tuple[str, ...] = ("A",)
     width: int = 640
     height: int = 480
     fps: int = 30
@@ -221,8 +221,8 @@ class PerceptionConfig:
         project_root = project_root.resolve()
         raw = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
         camera_values = raw.get("cameras", [])
-        if len(camera_values) != 2:
-            raise PerceptionError("perception config must contain exactly two cameras")
+        if not camera_values:
+            raise PerceptionError("perception config must contain at least one camera")
         cameras: list[CameraSpec] = []
         serials: set[str] = set()
         labels: set[str] = set()
@@ -266,7 +266,7 @@ class PerceptionConfig:
                 "garment_center_workspace_mm must be a JSON object"
             )
         config = cls(
-            cameras=(cameras[0], cameras[1]),
+            cameras=tuple(cameras),
             molmo=None,
             active_camera_labels=active_camera_labels,
             width=int(raw.get("width", 640)),
@@ -295,10 +295,8 @@ class PerceptionConfig:
 
     def validate(self) -> None:
         configured_labels = {camera.label for camera in self.cameras}
-        if len(self.active_camera_labels) != 2:
-            raise PerceptionError(
-                "dense AB RGB-D fusion requires both configured cameras"
-            )
+        if not self.active_camera_labels:
+            raise PerceptionError("at least one active camera is required")
         if len(set(self.active_camera_labels)) != len(self.active_camera_labels):
             raise PerceptionError("active_cameras must be unique")
         if not set(self.active_camera_labels).issubset(configured_labels):
@@ -670,7 +668,7 @@ def _voxel_fuse_base_points(
     """Fuse A/B points by median-free deterministic voxel aggregation.
 
     The returned source mask uses bit 1 for camera A and bit 2 for camera B,
-    so mask value 3 identifies voxels observed by both cameras.
+    so each source bit identifies the camera that observed a voxel.
     """
 
     numpy = _require_numpy()
@@ -3469,9 +3467,9 @@ class ClothCenterPerception:
         frames = self.capture(self.config) if frames is None else frames
         expected_labels = set(self.config.active_camera_labels)
         frame_labels = {frame.label for frame in frames}
-        if len(frames) != 2 or frame_labels != expected_labels:
+        if len(frames) != len(expected_labels) or frame_labels != expected_labels:
             raise PerceptionError(
-                f"dense AB fusion expected frames {sorted(expected_labels)}, got {sorted(frame_labels)}"
+                f"RGB-D fusion expected frames {sorted(expected_labels)}, got {sorted(frame_labels)}"
             )
 
         views: list[dict[str, Any]] = []
@@ -3681,7 +3679,7 @@ class ClothCenterPerception:
         garment_indices = numpy.flatnonzero(garment_candidate)
         if len(garment_indices) < 100:
             raise PerceptionError(
-                "dense AB fusion found fewer than 100 full-garment points distinct from the table"
+                "RGB-D fusion found fewer than 100 full-garment points distinct from the table"
             )
         relief_candidate = garment_candidate & (height_above_table >= relief_threshold_mm)
         garment_points = fused_points[garment_indices]
@@ -3777,7 +3775,7 @@ class ClothCenterPerception:
         updated = replace(experiment, **observation_plan.as_dict())
         updated.require_center()
         depth_fusion = {
-            "mode": "dense_ab_voxel_fusion",
+            "mode": "single_camera_voxel_fusion" if len(frames) == 1 else "dense_ab_voxel_fusion",
             "source_cameras": list(self.config.active_camera_labels),
             "temporal_median_frames": int(self.config.temporal_median_frames)
             if temporal_median_applied
@@ -3833,11 +3831,11 @@ class ClothCenterPerception:
         }
         result = {
             "created_at": _now(),
-            "status": "VALIDATED_DENSE_AB_FUSION",
-            "perception_mode": "dense_ab_rgbd_fusion",
+            "status": "VALIDATED_RGBD_FUSION",
+            "perception_mode": "single_camera_rgbd" if len(frames) == 1 else "dense_ab_rgbd_fusion",
             "active_cameras": list(self.config.active_camera_labels),
             "primary_camera": "A",
-            "auxiliary_depth_cameras": ["B"],
+            "auxiliary_depth_cameras": [label for label in self.config.active_camera_labels if label != "A"],
             "views": views,
             "warnings": [],
             "depth_fusion": depth_fusion,

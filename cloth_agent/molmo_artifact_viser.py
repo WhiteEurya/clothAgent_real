@@ -823,7 +823,7 @@ def run_viewer(
         robot = RobotConfig.load(project_root, robot_config_path if robot_config_path.is_file() else None)
     except Exception as exc:
         raise RuntimeError(f"could not load read-only robot model configuration: {exc}") from exc
-    urdf_path = project_root / "assets" / "robots" / "xarm7" / "xarm7.urdf"
+    urdf_path = project_root / "assets" / "robots" / "xarm6" / "xarm6_wo_ee.urdf"
     if not urdf_path.is_file():
         raise RuntimeError(f"xArm7 URDF is missing: {urdf_path}")
 

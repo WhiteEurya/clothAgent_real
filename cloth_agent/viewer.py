@@ -15,7 +15,7 @@ from PIL import Image
 
 from .config import ExperimentConfig
 from .experiment import Preflight, format_action_sequence, format_speed_profile
-from .kinematics import AnimationFrame, XArm7Kinematics
+from .kinematics import AnimationFrame, XArm6Kinematics
 from .perception import (
     DEFAULT_TABLE_CLIP_TOLERANCE_MM,
     PerceptionConfig,
@@ -355,7 +355,7 @@ def run_viewer(
         perception_config_path or root / "config" / "perception.example.json"
     ).expanduser().resolve()
     robot_urdf_path = (
-        urdf_path or root / "assets" / "robots" / "xarm7" / "xarm7.urdf"
+        urdf_path or root / "assets" / "robots" / "xarm6" / "xarm6_wo_ee.urdf"
     ).expanduser().resolve()
     selected = _latest_experiment(session, experiment)
     if selected is not None and experiment is None:
@@ -397,7 +397,7 @@ def run_viewer(
         load_meshes=True,
         load_collision_meshes=False,
     )
-    kinematics = XArm7Kinematics(robot_urdf_path)
+    kinematics = XArm6Kinematics(robot_urdf_path)
     home_cfg = np.concatenate(
         [np.radians(np.asarray(robot.init_joints_deg, dtype=np.float64)), [0.0]]
     )

@@ -1,4 +1,4 @@
-"""Offline xArm7 kinematics and animation frames for the Viser dashboard."""
+"""Offline xArm kinematics and animation frames for the Viser dashboard."""
 
 from __future__ import annotations
 
@@ -59,8 +59,12 @@ class XArm7Kinematics:
         joints = np.asarray(joints_rad, dtype=np.float64)
         if joints.shape != (7,):
             raise KinematicsError("xArm joint vector must contain seven values")
-        self.urdf.update_cfg(np.concatenate([joints, [float(gripper_rad)]]))
-        return np.asarray(self.urdf.get_transform("link_tcp", "world"), dtype=np.float64)
+        actuated = np.asarray(joints, dtype=np.float64)
+        if len(self.urdf.actuated_joint_names) > 6:
+            actuated = np.concatenate([actuated, [float(gripper_rad)]])
+        self.urdf.update_cfg(actuated)
+        tip = "link_tcp" if "link_tcp" in self.urdf.link_map else "link6"
+        return np.asarray(self.urdf.get_transform(tip, "world"), dtype=np.float64)
 
     def solve(
         self,
@@ -118,6 +122,44 @@ class XArm7Kinematics:
             )
         return solved.x.astype(np.float64)
 
+
+class XArm6Kinematics(XArm7Kinematics):
+    """Six-axis xArm wrapper using the same pose/IK interface as xArm7."""
+
+    def __init__(self, urdf_path: Path):
+        try:
+            import yourdfpy
+        except ImportError as exc:
+            raise KinematicsError("yourdfpy is required for xArm URDF animation") from exc
+        self.urdf_path = urdf_path.expanduser().resolve()
+        if not self.urdf_path.is_file():
+            raise FileNotFoundError(self.urdf_path)
+        self.urdf = yourdfpy.URDF.load(
+            self.urdf_path, build_scene_graph=True, build_collision_scene_graph=False,
+            load_meshes=False, load_collision_meshes=False,
+            filename_handler=partial(yourdfpy.filename_handler_magic, dir=self.urdf_path.parent),
+        )
+        names = list(self.urdf.actuated_joint_names)
+        if names[:6] != [f"joint{index}" for index in range(1, 7)]:
+            raise KinematicsError(f"unexpected xArm6 actuated joints: {names}")
+        self.joint_count = 6
+        self.lower = np.asarray([
+            float(j.limit.lower) if j.limit is not None else -2.0 * np.pi
+            for j in self.urdf.actuated_joints[:6]
+        ], dtype=np.float64)
+        self.upper = np.asarray([
+            float(j.limit.upper) if j.limit is not None else 2.0 * np.pi
+            for j in self.urdf.actuated_joints[:6]
+        ], dtype=np.float64)
+
+    def forward(self, joints_rad: np.ndarray, gripper_rad: float = 0.0) -> np.ndarray:
+        joints = np.asarray(joints_rad, dtype=np.float64)
+        if joints.shape != (6,):
+            raise KinematicsError("xArm6 joint vector must contain six values")
+        self.urdf.update_cfg(joints)
+        tip = "link_tcp" if "link_tcp" in self.urdf.link_map else "link6"
+        return np.asarray(self.urdf.get_transform(tip, "world"), dtype=np.float64)
+
     def build_animation(
         self,
         actions: list[dict[str, Any]],
@@ -130,8 +172,8 @@ class XArm7Kinematics:
         arm_steps: int = 24,
         gripper_steps: int = 10,
     ) -> list[AnimationFrame]:
-        if len(home_joints_deg) != 7:
-            raise KinematicsError("home joint configuration must contain seven values")
+        if len(home_joints_deg) not in {6, 7}:
+            raise KinematicsError("home joint configuration must contain six or seven values")
         home = np.radians(np.asarray(home_joints_deg, dtype=np.float64))
         current_joints = home.copy()
         current_gripper = 0.0
@@ -205,3 +247,9 @@ class XArm7Kinematics:
                     current_joints, 0.85, gripper_steps, action_index, "close_gripper"
                 )
         return frames
+
+
+# Keep the historical seven-axis import available for archived experiments.
+# New runtime code selects XArm6Kinematics explicitly.
+if not hasattr(XArm7Kinematics, "build_animation"):
+    XArm7Kinematics.build_animation = XArm6Kinematics.build_animation

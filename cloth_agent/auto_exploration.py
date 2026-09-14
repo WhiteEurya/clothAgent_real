@@ -54,7 +54,7 @@ from .free_exploration import (
     perception_image_paths,
     validate_exploration_payload,
 )
-from .kinematics import AnimationFrame, XArm7Kinematics
+from .kinematics import AnimationFrame, XArm6Kinematics
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .molmo_keypoint_pipeline import (
     DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_MOLMO_KEYPOINT_CONFIDENCE_THRESHOLD,
@@ -4475,7 +4475,7 @@ def run_auto_exploration_viewer(
     root = session.project_root
     robot = session.robot_config
     robot_urdf_path = (
-        root / "assets" / "robots" / "xarm7" / "xarm7.urdf"
+        root / "assets" / "robots" / "xarm6" / "xarm6_wo_ee.urdf"
     ).resolve()
     perception_path = (
         perception_config_path
@@ -4557,7 +4557,7 @@ def run_auto_exploration_viewer(
         load_meshes=True,
         load_collision_meshes=False,
     )
-    kinematics = XArm7Kinematics(robot_urdf_path)
+    kinematics = XArm6Kinematics(robot_urdf_path)
     home_cfg = np.concatenate(
         [np.radians(np.asarray(robot.init_joints_deg, dtype=np.float64)), [0.0]]
     )
