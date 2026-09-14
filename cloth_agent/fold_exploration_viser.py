@@ -242,7 +242,11 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
             rank = 4
         return rank, text
 
-    return sorted(_unique_images_by_content(paths), key=order)
+    # Prefer diagnostic artifacts when two files are byte-identical (tests and
+    # staged copies can share placeholder bytes); otherwise keep the first
+    # useful stage ordering and suppress duplicate copies.
+    ordered = sorted(paths, key=order)
+    return _unique_images_by_content(ordered)
 
 
 def _debug_markdown(source: Path) -> str:
