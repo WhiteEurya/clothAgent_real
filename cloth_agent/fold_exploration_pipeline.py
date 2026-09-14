@@ -3614,6 +3614,45 @@ class FoldExplorationPipeline:
         source_path.write_text(exploration_source(proposal), encoding="utf-8")
         return source_path
 
+    def _single_view_execution_confirmation(
+        self,
+        config: PerceptionConfig,
+        observation: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Carry the explicitly configured camera mode into the session guard.
+
+        A confirmed real run with one configured camera authorizes that camera
+        mode. An unexpected loss of a camera from a multi-camera configuration
+        does not. Check the current observation before planning, then recheck
+        session metadata immediately before recording/execution.
+        """
+        if not self.real:
+            return False
+        if not self.confirm_real:
+            raise PermissionError("physical folding requires --real and --confirm-real")
+        if observation is None:
+            metadata = json.loads(
+                (self.session.run_dir / "run_metadata.json").read_text(encoding="utf-8")
+            )
+            mode = metadata.get("last_perception_mode")
+            observed = metadata.get("last_active_cameras")
+        else:
+            mode = observation.get("perception_mode")
+            observed = observation.get("active_cameras")
+        configured = tuple(config.active_camera_labels)
+        single_view = mode == "single_camera_rgbd"
+        if single_view or len(configured) == 1:
+            if (not single_view or len(configured) != 1
+                    or not isinstance(observed, (list, tuple))
+                    or tuple(observed) != configured):
+                raise PermissionError(
+                    "fold camera configuration does not match the single-view observation: "
+                    f"configured={list(configured)}, observed={observed}, mode={mode}; "
+                    "capture a matching observation before planning or execution"
+                )
+            return True
+        return False
+
     def _execute(
         self,
         source_path: Path,
@@ -3624,7 +3663,10 @@ class FoldExplorationPipeline:
         hold_action_index: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = time.monotonic()
-        self._debug("execution", "starting trajectory execution", label=label, source=str(source_path))
+        single_view_confirmed = self._single_view_execution_confirmation(config)
+        self._debug("execution", "starting trajectory execution", label=label,
+                    source=str(source_path), single_view_confirmed=single_view_confirmed,
+                    active_cameras=list(config.active_camera_labels))
         recording_dir = iteration_dir / "rollout_recording"
         recorder: DualRealSenseRolloutRecorder | None = None
         thread: threading.Thread | None = None
@@ -3635,7 +3677,8 @@ class FoldExplorationPipeline:
         recording_errors: list[str] = []
         hold_snapshot: dict[str, Any] | None = None
         if self.real and self.record_video:
-            self._debug("recording", "starting dual-camera rollout recorder", directory=str(recording_dir))
+            self._debug("recording", "starting configured-camera rollout recorder",
+                        directory=str(recording_dir), active_cameras=list(config.active_camera_labels))
             try:
                 recorder = DualRealSenseRolloutRecorder(
                     config,
@@ -3810,6 +3853,7 @@ class FoldExplorationPipeline:
             session_kwargs: dict[str, Any] = {
                 "real": self.real,
                 "confirmed": self.confirm_real,
+                "single_view_confirmed": single_view_confirmed,
                 "notes": f"Closed-loop five-step folding {label}.",
             }
             if hold_action_index is not None:
@@ -4861,6 +4905,10 @@ class FoldExplorationPipeline:
                     reuse=self.reuse_latest_perception and iteration == 1,
                     stage="before perception",
                 )
+                single_view_confirmed = self._single_view_execution_confirmation(config, before)
+                self._debug("perception", "validated execution camera mode",
+                            active_cameras=list(config.active_camera_labels),
+                            single_view_confirmed=single_view_confirmed)
                 observer_before_images = _select_observer_images(before_images)
                 self._debug(
                     "observer-camera",

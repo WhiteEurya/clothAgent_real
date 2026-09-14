@@ -42,6 +42,8 @@ python scripts/remote_fold_smoke.py \
 
 启动日志会显示 `planner_backend='remote'` 和 `remote_planner_host='company-planner'`。相机或 perception 阶段失败时仍会在 Claude 调用之前停止。
 
+单腕部相机模式下，fold 会在 `--real --confirm-real` 已设置、配置只有一台活动相机且当前观测相机与配置一致时，向 session 传入 `single_view_confirmed=True`，无需额外命令行参数。相机模式在规划前检查，并在启动录像/执行前重新核对 run 元数据；双相机配置意外只得到单视角时仍会阻止执行。日志显示实际 `active_cameras` 和 `single_view_confirmed`。
+
 ## 数据与动作边界
 
 远端仅收到白名单中的 RGB（包括 RGB 上的 Rxxx 标注、RGB 视频接触图）和筛选后的语义任务/历史。不会发送深度图、热图、XYZ、标定矩阵、工作区数值、完整机器人状态或本地文件清单。上传 PNG 原字节，远端下载后先验证 SHA256。
