@@ -6,6 +6,14 @@
 
 ## 快速测试
 
+Alienware 安装本地 Molmo 袖部定位依赖，可在项目目录运行：
+
+```bash
+bash scripts/setup_molmo.sh
+```
+
+脚本创建或复用 Python 3.11 的 `molmo` Conda 环境，安装指定版本的依赖、下载 `allenai/MolmoPoint-8B` 并检查 CUDA、模型配置和处理器缓存。它不启动机器人，完成后会打印带有正确 `--molmo-python` 路径的折叠命令；完整模型推理仍需另行验证。
+
 仅有一张 RGB PNG 时，先检查传输和公司 Claude 的图像读取：
 
 ```bash
