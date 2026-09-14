@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run and archive the complete garment height-map/heatmap pipeline.
 
-This diagnostic is perception-only: it captures or reloads calibrated A/B
+This diagnostic is perception-only: it captures or reloads configured
 RGB-D frames, fits the table, segments the garment, computes per-pixel and
 fused height-above-table maps, and saves every intermediate/result artifact.
-It never connects to or commands the xArm.
+It never commands the xArm. Live wrist capture reads robot joints to compose
+camera extrinsics; offline replay uses saved transforms and needs no hardware.
 """
 
 from __future__ import annotations
@@ -101,9 +102,9 @@ def _load_raw_capture(capture_dir: Path) -> list[RGBDFrame]:
                 X_base_camera=np.asarray(item["X_base_camera"], dtype=np.float64),
             )
         )
-    if len(frames) != 2:
+    if not frames:
         raise RuntimeError(
-            f"offline capture must contain exactly two frames, found {len(frames)}"
+            "offline capture must contain at least one frame"
         )
     return frames
 
@@ -277,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copytree(source_capture, raw_capture_dir)
             capture_source = "offline_replay"
         else:
-            print("Capturing calibrated A/B RGB-D frames. No robot command will be sent.")
+            print("Capturing configured RGB-D cameras; wrist extrinsics read robot joints. No motion command will be sent.")
             frames = capture_two_view_rgbd(perception_config)
             _save_raw_capture(frames, raw_capture_dir)
             capture_source = "live_realsense"

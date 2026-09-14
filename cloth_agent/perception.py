@@ -1903,6 +1903,9 @@ def _require_projected_garment_validation(
             f"camera {label}: projected={int(artifacts.get('projection_diagnostics', {}).get('projected_point_count') or 0)}, "
             f"silhouette={camera_diagnostics[label]['silhouette_pixels']}, "
             f"depth_consistent={int(artifacts.get('projection_diagnostics', {}).get('depth_consistent_pixels') or 0)}, "
+            f"after_height={artifacts.get('projection_diagnostics', {}).get('after_height_pixels', 'unknown')}, "
+            f"after_appearance={artifacts.get('projection_diagnostics', {}).get('pre_component_garment_mask_pixels', 'unknown')}, "
+            f"before_fixture={artifacts.get('projection_diagnostics', {}).get('garment_mask_pixels_before_fixture_filter', 'unknown')}, "
             f"mask={camera_diagnostics[label]['garment_mask_pixels']}"
             for label, artifacts in camera_artifacts.items()
         )
@@ -2197,6 +2200,17 @@ def _occlusion_aware_garment_mask(
         "sparse_mask_pixels": int(numpy.count_nonzero(sparse_mask)),
         "silhouette_pixels": int(numpy.count_nonzero(silhouette)),
         "depth_consistent_pixels": int(numpy.count_nonzero(depth_consistent)),
+        "after_height_pixels": int(numpy.count_nonzero(
+            silhouette & depth_consistent & plausible_height
+        )),
+        "depth_consistent_height_percentiles_mm": (
+            numpy.percentile(
+                height_above_table_mm[depth_consistent & numpy.isfinite(height_above_table_mm)],
+                [0, 5, 50, 95, 100],
+            ).tolist()
+            if numpy.any(depth_consistent & numpy.isfinite(height_above_table_mm))
+            else None
+        ),
         "pre_component_garment_mask_pixels": int(
             numpy.count_nonzero(unconnected_mask)
         ),
@@ -2766,6 +2780,12 @@ def _save_camera_height_heatmap(
     )
     projection_diagnostics["garment_mask_pixels"] = int(
         numpy.count_nonzero(garment_mask)
+    )
+    # Persist before validation can abort the run. result.json is only written
+    # on success, so keeping diagnostics there loses the evidence we need most.
+    (output_dir / f"camera_{frame.label}_mask_diagnostics.json").write_text(
+        json.dumps(projection_diagnostics, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     local_support, support_ring_mask = _estimate_local_support_ring(
         frame,
