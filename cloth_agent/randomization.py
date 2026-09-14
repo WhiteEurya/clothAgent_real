@@ -67,18 +67,18 @@ def build_garment_randomization_plan(
 
     x, y, grasp_z, approach_z, _, yaw = experiment.require_ready()
     bounds = robot.boundaries
-    if None in (bounds.x_min, bounds.y_min, bounds.y_max, bounds.z_min, bounds.z_max):
+    if not bounds.complete:
         raise ValueError("garment randomization requires complete local XYZ safety bounds")
 
     margin = float(robot.workspace_margin_mm)
-    x_low = float(bounds.x_min + margin)  # type: ignore[operator]
+    x_low = float(bounds.x_min + margin) if bounds.x_min is not None else -math.inf
     x_high = (
         float(bounds.x_max - margin) if bounds.x_max is not None else math.inf
     )
-    y_low = float(bounds.y_min + margin)  # type: ignore[operator]
-    y_high = float(bounds.y_max - margin)  # type: ignore[operator]
+    y_low = float(bounds.y_min + margin) if bounds.y_min is not None else -math.inf
+    y_high = float(bounds.y_max - margin) if bounds.y_max is not None else math.inf
     z_low = float(bounds.z_min + robot.lower_z_margin_mm)  # type: ignore[operator]
-    z_high = float(bounds.z_max - margin)  # type: ignore[operator]
+    z_high = float(bounds.z_max - margin) if bounds.z_max is not None else math.inf
     if not (x_low <= x <= x_high and y_low <= y <= y_high):
         raise ValueError("validated garment point is outside the randomization workspace")
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Manually capture one or more RGB photos from a RealSense camera.
 
-The default device is the uncalibrated Camera-C observer used by the project
-(``243722070226``).  Each shot receives its own timestamped directory, so
+The default device is the Camera-A wrist camera used by the project
+(``317222073552``).  Each shot receives its own timestamped directory, so
 repeated invocations never overwrite an earlier photo.  This utility opens the
 selected camera, warms it up, captures RGB only, writes a PNG plus a manifest,
 and closes the pipeline.  It does not move the robot and does not participate
@@ -10,7 +10,7 @@ in A/B perception or geometry.
 
 Examples::
 
-    # One Camera-C photo (default)
+    # One Camera-A photo (default)
     python scripts/capture_camera_photo.py
 
     # Three photos, two seconds apart
@@ -18,7 +18,7 @@ Examples::
 
     # Use a different RealSense serial and output directory
     python scripts/capture_camera_photo.py \
-      --serial 243722070226 --output-dir runs/my_camera_c_photos
+      --serial 317222073552 --output-dir runs/my_camera_a_photos
 
 Run it with the project's ``cali`` Python environment, which contains
 ``pyrealsense2``::
@@ -40,7 +40,7 @@ from typing import Any, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CAMERA_C_SERIAL = "243722070226"
+DEFAULT_CAMERA_A_SERIAL = "317222073552"
 CALIBRATED_PYTHON = Path("/home/CNS2026330003/miniconda3/envs/cali/bin/python")
 
 # When invoked as ``python scripts/capture_camera_photo.py``, Python puts only
@@ -76,14 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--serial",
-        default=DEFAULT_CAMERA_C_SERIAL,
-        help=f"RealSense serial (default: Camera C {DEFAULT_CAMERA_C_SERIAL})",
+        default=DEFAULT_CAMERA_A_SERIAL,
+        help=f"RealSense serial (default: Camera A {DEFAULT_CAMERA_A_SERIAL})",
     )
-    parser.add_argument("--label", default="C", help="label used in filenames/manifests")
+    parser.add_argument("--label", default="A", help="label used in filenames/manifests")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("runs/camera_C_photos"),
+        default=Path("runs/camera_A_photos"),
         help="parent directory for timestamped shot directories",
     )
     parser.add_argument("--width", type=int, default=1280)

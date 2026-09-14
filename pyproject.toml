@@ -19,3 +19,15 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cloth_agent*"]
+exclude = [
+    "data*",
+    "assets*",
+    "config*",
+    "reports*",
+    "artifacts*",
+    "tests*",
+]

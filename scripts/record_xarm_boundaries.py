@@ -1,166 +1,105 @@
+"""Record only the two lateral TCP boundaries; Z is configured separately."""
+
 import argparse
 import json
-import sys
-import time
 from datetime import datetime
 from pathlib import Path
+import sys
 
-from xarm.wrapper import XArmAPI
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.config import WorkspaceBounds
 
-MEASUREMENTS = [
-    ("x_min", 0, "X 最小安全位置"),
-    ("y_min", 1, "Y 最小安全位置"),
-    ("y_max", 1, "Y 最大安全位置"),
-    ("z_min", 2, "Z 最低安全位置"),
-    ("z_max", 2, "Z 最高安全位置"),
-]
+DEFAULT_OUTPUT = "data/robot/xarm_boundaries_new.json"
 
 
 def read_robot(arm):
     code_p, pose = arm.get_position()
-    if code_p != 0:
-        raise RuntimeError(f"get_position() failed, code={code_p}")
-
     code_j, joints = arm.get_servo_angle()
-    if code_j != 0:
-        raise RuntimeError(f"get_servo_angle() failed, code={code_j}")
-
+    if code_p != 0 or code_j != 0:
+        raise RuntimeError(f"读取位姿失败: position={code_p}, joints={code_j}")
     return [float(v) for v in pose], [float(v) for v in joints]
 
 
-def save_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def save_component(args, updates, samples, remove=()):
+    """Merge with the latest output so independent captures preserve each other."""
+    output = Path(args.output)
+    source = output if output.exists() else getattr(args, "base_boundaries", None)
+    data = json.loads(Path(source).read_text()) if source else {}
+    if "boundary_mm" not in data:
+        data = {"boundary_mm": data}
+    bounds = data["boundary_mm"]
+    for key in remove:
+        bounds.pop(key, None)
+        data.get("samples", {}).pop(key, None)
+    bounds.update(updates)
+    validated = WorkspaceBounds.from_mapping(bounds)
+    data.setdefault("samples", {}).update(samples)
+    data["robot_ip"] = args.ip
+    data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    if output.exists():
+        backup = output.with_name(output.name + datetime.now().strftime(".%Y%m%dT%H%M%S%f.bak"))
+        backup.write_bytes(output.read_bytes())
+        print(f"旧文件已备份：{backup}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    print(f"已保存：{output}")
+    if not validated.complete:
+        print("边界尚未完整：左右两侧和 Z 下限均设置后，才可用于真实运行。")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ip", default="192.168.1.200")
-    parser.add_argument("--output", default="xarm_boundaries.json")
-    args = parser.parse_args()
+def capture_points(args, prompts):
+    from xarm.wrapper import XArmAPI
 
-    output = Path(args.output).expanduser().resolve()
-    arm = XArmAPI(args.ip)
-
-    data = {
-        "robot_ip": args.ip,
-        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "boundary_mm": {},
-        "samples": {},
-    }
-
+    arm = XArmAPI(args.ip, is_radian=False)
+    samples = {}
     try:
         if not arm.connected:
             raise RuntimeError(f"无法连接 xArm: {args.ip}")
-
-        print(f"\n已连接 xArm: {args.ip}")
-        print("state:", arm.get_state())
-        print("error/warn:", arm.get_err_warn_code())
-
-        print("\n即将进入 Free-Drive / Manual Mode。")
-        print("请确认：")
-        print("  1) 周围没有人或障碍物；")
-        print("  2) 急停按钮在手边；")
-        print("  3) 已安装夹爪时，负载/重力补偿设置合理；")
-        print("  4) 用手扶住机械臂后再进入拖动模式。")
-        input("\n准备好后按 Enter... ")
-
-        # Unlock and switch to manual/free-drive mode.
-        arm.motion_enable(enable=True)
-        arm.set_mode(0)
-        arm.set_state(0)
-        time.sleep(0.5)
-
-        ret = arm.set_mode(2)
-        if ret != 0:
-            raise RuntimeError(f"set_mode(2) failed, code={ret}")
-
-        ret = arm.set_state(0)
-        if ret != 0:
-            raise RuntimeError(f"set_state(0) failed, code={ret}")
-
-        time.sleep(0.5)
-
-        print("\n已进入 Free-Drive。")
-        print("坐标均为 xArm Base 坐标系，单位 mm。")
-        print("每次只会取目标轴的值，另外两个轴的位置不会影响该边界记录。\n")
-
-        for key, axis, description in MEASUREMENTS:
-            print("=" * 66)
-            print(f"测量 {key}: {description}")
-            print("把末端拖到该安全边界。")
-            cmd = input("到位后按 Enter 保存；输入 q 结束：").strip().lower()
-
-            if cmd == "q":
-                print("提前结束。")
-                break
-
-            # Let the arm settle after manual dragging.
-            time.sleep(0.2)
-
+        for name, label in prompts:
+            if input(f"将 TCP 移到{label}并停稳，回车记录；q 取消：").strip().lower() == "q":
+                print("已取消，未修改任何边界文件。")
+                return None
             pose, joints = read_robot(arm)
-            value = pose[axis]
-
-            data["boundary_mm"][key] = round(value, 3)
-            data["samples"][key] = {
-                "tcp_pose_mm_deg": [round(v, 4) for v in pose],
-                "joint_angles_deg": [round(v, 4) for v in joints],
-                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-            }
-
-            axis_name = "XYZ"[axis]
-            print(
-                f"保存成功：{key} = {value:.2f} mm\n"
-                f"当前 TCP: X={pose[0]:.2f}, Y={pose[1]:.2f}, Z={pose[2]:.2f} mm"
-            )
-
-            # Save after every measurement in case the session is interrupted.
-            save_json(output, data)
-
-        print("\n" + "=" * 66)
-        print("测量结果（原始值，尚未添加 safety margin）：")
-        for key, _, _ in MEASUREMENTS:
-            if key in data["boundary_mm"]:
-                print(f"  {key:5s} = {data['boundary_mm'][key]:8.2f} mm")
-
-        # Sanity checks
-        b = data["boundary_mm"]
-        if "y_min" in b and "y_max" in b and b["y_min"] >= b["y_max"]:
-            print("\n⚠ 警告：y_min >= y_max，可能把两侧记录反了。")
-        if "z_min" in b and "z_max" in b and b["z_min"] >= b["z_max"]:
-            print("\n⚠ 警告：z_min >= z_max，可能把上下记录反了。")
-
-        save_json(output, data)
-        print(f"\n已保存到：{output}")
-        print("这里只测量，没有把任何边界写入机器人控制器。")
-
-        input("\n双手离开机械臂后按 Enter，切回 Mode 0... ")
-
-    except KeyboardInterrupt:
-        print("\n收到 Ctrl-C，正在退出。", file=sys.stderr)
-
+            samples[name] = {"tcp_pose_mm_deg": pose, "joint_angles_deg": joints,
+                             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds")}
+            print(f"已记录 TCP：{pose[:3]} mm")
     finally:
-        try:
-            
-            save_json(output, data)
-        except Exception as e:
-            print(f"保存文件失败: {e}", file=sys.stderr)
+        arm.disconnect()
+    return samples
 
-        try:
-            if arm.connected:
-                arm.set_mode(0)
-                arm.set_state(0)
-                time.sleep(0.2)
-                arm.disconnect()
-                print("已切回 Mode 0，并断开 SDK 连接。")
-        except Exception as e:
-            print(f"退出时切换模式失败: {e}", file=sys.stderr)
+
+def record_sides(args):
+    print("左右选点：用 UFactory 手动操作机械臂，本程序只读取位置。")
+    print("保持夹爪朝向，沿左右方向选两个 TCP 安全极限点；两点顺序不限。")
+    print("只更新左右两侧，不设置或修改 Z 高度。")
+    samples = capture_points(args, (("side_1", "第一侧安全极限"), ("side_2", "另一侧安全极限")))
+    if samples is None:
+        return
+    points = [samples[k]["tcp_pose_mm_deg"][:2] for k in ("side_1", "side_2")]
+    updates = {"lateral_points_mm": points}
+    nx, ny, low, high = WorkspaceBounds.from_mapping(updates).lateral_geometry()
+    print(f"左右允许宽度：{high-low:.2f} mm；限制方向：({nx:.4f}, {ny:.4f})")
+    if input("输入 SAVE 保存两侧边界，其他输入取消：").strip() != "SAVE":
+        print("已取消，未修改任何边界文件。")
+        return
+    save_component(args, updates, samples, remove=("x_min", "x_max", "y_min", "y_max"))
+
+
+def build_parser(description):
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--ip", default="192.168.2.232")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--base-boundaries", default=None,
+                        help="仅在输出文件不存在时，从指定文件保留其他边界；默认新建")
+    return parser
+
+
+def main():
+    record_sides(build_parser(__doc__).parse_args())
 
 
 if __name__ == "__main__":
     main()
-

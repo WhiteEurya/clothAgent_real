@@ -4148,7 +4148,6 @@ class CameraAWebMonitor:
         try:
             if self.stop_event.is_set():
                 return
-            self.X_base_camera = load_extrinsics(self.spec.extrinsics_file)
             if not self._start_camera(camera):
                 return
             for _ in range(min(self.config.warmup_frames, 5)):
@@ -4157,6 +4156,7 @@ class CameraAWebMonitor:
                 camera.read()
             while not self.stop_event.is_set():
                 rgb, depth_m = camera.read()
+                self.X_base_camera = load_extrinsics(self.spec.extrinsics_file)
                 if camera.intrinsics is None:
                     raise AutoExplorationError("CamA intrinsics are unavailable")
                 self.on_frame(

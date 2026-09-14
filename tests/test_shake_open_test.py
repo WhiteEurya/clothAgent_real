@@ -49,6 +49,17 @@ def _config() -> RobotConfig:
     )
 
 
+def test_plan_without_z_ceiling_uses_finite_target():
+    from dataclasses import replace
+    import math
+
+    config = _config()
+    config = replace(config, boundaries=replace(config.boundaries, z_max=None))
+    config.validate_for_real()
+    plan = build_shake_open_plan((500, 25, 495, 178, 3, 170), config)
+    assert all(math.isfinite(value) for value in plan.work_pose_mm_deg)
+
+
 def test_plan_has_vertical_snaps_then_two_diagonal_cycles() -> None:
     plan = build_shake_open_plan((500, 25, 495, 178, 3, 170), _config())
 

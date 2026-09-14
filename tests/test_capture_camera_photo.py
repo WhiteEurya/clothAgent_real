@@ -14,9 +14,9 @@ def test_shot_directory_is_unique_and_timestamped(tmp_path: Path) -> None:
     assert first.name.startswith("camera_C_")
 
 
-def test_parser_defaults_to_camera_c() -> None:
+def test_parser_defaults_to_camera_a() -> None:
     args = build_parser().parse_args([])
-    assert args.serial == "243722070226"
-    assert args.label == "C"
+    assert args.serial == "317222073552"
+    assert args.label == "A"
     assert args.count == 1
 

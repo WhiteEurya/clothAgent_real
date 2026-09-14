@@ -2093,10 +2093,8 @@ def build_reverse_trajectory(
     laydown = post_moves[-1]
     all_z = [float(action["args"]["z"]) for action in actions if action.get("name") == "move"]
     bounds = robot_config.boundaries
-    if bounds.z_max is None:
-        raise ExplorationPlanningError("recovery requires configured z_max")
     recovery_high = min(
-        float(bounds.z_max - robot_config.workspace_margin_mm),
+        float(bounds.z_max - robot_config.workspace_margin_mm) if bounds.z_max is not None else math.inf,
         max(float(laydown["z"]) + 70.0, max(all_z) + 20.0),
     )
     if recovery_high <= float(laydown["z"]):
@@ -6032,8 +6030,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--viser-refresh-s", type=float, default=0.5)
     parser.add_argument(
         "--observer-camera-serial",
-        default="243722070226",
-        help="uncalibrated RGB-only observer serial (default: Camera C 243722070226); never used for geometry",
+        default=None,
+        help="optional separate RGB-only observer serial (disabled by default); never used for geometry",
     )
     parser.add_argument(
         "--no-observer-camera",

@@ -753,12 +753,13 @@ def invoke_claude_collar_motion_planner(
     margin = float(robot_config.workspace_margin_mm)
     y_extension = robot_config.y_workspace_extension_mm(COLLAR_GRASP_YAW_DEG)
     hard_bounds = {
-        "x_min_mm": float(bounds.x_min + margin),
+        "x_min_mm": float(bounds.x_min + margin) if bounds.x_min is not None else None,
         "x_max_mm": float(bounds.x_max - margin) if bounds.x_max is not None else None,
-        "y_min_mm": float(bounds.y_min - y_extension + margin),
-        "y_max_mm": float(bounds.y_max + y_extension - margin),
+        "y_min_mm": float(bounds.y_min - y_extension + margin) if bounds.y_min is not None else None,
+        "y_max_mm": float(bounds.y_max + y_extension - margin) if bounds.y_max is not None else None,
+        "lateral_points_mm": bounds.lateral_points_mm,
         "z_min_mm": float(bounds.z_min + robot_config.lower_z_margin_mm),
-        "z_max_mm": float(bounds.z_max - margin),
+        "z_max_mm": float(bounds.z_max - margin) if bounds.z_max is not None else None,
     }
     support_context = ""
     if grasp_height_plan.get("support_layer_active"):
@@ -825,7 +826,7 @@ def invoke_claude_collar_motion_planner(
         "a different reachable high pose or retreat geometry rather than releasing high. "
         "rather than lowering before the far transport. The vertical lift and Y=0 centering "
         "point must reach a genuinely high but controller-reachable pose: at least halfway "
-        "from the grounded grasp Z to the configured z_max, but they do not need to be within "
+        "from the grounded grasp Z to z_max when configured (null means no ceiling), but they do not need to be within "
         "8 mm of z_max. Keep the far +X point at that same high Z, then descend only during "
         "retreat. "
         "Use exactly three subsequent move "
@@ -1165,7 +1166,8 @@ def _proposal_with_repaired_workspace_x(
     ]
     if len(descent_indices) != 3:
         return None
-    safe_x_min = float(robot_config.boundaries.x_min + robot_config.workspace_margin_mm)
+    safe_x_min = (float(robot_config.boundaries.x_min + robot_config.workspace_margin_mm)
+                  if robot_config.boundaries.x_min is not None else -math.inf)
     affected_indices = [far_index, *descent_indices]
     minimum_x = min(float(actions[index]["args"]["x"]) for index in affected_indices)
     if minimum_x >= safe_x_min - 1e-6:
@@ -1347,9 +1349,8 @@ def validate_controller_with_auto_far_x_repair(
             ]
             if len(descent_action_indices) != 3:
                 raise
-            safe_x_min = float(
-                robot_config.boundaries.x_min + robot_config.workspace_margin_mm
-            )
+            safe_x_min = (float(robot_config.boundaries.x_min + robot_config.workspace_margin_mm)
+                          if robot_config.boundaries.x_min is not None else -math.inf)
             required_total_retreat = original_far_x - float(
                 actions[descent_action_indices[-1]]["args"]["x"]
             )
@@ -1698,13 +1699,11 @@ def validate_claude_collar_motion_proposal(
             "far +X transport must preserve the pre-transport Z"
         )
     bounds = robot_config.boundaries
-    if bounds.z_max is None:
-        raise CollarLiftRetreatError("collar motion requires a configured hard z_max")
-    safe_z_max = float(bounds.z_max - robot_config.workspace_margin_mm)
+    safe_z_max = float(bounds.z_max - robot_config.workspace_margin_mm) if bounds.z_max is not None else math.inf
     grasp_z = float(grasp_args["z"])
     minimum_high_z = grasp_z + MIN_HIGH_LIFT_FRACTION_OF_AVAILABLE_Z * (
         safe_z_max - grasp_z
-    )
+    ) if bounds.z_max is not None else grasp_z
     for label, point in (("vertical lift", lift), ("Y=0 centering", center)):
         point_z = float(point["z"])
         if point_z < minimum_high_z - 1e-6 or point_z > safe_z_max + 1e-6:
@@ -1791,7 +1790,7 @@ def validate_claude_collar_motion_proposal(
             - (release_reference_z + MAX_RELEASE_HEIGHT_ABOVE_TABLE_MM),
         )
         required_far_x = (
-            float(bounds.x_min + robot_config.workspace_margin_mm)
+            (float(bounds.x_min + robot_config.workspace_margin_mm) if bounds.x_min is not None else float(release["x"]))
             + required_total_descent / MAX_DESCENT_Z_PER_X_RATIO
         )
         raise CollarLiftRetreatError(

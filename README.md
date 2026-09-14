@@ -45,16 +45,37 @@ python -m pip install -e .
 | `config/perception.free_exploration.json` | 自动展开流程使用的视觉配置 |
 | `config/experiment.example.json` | 手工实验参数模板；使用感知时可保留为 `null` |
 | `xarm_boundaries.json` | 已测量的机器人工作空间边界 |
-| `data/robot/xarm_init_pose.json` | Home/观察位姿 |
-| `data/robot/xarm_perception_pose.json` | 感知位姿（如果配置了） |
+| `data/robot/xarm_init_pose.json` | Home 位姿 |
+| `data/robot/xarm_perception_pose.json` | 独立观察点 / 感知位姿 |
 
-如果机器人、相机或夹爪移动过，请重新检查边界、位姿、相机外参和 TCP 偏移。测量 xArm 边界可运行：
+如果机器人、相机或夹爪移动过，请重新检查边界、位姿、相机外参和 TCP 偏移。
+
+默认用左右两点设定边界，无需判断底座 X/Y 方向：
 
 ```bash
-python scripts/record_xarm_boundaries.py \
-  --ip 192.168.1.200 \
-  --output xarm_boundaries.json
+/home/sja/miniconda3/envs/cali/bin/python scripts/record_xarm_boundaries.py \
+  --ip 192.168.2.232 \
+  --output data/robot/xarm_boundaries_new.json
 ```
+
+1. 用 UFactory 手动操作机械臂，保持夹爪朝向，沿关心的左右方向将 TCP 移到第一侧安全极限，停稳后按回车。
+2. 移到另一侧安全极限，停稳后按回车。两点顺序不限，两点应沿需要限制的方向选取，不要斜着跨到不同前后位置。
+3. 程序显示两侧间距，输入 `SAVE` 保存；输入 `q` 取消选点不会修改文件。覆盖已有输出时自动备份。
+4. 将 `config/robot.example.json` 的 `boundaries_file` 改为新文件路径，重新加载配置。
+
+此模式只读机器人位置，不使能电机、不切换模式。两点的 XY 连线定义固定在桌面上的限制方向，运行时用点在该方向上的投影检查是否越界。夹爪转动不会旋转或放宽这两侧限制。记录的是 **TCP 安全极限**，选点时应给夹爪本体留出空间。
+
+新文件以 `boundary_mm.lateral_points_mm` 保存两点，替代旧 X/Y 轴限制；与连线垂直的水平移动不受这两侧限制。两侧程序不询问、不修改已有的高度下限。Home 和观察点不变。这是软件 TCP 边界，不是控制器碰撞保护，也不定义前后方向的操作策略。
+
+Z 最低高度用另一个程序独立设置（不设上限）：
+
+```bash
+/home/sja/miniconda3/envs/cali/bin/python scripts/record_xarm_z_bounds.py
+```
+
+手动将 TCP 移到最低允许高度，按回车，再输入 `SAVE`。这个程序更新 `z_min` 并清除已有的 `z_max`，保留左右两侧边界，也不会使能或移动机械臂。
+
+两个程序默认更新同一份 `data/robot/xarm_boundaries_new.json`，运行顺序不限。首次运行不自动沿用旧环境的边界；如果输出文件已存在，则保留另一项已经设置的值和采样记录。左右和高度都完成后，边界才可用于真实运行。使用自定义文件时，两个程序的 `--output` 必须一致。
 
 双相机感知要求 A、B 两台相机都能提供有效深度；当前版本不支持单相机模式。请确认 `config/perception*.json` 中的序列号和外参路径与实际安装一致。
 

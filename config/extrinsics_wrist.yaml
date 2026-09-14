@@ -32,7 +32,3 @@ X_TagmountTag:
   - 0.0
   - 0.0
   - 1.0
-camera_mount: link_eef
-robot_ip: 192.168.2.232
-robot_urdf: calibration_xarm6.urdf
-camera_serial: '317222073552'

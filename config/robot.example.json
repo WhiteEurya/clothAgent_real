@@ -1,6 +1,6 @@
 {
-  "robot_ip": "192.168.1.200",
-  "boundaries_file": "xarm_boundaries.json",
+  "robot_ip": "192.168.2.232",
+  "boundaries_file": "data/robot/xarm_boundaries_new.json",
   "init_pose_file": "data/robot/xarm_init_pose.json",
   "perception_pose_file": "data/robot/xarm_perception_pose.json",
   "workspace_margin_mm": 0.0,

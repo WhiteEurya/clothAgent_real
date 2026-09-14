@@ -401,6 +401,24 @@ def load_extrinsics(path: Path, key: str = "X_CammountCam") -> np.ndarray:
     transform = numpy.asarray(data[key], dtype=numpy.float64)
     if transform.shape != (4, 4) or not numpy.allclose(transform[3], [0, 0, 0, 1], atol=1e-6):
         raise PerceptionError(f"{path}:{key} must be a 4x4 homogeneous transform")
+    if key == "X_CammountCam" and data.get("camera_mount", "link_base") != "link_base":
+        from yourdfpy import URDF
+        from xarm.wrapper import XArmAPI
+
+        urdf_path = path.parent / data["robot_urdf"]
+        robot = URDF.load(urdf_path, load_meshes=False, load_collision_meshes=False)
+        arm = XArmAPI(data["robot_ip"], is_radian=True)
+        try:
+            code, angles = arm.get_servo_angle(is_radian=True)
+            if code != 0:
+                raise PerceptionError(f"Cannot read wrist camera joint angles: code={code}")
+            count = len(robot.actuated_joint_names)
+            if len(angles) < count or not numpy.isfinite(angles[:count]).all():
+                raise PerceptionError("Invalid wrist camera joint angles")
+            robot.update_cfg(dict(zip(robot.actuated_joint_names, angles[:count])))
+            transform = robot.get_transform(data["camera_mount"], "link_base") @ transform
+        finally:
+            arm.disconnect()
     return transform
 
 
@@ -3379,10 +3397,10 @@ def derive_grasp_plan(
 
     surface_z = float(center[2])
     bounds = robot_config.boundaries
-    if bounds.z_min is None or bounds.z_max is None:
-        raise PerceptionError("z_min and z_max are required to validate the observed surface")
+    if bounds.z_min is None:
+        raise PerceptionError("z_min is required to validate the observed surface")
     safe_z_min = float(bounds.z_min + robot_config.lower_z_margin_mm)
-    safe_z_max = float(bounds.z_max - robot_config.workspace_margin_mm)
+    safe_z_max = float(bounds.z_max - robot_config.workspace_margin_mm) if bounds.z_max is not None else math.inf
     if safe_z_min >= safe_z_max:
         raise PerceptionError("workspace margin leaves no usable z range")
     try:

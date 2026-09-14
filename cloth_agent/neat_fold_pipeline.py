@@ -245,6 +245,10 @@ def _validate_grounded_workspace_xy(
     x_mm, y_mm, z_mm = (float(value) for value in xyz)
     bounds = robot_config.boundaries
     margin = float(robot_config.workspace_margin_mm)
+    try:
+        bounds.validate_lateral(x_mm, y_mm, margin)
+    except SafetyError as exc:
+        raise ExplorationPlanningError(str(exc)) from exc
     if bounds.x_min is not None and x_mm < bounds.x_min + margin:
         raise ExplorationPlanningError(
             "selected Camera A pixel grounds outside the robot workspace: "
@@ -321,6 +325,10 @@ def _workspace_prefilter_overlay(
     x = xyz[:, :, 0]
     y = xyz[:, :, 1]
     inside = finite.copy()
+    if bounds.lateral_points_mm is not None:
+        nx, ny, low, high = bounds.lateral_geometry()
+        lateral = nx * x + ny * y
+        inside &= (lateral >= low + margin) & (lateral <= high - margin)
     if bounds.x_min is not None:
         inside &= x >= float(bounds.x_min) + margin
     if bounds.x_max is not None:

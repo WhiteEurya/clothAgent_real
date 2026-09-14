@@ -28,8 +28,8 @@ class WorkspaceBounds:
 
     ``x_max`` is optional. When it is absent, upper-X reachability is delegated
     to the xArm controller's read-only inverse-kinematics validation and final
-    motion command. The locally measured lower-X, Y, and Z limits remain
-    mandatory for real execution.
+    motion command. Real execution requires lower-X/Y/Z limits, or a pair of
+    lateral XY points defining a fixed strip together with a Z floor; a Z ceiling is optional.
     """
 
     x_min: float | None = None
@@ -38,19 +38,31 @@ class WorkspaceBounds:
     y_max: float | None = None
     z_min: float | None = None
     z_max: float | None = None
+    lateral_points_mm: tuple[tuple[float, float], tuple[float, float]] | None = None
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "WorkspaceBounds":
         names = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
-        parsed: dict[str, float | None] = {}
+        parsed: dict[str, Any] = {}
         for name in names:
             value = values.get(name)
             parsed[name] = None if value is None else _number(value, name)
+        points = values.get("lateral_points_mm")
+        if points is not None:
+            if not isinstance(points, (list, tuple)) or len(points) != 2 or any(
+                not isinstance(p, (list, tuple)) or len(p) != 2 for p in points
+            ):
+                raise ConfigError("lateral_points_mm requires two XY points")
+            parsed["lateral_points_mm"] = tuple(
+                tuple(_number(v, "lateral point") for v in p) for p in points
+            )
         bounds = cls(**parsed)
         bounds.validate_order()
         return bounds
 
     def validate_order(self) -> None:
+        if self.lateral_points_mm is not None:
+            self.lateral_geometry()
         for axis in ("x", "y", "z"):
             low, high = getattr(self, f"{axis}_min"), getattr(self, f"{axis}_max")
             if low is not None and high is not None and low >= high:
@@ -58,10 +70,33 @@ class WorkspaceBounds:
 
     @property
     def complete(self) -> bool:
+        if self.lateral_points_mm is not None:
+            return self.z_min is not None
         return all(
             getattr(self, name) is not None
-            for name in ("x_min", "y_min", "y_max", "z_min", "z_max")
+            for name in ("x_min", "y_min", "y_max", "z_min")
         )
+
+    def lateral_geometry(self) -> tuple[float, float, float, float]:
+        """Return the fixed XY normal and projection limits of the two sides."""
+        if self.lateral_points_mm is None:
+            raise ConfigError("lateral points are not configured")
+        a, b = self.lateral_points_mm
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        width = math.hypot(dx, dy)
+        if not math.isfinite(width) or width < 1.0:
+            raise ConfigError("lateral points must be at least 1 mm apart in XY")
+        nx, ny = dx / width, dy / width
+        low = nx * a[0] + ny * a[1]
+        return nx, ny, low, low + width
+
+    def validate_lateral(self, x: float, y: float, margin_mm: float = 0.0) -> None:
+        if self.lateral_points_mm is None:
+            return
+        nx, ny, low, high = self.lateral_geometry()
+        position = nx * x + ny * y
+        if position < low + margin_mm - 1e-6 or position > high - margin_mm + 1e-6:
+            raise SafetyError("TCP is outside the selected left/right boundaries")
 
     def validate(
         self,
@@ -82,7 +117,7 @@ class WorkspaceBounds:
         """
 
         if require_complete and not self.complete:
-            raise ConfigError("x_min, y_min, y_max, z_min, and z_max are required for a real run")
+            raise ConfigError("real execution requires x_min, y_min, y_max, z_min or lateral points with z_min")
         margin = _number(margin_mm, "workspace margin")
         if margin < 0:
             raise ConfigError("workspace margin must be non-negative")
@@ -97,6 +132,7 @@ class WorkspaceBounds:
         if y_extension < 0:
             raise ConfigError("Y workspace extension must be non-negative")
         target = {"x": _number(x, "x"), "y": _number(y, "y"), "z": _number(z, "z")}
+        self.validate_lateral(target["x"], target["y"], margin)
         for axis, value in target.items():
             low = getattr(self, f"{axis}_min")
             high = getattr(self, f"{axis}_max")
@@ -329,7 +365,7 @@ class RobotConfig:
             ),
         )
         return cls(
-            robot_ip=str(raw.get("robot_ip", boundary_doc.get("robot_ip", "192.168.1.200"))),
+            robot_ip=str(raw.get("robot_ip", boundary_doc.get("robot_ip", "192.168.2.232"))),
             boundaries=boundaries,
             init_joints_deg=joints,
             init_pose_mm_deg=pose,
@@ -405,7 +441,7 @@ class RobotConfig:
 
     def validate_for_real(self) -> None:
         if not self.boundaries.complete:
-            raise ConfigError("x_min, y_min, y_max, z_min, and z_max are required for a real run")
+            raise ConfigError("real execution requires x_min, y_min, y_max, z_min or lateral points with z_min")
         self.boundaries.validate_order()
         self.validate_workspace_pose(
             self.init_pose_mm_deg[0],

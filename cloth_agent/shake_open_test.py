@@ -162,13 +162,11 @@ def build_shake_open_plan(
             f"roll error={roll_error:.3f}, pitch error={pitch_error:.3f} deg"
         )
 
-    if config.boundaries.z_max is None:
-        raise SafetyError("shake-open test requires a configured z_max")
     highest_allowed_z = float(
         config.boundaries.z_max
         - config.workspace_margin_mm
         - CEILING_MARGIN_MM
-    )
+    ) if config.boundaries.z_max is not None else math.inf
     if highest_allowed_z < MINIMUM_ENTRY_Z_MM + WORK_Z_DROP_MM:
         raise SafetyError("configured z_max leaves no room for the shake-open test")
     test_high_z = min(highest_allowed_z, max(z, TARGET_TEST_HIGH_Z_MM))

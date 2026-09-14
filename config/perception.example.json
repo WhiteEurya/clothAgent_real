@@ -2,7 +2,7 @@
   "cameras": [
     {
       "label": "A",
-      "serial": "261722071490",
+      "serial": "317222073552",
       "extrinsics_file": "config/extrinsics_A.yaml",
       "color_exposure": 700,
       "color_white_balance": 3800
