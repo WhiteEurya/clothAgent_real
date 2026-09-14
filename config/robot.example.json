@@ -6,7 +6,7 @@
   "workspace_margin_mm": 0.0,
   "lower_z_margin_mm": 0.0,
   "online_camera_z_bias_correction": false,
-  "expected_tcp_offset_mm_deg": [0, 0, 0, 0, 0, 0],
+  "expected_tcp_offset_mm_deg": [0, 0, 172, 0, 0, 0],
   "tcp_offset_tolerance": 1.0,
   "grasp_height": {
     "surface_compression_mm": 3.0,
