@@ -93,10 +93,44 @@ class RemoteClaudeBackend:
             payload: Any = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
             raise PlannerBackendError("HTTPS upload returned invalid JSON") from exc
-        file_id = payload.get("id") or payload.get("fileId") or payload.get("file_id")
-        if not isinstance(file_id, str) or not file_id.strip():
-            raise PlannerBackendError("HTTPS upload response did not contain a file ID")
-        return f"{self.download_base_url}/{file_id.strip()}/download"
+        # tempfile.org has returned several equivalent shapes over time:
+        # ``{"id": ...}``, ``{"files": [{"id": ...}]}``, and a direct URL.
+        # Accept only an ID belonging to the uploaded file; never guess from
+        # arbitrary response text.
+        def find_file_id(value: Any) -> str | None:
+            if isinstance(value, dict):
+                for key in ("id", "fileId", "file_id"):
+                    candidate = value.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate.strip()
+                for key in ("file", "files", "data", "result"):
+                    found = find_file_id(value.get(key))
+                    if found:
+                        return found
+            elif isinstance(value, list):
+                for item in value:
+                    found = find_file_id(item)
+                    if found:
+                        return found
+            return None
+
+        direct_url = None
+        if isinstance(payload, dict):
+            for key in ("downloadUrl", "download_url", "url"):
+                candidate = payload.get(key)
+                if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                    direct_url = candidate
+                    break
+        if direct_url:
+            return direct_url
+        file_id = find_file_id(payload)
+        if not file_id:
+            preview = completed.stdout.strip().replace("\n", " ")[:500]
+            raise PlannerBackendError(
+                "HTTPS upload response did not contain a file ID "
+                f"(response={preview!r})"
+            )
+        return f"{self.download_base_url}/{file_id}/download"
 
     def invoke(self, *, prompt: str, image_paths: Iterable[Path],
                schema: dict[str, Any], system_prompt: str) -> BackendResult:
