@@ -19,6 +19,8 @@ import time
 from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_SERIAL = "317222073552"
 STATES = (
     ("state_00_unfolded", "unfolded shirt"),
@@ -49,6 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exposure", type=float, default=700.0)
     parser.add_argument("--white-balance", type=float, default=3800.0)
     parser.add_argument("--warmup-frames", type=int, default=30)
+    parser.add_argument(
+        "--robot-config",
+        type=Path,
+        default=Path("config/robot.example.json"),
+        help="xArm configuration used for the calibrated observation pose",
+    )
+    parser.add_argument(
+        "--no-move-to-observation",
+        action="store_true",
+        help="do not move xArm before opening the camera",
+    )
     parser.add_argument(
         "--no-preview",
         action="store_true",
@@ -177,6 +190,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--name must be a simple directory name")
     if min(args.width, args.height, args.fps) <= 0 or args.warmup_frames < 0:
         raise SystemExit("width, height, fps must be positive and warmup-frames non-negative")
+    if not args.no_move_to_observation:
+        from cloth_agent.config import RobotConfig
+        from cloth_agent.robot_api import move_robot_to_perception_position
+
+        robot_config_path = args.robot_config.expanduser()
+        if not robot_config_path.is_absolute():
+            robot_config_path = PROJECT_ROOT / robot_config_path
+        print("Moving xArm to the configured Camera-A observation pose...", flush=True)
+        robot_config = RobotConfig.load(PROJECT_ROOT, robot_config_path.resolve())
+        positioning = move_robot_to_perception_position(robot_config)
+        print(
+            "xArm observation pose reached: "
+            f"{positioning.get('actual_tcp_pose_mm_deg')}",
+            flush=True,
+        )
     output = (args.output_root.expanduser() / str(args.name).strip()).resolve()
     if output.exists():
         backup = output.with_name(f"{output.name}_previous_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
