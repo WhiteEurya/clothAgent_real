@@ -1475,6 +1475,7 @@ def run_molmo_keypoint_pipeline(
     allow_cpu_offload: bool = False,
     load_in_8bit: bool = False,
     direct_keypoints: bool = False,
+    rgb_only: bool = False,
     max_crops: int = 1,
     max_new_tokens: int = 96,
     query_batch_size: int = 2,
@@ -1489,7 +1490,11 @@ def run_molmo_keypoint_pipeline(
     subprocess_run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     worker_line_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Run Molmo once and build legacy Rxxx references or semantic Sxxx anchors."""
+    """Run Molmo once; RGB-only mode returns hints without metric lookup/install."""
+
+    if rgb_only and (install or semantic_anchors or not direct_keypoints):
+        raise MolmoKeypointPipelineError(
+            "RGB-only hints require direct_keypoints=True, install=False, semantic_anchors=False")
 
     root = Path(project_root).expanduser().resolve()
     perception = Path(perception_dir).expanduser().resolve()
@@ -1501,7 +1506,7 @@ def run_molmo_keypoint_pipeline(
     if output.exists():
         raise MolmoKeypointPipelineError(f"artifact directory already exists: {output}")
     output.mkdir(parents=True, exist_ok=False)
-    flat_reference = _load_flat_reference(root)
+    flat_reference = None if rgb_only else _load_flat_reference(root)
     if flat_reference is not None:
         reference_copy_dir = output / "flat_reference"
         reference_copy_dir.mkdir(parents=True, exist_ok=True)
@@ -1623,7 +1628,35 @@ def run_molmo_keypoint_pipeline(
     axis_references = _validated_axis_references(
         payload, cameras=normalized_cameras
     )
-    if semantic_anchors:
+    if rgb_only:
+        validated = _validate_worker_payload(payload, cameras=normalized_cameras, specs=specs)
+        points = []
+        output_views = []
+        for camera in normalized_cameras:
+            with Image.open(image_paths[camera]) as source:
+                image = source.convert("RGB")
+            records = list(validated[camera].values())
+            if any(record["image_size"] != list(image.size) for record in records):
+                raise MolmoKeypointPipelineError("Molmo reported dimensions do not match its RGB input")
+            draw = ImageDraw.Draw(image)
+            for record in records:
+                if record["status"] != "point_returned":
+                    continue
+                x, y = record["pixel_xy"]
+                draw.ellipse((x-6, y-6, x+6, y+6), outline="magenta", width=3)
+                draw.text((x+8, y), f'{record["name"]} {record["confidence"]:.3f}',
+                          fill="magenta", stroke_width=1, stroke_fill="black")
+                if record["confidence"] > threshold:
+                    points.append({**record, "camera": camera,
+                                   "source_pixel_xy": record["pixel_xy"], "role": "RGB_HINT_ONLY"})
+            overlay = output / f"camera_{camera}_molmo_rgb_hints.png"
+            image.save(overlay)
+            output_views.append({"camera": camera, "image": str(image_paths[camera]),
+                                 "accepted_overlay": str(overlay), "records": records})
+        manifest = {"status": "READY" if points else "NO_VALID_POINTS", "rgb_only": True,
+                    "references": points, "views": output_views,
+                    "role": "RGB_HINT_ONLY_NO_GEOMETRY_OR_REFERENCE_INSTALLATION"}
+    elif semantic_anchors:
         manifest = build_semantic_anchor_manifest(
             payload,
             perception_dir=perception,
@@ -1663,6 +1696,7 @@ def run_molmo_keypoint_pipeline(
         "allow_cpu_offload": bool(allow_cpu_offload),
         "load_in_8bit": bool(load_in_8bit),
         "direct_keypoints": bool(direct_keypoints),
+        "rgb_only": bool(rgb_only),
         "local_files_only": local_files_only,
         "axis_first": not direct_keypoints,
     }

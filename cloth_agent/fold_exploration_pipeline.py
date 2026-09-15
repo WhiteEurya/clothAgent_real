@@ -88,6 +88,8 @@ from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semanti
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
 from .claude_image_debug import debug_directory
+from .claude_molmo_view import map_molmo_pixel
+from .image_tools_mcp import pixel_hash
 from .perception import PerceptionConfig, RGBDFrame, capture_two_view_rgbd
 from .persistent_claude import PersistentClaudeSession
 from .molmo_keypoint_pipeline import (
@@ -3554,6 +3556,13 @@ class FoldExplorationPipeline:
         # as the hint for a new RGB after an unavailable Molmo result.
         for directory in {output_dir, views}:
             (directory / 'garment_frame.json').unlink(missing_ok=True)
+        if isinstance(getattr(self, 'client', None), RemoteFoldClient):
+            # The remote fold path aligns RGB with Claude before querying Molmo.
+            # Do not run an earlier Molmo axis pass in the fixed camera frame.
+            _write_json(output_dir / 'molmo_frame_hint.json', {
+                'status': 'CLAUDE_ORIENTATION_PENDING', 'authority': 'Claude',
+                'reason': 'Claude selects a collar-up RGB before the sleeve query.'})
+            return
         try:
             self._measure_molmo_frame(output_dir, upright_rgb)
             status = {'status': 'MOLMO_AXIS_HINT_AVAILABLE', 'authority': 'Claude'}
@@ -4088,6 +4097,11 @@ class FoldExplorationPipeline:
     def _locate_sleeve_with_molmo(
         self, *, step, iteration, iteration_dir, history=(),
     ):
+        if isinstance(getattr(self, 'client', None), RemoteFoldClient):
+            if not self.molmo_sleeve_grounding or step not in {'left_sleeve', 'right_sleeve'}:
+                return None
+            return self._locate_sleeve_in_claude_view(
+                step=step, iteration=iteration, iteration_dir=iteration_dir)
         hint = self._query_sleeve_with_molmo(step=step, iteration=iteration,
                                           iteration_dir=iteration_dir, history=history)
         if hint is None:
@@ -4126,6 +4140,111 @@ class FoldExplorationPipeline:
         image.save(image_path)
         hint.update(image=str(image_path), semantic_authority='Claude')
         _write_json(iteration_dir / 'molmo_sleeve_hint.json', hint)
+        return hint
+
+    def _locate_sleeve_in_claude_view(self, *, step, iteration, iteration_dir):
+        """Claude aligns RGB -> Molmo annotates that exact RGB -> Claude decides."""
+        started = time.monotonic()
+        raw_path = self.session.run_dir / 'workspace' / 'perception_views' / 'camera_0_A.png'
+        with Image.open(raw_path) as source:
+            raw = source.convert('RGB')
+        canonical = raw.transpose(Image.Transpose.ROTATE_270)
+        inputs = iteration_dir / 'molmo_current_rgb'
+        inputs.mkdir(parents=True, exist_ok=False)
+        canonical_path = inputs / 'camera_A_rgb_upright.png'
+        canonical.save(canonical_path)
+        raw.save(inputs / 'camera_A_source_raw.png')
+        self._debug('claude-orientation', 'selecting collar-up RGB before Molmo',
+                    iteration=iteration, step=step, image=str(canonical_path))
+        try:
+            selection = self.client.prepare_molmo_view(
+                canonical_path, iteration_dir / 'claude_molmo_orientation')
+        finally:
+            self._debug('claude-orientation-timing', 'orientation request finished',
+                        iteration=iteration, duration_s=round(time.monotonic()-started, 3))
+        selected_path = Path(selection['selected_image'])
+        spec = _molmo_sleeve_spec(step)
+        spec = KeypointSpec(spec.name,
+            'Claude has oriented this CURRENT RGB so the collar is above the hem. '
+            'Left/right mean image left/right in THIS collar-up view, never wearer anatomy. '
+            + spec.description + ' If the requested sleeve is folded, hidden or ambiguous, '
+            'return no point; never substitute the opposite visible sleeve.', spec.color)
+        _write_json(iteration_dir / 'molmo_handoff.json', {
+            'stage_order': ['claude_orientation', 'molmo_rgb_hint', 'claude_final_decision'],
+            'step': step, 'input_image': str(selected_path),
+            'input_rgb_sha256': selection['selected_rgb_sha256'],
+            'claude_selected_image_id': selection['image_id'], 'spec': spec.as_dict(),
+            'selection_manifest': str(iteration_dir / 'claude_molmo_orientation' / 'selection.json')})
+        with Image.open(selected_path) as source:
+            if pixel_hash(source) != selection['selected_rgb_sha256']:
+                raise ValueError('Claude-selected RGB changed before Molmo')
+        self._debug('molmo', 'reading Claude-selected collar-up image', iteration=iteration,
+                    step=step, image=str(selected_path), image_id=selection['image_id'])
+        molmo_started = time.monotonic()
+        artifacts = iteration_dir / 'molmo_sleeve_locator'
+        try:
+            manifest = run_molmo_keypoint_pipeline(
+                project_root=self.project_root, perception_dir=selected_path.parent,
+                artifact_dir=artifacts, confidence_threshold=self.molmo_confidence_threshold,
+                molmo_python=self.molmo_python, keypoint_specs=(spec,), cameras=('A',),
+                direct_keypoints=True, rgb_only=True, install=False,
+                query_batch_size=1, max_crops=1, max_new_tokens=48,
+                gpu_max_memory_gib=self.molmo_gpu_max_memory_gib,
+                allow_cpu_offload=False, load_in_8bit=self.molmo_load_in_8bit,
+                timeout_s=self.molmo_timeout_s, local_files_only=True,
+                worker_line_callback=lambda line: self._debug('molmo-worker',
+                    'structured result saved in Molmo artifacts' if line.startswith('{') else line,
+                    iteration=iteration, step=step))
+        finally:
+            self._debug('molmo-timing', 'localization in Claude view finished', iteration=iteration,
+                        duration_s=round(time.monotonic()-molmo_started, 3))
+        with Image.open(raw_path) as source, Image.open(selected_path) as selected:
+            if pixel_hash(source) != pixel_hash(raw) or pixel_hash(selected) != selection['selected_rgb_sha256']:
+                raise ValueError('current RGB or Molmo input changed during localization')
+            processed = selected.convert('RGB')
+        hint = {'status': 'NO_VALID_MOLMO_SLEEVE_POINT', 'step': step, 'camera': 'A',
+                'semantic_authority': 'Claude', 'role': 'fallible_semantic_sleeve_region_not_grasp_point',
+                'side_mapping': 'COLLAR_UP_IMAGE_LEFT_RIGHT',
+                'molmo_input_orientation': 'claude_selected_collar_up',
+                'input_image': str(selected_path), 'image_id': selection['image_id'],
+                'artifact_dir': str(artifacts), 'duration_s': time.monotonic()-started}
+        references = manifest.get('references', [])
+        trace = []
+        if references:
+            reference = references[0]
+            point = reference['source_pixel_xy']
+            mapping = map_molmo_pixel(selection, point)
+            u, v = mapping['mapped_pixel_xy_float']
+            raw_float = [v, raw.height - 1 - u]
+            raw_pixel = [int(math.floor(value + .5)) for value in raw_float]
+            if not (0 <= raw_pixel[0] < raw.width and 0 <= raw_pixel[1] < raw.height):
+                raise ValueError('mapped Molmo pixel is outside raw Camera-A RGB')
+            hint.update(status='MOLMO_POINT_AVAILABLE', processed_pixel_xy=point,
+                upright_pixel_xy=mapping['grounding_pixel_xy'], raw_pixel_xy=raw_pixel,
+                confidence=reference['confidence'], confidence_threshold=self.molmo_confidence_threshold)
+            trace.append({**mapping, 'raw_pixel_xy_float': raw_float, 'raw_pixel_xy': raw_pixel})
+            for image, pixel in ((processed, point), (canonical, [u, v]), (raw, raw_float)):
+                x, y = pixel
+                draw = ImageDraw.Draw(image)
+                draw.ellipse((x-8, y-8, x+8, y+8), outline='magenta', width=3)
+        for image in (processed, canonical, raw):
+            draw = ImageDraw.Draw(image)
+            draw.text((5, 5), f'{step} / MOLMO HINT ONLY - CLAUDE DECIDES',
+                      fill='magenta', stroke_width=1, stroke_fill='black')
+        canonical_overlay = artifacts / 'camera_A_molmo_hint_upright.png'
+        processed_overlay = artifacts / 'camera_A_molmo_hint_collar_up.png'
+        canonical.save(canonical_overlay)
+        processed.save(processed_overlay)
+        raw.save(artifacts / 'camera_A_molmo_hint_raw.png')
+        hint.update(image=str(canonical_overlay), processed_image=str(processed_overlay))
+        _write_json(artifacts / 'pixel_mapping.json', {'resolutions': trace,
+                    'canonical_frame': 'fixed clockwise90 camera display',
+                    'molmo_frame': 'Claude-selected collar-up RGB'})
+        _write_json(iteration_dir / 'molmo_sleeve_hint.json', hint)
+        self._debug('molmo', 'mapped hint ready for Claude final decision', iteration=iteration,
+                    step=step, processed_pixel=hint.get('processed_pixel_xy'),
+                    canonical_pixel=hint.get('upright_pixel_xy'), raw_pixel=hint.get('raw_pixel_xy'),
+                    status=hint['status'], duration_s=round(time.monotonic()-started, 3))
         return hint
 
     def _query_sleeve_with_molmo(
@@ -4465,6 +4584,10 @@ class FoldExplorationPipeline:
             hint_image = Path(molmo_hint['image'])
             if hint_image.is_file():
                 planning_images.append(hint_image)
+            if molmo_hint.get('processed_image'):
+                processed_hint = Path(molmo_hint['processed_image'])
+                if processed_hint.is_file():
+                    planning_images.append(processed_hint)
         planning_objective = objective + '\n' + CLAUDE_FOLD_RULE
         fold_reference = None
         if iteration_dir is not None and self.fold_reference_dir is not None:

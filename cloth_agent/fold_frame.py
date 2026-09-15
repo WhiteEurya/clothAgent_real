@@ -28,6 +28,11 @@ CLAUDE_FOLD_RULE = (
     "inspect, correct or disregard them, including when they mark the opposite sleeve. "
     "Use image tools if helpful. Static fold references show the desired transition only; "
     "do not copy their coordinates. Local depth, workspace, IK and execution checks remain required."
+    " For the remote sleeve handoff, Claude first selects and Reads a collar-up/hem-down "
+    "view; Molmo left/right then mean literal image-left/image-right in that selected view. "
+    "The collar-up Molmo overlay and fixed camera overlay show the same mapped hint. "
+    "Interpret static references in their own collar-up/hem-down frame too; the image "
+    "side before alignment is not a sleeve identity."
 )
 
 

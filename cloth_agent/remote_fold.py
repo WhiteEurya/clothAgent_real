@@ -37,6 +37,7 @@ from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_works
 from .fold_frame import CLAUDE_FOLD_RULE, load_frame
 from .claude_image_debug import debug_directory
 from .motion_image_sources import resolve_motion_sources
+from .claude_molmo_view import prepare_molmo_view
 
 
 # Explicit allow-list of RGB artifacts produced by the fold pipeline. Never
@@ -50,6 +51,7 @@ RGB_NAMES = frozenset({
     "camera_c_observer_rgb.png", "camera_c_observer_rgb_hold_check.png",
     "fold_reference_source.png", "fold_reference_target.png",
     "camera_a_molmo_frame_hint.png", "camera_a_molmo_hint_upright.png",
+    "camera_a_molmo_hint_collar_up.png",
 })
 
 
@@ -268,6 +270,9 @@ class RemoteFoldClient(ClaudeAutoClient):
         self._remote_context: dict[str, Any] | None = None
         self._remote_images: list[Path] = []
         self.diagnostics_dir: Path | None = None
+
+    def prepare_molmo_view(self, canonical_image: Path, output: Path):
+        return prepare_molmo_view(self.backend, canonical_image, output, timeout_s=self.timeout_s)
 
     def plan(self, image_paths, session, objective, feedback=None, history=None,
              phase_callback=None, reference_policy="uniform", workspace_recovery=None):

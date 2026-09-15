@@ -12,34 +12,50 @@ Images, Rxxx IDs, depth maps, camera transforms and robot grounding retain their
 existing coordinates. Legacy generic callers still support `GARMENT_FRAME_V1`
 region checks; the fold loop no longer uses those bands to veto Claude's choice.
 
-Each before/after capture queries Molmo for the current collar and hem before
-supervisor reasoning. These are two additional point queries. A missing,
-low-confidence, out-of-image or degenerate axis is recorded as an unavailable
-hint; Claude still inspects the current RGB and decides. This also
-applies with `--no-molmo-sleeve-grounding`, which disables only the optional
-sleeve hint. Model confidence is not proof that a landmark is correct.
+The remote fold path uses this order for each sleeve step:
 
-The frame is bound to the current RGB by a content digest. Supervisor, Molmo
-sleeve query and both remote planner stages can receive the tentative frame.
-Old sleeve hints are not reused across captures; stale generated frame sidecars
-are cleared before a new attempt. An opposite-side Molmo point is displayed as
-a hypothesis, never mirrored into an invented point. Claude may accept, correct
-or ignore it. The current garment mask, measured geometry, workspace, grasp
-height, trajectory and IK checks remain mandatory.
+1. Supervisor decides the current step using the same garment-relative convention.
+2. Claude Reads the current RGB, chooses rotation/crop/resize as needed, and Reads
+   its selected collar-up, hem-down view. An already aligned original can be selected.
+3. The host verifies the image hash, current-source ancestry, successful Read and
+   declared collar/hem alignment (within 14 degrees of vertical). It stages that exact
+   RGB for Molmo. This alignment check validates Claude's declaration, not the semantic
+   correctness of the landmarks. Ambiguity, timeout, missing Read, invalid transform or
+   invalid selection stops the handoff; no guessed orientation is used.
+4. Molmo sees only this selected RGB and a literal IMAGE LEFT/RIGHT sleeve request.
+   This RGB-only query does not load depth, transform geometry maps or install grasp
+   references. It does not read static reference images. A hidden/ambiguous sleeve
+   should produce no point, rather than selecting the other sleeve.
+5. The host maps the hint back through the verified transforms to current canonical
+   and raw Camera-A pixels. Claude receives both processed and canonical RGB overlays
+   and decides whether to accept, correct or ignore the hint.
 
-For each capture inspect:
+The early Molmo collar/hem pass is disabled for the remote fold path. Generated stale
+frame sidecars are still cleared. `--no-molmo-sleeve-grounding` skips the entire optional
+orientation-to-Molmo handoff. Legacy local planner mode retains its old Molmo axis/hint
+flow; this image-tool handoff is implemented through `RemoteFoldClient`.
 
-- `before_raw/garment_frame.json` (or the corresponding after/retry directory):
-  current collar, hem and basis vectors in displayed pixels.
-- `before_raw/camera_A_garment_frame.png`: yellow collar-to-hem line, cyan LEFT
-  direction, magenta RIGHT direction when Molmo provides a valid tentative axis.
-- `before_raw/camera_A_molmo_frame_hint.png`: RGB annotation explicitly labeled
-  as a hint; supplied to the supervisor/planner, including an unavailable label
-  when no valid axis exists.
-- `molmo_sleeve_locator/camera_A_molmo_hint_upright.png`: current RGB with raw
-  sleeve point/confidence annotations. No XYZ/depth is sent in this image.
-- `before_raw/garment_axis_locator/molmo_keypoints_raw.json`: model outputs and
-  confidences, before geometric checks.
+The current garment mask, measured geometry, workspace, grasp height, trajectory and
+IK checks remain mandatory. No transformed image gets paired with an untransformed
+depth map, and an opposite-side hint is never automatically mirrored.
+
+For each iteration inspect:
+
+- `claude_image_tools/molmo_orientation_*/`: prompt, all operations/Read events,
+  original and replayed images, timings, hashes and failures.
+- `claude_molmo_orientation/selection.json`: exact selected view, source chain,
+  collar/hem coordinates, validation status and Claude's reasoning.
+- `claude_molmo_orientation/molmo_input/camera_0_A.png`: exact RGB given to Molmo.
+- `claude_molmo_orientation/claude_orientation_debug.png`: collar/hem annotations
+  for humans; this annotated copy is not given to Molmo.
+- `molmo_handoff.json`: actual input path/digest, current step and literal Molmo prompt.
+- `molmo_sleeve_locator/camera_A_molmo_hint_collar_up.png`: Molmo's point in the
+  selected collar-up view; also sent to Claude.
+- `molmo_sleeve_locator/camera_A_molmo_hint_upright.png`: the same hint mapped to
+  the canonical fixed camera display; also sent to Claude.
+- `molmo_sleeve_locator/camera_A_molmo_hint_raw.png`: the same hint in raw Cam A.
+- `molmo_sleeve_locator/pixel_mapping.json`: floating and rounded pixel mappings.
+- `molmo_sleeve_locator/molmo_keypoints_raw.json`: original worker outputs/confidences.
 - `planning_attempt_*/.../reference_prevalidation.json`: executable reference
   checks. Claude owns the semantic region; current cloth mask/geometry and
   workspace still constrain the selected grasp.
@@ -70,5 +86,6 @@ Offline verification:
 
 ```bash
 python -m pytest -q tests/test_fold_frame.py tests/test_remote_fold.py \
-  tests/test_fold_exploration_pipeline.py tests/test_auto_exploration.py
+  tests/test_fold_exploration_pipeline.py tests/test_auto_exploration.py \
+  tests/test_claude_molmo_view.py tests/test_molmo_keypoint_pipeline.py
 ```

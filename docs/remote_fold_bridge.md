@@ -144,6 +144,10 @@ python scripts/remote_fold_smoke.py \
 
 ## 数据与动作边界
 
+左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前新增一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，并 Read 最终选定图；本地验证像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
+
+Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 `Claude → Molmo → Claude` 交接状态、实际输入路径／哈希和三个坐标系的点。`claude_molmo_orientation/molmo_input/camera_0_A.png` 是 Molmo 实际输入，`molmo_handoff.json` 保存提示词，`molmo_sleeve_locator/pixel_mapping.json` 保存映射。方向不明确、未 Read、哈希／来源不合法或调用失败会停止交接，不会退回旧图。新增调用会增加每次袖子步骤的耗时；其他本地安全检查继续执行。完整文件说明见 [fold_garment_frame.md](fold_garment_frame.md)。
+
 远端仅收到白名单中的 RGB（包括 RGB 上的 Rxxx 标注、RGB 视频接触图）和筛选后的语义任务/历史。不会发送深度图、热图、XYZ、标定矩阵、工作区数值、完整机器人状态或本地文件清单。上传 PNG 原字节，远端下载后先验证 SHA256。
 
 远端先选择现有 Rxxx，再显式提出完整动作序列。move 使用选定 grasp 或当前 upright RGB 的 pixel，加相对抓取高度与相对 Home yaw；这些是运动提议，不是远端测量的坐标。本地将 upright pixel 逆旋转回原图，查询保存的深度/XYZ；抓取高度仍由原 `resolve_grasp_height` 决定。不会补默认动作、猜缺失深度或把完整 fold 自动改成 probe。该远程接口要求 closure 精确对应选定 Rxxx，不使用旧本地生成器可选的偏移抓取。

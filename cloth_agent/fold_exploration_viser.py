@@ -364,6 +364,20 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
         lines.extend(["", "**Supervisor after reason**", "", _short(after.get("reason"), 900)])
     if evaluation.get("reason"):
         lines.extend(["", "**Evaluation reason**", "", _short(evaluation.get("reason"), 1200)])
+    selection = _load_json(iteration_dir / 'claude_molmo_orientation' / 'selection.json')
+    if selection:
+        handoff = _load_json(iteration_dir / 'molmo_handoff.json')
+        hint = _load_json(iteration_dir / 'molmo_sleeve_hint.json')
+        lines.extend(['', '**Claude → Molmo → Claude**', '',
+            f"- Orientation: `{selection.get('status')}` / collar UP, hem DOWN",
+            f"- Claude selected: `{selection.get('image_id')}`",
+            f"- Molmo actual RGB input: `{handoff.get('input_image', 'not handed off')}`",
+            f"- RGB digest: `{handoff.get('input_rgb_sha256', 'n/a')}`",
+            f"- Sleeve step: `{handoff.get('step', 'n/a')}` / hint: `{hint.get('status', 'pending')}`",
+            f"- Point in processed RGB: `{hint.get('processed_pixel_xy')}`",
+            f"- Point in fixed camera display: `{hint.get('upright_pixel_xy')}`",
+            f"- Point in original Cam A: `{hint.get('raw_pixel_xy')}`",
+            '', _short(selection.get('error') or selection.get('reason'), 1200)])
     files = [
         "supervisor_before.json",
         "planning_diagnostics.json",
@@ -375,6 +389,9 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
         "supervisor_after.json",
         "record.json",
         "perception_artifacts.json",
+        "claude_molmo_orientation/selection.json",
+        "molmo_handoff.json",
+        "molmo_sleeve_locator/pixel_mapping.json",
     ]
     present = [name for name in files if (iteration_dir / name).is_file()]
     if present:
