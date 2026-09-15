@@ -579,22 +579,36 @@ class XArmBackend:
             state["servo_angles_deg"] = [float(value) for value in angles[1]]
         return pose, state
 
-    def _gripper_settled_state(self, config: RobotConfig):
-        """Wait for the jaw command to settle before allowing the next move."""
+    def _gripper_settled_state(self, config: RobotConfig, *, target: str):
+        """Read xArm feedback until the requested gripper command completes.
 
-        minimum_wait = max(0.0, float(config.gripper_settle_s))
-        if minimum_wait:
-            time.sleep(minimum_wait)
-        deadline = time.monotonic() + max(1.0, minimum_wait + 1.0)
-        pose, state = self._state()
+        ``set_gripper_position(wait=True)`` only waits for the SDK call.  The
+        controller feedback is authoritative here.  A missing/unknown status
+        is never treated as success because that could start a move while the
+        jaws are still travelling.
+        """
+
+        deadline = time.monotonic() + max(1.0, float(config.gripper_settle_s) + 1.0)
+        last_feedback: dict[str, Any] | None = None
         while time.monotonic() < deadline:
-            feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
-            if not isinstance(feedback, dict) or feedback.get("state") != "moving":
-                return pose, state
-            time.sleep(0.05)
             pose, state = self._state()
+            feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
+            if isinstance(feedback, dict):
+                last_feedback = feedback
+                status = feedback.get("state")
+                position = feedback.get("position_pulse")
+                # A close may stop above pulse zero when cloth is held, so its
+                # position is diagnostic; status must be stop or grasp.
+                if status in {"stop", "grasp"} and position is not None:
+                    if target == "open":
+                        if abs(float(position) - float(config.gripper_open)) <= 25.0:
+                            return pose, state
+                    else:
+                        return pose, state
+            time.sleep(0.05)
         raise RobotExecutionError(
-            "gripper did not report a settled state before the next trajectory action"
+            "xArm gripper completion could not be confirmed from feedback: "
+            f"target={target}, feedback={last_feedback}"
         )
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
@@ -618,7 +632,7 @@ class XArmBackend:
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_open, speed=config.gripper_speed, wait=True),
         )
-        pose, state = self._gripper_settled_state(config)
+        pose, state = self._gripper_settled_state(config, target="open")
         feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
         return {"command_result": result, "feedback": feedback}, (pose, state)
 
@@ -627,7 +641,7 @@ class XArmBackend:
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_close, speed=config.gripper_speed, wait=True),
         )
-        pose, state = self._gripper_settled_state(config)
+        pose, state = self._gripper_settled_state(config, target="close")
         feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
         return {"command_result": result, "feedback": feedback}, (pose, state)
 

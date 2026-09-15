@@ -203,7 +203,7 @@ class RobotConfig:
     gripper_speed: float = 500.0
     gripper_open: float = 850.0
     gripper_close: float = 0.0
-    # Minimum time after a gripper command before the next motion is allowed.
+    # Feedback confirmation timeout extension after a gripper command.
     gripper_settle_s: float = 0.5
     # Effective jaw-to-jaw span used only to account for the gripper body when
     # the TCP is close to a Y workspace edge.  A value of 0 keeps the legacy
