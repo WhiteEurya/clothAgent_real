@@ -20,6 +20,16 @@ FRAME_RULE = (
     "orientation independently and never copy their pixels."
 )
 
+CLAUDE_FOLD_RULE = (
+    "CLAUDE_FOLD_AUTHORITY_V1: Claude makes the final semantic decision from the current RGB. "
+    "Garment left/right mean viewer-left/right with collar above hem, without mirroring, "
+    "not wearer anatomy or fixed screen sides. The camera's upright filename is only a "
+    "display rotation. Molmo points/axes and their annotated RGB images are fallible hints; "
+    "inspect, correct or disregard them, including when they mark the opposite sleeve. "
+    "Use image tools if helpful. Static fold references show the desired transition only; "
+    "do not copy their coordinates. Local depth, workspace, IK and execution checks remain required."
+)
+
 
 def image_digest(image: Image.Image) -> str:
     return hashlib.sha256(image.convert('RGB').tobytes()).hexdigest()

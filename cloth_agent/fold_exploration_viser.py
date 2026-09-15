@@ -54,6 +54,8 @@ def _short(value: Any, limit: int = 1800) -> str:
 
 
 def _iteration_dirs(source: Path) -> list[Path]:
+    if (source / "claude_image_tools").is_dir():
+        return [source]
     return sorted(
         (path for path in source.glob("iteration_*") if path.is_dir()),
         key=lambda path: path.name,
@@ -224,6 +226,7 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
         path.resolve()
         for path in iteration_dir.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+        and "claude_image_tools" not in path.relative_to(iteration_dir).parts
     ]
 
     def order(path: Path) -> tuple[int, str]:
@@ -379,6 +382,30 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
     return "\n".join(lines)
 
 
+def _image_tool_summary(data):
+    lines = [f"**{data.get('stage', 'Claude')} | {data.get('status', 'RUNNING')}**",
+        f"Elapsed: {data.get('elapsed_s', 0):.1f}s | "
+        f"Audit: {'complete' if data.get('audit_complete') else 'in progress / incomplete'}",
+        "READ_COMPLETED means the Read tool succeeded; it does not prove visual understanding."]
+    if not any(e.get("tool") in {"rotate_image", "crop_image", "resize_image"} for e in data.get("events", [])):
+        lines.append("No image transformation calls recorded so far.")
+    if data.get("error"):
+        lines.append(f"Error: {data['error']}")
+    lines.extend(str(e) for e in data.get("errors", []))
+    for i, event in enumerate(data.get("events", []), 1):
+        if event.get("kind") == "session":
+            continue
+        duration = event.get("duration_s")
+        suffix = f" | {duration:.3f}s" if isinstance(duration, (int, float)) else ""
+        lines.append(f"{i}. +{event.get('received_elapsed_s', 0):.1f}s | {event.get('tool')} | {event.get('status')}{suffix} | "
+                     f"{json.dumps(event.get('arguments', {}), ensure_ascii=False)}")
+        if event.get("tool") == "map_point":
+            lines.append(f"   Original pixel: {json.dumps(event.get('result', {}))}")
+        if event.get("error"):
+            lines.append(f"   Error: {event['error']}")
+    return "\n\n".join(lines)
+
+
 class _FoldViserState:
     def __init__(self, server: Any, source: Path):
         self.server = server
@@ -394,6 +421,13 @@ class _FoldViserState:
         self.path_handles: dict[Path, Any] = {}
         self.path_mtimes: dict[Path, int] = {}
         self.image_folders: dict[tuple[Path, str], Any] = {}
+        self.tool_panels = {}
+        self.tool_image_handles = {}
+        self.tool_image_panels = {}
+        self.tool_raw_panels = {}
+        self.tool_raw_folders = {}
+        self.tool_raw_mtimes = {}
+        self.visible_iterations = set()
         self.status = server.gui.add_markdown(
             f"### Folding exploration dashboard\n\nFollowing `{source}`. Waiting for iteration artifacts."
         )
@@ -507,11 +541,110 @@ class _FoldViserState:
             line_width=4.0,
         )
 
+    def _render_image_tools(self, iteration_dir):
+        for manifest in sorted(iteration_dir.glob("claude_image_tools/*/image_debug.json")):
+            data = _load_json(manifest)
+            if not data:
+                continue
+            folder = self._folder(iteration_dir, "Claude image operations / " + manifest.parent.name)
+            with folder:
+                summary = _image_tool_summary(data)
+                if manifest not in self.tool_panels:
+                    self.tool_panels[manifest] = self.server.gui.add_markdown(summary)
+                else:
+                    self.tool_panels[manifest].content = summary
+                for index, view in enumerate(data.get("views", [])):
+                    path = Path(view.get("path", "")).resolve()
+                    if manifest.parent not in path.parents or not path.is_file():
+                        continue
+                    key = (manifest, view["image_id"])
+                    info = (f"**{index:02d} | {view.get('operation', 'Original RGB')} | {view['image_id']}**\n\n"
+                        f"{view.get('verification')} | {view.get('read_status')}\n\n"
+                        f"Original: image_{view.get('original_image_index')} | "
+                        f"Parent: {view.get('parent_image_id')} | Size: {view.get('size')}\n\n"
+                        f"Operation duration: {view.get('duration_s', 'n/a')} s | "
+                        f"Read durations: {[r.get('duration_s') for r in view.get('reads', [])]} s\n\n"
+                        f"Parameters: `{json.dumps(view.get('arguments', {}))}`\n\n"
+                        f"{self._relative_to_run(path)}")
+                    if key not in self.tool_image_panels:
+                        self.tool_image_panels[key] = self.server.gui.add_markdown(info)
+                    else:
+                        self.tool_image_panels[key].content = info
+                    if key not in self.tool_image_handles:
+                        pixels = _image(path)
+                        if pixels is not None:
+                            self.tool_image_handles[key] = self.server.gui.add_image(pixels,
+                                label=f"{index:02d} {view.get('operation', 'Original')} | {view['image_id']}")
+                for overlay in data.get("point_overlays", []):
+                    path = Path(overlay.get("path", "")).resolve()
+                    if manifest.parent not in path.parents or not path.is_file():
+                        continue
+                    key = (manifest, str(path))
+                    if key not in self.tool_image_handles:
+                        pixels = _image(path)
+                        if pixels is not None:
+                            label = (f"DEBUG ONLY / NOT SENT | event {overlay['event_sequence']} | "
+                                f"{overlay['label']} | {overlay['source_image_id']} | "
+                                f"{overlay['pixel_xy']} | source {overlay['source_verification']}")
+                            self.tool_image_handles[key] = self.server.gui.add_image(pixels, label=label)
+                # Complete request, tool results/matrices/hashes, stdout and
+                # stderr remain expandable; do not truncate diagnostic files.
+                for name in ("request.json", "image_debug.json", "stdout.log", "stderr.log", "exception.log"):
+                    path = manifest.parent / name
+                    if not path.exists():
+                        continue
+                    key = (manifest, name)
+                    try:
+                        mtime = path.stat().st_mtime_ns
+                        if self.tool_raw_mtimes.get(key) == mtime:
+                            continue
+                        content = path.read_text(encoding="utf-8")
+                    except OSError:
+                        continue
+                    self.tool_raw_mtimes[key] = mtime
+                    fence = "`" * max(4, 1 + max((len(m.group()) for m in re.finditer(r"`+", content)), default=0))
+                    markdown = fence + "text\n" + content + "\n" + fence
+                    if key not in self.tool_raw_panels:
+                        self.tool_raw_folders[key] = self.server.gui.add_folder(name, expand_by_default=False)
+                        with self.tool_raw_folders[key]:
+                            self.tool_raw_panels[key] = self.server.gui.add_markdown(markdown)
+                    else:
+                        self.tool_raw_panels[key].content = markdown
+
+    def _evict_iteration(self, iteration):
+        """Release GUI/scene handles only; saved run artifacts stay on disk."""
+        def belongs(key):
+            paths = key if isinstance(key, tuple) else (key,)
+            return any(isinstance(p, Path) and (p == iteration or iteration in p.parents) for p in paths)
+        for name in ('image_handles', 'claude_image_handles', 'claude_iteration_panels',
+                     'iteration_panels', 'path_handles', 'tool_panels', 'tool_image_handles',
+                     'tool_image_panels', 'tool_raw_panels', 'tool_raw_folders', 'image_folders'):
+            handles = getattr(self, name)
+            for key in list(handles):
+                if not belongs(key):
+                    continue
+                value = handles.pop(key)
+                handle = value[-1] if isinstance(value, tuple) else value
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+        for name in ('path_mtimes', 'tool_raw_mtimes'):
+            mapping = getattr(self, name)
+            for key in list(mapping):
+                if belongs(key):
+                    mapping.pop(key)
+
     def update(self) -> None:
-        iteration_dirs = _iteration_dirs(self.source)
+        all_iteration_dirs = _iteration_dirs(self.source)
+        iteration_dirs = all_iteration_dirs[-2:]
+        for old in self.visible_iterations - set(iteration_dirs):
+            self._evict_iteration(old)
+        self.visible_iterations = set(iteration_dirs)
         displayed = 0
         claude_group_count = 0
         for iteration_dir in iteration_dirs:
+            self._render_image_tools(iteration_dir)
             claude_groups = _claude_input_groups(iteration_dir, self.run_root)
             claude_groups = {stage: _unique_images_by_content(paths)
                              for stage, paths in claude_groups.items()}
@@ -565,10 +698,11 @@ class _FoldViserState:
         self.status.content = (
             "### Folding exploration dashboard\n\n"
             f"- source: `{self.source}`\n"
-            f"- iterations discovered: `{len(iteration_dirs)}`\n"
+            f"- iterations discovered: `{len(all_iteration_dirs)}`; showing latest `{len(iteration_dirs)}` (maximum 2)\n"
             f"- raster artifacts displayed: `{len(self.image_handles)}`\n"
             f"- Claude input images displayed: `{len(self.claude_image_handles)}`\n"
             f"- Claude input groups: `{claude_group_count}`\n"
+            f"- Claude image-operation views/point overlays: `{len(self.tool_image_handles)}`\n"
             f"- trajectory overlays: `{len(self.path_handles)}`\n"
             f"- run status: `{summary.get('status', 'RUNNING')}`\n"
             "\nThe viewer is read-only; it does not control the robot."

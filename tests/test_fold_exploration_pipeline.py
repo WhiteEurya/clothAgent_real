@@ -492,9 +492,12 @@ def test_upright_builder_keeps_original_uniform_references_only(
     assert "fold_boundary_reference_count" not in workspace_saved
 
 
+@pytest.mark.parametrize('pixel_x,with_frame', [(400, True), (650, True), (400, False)])
 def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    pixel_x: int,
+    with_frame: bool,
 ) -> None:
     run = tmp_path / "run"
     perception = run / "workspace" / "perception_views"
@@ -515,7 +518,8 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
     seen = {}
     from cloth_agent.fold_frame import build_frame
     frame = build_frame(Image.new('RGB', (720, 1280), 'white'), [600, 350], [600, 1150])
-    (perception / 'garment_frame.json').write_text(json.dumps(frame))
+    if with_frame:
+        (perception / 'garment_frame.json').write_text(json.dumps(frame))
 
     def fake_molmo(**kwargs):
         seen.update(kwargs)
@@ -525,8 +529,8 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
             "references": [
                 {
                     "name": "fold_image_left_sleeve_region",
-                    "source_pixel_xy": [400, 700],
-                    "pixel_xy": [400, 700],
+                    "source_pixel_xy": [pixel_x, 700],
+                    "pixel_xy": [pixel_x, 700],
                     "base_xyz_mm": [420, -260, 10],
                     "confidence": 0.8,
                 }
@@ -558,8 +562,12 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
 
     assert hint is not None
     assert hint["status"] == "MOLMO_POINT_AVAILABLE"
-    assert hint["upright_pixel_xy"] == [400, 700]
-    assert hint["raw_pixel_xy"] == [700, 319]
+    assert hint["upright_pixel_xy"] == [pixel_x, 700]
+    assert hint["raw_pixel_xy"] == [700, 719-pixel_x]
+    assert hint['semantic_authority'] == 'Claude'
+    assert Path(hint['image']).is_file()
+    if with_frame and pixel_x == 650:
+        assert hint['molmo_lateral_diagnostic'] > 0  # opposite-side hint is not mirrored or vetoed
     assert seen["perception_dir"] == iteration_dir / "molmo_sleeve_input_upright"
     assert seen["cameras"] == ("A",)
     assert seen["install"] is False

@@ -86,7 +86,8 @@ from .grasp_height import GraspHeightError, resolve_grasp_height
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
-from .fold_frame import FRAME_RULE, build_frame, load_frame, draw_frame, project_pixels
+from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
+from .claude_image_debug import debug_directory
 from .perception import PerceptionConfig, RGBDFrame, capture_two_view_rgbd
 from .persistent_claude import PersistentClaudeSession
 from .molmo_keypoint_pipeline import (
@@ -1167,13 +1168,13 @@ def _select_supervisor_images(images: Sequence[Path], max_images: int = 8) -> li
     def score(path: Path) -> tuple[int, str]:
         name = path.name.lower()
         parent = "/".join(part.lower() for part in path.parts)
-        # The upright Camera-A RGB is the canonical semantic view: collar at
-        # the top, image-left/image-right sleeves unambiguous.  Keep it ahead
-        # of raw landscape duplicates so the supervisor can judge the sleeve
-        # order from the same orientation used by the planner.
+        # Fixed display rotation is not garment alignment. Supply current RGB
+        # first and optional Molmo annotated evidence before duplicate views.
         if name == "camera_a_rgb_upright.png":
             rank = -2
         elif name == "camera_a_rxxx_overlay_upright.png":
+            rank = -1
+        elif name in {'camera_a_molmo_frame_hint.png', 'camera_a_molmo_hint_upright.png'}:
             rank = -1
         elif name in {"camera_0_a.png", "camera_1_b.png"}:
             rank = 0
@@ -2327,7 +2328,11 @@ def _select_fold_planning_images(images: Sequence[Path]) -> list[Path]:
         "camera_A_rxxx_overlay_upright.png",
     )
     if all(name in by_name and by_name[name].is_file() for name in required):
-        return [by_name[name] for name in required]
+        selected = [by_name[name] for name in required]
+        hint = selected[0].parent / 'camera_A_molmo_frame_hint.png'
+        if hint.is_file():
+            selected.append(hint)
+        return selected
     raise RuntimeError(
         "fold planning requires the canonical upright Camera-A RGB and Rxxx overlay"
     )
@@ -2541,7 +2546,7 @@ class FoldSupervisor:
                     "5. bottom hem upward",
                     "",
                     "Determine which actions are visibly complete in the CURRENT images; never infer completion merely from a requested or executed plan.",
-                    FRAME_RULE,
+                    CLAUDE_FOLD_RULE,
                     "Sleeve completion rubric: mark an inward sleeve complete when its distal lobe no longer protrudes outward from its torso side and the fabric lies over/inboard on the torso. A wrinkled, curled, or bunched cuff is still complete if it is visibly deposited inboard; do not require a perfectly flat cuff or a strong height-map ridge. Do not mark it complete when the sleeve remains extended outside the torso silhouette or when only the torso/print changed.",
                     "If both garment-frame left and right sleeves satisfy that rubric, completed_steps MUST contain both left_sleeve and right_sleeve and current_step MUST be left_side. Never leave current_step at right_sleeve merely because the second cuff is bunched.",
                     "A later ambiguous/occluded frame must not undo a sleeve completion that is supported by an earlier non-fallback supervisor observation in the recent history. Fallback/bookkeeping entries are not visual evidence.",
@@ -2558,10 +2563,13 @@ class FoldSupervisor:
         _write_json(screen_path, dict(screen))
         current_rgb = next((p for p in images if p.name == 'camera_A_rgb_upright.png'), None)
         if current_rgb is not None and (current_rgb.parent / 'garment_frame.json').is_file():
-            with Image.open(current_rgb) as image:
-                frame = load_frame(current_rgb.parent, image)
-            with instructions_path.open('a', encoding='utf-8') as handle:
-                handle.write('\nCurrent garment_frame in displayed Camera-A pixels:\n' + json.dumps(frame))
+            try:
+                with Image.open(current_rgb) as image:
+                    frame = load_frame(current_rgb.parent, image)
+                with instructions_path.open('a', encoding='utf-8') as handle:
+                    handle.write('\nOptional Molmo axis hint; Claude may reject/correct it:\n' + json.dumps(frame))
+            except (OSError, ValueError, KeyError):
+                pass  # Missing/stale semantic hints do not veto current RGB reasoning.
         _write_json(history_path, _compact_history(history, 6))
 
         def relative(path: Path) -> str:
@@ -2643,7 +2651,9 @@ class FoldSupervisor:
                 "recent_experiences": semantic_history(history),
             }, ensure_ascii=False)
             started = time.monotonic()
+            image_debug = debug_directory(images_remote, Path(context_bundle["directory"]), "supervisor")
             completed = self.backend.invoke(prompt=prompt_remote,
+                debug_dir=image_debug,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
                 system_prompt="Read-only fold state supervisor. Read the supplied RGB and return the requested JSON. No robot access.")
             result = _normalize_supervisor_current_step(
@@ -2652,6 +2662,8 @@ class FoldSupervisor:
                 context_bundle=context_bundle, command=list(completed.command),
                 raw_stdout=completed.stdout, raw_stderr=completed.stderr, backend="remote",
                 evidence_images=[str(p) for p in images_remote],
+                image_tool_events=getattr(completed, "image_tool_events", ()),
+                image_debug_directory=str(image_debug),
                 backend_timings=getattr(completed, "timings", {}))
             return result
         prompt = (
@@ -3536,7 +3548,36 @@ class FoldExplorationPipeline:
         return image
 
     def _prepare_garment_frame(self, output_dir: Path, upright_rgb: Path) -> None:
-        """Measure the current semantic axis before supervisor/step selection."""
+        """Produce optional Molmo evidence; semantic uncertainty is for Claude."""
+        views = self.session.workspace / 'perception_views'
+        # These are generated sidecars. Never let a previous capture's axis act
+        # as the hint for a new RGB after an unavailable Molmo result.
+        for directory in {output_dir, views}:
+            (directory / 'garment_frame.json').unlink(missing_ok=True)
+        try:
+            self._measure_molmo_frame(output_dir, upright_rgb)
+            status = {'status': 'MOLMO_AXIS_HINT_AVAILABLE', 'authority': 'Claude'}
+        except Exception as exc:
+            status = {'status': 'MOLMO_AXIS_UNAVAILABLE', 'authority': 'Claude',
+                      'error': f'{type(exc).__name__}: {exc}'}
+            self._debug('garment-frame', 'optional Molmo axis unavailable; Claude will inspect current RGB', **status)
+        with Image.open(upright_rgb) as source:
+            image = source.convert('RGB')
+        frame_path = output_dir / 'garment_frame.json'
+        hint_path = output_dir / 'camera_A_molmo_frame_hint.png'
+        if frame_path.is_file():
+            draw_frame(image, load_frame(output_dir, image), hint_path)
+            with Image.open(hint_path) as source:
+                image = source.convert('RGB')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, image.width, 24), fill='white')
+        draw.text((5, 6), 'MOLMO AXIS HINT ONLY - CLAUDE DECIDES' if frame_path.is_file()
+                  else 'MOLMO AXIS UNAVAILABLE - CLAUDE INSPECT CURRENT RGB', fill='black')
+        image.save(hint_path)
+        _write_json(output_dir / 'molmo_frame_hint.json', status)
+
+    def _measure_molmo_frame(self, output_dir: Path, upright_rgb: Path) -> None:
+        """Query Molmo for a tentative axis without assigning decision authority."""
         views = self.session.workspace / 'perception_views'
         with Image.open(upright_rgb) as image:
             rgb = image.convert('RGB')
@@ -3595,6 +3636,8 @@ class FoldExplorationPipeline:
             self._prepare_garment_frame(output_dir, upright[0])
             observer_image = self._capture_observer_rgb(output_dir)
             images = [*upright, *global_perception_image_paths(saved, saved_path)]
+            if (output_dir / 'camera_A_molmo_frame_hint.png').is_file():
+                images.append(output_dir / 'camera_A_molmo_frame_hint.png')
             if observer_image is not None:
                 images.append(observer_image)
             staged = _stage_image_artifacts(images, output_dir)
@@ -3640,6 +3683,8 @@ class FoldExplorationPipeline:
         self._prepare_garment_frame(output_dir, upright[0])
         observer_image = self._capture_observer_rgb(output_dir)
         images = [*upright, *raw, *global_perception_image_paths(saved, saved_path)]
+        if (output_dir / 'camera_A_molmo_frame_hint.png').is_file():
+            images.append(output_dir / 'camera_A_molmo_frame_hint.png')
         if observer_image is not None:
             images.append(observer_image)
         staged = _stage_image_artifacts(images, output_dir)
@@ -4041,6 +4086,49 @@ class FoldExplorationPipeline:
         return execution, recording
 
     def _locate_sleeve_with_molmo(
+        self, *, step, iteration, iteration_dir, history=(),
+    ):
+        hint = self._query_sleeve_with_molmo(step=step, iteration=iteration,
+                                          iteration_dir=iteration_dir, history=history)
+        if hint is None:
+            return None
+        rgb_path = iteration_dir / 'molmo_sleeve_input_upright' / 'camera_0_A.png'
+        if not rgb_path.is_file():
+            return hint
+        with Image.open(rgb_path) as source:
+            image = source.convert('RGB')
+        draw = ImageDraw.Draw(image)
+        raw_path = iteration_dir / 'molmo_sleeve_locator' / 'molmo_keypoints_raw.json'
+        records = []
+        if raw_path.is_file():
+            try:
+                raw = json.loads(raw_path.read_text(encoding='utf-8'))
+                records = [r for view in raw.get('views', []) if view.get('label') == 'A'
+                           for r in view.get('records', [])]
+            except (OSError, ValueError, TypeError):
+                pass
+        if not records and hint.get('upright_pixel_xy') is not None:
+            records = [{'pixel_xy': hint['upright_pixel_xy'], 'confidence': hint.get('confidence')}]
+        for record in records:
+            pixel = record.get('pixel_xy')
+            if (not isinstance(pixel, list) or len(pixel) != 2 or
+                    any(type(v) not in (int, float) or not math.isfinite(v) for v in pixel)):
+                continue
+            x, y = pixel
+            if not (0 <= x < image.width and 0 <= y < image.height):
+                continue
+            draw.ellipse((x-8, y-8, x+8, y+8), outline='magenta', width=3)
+            draw.text((x+10, y), f'Molmo hint {record.get("confidence")}', fill='magenta', stroke_width=1, stroke_fill='black')
+        draw.rectangle((0, 0, image.width, 24), fill='white')
+        draw.text((5, 6), 'MOLMO HINT ONLY - CLAUDE MAY CORRECT OR IGNORE', fill='black')
+        image_path = iteration_dir / 'molmo_sleeve_locator' / 'camera_A_molmo_hint_upright.png'
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(image_path)
+        hint.update(image=str(image_path), semantic_authority='Claude')
+        _write_json(iteration_dir / 'molmo_sleeve_hint.json', hint)
+        return hint
+
+    def _query_sleeve_with_molmo(
         self,
         *,
         step: str,
@@ -4087,14 +4175,22 @@ class FoldExplorationPipeline:
                 molmo_perception_dir,
             )
             with Image.open(molmo_perception_dir / 'camera_0_A.png') as image:
-                frame = load_frame(source_perception_dir, image)
+                try:
+                    frame = load_frame(source_perception_dir, image)
+                except (OSError, ValueError, KeyError):
+                    frame = None
             manifest = run_molmo_keypoint_pipeline(
                 project_root=self.project_root,
                 perception_dir=molmo_perception_dir,
                 artifact_dir=artifact_dir,
                 confidence_threshold=self.molmo_confidence_threshold,
                 molmo_python=self.molmo_python,
-                keypoint_specs=(_molmo_sleeve_spec(step, frame),),
+                keypoint_specs=(_molmo_sleeve_spec(step, frame) if frame is not None else KeypointSpec(
+                    f'fold_image_{step}_region',
+                    f'Point near the center of the {step.replace("_", " ")} lobe of this shirt. '
+                    'Left/right mean viewer left/right with collar above hem, without mirroring. '
+                    'The shirt may be rotated in the image. Return no point if ambiguous. '
+                    'This is a fallible region hint for another planner, not a grasp selection.', (255, 40, 220)),),
                 cameras=("A",),
                 query_batch_size=1,
                 max_crops=1,
@@ -4142,12 +4238,7 @@ class FoldExplorationPipeline:
                     int(upright_source_pixel[0]),
                     int(upright_source_pixel[1]),
                 ]
-                lateral, _ = project_pixels(upright_pixel, frame)
-                if ((step == 'left_sleeve' and lateral >= 0)
-                        or (step == 'right_sleeve' and lateral <= 0)):
-                    raise MolmoKeypointPipelineError(
-                        f'Molmo sleeve hint contradicts garment-frame side: step={step}, '
-                        f'pixel={upright_pixel}, lateral={lateral:.1f}; discard hint, do not mirror it')
+                lateral = float(project_pixels(upright_pixel, frame)[0]) if frame is not None else None
                 raw_height = int(orientation["raw_size"][1])
                 camera_raw_pixel = [
                     int(upright_pixel[1]),
@@ -4166,6 +4257,7 @@ class FoldExplorationPipeline:
                     "role": "fallible_semantic_sleeve_region_not_grasp_point",
                     "side_mapping": "GARMENT_FRAME_V1",
                     "garment_frame": frame,
+                    "molmo_lateral_diagnostic": lateral,
                     "molmo_input_orientation": "clockwise90_upright",
                     "artifact_dir": str(artifact_dir),
                     "accepted_overlay": (
@@ -4369,7 +4461,11 @@ class FoldExplorationPipeline:
         attempts = self.max_stage_retries + 1
         last_error: Exception | None = None
         planning_images = _select_fold_planning_images(images)
-        planning_objective = objective
+        if isinstance(molmo_hint, Mapping) and molmo_hint.get('image'):
+            hint_image = Path(molmo_hint['image'])
+            if hint_image.is_file():
+                planning_images.append(hint_image)
+        planning_objective = objective + '\n' + CLAUDE_FOLD_RULE
         fold_reference = None
         if iteration_dir is not None and self.fold_reference_dir is not None:
             match = re.search(r"current_step is ([a-z_]+)", objective)
@@ -5199,7 +5295,7 @@ class FoldExplorationPipeline:
                 objective = (
                     "Fold this shirt using exactly five ordered steps: left sleeve inward, right sleeve inward, "
                     "first torso side inward, second torso side inward, bottom hem upward. "
-                    f"{FRAME_RULE} "
+                    f"{CLAUDE_FOLD_RULE} "
                     f"The supervisor says current_step is {current_step} ({step_label}). "
                     "Plan exactly one action for that current step; do not skip ahead. "
                     "Use current RGB as the primary evidence and the calibrated references only for grounding. "

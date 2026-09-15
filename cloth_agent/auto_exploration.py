@@ -2390,7 +2390,21 @@ class ClaudeAutoClient:
         }
 
         fold_step = _fold_sleeve_step_from_objective(objective)
-        if fold_step is not None:
+        if fold_step is not None and 'CLAUDE_FOLD_AUTHORITY_V1' in (objective or ''):
+            try:
+                if camera != 'A':
+                    raise ValueError('fold grasp must use current Camera A')
+                mask = np.load(session.run_dir / 'workspace/perception_views/camera_A_garment_mask.npy')
+                pixel = measurement.get('pixel_xy', [])
+                if len(pixel) != 2 or any(not math.isfinite(float(v)) for v in pixel):
+                    raise ValueError('invalid grasp pixel')
+                x, y = (int(round(float(v))) for v in pixel)
+                if mask.ndim != 2 or not (0 <= x < mask.shape[1] and 0 <= y < mask.shape[0]) or not mask[y, x]:
+                    raise ValueError('grasp reference is outside current garment mask')
+                measurement['fold_semantic_validation'] = {'authority': 'Claude', 'garment_mask_valid': True}
+            except (OSError, ValueError, TypeError) as exc:
+                raise SelectedReferenceNotExecutableError(camera, reference_id, str(exc), measurement=measurement) from exc
+        if fold_step is not None and 'CLAUDE_FOLD_AUTHORITY_V1' not in (objective or ''):
             if camera != "A":
                 raise SelectedReferenceNotExecutableError(
                     camera,
@@ -2998,7 +3012,7 @@ class ClaudeAutoClient:
         reference_policy: str = "uniform",
         workspace_recovery: GarmentWorkspaceRecovery | None = None,
     ) -> ExplorationProposal:
-        if 'GARMENT_FRAME_V1' in objective:
+        if 'GARMENT_FRAME_V1' in objective and 'CLAUDE_FOLD_AUTHORITY_V1' not in objective:
             from PIL import Image
             from .fold_frame import load_frame
             views = session.run_dir / 'workspace' / 'perception_views'

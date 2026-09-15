@@ -54,7 +54,7 @@ def test_frame_rejects_missing_degenerate_and_stale(tmp_path):
         load_frame(tmp_path, image)
 
 
-def test_supervisor_and_molmo_receive_identical_frame(tmp_path):
+def test_supervisor_receives_frame_as_hint_and_molmo_uses_it_for_query(tmp_path):
     rgb = Image.new('RGB', (200, 200))
     frame = build_frame(rgb, [50, 100], [150, 100])
     path = tmp_path / 'camera_A_rgb_upright.png'
@@ -62,7 +62,8 @@ def test_supervisor_and_molmo_receive_identical_frame(tmp_path):
     (tmp_path / 'garment_frame.json').write_text(json.dumps(frame))
     bundle = FoldSupervisor._write_context_bundle(tmp_path, images=[path], video_evidence=[], history=[], screen={})
     instructions = (tmp_path / bundle['read_order'][0]).read_text()
-    assert FRAME_RULE in instructions
+    from cloth_agent.fold_frame import CLAUDE_FOLD_RULE
+    assert CLAUDE_FOLD_RULE in instructions
     assert json.dumps(frame) in instructions
     spec = _molmo_sleeve_spec('left_sleeve', frame)
     assert json.dumps(frame) in spec.description
@@ -72,7 +73,7 @@ def test_supervisor_and_molmo_receive_identical_frame(tmp_path):
 
 
 @pytest.mark.parametrize('confidence', [.9, .1])
-def test_axis_acquisition_uses_current_rgb_and_stops_on_low_confidence(tmp_path, monkeypatch, confidence):
+def test_axis_acquisition_uses_current_rgb_and_defers_uncertainty_to_claude(tmp_path, monkeypatch, confidence):
     views = tmp_path / 'workspace' / 'perception_views'
     views.mkdir(parents=True)
     raw = Image.new('RGB', (80, 60), 'white')
@@ -102,12 +103,14 @@ def test_axis_acquisition_uses_current_rgb_and_stops_on_low_confidence(tmp_path,
     pipeline.molmo_load_in_8bit = True
     pipeline.molmo_timeout_s = 900
     if confidence < .5:
-        with pytest.raises(ValueError, match='axis unavailable'):
-            pipeline._prepare_garment_frame(output, rgb_path)
+        (views / 'garment_frame.json').write_text('{}')  # stale generated sidecar
+        pipeline._prepare_garment_frame(output, rgb_path)
         assert not (views / 'garment_frame.json').exists()
+        assert json.loads((output / 'molmo_frame_hint.json').read_text())['status'] == 'MOLMO_AXIS_UNAVAILABLE'
     else:
         pipeline._prepare_garment_frame(output, rgb_path)
         with Image.open(rgb_path) as image:
             frame = load_frame(views, image)
         assert frame['right_unit'] == [0., -1.]
         assert (output / 'camera_A_garment_frame.png').exists()
+    assert (output / 'camera_A_molmo_frame_hint.png').exists()

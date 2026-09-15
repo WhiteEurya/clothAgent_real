@@ -2,7 +2,7 @@
 
 The existing reference selection gates, grasp-height policy and execution gates
 stay on the host. Remote movement proposals use upright pixels and relative
-heights, never measured XYZ. No local Claude process or remote MCP is needed.
+heights, never measured XYZ. Remote MCP exposes only RGB inspection tools.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import math
 import re
 import time
 import uuid
+import copy
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -33,7 +34,9 @@ from .grasp_height import resolve_grasp_height
 from .planner_backend import RemoteClaudeBackend, parse_claude_json
 from .config import SafetyError
 from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
-from .fold_frame import FRAME_RULE, load_frame
+from .fold_frame import CLAUDE_FOLD_RULE, load_frame
+from .claude_image_debug import debug_directory
+from .motion_image_sources import resolve_motion_sources
 
 
 # Explicit allow-list of RGB artifacts produced by the fold pipeline. Never
@@ -46,6 +49,7 @@ RGB_NAMES = frozenset({
     "camera_c_rgb_contact_sheet.png", "camera_c.png",
     "camera_c_observer_rgb.png", "camera_c_observer_rgb_hold_check.png",
     "fold_reference_source.png", "fold_reference_target.png",
+    "camera_a_molmo_frame_hint.png", "camera_a_molmo_hint_upright.png",
 })
 
 
@@ -136,13 +140,17 @@ MOVE_ARGS = {
     },
     "required": ["target", "pixel_xy", "height_above_grasp_mm", "yaw_deg"],
 }
+REMOTE_MOVE_ARGS = copy.deepcopy(MOVE_ARGS)
+REMOTE_MOVE_ARGS['properties']['image_id'] = {'type': ['string', 'null']}
+REMOTE_MOVE_ARGS['properties']['pixel_xy']['anyOf'][1]['items']['type'] = 'number'
+REMOTE_MOVE_ARGS['required'].append('image_id')
 MOTION_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "actions": {"type": "array", "minItems": 1, "maxItems": MAX_EXPLORATION_ACTIONS,
             "items": {"oneOf": [
                 {"type": "object", "additionalProperties": False,
-                 "properties": {"name": {"const": "move"}, "args": MOVE_ARGS},
+                 "properties": {"name": {"const": "move"}, "args": REMOTE_MOVE_ARGS},
                  "required": ["name", "args"]},
                 {"type": "object", "additionalProperties": False,
                  "properties": {"name": {"enum": ["open_gripper", "close_gripper", "home"]},
@@ -263,6 +271,7 @@ class RemoteFoldClient(ClaudeAutoClient):
 
     def plan(self, image_paths, session, objective, feedback=None, history=None,
              phase_callback=None, reference_policy="uniform", workspace_recovery=None):
+        objective += '\n' + CLAUDE_FOLD_RULE
         self.last_plan_result = None
         self.last_grounding_verification = None
         self._remote_context = None
@@ -315,9 +324,12 @@ class RemoteFoldClient(ClaudeAutoClient):
                                 "previous_candidate_rejected": rejection_category(feedback),
                                 "xy_eligible_transport_pixels_upright": transport_pixels,
                                 "fold_state_reference": fold_reference_context}
-        if (views / 'garment_frame.json').exists() or 'GARMENT_FRAME_V1' in objective:
-            self._remote_context['garment_frame'] = load_frame(views, expected)
-            self._remote_context['garment_frame_instruction'] = FRAME_RULE
+        if (views / 'garment_frame.json').exists():
+            try:
+                self._remote_context['molmo_frame_hint'] = load_frame(views, expected)
+            except (OSError, ValueError, KeyError):
+                self._remote_context['molmo_frame_hint'] = None
+        self._remote_context['semantic_authority'] = CLAUDE_FOLD_RULE
         try:
             return super().plan(image_paths, session, objective, feedback, history,
                                 phase_callback, reference_policy, workspace_recovery)
@@ -334,26 +346,31 @@ class RemoteFoldClient(ClaudeAutoClient):
                 json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
     def _ask(self, stage, context, schema, images, root, instructions):
-        if context.get('garment_frame') is not None:
-            instructions = instructions.replace(
-                'left/right refer to that displayed image, not anatomy.',
-                'left/right are defined by the supplied collar/hem garment_frame, not screen axes.')
-            instructions += '\n' + FRAME_RULE
+        instructions = instructions.replace('with [u,v] in the CURRENT upright RGB for transport destinations.',
+            'with image_id naming the exact source RGB/view and pixel_xy in that view; the host maps transport destinations.')
+        instructions = instructions.replace(
+            'left/right refer to that displayed image, not anatomy.',
+            'left/right are garment-relative; Claude determines them from the current RGB.')
+        instructions += ' ' + CLAUDE_FOLD_RULE
         prompt = instructions + "\n" + json.dumps(context, ensure_ascii=False)
         started = time.monotonic()
         diagnostics = getattr(self, "_call_diagnostics", None)
         invocation = {"stage": stage, "evidence_images": [str(p) for p in images], "status": "RUNNING"}
+        image_debug = debug_directory(images, diagnostics or root, stage)
+        invocation["image_debug_directory"] = str(image_debug)
         manifest = diagnostics / f"{stage}_invocation.json" if diagnostics is not None else None
         if manifest is not None:
             manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
         try:
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
+                debug_dir=image_debug,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
-                system_prompt="You are a read-only garment reasoning assistant. Read the supplied RGB files. Return only the requested JSON. No tools except Read; no robot access.")
+                system_prompt="You are a garment reasoning assistant. Inspect RGB using Read and image tools as needed. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)
         except Exception as exc:
             invocation.update(status="FAILED", error=f"{type(exc).__name__}: {exc}",
-                              timings=getattr(exc, "timings", {}), duration_s=time.monotonic() - started)
+                              timings=getattr(exc, "timings", {}), duration_s=time.monotonic() - started,
+                              image_tool_events=getattr(exc, "image_tool_events", ()))
             if manifest is not None:
                 manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
             self._save_visual_log(root, {"stage": stage, "backend": "remote",
@@ -361,11 +378,14 @@ class RemoteFoldClient(ClaudeAutoClient):
             raise
         self._save_visual_log(root, {"stage": stage, "backend": "remote", "created_at": _now(),
             "evidence_images": [str(p) for p in images], "timings": getattr(result, "timings", {}),
+            "image_tool_events": getattr(result, "image_tool_events", ()),
             "duration_s": time.monotonic() - started})
         if manifest is not None:
             manifest.write_text(json.dumps({
                 "stage": stage, "evidence_images": [str(p) for p in images],
+                "image_debug_directory": str(image_debug),
                 "timings": getattr(result, "timings", {}), "duration_s": time.monotonic() - started,
+                "image_tool_events": getattr(result, "image_tool_events", ()),
                 "status": "COMPLETED", "response": payload}, indent=2), encoding="utf-8")
         return payload, result, prompt, time.monotonic() - started
 
@@ -401,6 +421,13 @@ class RemoteFoldClient(ClaudeAutoClient):
             "samples which passed local XY limits only, not final height, yaw or IK approval. "
             "Do not assume the entire visible garment is reachable. Choose a semantically suitable inward "
             "destination for FOLD, or outward destination for REPAIR_SLEEVE; do not change the task to fit a point.")
+        current_index = next(i for i, p in enumerate(self._remote_images) if p.name.lower() == 'camera_a_rgb_upright.png')
+        context['pixel_source_contract'] = (
+            f'Current executable RGB is image_{current_index}. For target=pixel, return image_id naming '
+            'the exact image/view in which pixel_xy was selected, with its original floating-point coordinates. '
+            'The host maps and rounds it; do not mix a view ID with already mapped coordinates. '
+            'Only current RGB or verified tool views derived from it can supply transport pixels. '
+            'For target=grasp, image_id=null and pixel_xy=null; the selected current Rxxx fixes the grasp.')
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
             "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. If fold_state_reference is present, use its target image only as a semantic visual goal for the current step. Select grasp and transport pixels exclusively from the CURRENT Camera-A RGB/Rxxx evidence; never copy reference-image pixels, coordinates, scale, depth, or XYZ. Do not send measured XYZ or code.")
@@ -409,9 +436,15 @@ class RemoteFoldClient(ClaudeAutoClient):
             size = image.size
         compile_started = time.monotonic()
         try:
-            proposal, verification = compile_pixel_motion(payload, visual,
+            canonical_payload, source_trace = resolve_motion_sources(payload, self._remote_images,
+                getattr(result, 'image_sources', ()))
+            (self._call_diagnostics / 'pixel_source_resolution.json').write_text(
+                json.dumps({'remote_motion': payload, 'canonical_motion': canonical_payload,
+                            'resolutions': source_trace}, indent=2), encoding='utf-8')
+            proposal, verification = compile_pixel_motion(canonical_payload, visual,
                 GarmentGrounding(session.run_dir / "workspace" / "perception_views"),
                 session.robot_config, size)
+            verification['image_source_resolution'] = source_trace
         except Exception as exc:
             if isinstance(exc, WorkspaceTargetError):
                 save_workspace_debug(self._call_diagnostics,

@@ -156,9 +156,48 @@ def test_remote_stages_share_current_garment_frame(saved_scene):
         assert call['image_paths'] == images[:2]
     frame['image_sha256'] = 'stale'
     (views / 'garment_frame.json').write_text(json.dumps(frame))
-    with pytest.raises(ValueError, match='stale'):
-        client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
-    assert len(backend.calls) == 2
+    backend.responses.extend([visual_payload(), motion_payload()])
+    client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
+    assert len(backend.calls) == 4
+    assert '"molmo_frame_hint": null' in backend.calls[2]['prompt']
+
+
+def test_claude_semantic_authority_retains_mask_and_workspace_checks(saved_scene):
+    from cloth_agent.fold_frame import CLAUDE_FOLD_RULE
+    session, images, grounding = saved_scene
+    measurement = grounding.lookup_reference('A', 'R001')
+    objective = 'The current_step is left_sleeve. ' + CLAUDE_FOLD_RULE
+    # Central point that fails the old outer-side heuristic is allowed when
+    # Claude owns semantics, but still must be valid measured garment fabric.
+    result = ClaudeAutoClient._validate_measurement_for_stage2('A', 'R001', measurement, session, objective)
+    assert result['fold_semantic_validation']['authority'] == 'Claude'
+    with pytest.raises(SelectedReferenceNotExecutableError):
+        ClaudeAutoClient._validate_measurement_for_stage2('A', 'R001', measurement, session,
+                                                        'The current_step is left_sleeve.')
+    mask_path = grounding.perception_dir / 'camera_A_garment_mask.npy'
+    np.save(mask_path, np.zeros((30, 40), dtype=bool))
+    with pytest.raises(SelectedReferenceNotExecutableError, match='mask'):
+        ClaudeAutoClient._validate_measurement_for_stage2('A', 'R001', measurement, session, objective)
+    invalid = dict(measurement, base_xyz_mm=[100000, 0, 30])
+    with pytest.raises(SelectedReferenceNotExecutableError, match='bound'):
+        ClaudeAutoClient._validate_measurement_for_stage2('A', 'R001', invalid, session, objective)
+
+
+def test_remote_claude_receives_molmo_rgb_hint_and_host_resolves_float_destination(saved_scene):
+    session, images, grounding = saved_scene
+    hint = session.run_dir / 'camera_A_molmo_hint_upright.png'
+    Image.new('RGB', (30, 40), 'magenta').save(hint)
+    motion = motion_payload()
+    motion['actions'][5]['args'].update(target='pixel', image_id='image_0', pixel_xy=[5.25, 6.75])
+    backend = FakeBackend(visual_payload(), motion)
+    client = RemoteFoldClient(backend=backend)
+    client.plan([*images, hint], session, 'Fold garment')
+    for call in backend.calls:
+        assert hint in call['image_paths']
+        assert 'CLAUDE_FOLD_AUTHORITY_V1' in call['prompt']
+    trace = client.last_grounding_verification['image_source_resolution']
+    assert trace[0]['grounding_pixel_xy'] == [5, 7]
+    assert list(session.run_dir.rglob('pixel_source_resolution.json'))
 
 
 @pytest.mark.parametrize("corruption", ["nan", "bad_pixel", "depth_hole", "unknown_action", "missing_contact", "workspace", "extra"])
@@ -338,6 +377,7 @@ def test_rotated_strip_signed_distances_and_local_failure_images(saved_scene):
             assert im.width >= 780
             assert np.any(np.asarray(im)[..., 0] > np.asarray(im)[..., 1])
     backend = FakeBackend(visual_payload(), motion)
+    motion['actions'][5]['args']['image_id'] = 'image_0'
     client = RemoteFoldClient(backend=backend)
     with pytest.raises(WorkspaceTargetError):
         client.plan(images, session, "Fold the garment")
