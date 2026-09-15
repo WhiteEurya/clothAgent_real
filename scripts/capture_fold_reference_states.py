@@ -24,8 +24,8 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_SERIAL = "317222073552"
 STATES = (
     ("state_00_unfolded", "unfolded shirt"),
-    ("state_01_left_sleeve", "after folding the image-left sleeve inward"),
-    ("state_02_right_sleeve", "after folding the image-right sleeve inward"),
+    ("state_01_left_sleeve", "after folding the garment-frame LEFT sleeve inward (imagine collar above hem, without mirroring)"),
+    ("state_02_right_sleeve", "after folding the garment-frame RIGHT sleeve inward (imagine collar above hem, without mirroring)"),
     ("state_03_left_side", "after folding the first torso side inward"),
     ("state_04_right_side", "after folding the second torso side inward"),
     ("state_05_bottom_hem", "after folding the bottom hem upward"),
@@ -157,6 +157,7 @@ def _capture_pipeline(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         manifest = {
             "schema_version": 1,
             "reference_type": "static_cross_garment_fold_states",
+            "side_convention": "GARMENT_FRAME_V1: viewer left/right with collar above hem, without mirroring",
             "collection_name": str(args.name).strip(),
             "created_at": _utc_stamp(),
             "source_garment": "operator-provided reference garment; no trajectory data",

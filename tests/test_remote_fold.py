@@ -139,6 +139,28 @@ def test_upright_pixel_transform_and_repair_failure(saved_scene):
     assert proposal.actions[5]["args"] == {"x": 550, "y": 80, "z": 57, "yaw": 0}
 
 
+def test_remote_stages_share_current_garment_frame(saved_scene):
+    from cloth_agent.fold_frame import build_frame, FRAME_RULE
+    session, images, _ = saved_scene
+    with Image.open(images[0]) as image:
+        frame = build_frame(image, [5, 20], [25, 20])
+    views = session.workspace / 'perception_views'
+    (views / 'garment_frame.json').write_text(json.dumps(frame))
+    backend = FakeBackend(visual_payload(), motion_payload())
+    client = RemoteFoldClient(backend=backend)
+    client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
+    assert len(backend.calls) == 2
+    for call in backend.calls:
+        assert json.dumps(frame) in call['prompt']
+        assert 'left/right refer to that displayed image' not in call['prompt']
+        assert call['image_paths'] == images[:2]
+    frame['image_sha256'] = 'stale'
+    (views / 'garment_frame.json').write_text(json.dumps(frame))
+    with pytest.raises(ValueError, match='stale'):
+        client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
+    assert len(backend.calls) == 2
+
+
 @pytest.mark.parametrize("corruption", ["nan", "bad_pixel", "depth_hole", "unknown_action", "missing_contact", "workspace", "extra"])
 def test_invalid_remote_motion_fails_closed(saved_scene, corruption):
     session, _, grounding = saved_scene

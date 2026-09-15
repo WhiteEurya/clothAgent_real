@@ -33,6 +33,7 @@ from .grasp_height import resolve_grasp_height
 from .planner_backend import RemoteClaudeBackend, parse_claude_json
 from .config import SafetyError
 from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
+from .fold_frame import FRAME_RULE, load_frame
 
 
 # Explicit allow-list of RGB artifacts produced by the fold pipeline. Never
@@ -314,6 +315,9 @@ class RemoteFoldClient(ClaudeAutoClient):
                                 "previous_candidate_rejected": rejection_category(feedback),
                                 "xy_eligible_transport_pixels_upright": transport_pixels,
                                 "fold_state_reference": fold_reference_context}
+        if (views / 'garment_frame.json').exists() or 'GARMENT_FRAME_V1' in objective:
+            self._remote_context['garment_frame'] = load_frame(views, expected)
+            self._remote_context['garment_frame_instruction'] = FRAME_RULE
         try:
             return super().plan(image_paths, session, objective, feedback, history,
                                 phase_callback, reference_policy, workspace_recovery)
@@ -330,6 +334,11 @@ class RemoteFoldClient(ClaudeAutoClient):
                 json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
     def _ask(self, stage, context, schema, images, root, instructions):
+        if context.get('garment_frame') is not None:
+            instructions = instructions.replace(
+                'left/right refer to that displayed image, not anatomy.',
+                'left/right are defined by the supplied collar/hem garment_frame, not screen axes.')
+            instructions += '\n' + FRAME_RULE
         prompt = instructions + "\n" + json.dumps(context, ensure_ascii=False)
         started = time.monotonic()
         diagnostics = getattr(self, "_call_diagnostics", None)

@@ -513,6 +513,9 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
         np.zeros((720, 1280), dtype=np.float32),
     )
     seen = {}
+    from cloth_agent.fold_frame import build_frame
+    frame = build_frame(Image.new('RGB', (720, 1280), 'white'), [600, 350], [600, 1150])
+    (perception / 'garment_frame.json').write_text(json.dumps(frame))
 
     def fake_molmo(**kwargs):
         seen.update(kwargs)
@@ -568,7 +571,7 @@ def test_molmo_sleeve_locator_is_camera_a_only_and_non_installing(
     assert (iteration_dir / "molmo_sleeve_hint.json").is_file()
 
 
-def test_molmo_sleeve_locator_reuses_hint_when_scene_is_unchanged(
+def test_molmo_sleeve_locator_does_not_reuse_old_frame_hint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -582,6 +585,8 @@ def test_molmo_sleeve_locator_reuses_hint_when_scene_is_unchanged(
     pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
     pipeline.molmo_sleeve_grounding = True
     pipeline._debug = lambda *args, **kwargs: None
+    pipeline._debug_exception = lambda *args, **kwargs: None
+    pipeline.molmo_confidence_threshold = .5
     pipeline.session = SimpleNamespace(run_dir=run)
     history = [
         {
@@ -614,10 +619,9 @@ def test_molmo_sleeve_locator_reuses_hint_when_scene_is_unchanged(
     )
 
     assert hint is not None
-    assert hint["status"] == "MOLMO_POINT_AVAILABLE"
-    assert hint["reused"] is True
-    assert hint["reused_from_iteration"] == 1
-    assert hint["duration_s"] == 0.0
+    assert hint['status'] == 'MOLMO_FALLBACK_TO_HOST_RGB'
+    assert 'reused' not in hint
+    assert 'raw_pixel_xy' not in hint
 
 
 def test_acquisition_state_reuses_step_without_visual_supervisor() -> None:

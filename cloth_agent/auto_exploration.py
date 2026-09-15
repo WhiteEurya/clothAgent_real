@@ -1754,6 +1754,7 @@ def _fold_sleeve_reference_geometry(
     rgb_raw: np.ndarray | None = None,
     max_interior_distance_px: float = 14.0,
     require_free_edge: bool = True,
+    garment_frame: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate a sleeve anchor in the canonical clockwise-90 RGB frame.
 
@@ -1806,6 +1807,21 @@ def _fold_sleeve_reference_geometry(
     sleeve_y_max = float(y_min) + 0.58 * height
     sleeve_height_ok = sleeve_y_min <= float(y_upright) <= sleeve_y_max
     sleeve_height_rule = f"{sleeve_y_min:.1f} <= y <= {sleeve_y_max:.1f}"
+
+    if garment_frame is not None:
+        from .fold_frame import project_pixels
+        lateral, longitudinal = project_pixels(np.column_stack((xs, ys)), garment_frame)
+        s, t = project_pixels([x_upright, y_upright], garment_frame)
+        side_extent = float(-lateral.min() if step == 'left_sleeve' else lateral.max())
+        signed_side = float(-s if step == 'left_sleeve' else s)
+        # Retain the coarse outer-region check, but in the garment frame.
+        side_limit = (1 - 2 * outer_fraction) * max(0., side_extent)
+        side_ok = signed_side > 0 and signed_side >= side_limit
+        side_rule = f'{step} lateral distance >= {side_limit:.1f}px from collar/hem axis'
+        sleeve_y_min = float(longitudinal.min()) + .15 * float(np.ptp(longitudinal))
+        sleeve_y_max = float(longitudinal.min()) + .58 * float(np.ptp(longitudinal))
+        sleeve_height_ok = sleeve_y_min <= float(t) <= sleeve_y_max
+        sleeve_height_rule = f'{sleeve_y_min:.1f} <= garment longitudinal <= {sleeve_y_max:.1f}'
 
     from scipy.ndimage import distance_transform_edt
 
@@ -1865,15 +1881,17 @@ def _fold_sleeve_reference_geometry(
         "minimum_edge_contrast_rgb_norm": minimum_edge_contrast_rgb_norm,
         "edge_contrast_ok": edge_contrast_ok,
         "free_edge_required": bool(require_free_edge),
+        "semantic_frame": dict(garment_frame) if garment_frame is not None else 'legacy_display_axes',
+        "garment_lateral_longitudinal_px": [float(s), float(t)] if garment_frame is not None else None,
     }
     failures: list[str] = []
     if not side_ok:
         failures.append(
-            f"upright x={x_upright} is not in the outer {step} side band ({side_rule})"
+            f"pixel [{x_upright}, {y_upright}] is not in the outer {step} side band ({side_rule})"
         )
     if not sleeve_height_ok:
         failures.append(
-            f"upright y={y_upright} is outside the sleeve-height band "
+            f"pixel [{x_upright}, {y_upright}] is outside the sleeve-height band "
             f"({sleeve_height_rule})"
         )
     if require_free_edge and not boundary_ok:
@@ -1987,6 +2005,14 @@ def _validate_fold_grasp_anchor_offset(
     else:
         inboard_delta_px = selected_upright_x - actual_upright_x
         inboard_rule = "upright -x toward garment center"
+    if (perception_dir / 'garment_frame.json').is_file():
+        from PIL import Image
+        from .fold_frame import load_frame, project_pixels
+        with Image.open(perception_dir / 'camera_0_A.png') as image:
+            frame = load_frame(perception_dir, image.rotate(-90, expand=True))
+        side, _ = project_pixels([[selected_upright_x, selected_x], [actual_upright_x, actual_x]], frame)
+        inboard_delta_px = float((side[1] - side[0]) * (1 if step == 'left_sleeve' else -1))
+        inboard_rule = 'toward collar/hem axis in GARMENT_FRAME_V1'
     return {
         "mode": "bounded_sleeve_anchor_offset",
         "step": step,
@@ -2129,11 +2155,9 @@ class ClaudeAutoClient:
             "probe, while a validated hypothesis should be expanded into meaningful transport.\n\n"
             f"Garment images to inspect:\n{image_text}\n\n"
             "When the canonical upright Camera-A RGB and Rxxx overlay are supplied, "
-            "they are the only authoritative frame for image-left/image-right garment "
-            "semantics: LEFT means the viewer's left side of the displayed image "
-            "(smaller upright x), and RIGHT means the viewer's right side (larger "
-            "upright x). Do not use the wearer's anatomical left/right and do not "
-            "mirror the image. They show the same rotated pixels and the same Rxxx identities. "
+            "they are the authoritative pixel frame. With GARMENT_FRAME_V1, sleeve sides "
+            "follow the supplied collar/hem frame, not screen x/y. Do not use wearer anatomy "
+            "or mirror the image. They show the same pixels and the same Rxxx identities. "
             "Do not reinterpret an Rxxx from a sideways/raw orientation. Before naming "
             "a sleeve reference, visually verify that its marker is on the requested "
             "sleeve fabric, not the torso interior, chest print, opposite sleeve, label, "
@@ -2417,6 +2441,11 @@ class ClaudeAutoClient:
                         32.0,
                         max(14.0, 0.6 * uniform_stride_px),
                     )
+                from .fold_frame import load_frame
+                frame = None
+                if (mask_path.parent / 'garment_frame.json').exists() or 'GARMENT_FRAME_V1' in objective:
+                    with Image.open(rgb_path) as image:
+                        frame = load_frame(mask_path.parent, image.rotate(-90, expand=True))
                 semantic = _fold_sleeve_reference_geometry(
                     np.load(mask_path),
                     measurement.get("pixel_xy", []),
@@ -2424,6 +2453,7 @@ class ClaudeAutoClient:
                     rgb_raw=rgb_raw,
                     max_interior_distance_px=maximum_interior_distance_px,
                     require_free_edge=False,
+                    garment_frame=frame,
                 )
             except (OSError, TypeError, ValueError) as exc:
                 raise SelectedReferenceNotExecutableError(
@@ -2968,6 +2998,13 @@ class ClaudeAutoClient:
         reference_policy: str = "uniform",
         workspace_recovery: GarmentWorkspaceRecovery | None = None,
     ) -> ExplorationProposal:
+        if 'GARMENT_FRAME_V1' in objective:
+            from PIL import Image
+            from .fold_frame import load_frame
+            views = session.run_dir / 'workspace' / 'perception_views'
+            with Image.open(views / 'camera_0_A.png') as image:
+                frame = load_frame(views, image.rotate(-90, expand=True))
+            objective += '\nCurrent garment_frame in displayed pixels: ' + json.dumps(frame)
         previous_visual_result = self.last_visual_plan_result
         self.last_plan_result = None
         self.last_visual_plan_result = None
@@ -3081,11 +3118,9 @@ class ClaudeAutoClient:
                 )
             allowed_text = ", ".join(executable_reference_ids)
             fold_reference_instruction = (
-                "\nFor this sleeve step, image-left/image-right refer only to the "
-                "clockwise-90 canonical upright Camera-A RGB and matching upright Rxxx "
-                "overlay: image-left is the viewer's left side (smaller upright x), "
-                "image-right is the viewer's right side (larger upright x); never use "
-                "wearer-left/wearer-right or mirror the view. Select Camera A only. "
+                "\nFor this sleeve step, use the task's side convention. With GARMENT_FRAME_V1 "
+                "use the supplied collar/hem frame, not screen x/y. Never use wearer anatomy "
+                "or mirror the view. Select Camera A only. "
                 "The cyan Rxxx markers are the original "
                 "uniform calibrated references spread across the entire visible garment; "
                 "they are not pre-ranked contact candidates. Select exactly "
