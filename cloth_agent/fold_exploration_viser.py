@@ -461,8 +461,11 @@ class _FoldViserState:
         if image is None:
             return
         relative = path.relative_to(iteration_dir)
-        label = f"{iteration_dir.name} | {relative}"
-        group = ("Workspace targets" if path.name.startswith("workspace_") else
+        is_static_reference = "flat_reference" in relative.parts
+        label = (f"{iteration_dir.name} | STATIC REFERENCE (historical topology; not current camera) | {relative}"
+                 if is_static_reference else f"{iteration_dir.name} | {relative}")
+        group = ("Static Molmo reference (not current observation)" if is_static_reference else
+                 "Workspace targets" if path.name.startswith("workspace_") else
                  "After observation" if "after_raw" in str(relative) else
                  "Before observation" if "before_raw" in str(relative) else
                  "Rollout" if "rollout" in str(relative) else "Other diagnostics")

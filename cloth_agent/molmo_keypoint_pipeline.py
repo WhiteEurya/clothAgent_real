@@ -1517,6 +1517,10 @@ def run_molmo_keypoint_pipeline(
         _write_json(
             output / "flat_reference_context.json",
             {
+                "role": "STATIC_SEMANTIC_REFERENCE_ONLY",
+                "current_observation": False,
+                "used_for": ["garment topology", "axis and anchor semantics"],
+                "not_used_for": ["current pixel target", "depth", "XYZ", "robot action"],
                 "manifest": flat_reference["manifest_path"],
                 "raw_image": flat_reference["raw_image"],
                 "annotated_image": flat_reference["annotated_image"],
