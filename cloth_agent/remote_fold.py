@@ -44,6 +44,7 @@ RGB_NAMES = frozenset({
     "camera_a_rgb_contact_sheet.png", "camera_b_rgb_contact_sheet.png",
     "camera_c_rgb_contact_sheet.png", "camera_c.png",
     "camera_c_observer_rgb.png", "camera_c_observer_rgb_hold_check.png",
+    "fold_reference_source.png", "fold_reference_target.png",
 })
 
 
@@ -290,9 +291,29 @@ class RemoteFoldClient(ClaudeAutoClient):
         # and all diagnostic images remain on the host.
         transport_pixels = [[int(expected.width - 1 - r["pixel_xy"][1]), int(r["pixel_xy"][0])]
                             for r in precheck.get("references", []) if r["xy_eligible"]]
+        fold_reference_context: dict[str, Any] | None = None
+        for candidate in images:
+            if candidate.name.lower() != "fold_reference_source.png":
+                continue
+            manifest_path = candidate.parent / "reference_manifest.json"
+            if manifest_path.is_file():
+                try:
+                    loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ExplorationPlanningError("fold-state reference manifest is unreadable") from exc
+                if not isinstance(loaded, dict) or loaded.get("reference_type") != "static_cross_garment_fold_states":
+                    raise ExplorationPlanningError("fold-state reference manifest has an invalid type")
+                fold_reference_context = {
+                    key: loaded[key]
+                    for key in ("reference_type", "current_step", "source_state", "target_state",
+                                "source_image", "target_image", "role", "coordinate_policy")
+                    if key in loaded
+                }
+            break
         self._remote_context = {**semantic_task(objective), "recent_outcomes": semantic_history(history or []),
                                 "previous_candidate_rejected": rejection_category(feedback),
-                                "xy_eligible_transport_pixels_upright": transport_pixels}
+                                "xy_eligible_transport_pixels_upright": transport_pixels,
+                                "fold_state_reference": fold_reference_context}
         try:
             return super().plan(image_paths, session, objective, feedback, history,
                                 phase_callback, reference_policy, workspace_recovery)
@@ -349,7 +370,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                                     for r in self.last_rejected_visual_references]}
         payload, result, prompt, duration = self._ask("visual_planning", context,
             VISUAL_PLAN_JSON_SCHEMA, self._remote_images, run_dir,
-            "Select one visible Camera-A Rxxx marker for the exact current task. The current RGB and marker overlay are rotated clockwise90 upright; left/right refer to that displayed image, not anatomy. Flat reference images are topology references only. Do not choose an already rejected marker. Describe your motion strategy and expected physical evidence. Do not output XYZ or actions.")
+            "Select one visible Camera-A Rxxx marker for the exact current task. The current RGB and marker overlay are rotated clockwise90 upright; left/right refer to that displayed image, not anatomy. Flat reference images are topology references only. If fold_state_reference is present, its source/target images are static cross-garment visual examples of the requested state transition. Use them only for semantic fold geometry and the desired target state; never copy their pixels, scale, grasp points, depth, XYZ, or robot coordinates. All executable points must come from the current Camera-A RGB and current Rxxx overlay. Do not choose an already rejected marker. Describe your motion strategy and expected physical evidence. Do not output XYZ or actions.")
         decision = validate_visual_plan_payload(payload, allowed_skill_names=self.skill_names)
         record = ClaudeVisualPlanResult(prompt, result.command, result.returncode,
             result.stdout, result.stderr, _now(), duration, decision)
@@ -373,7 +394,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             "destination for FOLD, or outward destination for REPAIR_SLEEVE; do not change the task to fit a point.")
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
-            "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. Do not send measured XYZ or code.")
+            "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. If fold_state_reference is present, use its target image only as a semantic visual goal for the current step. Select grasp and transport pixels exclusively from the CURRENT Camera-A RGB/Rxxx evidence; never copy reference-image pixels, coordinates, scale, depth, or XYZ. Do not send measured XYZ or code.")
         rgb = next(p for p in self._remote_images if p.name.lower() == "camera_a_rgb_upright.png")
         with Image.open(rgb) as image:
             size = image.size

@@ -85,6 +85,7 @@ from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
+from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .perception import PerceptionConfig, RGBDFrame, capture_two_view_rgbd
 from .persistent_claude import PersistentClaudeSession
 from .molmo_keypoint_pipeline import (
@@ -2774,6 +2775,7 @@ class FoldExplorationPipeline:
         observer_camera_fps: int = 15,
         observer_camera_exposure: float | None = 700.0,
         observer_camera_white_balance: float | None = 3800.0,
+        fold_reference_dir: Path | None = None,
     ):
         self.session = session
         self.project_root = session.project_root
@@ -2837,6 +2839,10 @@ class FoldExplorationPipeline:
         self.observer_camera_fps = int(observer_camera_fps)
         self.observer_camera_exposure = observer_camera_exposure
         self.observer_camera_white_balance = observer_camera_white_balance
+        default_fold_reference_dir = self.project_root / "data" / "reference" / "fold_states" / "active"
+        self.fold_reference_dir = Path(
+            fold_reference_dir if fold_reference_dir is not None else default_fold_reference_dir
+        ).expanduser().resolve()
         if min(
             self.observer_camera_width,
             self.observer_camera_height,
@@ -4294,6 +4300,7 @@ class FoldExplorationPipeline:
         iteration: int,
         attempt_kind: str = "fold",
         molmo_hint: Mapping[str, Any] | None = None,
+        iteration_dir: Path | None = None,
     ) -> ExplorationProposal:
         """Retry a Claude planning invocation before declaring the run failed.
 
@@ -4311,6 +4318,37 @@ class FoldExplorationPipeline:
         attempts = self.max_stage_retries + 1
         last_error: Exception | None = None
         planning_images = _select_fold_planning_images(images)
+        planning_objective = objective
+        fold_reference = None
+        if self.fold_reference_dir is not None and iteration_dir is not None:
+            match = re.search(r"current_step is ([a-z_]+)", objective)
+            current_step = match.group(1) if match else None
+            if current_step:
+                try:
+                    fold_reference = stage_fold_state_pair(
+                        self.fold_reference_dir, iteration_dir, current_step
+                    )
+                except FoldStateReferenceError as exc:
+                    raise RuntimeError(f"fold-state reference is invalid: {exc}") from exc
+                if fold_reference is not None:
+                    planning_images = [*planning_images, *fold_reference["images"]]
+                    planning_objective += (
+                        "\nStatic cross-garment fold-state references are supplied as the two final images: "
+                        f"{fold_reference['source_state']} is the source state and "
+                        f"{fold_reference['target_state']} is the desired target state for this step. "
+                        "Use them only for semantic state-transition reasoning. Do not copy their "
+                        "pixels, scale, grasp points, depth, XYZ, or robot coordinates; all executable "
+                        "points must come from the current Camera-A RGB and Rxxx overlay."
+                    )
+                    self._debug(
+                        "planning",
+                        "staged static cross-garment fold-state references",
+                        iteration=iteration,
+                        current_step=current_step,
+                        source_state=fold_reference["source_state"],
+                        target_state=fold_reference["target_state"],
+                        images=[path.name for path in fold_reference["images"]],
+                    )
         candidate_filter = _filter_fold_sleeve_planning_overlay(
             planning_images,
             objective,
@@ -4337,6 +4375,11 @@ class FoldExplorationPipeline:
                 if candidate_filter is not None
                 else None
             ),
+            fold_state_reference=(
+                {key: value for key, value in fold_reference.items() if key not in {"images", "directory"}}
+                if fold_reference is not None
+                else None
+            ),
         )
         for attempt in range(1, attempts + 1):
             started = time.monotonic()
@@ -4347,7 +4390,7 @@ class FoldExplorationPipeline:
                 proposal = self.client.plan(
                     planning_images,
                     self.session,
-                    objective,
+                    planning_objective,
                     feedback=feedback,
                     history=_compact_history(history),
                     reference_policy="uniform",
@@ -5195,6 +5238,7 @@ class FoldExplorationPipeline:
                         history,
                         iteration=iteration,
                         molmo_hint=molmo_hint,
+                        iteration_dir=iteration_dir,
                     )
                 except Exception as exc:
                     planning_attempts.append(
@@ -5322,6 +5366,7 @@ class FoldExplorationPipeline:
                                     iteration=iteration,
                                     attempt_kind=f"fold-replan-{plan_attempt}",
                                     molmo_hint=molmo_hint,
+                                    iteration_dir=iteration_dir,
                                 )
                         # Keep the model proposal separate from the program that
                         # will be sent to the robot.  This makes any host-side
@@ -6107,6 +6152,15 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--run-id")
     parser.add_argument("--robot-config", type=Path, default=Path("config/robot.example.json"))
     parser.add_argument("--perception-config", type=Path, default=Path("config/perception.free_exploration.json"))
+    parser.add_argument(
+        "--fold-reference-dir",
+        type=Path,
+        default=Path("data/reference/fold_states/active"),
+        help=(
+            "optional static cross-garment fold-state collection created by "
+            "capture_fold_reference_states.py (default: data/reference/fold_states/active)"
+        ),
+    )
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--planner-backend", choices=("remote", "local"), default="remote",
                         help="fold model calls use the HTTPS/SSH bridge by default")
@@ -6263,6 +6317,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         observer_camera_fps=args.observer_camera_fps,
         observer_camera_exposure=args.observer_camera_exposure,
         observer_camera_white_balance=args.observer_camera_white_balance,
+        fold_reference_dir=(
+            (root / args.fold_reference_dir).resolve()
+            if args.fold_reference_dir is not None and not args.fold_reference_dir.is_absolute()
+            else args.fold_reference_dir
+        ),
     ).run()
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary.get("status") in {"COMPLETE", "MAX_ITERATIONS_REACHED"} else 1
