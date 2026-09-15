@@ -34,6 +34,7 @@
     "speed": 500,
     "open": 850,
     "close": 0,
+    "settle_s": 0.5,
     "width_mm": 86.0
   }
 }

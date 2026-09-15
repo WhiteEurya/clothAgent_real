@@ -3805,6 +3805,19 @@ class FoldExplorationPipeline:
             """Capture one Camera-C still immediately after the first lift move."""
 
             nonlocal hold_snapshot
+            action_payload = dict(action)
+            self._debug(
+                "execution-action",
+                "robot action completed",
+                iteration=iteration_dir.name,
+                action_index=int(action_index),
+                action=action_payload,
+                gripper_feedback=(
+                    action_payload.get("gripper_result", {}).get("feedback")
+                    if isinstance(action_payload.get("gripper_result"), Mapping)
+                    else None
+                ),
+            )
             if hold_action_index is None or action_index != hold_action_index:
                 return
             if hold_snapshot is not None:
@@ -3885,8 +3898,7 @@ class FoldExplorationPipeline:
                 "single_view_confirmed": single_view_confirmed,
                 "notes": f"Closed-loop five-step folding {label}.",
             }
-            if hold_action_index is not None:
-                session_kwargs["action_callback"] = on_robot_action
+            session_kwargs["action_callback"] = on_robot_action
             execution = self.session.run_experiment(source_path.name, **session_kwargs)
         except KeyboardInterrupt:
             # Do not turn an operator stop into an ordinary failed rollout.
@@ -5674,6 +5686,40 @@ class FoldExplorationPipeline:
                 _write_json(iteration_dir / "execution_plan.json", execution_proposal.as_dict())
                 _write_json(iteration_dir / "host_compilation.json", host_compilation)
                 _write_json(iteration_dir / "trajectory.json", trajectory)
+                grounding_debug = getattr(self.client, "last_grounding_verification", None)
+                workspace_trace = (
+                    grounding_debug.get("workspace_trace", {})
+                    if isinstance(grounding_debug, Mapping)
+                    else {}
+                )
+                move_points = list(workspace_trace.get("moves", [])) if isinstance(workspace_trace, Mapping) else []
+                grasp_point = next(
+                    (point for point in move_points if point.get("target") == "grasp"),
+                    None,
+                )
+                transport_points = [
+                    point for point in move_points if point.get("target") == "pixel"
+                ]
+                execution_debug = {
+                    "schema_version": 1,
+                    "step": current_step,
+                    "mode": mode,
+                    "authority": "host_local_grounding",
+                    "grasp": grasp_point,
+                    "transport_destinations": transport_points,
+                    "selected_reference": (
+                        grounding_debug.get("measurement")
+                        if isinstance(grounding_debug, Mapping)
+                        else None
+                    ),
+                    "all_move_points": move_points,
+                    "action_sequence": [dict(action) for action in preflight.actions],
+                    "coordinate_policy": (
+                        "raw/upright pixels and measured base XYZ are logged for debugging; "
+                        "only the locally validated trajectory is executable"
+                    ),
+                }
+                _write_json(iteration_dir / "execution_debug.json", execution_debug)
                 planning_diagnostics: dict[str, Any] = {
                     "mode": mode,
                     "action_mode": action_mode,
@@ -5715,6 +5761,9 @@ class FoldExplorationPipeline:
                     claude_plan=str(iteration_dir / "claude_plan.json"),
                     execution_plan=str(iteration_dir / "execution_plan.json"),
                     host_compilation=str(iteration_dir / "host_compilation.json"),
+                    grasp=grasp_point,
+                    transport_destinations=transport_points,
+                    execution_debug=str(iteration_dir / "execution_debug.json"),
                 )
                 execution, recording = self._execute(
                     source_path,

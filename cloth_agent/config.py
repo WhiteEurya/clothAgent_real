@@ -203,6 +203,8 @@ class RobotConfig:
     gripper_speed: float = 500.0
     gripper_open: float = 850.0
     gripper_close: float = 0.0
+    # Minimum time after a gripper command before the next motion is allowed.
+    gripper_settle_s: float = 0.5
     # Effective jaw-to-jaw span used only to account for the gripper body when
     # the TCP is close to a Y workspace edge.  A value of 0 keeps the legacy
     # fixed Y bounds until the installed tool is measured and configured.
@@ -436,6 +438,7 @@ class RobotConfig:
             gripper_speed=_number(gripper.get("speed", 500.0), "gripper speed"),
             gripper_open=_number(gripper.get("open", 850.0), "gripper open"),
             gripper_close=_number(gripper.get("close", 0.0), "gripper close"),
+            gripper_settle_s=_number(gripper.get("settle_s", 0.5), "gripper settle time"),
             gripper_width_mm=_number(gripper_width_mm, "gripper width"),
         )
 
@@ -467,6 +470,8 @@ class RobotConfig:
             )
         if self.gripper_speed <= 0:
             raise ConfigError("real gripper speed must be positive")
+        if not math.isfinite(self.gripper_settle_s) or self.gripper_settle_s < 0:
+            raise ConfigError("gripper settle time must be finite and non-negative")
         if not math.isfinite(self.gripper_width_mm) or self.gripper_width_mm < 0:
             raise ConfigError("gripper width must be finite and non-negative")
         if self.perception_joints_deg is not None and len(

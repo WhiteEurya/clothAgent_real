@@ -579,6 +579,24 @@ class XArmBackend:
             state["servo_angles_deg"] = [float(value) for value in angles[1]]
         return pose, state
 
+    def _gripper_settled_state(self, config: RobotConfig):
+        """Wait for the jaw command to settle before allowing the next move."""
+
+        minimum_wait = max(0.0, float(config.gripper_settle_s))
+        if minimum_wait:
+            time.sleep(minimum_wait)
+        deadline = time.monotonic() + max(1.0, minimum_wait + 1.0)
+        pose, state = self._state()
+        while time.monotonic() < deadline:
+            feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
+            if not isinstance(feedback, dict) or feedback.get("state") != "moving":
+                return pose, state
+            time.sleep(0.05)
+            pose, state = self._state()
+        raise RobotExecutionError(
+            "gripper did not report a settled state before the next trajectory action"
+        )
+
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
         code = self.arm.set_position(
             x=x,
@@ -600,7 +618,7 @@ class XArmBackend:
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_open, speed=config.gripper_speed, wait=True),
         )
-        pose, state = self._state()
+        pose, state = self._gripper_settled_state(config)
         feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
         return {"command_result": result, "feedback": feedback}, (pose, state)
 
@@ -609,7 +627,7 @@ class XArmBackend:
             "set_gripper_position",
             self.arm.set_gripper_position(config.gripper_close, speed=config.gripper_speed, wait=True),
         )
-        pose, state = self._state()
+        pose, state = self._gripper_settled_state(config)
         feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
         return {"command_result": result, "feedback": feedback}, (pose, state)
 

@@ -151,6 +151,7 @@ class AgentSession:
                         "speed": robot_config.gripper_speed,
                         "open": robot_config.gripper_open,
                         "close": robot_config.gripper_close,
+                        "settle_s": robot_config.gripper_settle_s,
                         "width_mm": robot_config.gripper_width_mm,
                     },
                     "yaw_dependent_y_workspace": {
