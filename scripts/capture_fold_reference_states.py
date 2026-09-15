@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 from typing import Any, Sequence
@@ -48,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exposure", type=float, default=700.0)
     parser.add_argument("--white-balance", type=float, default=3800.0)
     parser.add_argument("--warmup-frames", type=int, default=30)
+    parser.add_argument(
+        "--no-preview",
+        action="store_true",
+        help="disable the live Camera-A window and use terminal Enter capture",
+    )
     return parser
 
 
@@ -57,6 +63,17 @@ def _capture_pipeline(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         from PIL import Image
     except ImportError as exc:
         raise RuntimeError("numpy and Pillow are required; run this script in the cali environment") from exc
+    cv2 = None
+    preview = not bool(args.no_preview)
+    if preview:
+        try:
+            import cv2 as _cv2
+            cv2 = _cv2
+            cv2.namedWindow("Camera A fold reference capture", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Camera A fold reference capture", 960, 540)
+        except Exception as exc:
+            print(f"Live preview unavailable ({exc}); using terminal capture.", file=sys.stderr)
+            preview = False
     try:
         import pyrealsense2 as rs
     except ImportError as exc:
@@ -90,12 +107,25 @@ def _capture_pipeline(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         states: list[dict[str, Any]] = []
         for index, (state_id, instruction) in enumerate(STATES):
             print(f"\n[{index + 1}/{len(STATES)}] Place the reference shirt in the {instruction} state.")
-            input("Press Enter to capture this state (Ctrl-C to cancel)... ")
-            frames = pipeline.wait_for_frames(2000)
-            color = frames.get_color_frame()
-            if not color:
-                raise RuntimeError(f"Camera A returned no color frame for {state_id}")
-            image = np.asanyarray(color.get_data()).copy()
+            print("Live preview: press Enter/Space in the preview window to capture; press q to cancel.")
+            image = None
+            color = None
+            while image is None:
+                frames = pipeline.wait_for_frames(2000)
+                color = frames.get_color_frame()
+                if not color:
+                    raise RuntimeError(f"Camera A returned no color frame for {state_id}")
+                image = np.asanyarray(color.get_data()).copy()
+                if preview and cv2 is not None:
+                    cv2.imshow("Camera A fold reference capture", image[:, :, ::-1])
+                    key = cv2.waitKey(30) & 0xFF
+                    if key in (13, 32):
+                        break
+                    if key in (ord("q"), ord("Q"), 27):
+                        raise KeyboardInterrupt("capture cancelled from preview window")
+                    image = None
+                else:
+                    input("Press Enter to capture this state (Ctrl-C to cancel)... ")
             filename = f"{state_id}.png"
             # The fold planner always reasons over the canonical Camera-A
             # clockwise-90 upright view.  Save references in that same frame
@@ -134,6 +164,11 @@ def _capture_pipeline(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         return manifest
     finally:
         pipeline.stop()
+        if preview and cv2 is not None:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -143,6 +178,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if min(args.width, args.height, args.fps) <= 0 or args.warmup_frames < 0:
         raise SystemExit("width, height, fps must be positive and warmup-frames non-negative")
     output = (args.output_root.expanduser() / str(args.name).strip()).resolve()
+    if output.exists():
+        backup = output.with_name(f"{output.name}_previous_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        suffix = 2
+        while backup.exists():
+            backup = output.with_name(f"{output.name}_previous_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{suffix}")
+            suffix += 1
+        shutil.move(str(output), str(backup))
+        print(f"Existing collection backed up to {backup}", file=sys.stderr)
     output.mkdir(parents=True, exist_ok=False)
     try:
         manifest = _capture_pipeline(args, output)
