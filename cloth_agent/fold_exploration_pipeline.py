@@ -136,7 +136,10 @@ def _molmo_sleeve_spec(step: str) -> KeypointSpec:
             "fold_image_left_sleeve_region",
             (
                 "This is an upright overhead RGB view of one T-shirt. Locate the sleeve "
-                "that appears on the LEFT side of the image. Point near the visual center "
+                "that appears on the RIGHT side of the image. The Molmo deployment used by "
+                "this robot has a verified left/right semantic inversion for this query, "
+                "so this RIGHT-side request is the compatibility mapping for the requested "
+                "image-left fold sleeve. Point near the visual center "
                 "of that sleeve lobe so a downstream planner can reason over the whole "
                 "sleeve region. Do not choose a grasp point and do not prefer an edge, "
                 "seam, wrinkle, or height feature. Do not point to the other sleeve, "
@@ -149,7 +152,10 @@ def _molmo_sleeve_spec(step: str) -> KeypointSpec:
             "fold_image_right_sleeve_region",
             (
                 "This is an upright overhead RGB view of one T-shirt. Locate the sleeve "
-                "that appears on the RIGHT side of the image. Point near the visual center "
+                "that appears on the LEFT side of the image. The Molmo deployment used by "
+                "this robot has a verified left/right semantic inversion for this query, "
+                "so this LEFT-side request is the compatibility mapping for the requested "
+                "image-right fold sleeve. Point near the visual center "
                 "of that sleeve lobe so a downstream planner can reason over the whole "
                 "sleeve region. Do not choose a grasp point and do not prefer an edge, "
                 "seam, wrinkle, or height feature. Do not point to the other sleeve, "
@@ -4127,6 +4133,9 @@ class FoldExplorationPipeline:
                     "name": reference.get("name"),
                     "base_xyz_mm": reference.get("base_xyz_mm"),
                     "role": "fallible_semantic_sleeve_region_not_grasp_point",
+                    "side_mapping": "verified_molmo_left_right_inversion_compensation",
+                    "requested_fold_side": "image-left" if step == "left_sleeve" else "image-right",
+                    "queried_visual_side": "image-right" if step == "left_sleeve" else "image-left",
                     "molmo_input_orientation": "clockwise90_upright",
                     "artifact_dir": str(artifact_dir),
                     "accepted_overlay": (
