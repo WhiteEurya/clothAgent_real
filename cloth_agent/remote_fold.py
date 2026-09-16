@@ -369,6 +369,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         try:
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
                 debug_dir=image_debug,
+                image_edit_limit=6,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
                 system_prompt="You are a garment reasoning assistant. Inspect RGB using Read and image tools as needed. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)

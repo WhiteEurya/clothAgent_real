@@ -79,6 +79,19 @@ def test_incomplete_replay_does_not_invent_image_or_read_success(tmp_path):
     assert "incomplete" in summary and "bad rotation" in summary and "INTERRUPTED" in summary
 
 
+def test_cached_edit_does_not_duplicate_debug_views(tmp_path):
+    tools, debug = prepare(tmp_path)
+    args = {'image_id': 'image_0', 'degrees_clockwise': 90}
+    first = tools.call('rotate_image', args)
+    debug.consume(latest(tools))
+    tools.call('rotate_image', args)
+    debug.consume(latest(tools))
+    assert len(debug.state['views']) == 3
+    assert debug.state['views'][-1]['image_id'] == first['image_id']
+    assert debug.state['views'][-1]['verification'] == 'VERIFIED'
+    assert not debug.state['errors']
+
+
 class Folder:
     removed = False
 

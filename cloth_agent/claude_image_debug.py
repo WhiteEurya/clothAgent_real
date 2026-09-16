@@ -130,6 +130,10 @@ class ImageDebugSession:
                 self.state["audit_complete"] = True
             elif event.get("status") == "ok" and event.get("tool") in {
                     "rotate_image", "crop_image", "resize_image"}:
+                if event.get('result', {}).get('reused'):
+                    self._match_reads()
+                    self.flush()
+                    return
                 args = dict(event["arguments"])
                 parent = args["image_id"]
                 args["image_id"] = self.ids[parent]

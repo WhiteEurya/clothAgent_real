@@ -162,7 +162,9 @@ python scripts/remote_fold_smoke.py \
 
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前新增一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，并 Read 最终选定图；本地验证像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
-此图片准备调用最多尝试 6 次编辑，旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。有合适结果就立即结束；没有则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。MCP 重启也保留同一 job 的计数。此限制不改变其他规划阶段；6 次编辑不是总耗时或 Read 次数的保证，原有调用超时仍生效。
+方向准备、supervisor、视觉规划、动作提案和评价各自最多尝试 6 次新编辑，旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。每次远端 CLI 调用还通过 `--max-turns 16` 限制模型轮次，防止编辑额度耗尽后仍无限读图；这不是 16 次工具调用或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
+
+工具响应附带 `inspection_history`，列出已有图片的 ID、路径、父图、操作参数与成功 Read 次数；Claude 可用 `list_images` 查询完整目录。远端 job 内保存 `inspection_history.json` 快照和 `image_tool_calls.jsonl` 日志。相同源 image_id、相同操作和参数会返回已有图片及 `reused=true`，不新增文件、不消耗新编辑额度，但仍计入工具调用次数。MCP 重启从日志恢复图片目录、编辑缓存和调用计数。历史只属于当前 job，不自动跨阶段共享；本地 `claude_image_tools/<stage>/events.jsonl`、`image_debug.json` 和 `images/` 长期保留对应操作、读取记录与经像素校验的重建图，远端目录按原流程清理。成功 Read 仅证明工具返回过图片，不代表模型理解正确。
 
 Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 `Claude → Molmo → Claude` 交接状态、实际输入路径／哈希和三个坐标系的点。`claude_molmo_orientation/molmo_input/camera_0_A.png` 是 Molmo 实际输入，`molmo_handoff.json` 保存提示词，`molmo_sleeve_locator/pixel_mapping.json` 保存映射。方向不明确、未 Read、哈希／来源不合法或调用失败会停止交接，不会退回旧图。新增调用会增加每次袖子步骤的耗时；其他本地安全检查继续执行。完整文件说明见 [fold_garment_frame.md](fold_garment_frame.md)。
 

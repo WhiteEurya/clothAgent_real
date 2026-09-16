@@ -2660,6 +2660,7 @@ class FoldSupervisor:
             image_debug = debug_directory(images_remote, Path(context_bundle["directory"]), "supervisor")
             completed = self.backend.invoke(prompt=prompt_remote,
                 debug_dir=image_debug,
+                image_edit_limit=6,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
                 system_prompt="You are a read-only visual state classifier for a real T-shirt folding experiment. Inspect the supplied RGB evidence, determine the garment's folding state using the stated five-step task, and return only the requested garment-state JSON. The host handles calibration, safety, and execution; you have no robot access and must not discuss or plan physical actions.")
             result = _normalize_supervisor_current_step(

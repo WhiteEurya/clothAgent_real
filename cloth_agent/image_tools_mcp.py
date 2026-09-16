@@ -42,6 +42,10 @@ INSTRUCTIONS = (
     "a static reference or a crop/rotated view. Rxxx IDs keep their original "
     "identity. An image rotation never changes the task's garment-left/right "
     "definition. No mirroring, generated fabric, depth, or robot access is provided."
+    " Each tool result includes inspection_history with existing image paths and Read counts. "
+    "Use list_images to recover this inventory. Reuse an existing suitable view rather than "
+    "recreating it. Identical edits return the same image. Inspect unread useful views, "
+    "then finish the requested decision; do not inspect indefinitely."
 )
 
 
@@ -54,6 +58,8 @@ def _tool(name, description, properties):
 
 
 TOOLS = [
+    {"name": "list_images", "description": "List saved images, operations and successful Read counts; reuse existing views.",
+     "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     _tool("image_info", "Get image dimensions, original identity and Read path.", {}),
     _tool("rotate_image", "Rotate RGB by degrees clockwise, expanding the canvas; Read the returned path.",
           {"degrees_clockwise": {"type": "number", "minimum": -360, "maximum": 360}}),
@@ -142,6 +148,7 @@ class ImageTools:
         self.views = {}
         self.calls = 0
         self.created = 0
+        self.edit_cache = {}
         for i in range(image_count):
             image_id = f"image_{i}"
             path = self.job / f"{image_id}.png"
@@ -153,6 +160,49 @@ class ImageTools:
                     rgb_sha256=pixel_hash(image), pillow_version=Image.__version__,
                     original_image_index=i, original_size=list(image.size), to_original=IDENTITY[:],
                     parent_image_id=None, to_parent=IDENTITY[:])
+        # The append-only audit is also the recovery ledger. Do not grant a
+        # fresh set of views/calls merely because the MCP process restarted.
+        for event in self._events():
+            if event.get('tool') in {t['name'] for t in TOOLS}:
+                self.calls += 1
+            if event.get('tool') in EDIT_TOOLS and event.get('status') == 'ok':
+                view = event['result']
+                path = Path(view['path'])
+                if path.is_symlink() or path.resolve().parent != self.job or not path.is_file():
+                    raise ValueError('saved image ledger points outside job or to missing image')
+                # Do not persist recursive inspection histories inside views.
+                self.views[view['image_id']] = {k: v for k, v in view.items()
+                    if k not in {'inspection_history', 'reused', 'edit_budget', 'next_step'}}
+                self.edit_cache[self._edit_key(event['tool'], event['arguments'])] = view['image_id']
+        self.created = len(self.views) - image_count
+
+    def _events(self):
+        path = self.job / 'image_tool_calls.jsonl'
+        if not path.exists():
+            return []
+        events = []
+        for line in path.read_text(encoding='utf-8').splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # A concurrent hook may still be appending its line.
+        return events
+
+    @staticmethod
+    def _edit_key(name, args):
+        return json.dumps([name, args], sort_keys=True)
+
+    def inspection_history(self):
+        reads = {}
+        for event in self._events():
+            if event.get('kind') == 'read' and event.get('status') == 'completed':
+                path = event.get('arguments', {}).get('file_path')
+                if isinstance(path, str):
+                    path = str((self.job / path).resolve())
+                    reads.setdefault(path, set()).add(event.get('tool_use_id') or event.get('event_id'))
+        return [{k: view.get(k) for k in ('image_id', 'path', 'size', 'parent_image_id', 'operation', 'arguments')}
+                | {'completed_reads': len(reads.get(view['path'], ())) }
+                for view in self.views.values()]
 
     def edit_budget(self, *, consume=False):
         if self.edit_limit is None:
@@ -175,7 +225,7 @@ class ImageTools:
             stream.flush()
         budget = {**state, 'remaining': state['limit'] - state['used'],
             'next_step': ('Editing is exhausted. Do not request more edits. Read existing images and '
-                          'select a suitable view now, or return UNCERTAIN; do not restart.'
+                          'finish using the existing evidence, or report insufficient evidence under the requested schema; do not restart.'
                           if state['used'] >= state['limit'] else
                           'Finish as soon as the view is suitable; do not use edits just to spend the budget.')}
         if consume and exhausted:
@@ -187,17 +237,28 @@ class ImageTools:
         self.calls += 1
         event = {"tool": name, "arguments": args}
         try:
-            if name in EDIT_TOOLS:
+            cached = self.edit_cache.get(self._edit_key(name, args)) if name in EDIT_TOOLS else None
+            if name in EDIT_TOOLS and cached is None:
                 self.edit_budget(consume=True)
             if self.calls > MAX_CALLS:
                 raise ValueError("image tool call budget exhausted")
             spec = next((t for t in TOOLS if t["name"] == name), None)
             if spec is None or not isinstance(args, dict) or set(args) != set(spec["inputSchema"]["required"]):
                 raise ValueError("unknown tool or invalid argument fields")
-            image_id = args["image_id"]
-            if not isinstance(image_id, str) or image_id not in self.views:
-                raise ValueError("unknown image_id; use image_N or a returned view ID")
-            result = self._call(name, args, self.views[image_id])
+            if name == 'list_images':
+                result = {}
+            else:
+                image_id = args["image_id"]
+                if not isinstance(image_id, str) or image_id not in self.views:
+                    raise ValueError("unknown image_id; use image_N or a returned view ID")
+                if cached is not None:
+                    result = dict(self.views[cached], reused=True,
+                                  next_step='Reuse this saved image; Read it only if necessary.')
+                else:
+                    result = self._call(name, args, self.views[image_id])
+                    if name in EDIT_TOOLS:
+                        self.edit_cache[self._edit_key(name, args)] = result['image_id']
+            result = dict(result, inspection_history=self.inspection_history())
             if self.edit_limit is not None:
                 result = dict(result, edit_budget=self.edit_budget())
             event.update(status="ok", result=result)
@@ -210,6 +271,11 @@ class ImageTools:
                 event['edit_budget'] = self.edit_budget()
             event["duration_s"] = time.monotonic() - started
             audit(self.job, event)
+            inventory = self.job / 'inspection_history.json'
+            temporary = inventory.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'images': self.inspection_history(),
+                'tool_calls': self.calls, 'edit_budget': self.edit_budget()}, indent=2), encoding='utf-8')
+            temporary.replace(inventory)
 
     def _map_point(self, view, point):
         if not isinstance(point, list) or len(point) != 2:
@@ -280,6 +346,7 @@ class ImageTools:
         destination = self.job / f"{image_id}.png"
         output.save(destination)
         view = dict(image_id=image_id, path=str(destination), size=list(output.size),
+            operation=name, arguments=dict(args),
             rgb_sha256=pixel_hash(output), pillow_version=Image.__version__,
             original_image_index=source["original_image_index"], original_size=source["original_size"],
             to_original=compose(source["to_original"], mapping),
@@ -320,6 +387,7 @@ def serve_stdio(tools):
                     detail = str(exc)
                     if tools.edit_limit is not None:
                         detail += '\nedit_budget: ' + json.dumps(tools.edit_budget())
+                    detail += '\ninspection_history: ' + json.dumps(tools.inspection_history())
                     result = {"isError": True, "content": [{"type": "text", "text": detail}]}
             else:
                 print(json.dumps({"jsonrpc": "2.0", "id": message["id"],

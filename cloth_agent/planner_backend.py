@@ -112,6 +112,7 @@ class RemoteClaudeBackend:
         ssh_binary: str = "ssh",
         curl_binary: str = "curl",
         image_tools: bool = True,
+        max_turns: int = 16,
     ):
         self.ssh_host = ssh_host
         self.upload_url = upload_url.rstrip("/")
@@ -120,6 +121,9 @@ class RemoteClaudeBackend:
         self.ssh_binary = ssh_binary
         self.curl_binary = curl_binary
         self.image_tools = bool(image_tools)
+        if type(max_turns) is not int or max_turns < 1:
+            raise ValueError('max_turns must be a positive integer')
+        self.max_turns = max_turns
         self.progress_callback = None
         self.last_timings: dict[str, float] = {}
         self.last_image_tool_events: list[dict[str, Any]] = []
@@ -295,7 +299,7 @@ class RemoteClaudeBackend:
         prompt = (f"\n\nImage inspection tool list: {job}/tool_list.json\n" + INSTRUCTIONS)
         if limit is not None:
             prompt += (f' This call has at most {limit} edit attempts total (rotation/crop/resize combined). '
-                       'Each result reports edit_budget. At zero, Read and select existing views or return UNCERTAIN. '
+                       'Each result reports edit_budget. At zero, use existing views to finish, or report insufficient evidence under the requested schema. '
                        'Do not repeatedly request denied edits. Invalid edit attempts also consume budget.')
         return setup, flags, prompt
 
@@ -425,7 +429,7 @@ class RemoteClaudeBackend:
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
             f"timeout {call_timeout}s claude -p --output-format json --permission-mode dontAsk "
-            f"{tool_flags}--no-session-persistence "
+            f"{tool_flags}--no-session-persistence --max-turns {self.max_turns} "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"
         )
@@ -435,6 +439,8 @@ class RemoteClaudeBackend:
             f"{prompt}\n\nRGB files available to inspect:\n" +
             "\n".join(f"- {job}/image_{i}.png" for i in range(len(images))) +
             tool_prompt +
+            f"\nThis call allows at most {self.max_turns} model turns. Reuse saved image history and finish promptly. "
+            "If evidence is insufficient, report it using the requested schema; never invent an action. " +
             "\nReturn only the requested JSON object."
         )
         ssh = [self.ssh_binary, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
@@ -481,6 +487,14 @@ class RemoteClaudeBackend:
                 self._finish_phase("cleanup", cleanup_started)
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
+            try:
+                envelope = json.loads(completed.stdout)
+                if isinstance(envelope, dict):
+                    detail = json.dumps({key: envelope[key] for key in
+                        ('subtype', 'stop_reason', 'terminal_reason', 'num_turns', 'result', 'errors')
+                        if key in envelope}, ensure_ascii=False) + '\n' + detail
+            except (ValueError, TypeError):
+                pass
             raise PlannerBackendError(
                 f"remote Claude exited with {completed.returncode}: "
                 f"{detail}"

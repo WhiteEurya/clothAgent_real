@@ -105,13 +105,15 @@ def test_six_shared_edits_then_inspection_only_with_restart_persistence(scene):
     original_tools, _ = scene
     tools = ImageTools(original_tools.job, 1, edit_limit=6)
     operations = [('rotate_image', {'degrees_clockwise': 90}),
-                  ('crop_image', {'box': [0, 0, 5, 5]}), ('resize_image', {'scale': 1})]*2
+                  ('crop_image', {'box': [0, 0, 5, 5]}), ('resize_image', {'scale': 2}),
+                  ('rotate_image', {'degrees_clockwise': 180}),
+                  ('crop_image', {'box': [0, 0, 6, 6]}), ('resize_image', {'scale': 1})]
     for index, (name, args) in enumerate(operations):
         result = tools.call(name, {'image_id': 'image_0', **args})
         assert result['edit_budget']['remaining'] == 5-index
     count = len(list(tools.job.glob('view_*.png')))
     with pytest.raises(ValueError, match='budget exhausted'):
-        tools.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 90})
+        tools.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 45})
     assert len(list(tools.job.glob('view_*.png'))) == count
     assert tools.call('image_info', {'image_id': result['image_id']})['edit_budget']['remaining'] == 0
     assert tools.call('map_point', {'image_id': result['image_id'], 'pixel_xy': [1, 1]})['pixel_xy'] == [1, 1]
@@ -119,7 +121,7 @@ def test_six_shared_edits_then_inspection_only_with_restart_persistence(scene):
         assert image.width > 0  # all existing files remain readable
     restarted = ImageTools(tools.job, 1, edit_limit=6)
     with pytest.raises(ValueError, match='budget exhausted'):
-        restarted.call('resize_image', {'image_id': 'image_0', 'scale': 1})
+        restarted.call('resize_image', {'image_id': 'image_0', 'scale': 3})
     assert restarted.call('image_info', {'image_id': 'image_0'})['edit_budget']['used'] == 6
 
 
@@ -135,13 +137,50 @@ def test_invalid_edit_attempts_consume_budget_but_info_does_not(scene):
         tools.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 90})
 
 
+def test_saved_inventory_reads_and_duplicate_edits_survive_restart(scene):
+    from cloth_agent.image_tools_mcp import audit
+    base, _ = scene
+    tools = ImageTools(base.job, 1, edit_limit=1)
+    args = {'image_id': 'image_0', 'box': [1, 1, 8, 6]}
+    first = tools.call('crop_image', args)
+    assert first['inspection_history'][-1]['completed_reads'] == 0
+    for status in ('started', 'completed'):
+        audit(tools.job, {'kind': 'read', 'tool': 'Read', 'status': status,
+              'tool_use_id': 'read-1', 'arguments': {'file_path': Path(first['path']).name}})
+    duplicate = tools.call('crop_image', args)
+    assert duplicate['reused'] is True
+    assert duplicate['image_id'] == first['image_id']
+    assert duplicate['edit_budget']['used'] == 1
+    restarted = ImageTools(tools.job, 1, edit_limit=1)
+    same = restarted.call('crop_image', args)
+    assert same['path'] == first['path']
+    assert len(list(tools.job.glob('view_*.png'))) == 1
+    inventory = restarted.call('list_images', {})['inspection_history']
+    assert len(inventory) == 2
+    assert inventory[-1]['completed_reads'] == 1
+    assert inventory[-1]['arguments'] == args
+    assert json.loads((tools.job / 'inspection_history.json').read_text())['images'] == inventory
+    with pytest.raises(ValueError, match='budget exhausted'):
+        restarted.call('crop_image', {**args, 'box': [2, 1, 8, 6]})
+
+
+def test_tool_call_budget_not_reset_on_restart(scene):
+    from cloth_agent.image_tools_mcp import MAX_CALLS
+    tools, _ = scene
+    for _ in range(MAX_CALLS):
+        tools.call('image_info', {'image_id': 'image_0'})
+    restarted = ImageTools(tools.job, 1)
+    with pytest.raises(ValueError, match='call budget exhausted'):
+        restarted.call('list_images', {})
+
+
 def test_budget_bootstrap_and_stdio_enforce_seventh_edit_denial(scene):
     tools, _ = scene
     main(['--job', str(tools.job), '--image-count', '1', '--edit-limit', '6', '--prepare'])
     server = json.loads((tools.job / 'image_tools.mcp.json').read_text())['mcpServers']['cloth_image']
     assert server['args'][-2:] == ['--edit-limit', '6']
     requests = [{'jsonrpc': '2.0', 'id': i, 'method': 'tools/call', 'params': {
-        'name': 'rotate_image', 'arguments': {'image_id': 'image_0', 'degrees_clockwise': 90}}}
+        'name': 'rotate_image', 'arguments': {'image_id': 'image_0', 'degrees_clockwise': i*10}}}
         for i in range(7)]
     requests.append({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
                      'params': {'name': 'image_info', 'arguments': {'image_id': 'image_0'}}})
@@ -255,7 +294,9 @@ print(json.dumps({"result": "{\\"ok\\":true}"}))
     remote_path = Path(rotation["result"]["path"])
     assert not remote_path.parent.exists()
     assert "--strict-mcp-config" in result.command[-1]
-    assert "--allowedTools Read,mcp__cloth_image__image_info" in result.command[-1]
+    assert "mcp__cloth_image__list_images" in result.command[-1]
+    assert "mcp__cloth_image__image_info" in result.command[-1]
+    assert "--max-turns 16" in result.command[-1]
     if live_debug:
         saved = json.loads((debug / "image_debug.json").read_text())
         assert saved["status"] == "COMPLETED"
