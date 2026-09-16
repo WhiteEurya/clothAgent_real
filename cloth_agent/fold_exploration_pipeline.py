@@ -88,7 +88,7 @@ from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semanti
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
 from .claude_image_debug import debug_directory
-from .claude_molmo_view import map_molmo_pixel
+from .claude_molmo_view import map_molmo_pixel, MolmoOrientationError
 from .image_tools_mcp import pixel_hash
 from .perception import PerceptionConfig, RGBDFrame, capture_two_view_rgbd
 from .persistent_claude import PersistentClaudeSession
@@ -2983,7 +2983,7 @@ class FoldExplorationPipeline:
         supervisor, evaluation, and process-level faults).
         """
 
-        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, MolmoOrientationError)):
             return False
         if operational_stage == "execution":
             return False

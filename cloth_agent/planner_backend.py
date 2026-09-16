@@ -190,7 +190,11 @@ class RemoteClaudeBackend:
 
     def invoke(self, *, prompt: str, image_paths: Iterable[Path],
                schema: dict[str, Any], system_prompt: str,
-               timeout_s: int | None = None, debug_dir: Path | None = None) -> BackendResult:
+               timeout_s: int | None = None, debug_dir: Path | None = None,
+               image_edit_limit: int | None = None) -> BackendResult:
+        if image_edit_limit is not None and (type(image_edit_limit) is not int or not 0 <= image_edit_limit <= 24):
+            raise ValueError('image_edit_limit must be an integer in [0, 24]')
+        self._image_edit_limit = image_edit_limit
         self.last_timings = {}
         self.last_image_tool_events = []
         self._seen_events = set()
@@ -201,6 +205,7 @@ class RemoteClaudeBackend:
             from .claude_image_debug import ImageDebugSession
             self._debug_session = ImageDebugSession(debug_dir, image_paths,
                 {"prompt": prompt, "system_prompt": system_prompt, "schema": schema,
+                 "image_edit_limit": image_edit_limit,
                  "image_paths": [str(p) for p in image_paths]})
         started = time.monotonic()
         try:
@@ -259,7 +264,8 @@ class RemoteClaudeBackend:
                 if self._debug_session:
                     self._debug_session.consume(event)
                 self._progress("image_tool", event.get("status", "unknown"),
-                               event.get("duration_s"), tool=event.get("tool"))
+                               event.get("duration_s"), tool=event.get("tool"),
+                               edit_budget=event.get('edit_budget'))
 
     def _image_tool_setup(self, job, count):
         """Stage the small tool implementation over SSH, never additional RGB."""
@@ -270,17 +276,23 @@ class RemoteClaudeBackend:
         bootstrap = ("import base64,pathlib; "
                      f"pathlib.Path({job + '/image_tools.py'!r}).write_bytes(base64.b64decode({encoded!r}))")
         quoted_job = shlex.quote(job)
+        limit = getattr(self, '_image_edit_limit', None)
+        budget_flag = f' --edit-limit {limit}' if limit is not None else ''
         setup = (
             'cloth_image_python=${CLOTH_REMOTE_IMAGE_PYTHON:-python3}; '
             f'"$cloth_image_python" -c {shlex.quote(bootstrap)}; '
             f'"$cloth_image_python" {quoted_job}/image_tools.py --prepare '
-            f'--job {quoted_job} --image-count {count}; '
+            f'--job {quoted_job} --image-count {count}{budget_flag}; '
         )
         flags = (f"--allowedTools {shlex.quote(','.join(('Read', *TOOL_NAMES)))} --tools Read "
                  f"--mcp-config {quoted_job}/image_tools.mcp.json --strict-mcp-config "
                  f"--settings {quoted_job}/image_tools.settings.json "
                  "--disable-slash-commands ")
         prompt = (f"\n\nImage inspection tool list: {job}/tool_list.json\n" + INSTRUCTIONS)
+        if limit is not None:
+            prompt += (f' This call has at most {limit} edit attempts total (rotation/crop/resize combined). '
+                       'Each result reports edit_budget. At zero, Read and select existing views or return UNCERTAIN. '
+                       'Do not repeatedly request denied edits. Invalid edit attempts also consume budget.')
         return setup, flags, prompt
 
     def _run_streaming(self, command, prompt, timeout_s):

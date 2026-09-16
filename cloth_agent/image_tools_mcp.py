@@ -6,6 +6,7 @@ affine map back to the originally supplied RGB. No camera or robot imports.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -23,6 +24,7 @@ MAX_PIXELS = 16_777_216
 MAX_SIDE = 8192
 MAX_VIEWS = 24
 MAX_CALLS = 64
+EDIT_TOOLS = frozenset({'rotate_image', 'crop_image', 'resize_image'})
 IDENTITY = [1., 0., 0., 0., 1., 0.]
 INSTRUCTIONS = (
     "Use cloth_image tools to inspect the supplied RGB: rotate_image (positive "
@@ -132,8 +134,11 @@ def _size(width, height):
 
 
 class ImageTools:
-    def __init__(self, job: Path, image_count: int):
+    def __init__(self, job: Path, image_count: int, edit_limit: int | None = None):
         self.job = job.resolve(strict=True)
+        if edit_limit is not None and (type(edit_limit) is not int or not 0 <= edit_limit <= MAX_VIEWS):
+            raise ValueError('edit_limit must be an integer in [0, 24]')
+        self.edit_limit = edit_limit
         self.views = {}
         self.calls = 0
         self.created = 0
@@ -149,11 +154,41 @@ class ImageTools:
                     original_image_index=i, original_size=list(image.size), to_original=IDENTITY[:],
                     parent_image_id=None, to_parent=IDENTITY[:])
 
+    def edit_budget(self, *, consume=False):
+        if self.edit_limit is None:
+            return None
+        # Persist before editing, including failed attempts. MCP restarts and
+        # concurrent requests must not grant a fresh allowance in this job.
+        with (self.job / 'image_edit_budget.json').open('a+', encoding='utf-8') as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            stream.seek(0)
+            content = stream.read()
+            state = json.loads(content) if content else {'limit': self.edit_limit, 'used': 0}
+            if state['limit'] != self.edit_limit:
+                raise ValueError('image edit budget cannot change within a job')
+            exhausted = state['used'] >= state['limit']
+            if consume and not exhausted:
+                state['used'] += 1
+            stream.seek(0)
+            stream.truncate()
+            json.dump(state, stream)
+            stream.flush()
+        budget = {**state, 'remaining': state['limit'] - state['used'],
+            'next_step': ('Editing is exhausted. Do not request more edits. Read existing images and '
+                          'select a suitable view now, or return UNCERTAIN; do not restart.'
+                          if state['used'] >= state['limit'] else
+                          'Finish as soon as the view is suitable; do not use edits just to spend the budget.')}
+        if consume and exhausted:
+            raise ValueError('image edit budget exhausted: ' + json.dumps(budget))
+        return budget
+
     def call(self, name, args):
         started = time.monotonic()
         self.calls += 1
         event = {"tool": name, "arguments": args}
         try:
+            if name in EDIT_TOOLS:
+                self.edit_budget(consume=True)
             if self.calls > MAX_CALLS:
                 raise ValueError("image tool call budget exhausted")
             spec = next((t for t in TOOLS if t["name"] == name), None)
@@ -163,12 +198,16 @@ class ImageTools:
             if not isinstance(image_id, str) or image_id not in self.views:
                 raise ValueError("unknown image_id; use image_N or a returned view ID")
             result = self._call(name, args, self.views[image_id])
+            if self.edit_limit is not None:
+                result = dict(result, edit_budget=self.edit_budget())
             event.update(status="ok", result=result)
             return result
         except Exception as exc:
             event.update(status="error", error=f"{type(exc).__name__}: {exc}")
             raise
         finally:
+            if self.edit_limit is not None:
+                event['edit_budget'] = self.edit_budget()
             event["duration_s"] = time.monotonic() - started
             audit(self.job, event)
 
@@ -278,7 +317,10 @@ def serve_stdio(tools):
                     value = tools.call(params.get("name"), params.get("arguments", {}))
                     result = {"content": [{"type": "text", "text": json.dumps(value)}]}
                 except Exception as exc:
-                    result = {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+                    detail = str(exc)
+                    if tools.edit_limit is not None:
+                        detail += '\nedit_budget: ' + json.dumps(tools.edit_budget())
+                    result = {"isError": True, "content": [{"type": "text", "text": detail}]}
             else:
                 print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
                                   "error": {"code": -32601, "message": "method not found"}}), flush=True)
@@ -294,6 +336,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", type=Path, required=True)
     parser.add_argument("--image-count", type=int, required=True)
+    parser.add_argument('--edit-limit', type=int, default=None)
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--read-hook", action="store_true")
     parser.add_argument("--audit-forward", action="store_true")
@@ -304,14 +347,16 @@ def main(argv=None):
     if args.audit_forward:
         forward_audit(args.job.resolve(strict=True))
         return 0
-    tools = ImageTools(args.job, args.image_count)
+    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit)
     if args.prepare:
         config = {"mcpServers": {SERVER_NAME: {"type": "stdio", "command": sys.executable,
             "args": [str(Path(__file__).resolve()), "--job", str(tools.job),
-                     "--image-count", str(args.image_count)]}}}
+                     "--image-count", str(args.image_count)] +
+                    (['--edit-limit', str(args.edit_limit)] if args.edit_limit is not None else [])}}}
         (tools.job / "image_tools.mcp.json").write_text(json.dumps(config), encoding="utf-8")
         (tools.job / "tool_list.json").write_text(json.dumps({"instructions": INSTRUCTIONS,
-            "tools": TOOLS, "images": list(tools.views.values())}, indent=2), encoding="utf-8")
+            "tools": TOOLS, "images": list(tools.views.values()),
+            "edit_budget": tools.edit_budget()}, indent=2), encoding="utf-8")
         hook_command = shlex.join([sys.executable, str(Path(__file__).resolve()),
             "--job", str(tools.job), "--image-count", str(args.image_count), "--read-hook"])
         settings = {"hooks": {event: [{"matcher": "Read", "hooks": [
@@ -320,6 +365,7 @@ def main(argv=None):
         (tools.job / "image_tools.settings.json").write_text(json.dumps(settings), encoding="utf-8")
         audit(tools.job, {"kind": "session", "tool": "image_tools_ready", "status": "ok",
             "images": list(tools.views.values()), "tools": TOOLS, "settings": settings,
+            "edit_budget": tools.edit_budget(),
             "pillow_version": Image.__version__})
     else:
         serve_stdio(tools)

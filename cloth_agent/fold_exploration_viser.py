@@ -410,6 +410,9 @@ def _image_tool_summary(data):
         lines.append(f"Error: {data['error']}")
     lines.extend(str(e) for e in data.get("errors", []))
     for i, event in enumerate(data.get("events", []), 1):
+        budget = event.get('edit_budget')
+        if budget is not None:
+            lines.append(f"Edit budget: {budget['used']}/{budget['limit']} used; {budget['remaining']} remaining")
         if event.get("kind") == "session":
             continue
         duration = event.get("duration_s")

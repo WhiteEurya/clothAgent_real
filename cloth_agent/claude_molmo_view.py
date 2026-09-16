@@ -13,6 +13,13 @@ from .motion_image_sources import resolve_motion_sources
 from .planner_backend import parse_claude_json
 
 
+class MolmoOrientationError(ValueError):
+    """A failed bounded orientation attempt must not restart with a fresh budget."""
+
+
+ORIENTATION_EDIT_LIMIT = 6
+
+
 _PIXEL = {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 2,
     "maxItems": 2, "items": {"type": "number"}}]}
 VIEW_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
@@ -39,6 +46,11 @@ VIEW_PROMPT = (
     "RGB, then Claude will judge its fallible annotation and decide the fold. "
     "If the collar/hem orientation is ambiguous or cannot be verified, return UNCERTAIN "
     "with null image_id and null coordinates. Return only the requested JSON."
+    " You may try and refine, but have at most 6 edit attempts across rotate_image, "
+    "crop_image and resize_image, including invalid attempts. Every response reports "
+    "remaining edits. Stop as soon as the view is suitable; do not aim for perfection. "
+    "At zero edits, do not request more edits: Read existing views, select and verify "
+    "the best suitable one, or return UNCERTAIN. Do not restart to obtain more edits."
 )
 
 
@@ -56,11 +68,13 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
     output.mkdir(parents=True, exist_ok=False)
     debug = debug_directory([canonical_image], output, "molmo_orientation")
     report = {"status": "RUNNING", "canonical_image": str(canonical_image),
+              "edit_limit": ORIENTATION_EDIT_LIMIT, "automatic_retry_allowed": False,
               "image_debug_directory": str(debug)}
     report_path = output / "selection.json"
     try:
         result = backend.invoke(prompt=VIEW_PROMPT, image_paths=[canonical_image],
             schema=VIEW_SCHEMA, debug_dir=debug, timeout_s=timeout_s,
+            image_edit_limit=ORIENTATION_EDIT_LIMIT,
             system_prompt="Inspect current RGB with Read and the image tools. Prepare a collar-up view for Molmo. No robot access.")
         payload = parse_claude_json(result.stdout)
         report.update(response=payload, timings=result.timings,
@@ -115,6 +129,8 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
         return report
     except BaseException as exc:
         report.update(status="FAILED_NO_MOLMO", error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, Exception):
+            raise MolmoOrientationError(f'Claude orientation failed; no automatic budget reset: {exc}') from exc
         raise
     finally:
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 from cloth_agent.claude_image_debug import ImageDebugSession
-from cloth_agent.claude_molmo_view import prepare_molmo_view, map_molmo_pixel
+from cloth_agent.claude_molmo_view import prepare_molmo_view, map_molmo_pixel, MolmoOrientationError
 from cloth_agent.fold_exploration_pipeline import FoldExplorationPipeline
 from cloth_agent.image_tools_mcp import ImageTools, pixel_hash
 from cloth_agent.molmo_keypoint_pipeline import (
@@ -22,17 +22,20 @@ from cloth_agent.remote_fold import RemoteFoldClient, rgb_evidence
 
 class OrientationBackend:
     """Actual image tools/replay, only Claude's choices are simulated."""
-    def __init__(self, *, angle=90, zoom=1, failure=None):
+    def __init__(self, *, angle=90, zoom=1, failure=None, extra_edits=0):
         self.angle, self.zoom, self.failure = angle, zoom, failure
+        self.extra_edits = extra_edits
         self.called = False
 
     def invoke(self, **kwargs):
+        assert kwargs['image_edit_limit'] == 6
         debug = ImageDebugSession(kwargs['debug_dir'], kwargs['image_paths'], kwargs['prompt'])
-        tools = ImageTools(debug.image_dir, 1)
+        tools = ImageTools(debug.image_dir, 1, edit_limit=kwargs['image_edit_limit'])
         debug.consume({'kind': 'session', 'images': list(tools.views.values())})
         selected = tools.views['image_0']
         for name, args in ([('rotate_image', {'degrees_clockwise': self.angle})] if self.angle else []) + (
-                [('resize_image', {'scale': self.zoom})] if self.zoom != 1 else []):
+                [('resize_image', {'scale': self.zoom})] if self.zoom != 1 else []) + [
+                    ('resize_image', {'scale': 1})]*self.extra_edits:
             selected = tools.call(name, {'image_id': selected['image_id'], **args})
             debug.consume(json.loads((tools.job / 'image_tool_calls.jsonl').read_text().splitlines()[-1]))
         if self.failure != 'unread':
@@ -100,9 +103,34 @@ def test_timeout_keeps_selection_failure(tmp_path):
     class FailedBackend:
         def invoke(self, **kwargs):
             raise TimeoutError('Claude timed out')
-    with pytest.raises(TimeoutError):
+    with pytest.raises(MolmoOrientationError, match='no automatic budget reset'):
         prepare_molmo_view(FailedBackend(), canonical_image(tmp_path), tmp_path / 'orientation', timeout_s=30)
     assert json.loads((tmp_path / 'orientation' / 'selection.json').read_text())['status'] == 'FAILED_NO_MOLMO'
+
+
+def test_select_existing_final_view_after_all_six_edits(tmp_path):
+    backend = OrientationBackend(extra_edits=5)
+    report = prepare_molmo_view(backend, canonical_image(tmp_path), tmp_path / 'orientation', timeout_s=30)
+    assert report['status'] == 'READY'
+    assert backend.selected['edit_budget']['remaining'] == 0
+    assert report['edit_limit'] == 6
+    assert report['automatic_retry_allowed'] is False
+
+
+def test_orientation_failure_cannot_restart_unattended_with_fresh_budget():
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.unattended = True
+    pipeline._last_operational_stage = 'molmo'
+    calls = []
+    def failed_attempt():
+        calls.append(1)
+        raise MolmoOrientationError('no acceptable image after the edit budget')
+    pipeline._run_once = failed_attempt
+    with pytest.raises(MolmoOrientationError):
+        pipeline.run()
+    assert len(calls) == 1
+    for stage in ('planning', 'molmo', 'perception', 'supervisor', None):
+        assert not pipeline._unattended_error_is_retriable(MolmoOrientationError('invalid selection'), stage)
 
 
 @pytest.mark.parametrize('step', ['left_sleeve', 'right_sleeve'])

@@ -101,6 +101,76 @@ def test_tool_bootstrap_and_real_stdio_protocol(scene):
     assert responses[3]["result"]["isError"] is True
 
 
+def test_six_shared_edits_then_inspection_only_with_restart_persistence(scene):
+    original_tools, _ = scene
+    tools = ImageTools(original_tools.job, 1, edit_limit=6)
+    operations = [('rotate_image', {'degrees_clockwise': 90}),
+                  ('crop_image', {'box': [0, 0, 5, 5]}), ('resize_image', {'scale': 1})]*2
+    for index, (name, args) in enumerate(operations):
+        result = tools.call(name, {'image_id': 'image_0', **args})
+        assert result['edit_budget']['remaining'] == 5-index
+    count = len(list(tools.job.glob('view_*.png')))
+    with pytest.raises(ValueError, match='budget exhausted'):
+        tools.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 90})
+    assert len(list(tools.job.glob('view_*.png'))) == count
+    assert tools.call('image_info', {'image_id': result['image_id']})['edit_budget']['remaining'] == 0
+    assert tools.call('map_point', {'image_id': result['image_id'], 'pixel_xy': [1, 1]})['pixel_xy'] == [1, 1]
+    with Image.open(result['path']) as image:
+        assert image.width > 0  # all existing files remain readable
+    restarted = ImageTools(tools.job, 1, edit_limit=6)
+    with pytest.raises(ValueError, match='budget exhausted'):
+        restarted.call('resize_image', {'image_id': 'image_0', 'scale': 1})
+    assert restarted.call('image_info', {'image_id': 'image_0'})['edit_budget']['used'] == 6
+
+
+def test_invalid_edit_attempts_consume_budget_but_info_does_not(scene):
+    base, _ = scene
+    tools = ImageTools(base.job, 1, edit_limit=6)
+    for remaining in range(5, -1, -1):
+        with pytest.raises(ValueError):
+            tools.call('crop_image', {'image_id': 'image_0', 'box': [-1, 0, 2, 2]})
+        assert tools.call('image_info', {'image_id': 'image_0'})['edit_budget']['remaining'] == remaining
+    assert tools.created == 0
+    with pytest.raises(ValueError, match='budget exhausted'):
+        tools.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 90})
+
+
+def test_budget_bootstrap_and_stdio_enforce_seventh_edit_denial(scene):
+    tools, _ = scene
+    main(['--job', str(tools.job), '--image-count', '1', '--edit-limit', '6', '--prepare'])
+    server = json.loads((tools.job / 'image_tools.mcp.json').read_text())['mcpServers']['cloth_image']
+    assert server['args'][-2:] == ['--edit-limit', '6']
+    requests = [{'jsonrpc': '2.0', 'id': i, 'method': 'tools/call', 'params': {
+        'name': 'rotate_image', 'arguments': {'image_id': 'image_0', 'degrees_clockwise': 90}}}
+        for i in range(7)]
+    requests.append({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
+                     'params': {'name': 'image_info', 'arguments': {'image_id': 'image_0'}}})
+    result = subprocess.run([server['command'], *server['args']],
+        input='\n'.join(map(json.dumps, requests))+'\n', text=True, capture_output=True, check=True)
+    responses = [json.loads(line)['result'] for line in result.stdout.splitlines()]
+    assert all(not row.get('isError') for row in responses[:6])
+    assert responses[6]['isError']
+    assert 'remaining' in responses[6]['content'][0]['text']
+    assert json.loads(responses[7]['content'][0]['text'])['edit_budget']['remaining'] == 0
+
+
+def test_backend_passes_per_call_limit_without_leaking_to_other_stages(scene, monkeypatch):
+    tools, _ = scene
+    from cloth_agent.planner_backend import BackendResult
+    backend = RemoteClaudeBackend()
+    setups = []
+    def invoke(**kwargs):
+        setups.append(backend._image_tool_setup('/tmp/cloth_remote_test', 1))
+        return BackendResult('{}', '', 0, ())
+    monkeypatch.setattr(backend, '_invoke', invoke)
+    request = dict(prompt='test', image_paths=[tools.job / 'image_0.png'], schema={}, system_prompt='test')
+    backend.invoke(**request, image_edit_limit=6)
+    backend.invoke(**request)
+    assert '--edit-limit 6' in setups[0][0]
+    assert 'at most 6 edit attempts' in setups[0][2]
+    assert '--edit-limit' not in setups[1][0]
+
+
 @pytest.mark.parametrize("claude_fails", [False, True])
 @pytest.mark.parametrize("live_debug", [False, True])
 def test_real_bridge_bootstrap_tool_call_and_cleanup(scene, monkeypatch, claude_fails, live_debug):

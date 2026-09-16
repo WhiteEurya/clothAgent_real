@@ -162,6 +162,8 @@ python scripts/remote_fold_smoke.py \
 
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前新增一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，并 Read 最终选定图；本地验证像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
+此图片准备调用最多尝试 6 次编辑，旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。有合适结果就立即结束；没有则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。MCP 重启也保留同一 job 的计数。此限制不改变其他规划阶段；6 次编辑不是总耗时或 Read 次数的保证，原有调用超时仍生效。
+
 Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 `Claude → Molmo → Claude` 交接状态、实际输入路径／哈希和三个坐标系的点。`claude_molmo_orientation/molmo_input/camera_0_A.png` 是 Molmo 实际输入，`molmo_handoff.json` 保存提示词，`molmo_sleeve_locator/pixel_mapping.json` 保存映射。方向不明确、未 Read、哈希／来源不合法或调用失败会停止交接，不会退回旧图。新增调用会增加每次袖子步骤的耗时；其他本地安全检查继续执行。完整文件说明见 [fold_garment_frame.md](fold_garment_frame.md)。
 
 远端仅收到白名单中的 RGB（包括 RGB 上的 Rxxx 标注、RGB 视频接触图）和筛选后的语义任务/历史。不会发送深度图、热图、XYZ、标定矩阵、工作区数值、完整机器人状态或本地文件清单。上传 PNG 原字节，远端下载后先验证 SHA256。

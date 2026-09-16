@@ -30,6 +30,18 @@ The remote fold path uses this order for each sleeve step:
    and raw Camera-A pixels. Claude receives both processed and canonical RGB overlays
    and decides whether to accept, correct or ignore the hint.
 
+The orientation call has a hard shared budget of **6 edit attempts** across rotation,
+crop and resize (invalid attempts count too). Claude may iterate and correct its views,
+but should finish as soon as a suitable view exists. Tool replies and Viser show used
+and remaining edits. At zero, all further edits are rejected; Read, image_info and
+map_point remain available to inspect/select existing images (the general call/time
+limits still apply). Budget state persists inside the remote job across MCP restarts.
+An orientation failure, UNCERTAIN response or timeout is non-retriable, including in
+unattended mode: it stops before Molmo/robot execution rather than starting another
+Claude call with fresh budget. Successful selection after using all 6 edits is allowed.
+Other Claude stages retain their existing limits. Six edits bounds image mutations,
+not total model latency or the number of Read calls.
+
 The early Molmo collar/hem pass is disabled for the remote fold path. Generated stale
 frame sidecars are still cleared. `--no-molmo-sleeve-grounding` skips the entire optional
 orientation-to-Molmo handoff. Legacy local planner mode retains its old Molmo axis/hint
