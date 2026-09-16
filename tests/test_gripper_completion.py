@@ -81,12 +81,31 @@ def test_old_stop_at_open_position_does_not_allow_lift(config, backend):
     assert all(row['completion_reason'] is None for row in completion['samples'][:-1])
 
 
-def test_fabric_contact_requires_new_closing_progress(config, backend):
-    b = backend([sample(850), sample(850, 2), sample(500, 1), sample(35, 2)])
-    result, _ = b.close_gripper(config)
-    assert result['completion']['reason'] == 'measured_closing_progress_and_grasp'
-    assert len(result['completion']['samples']) == 3
-    assert result['feedback']['position_pulse'] == 35
+def test_observed_early_grasp_at_834_never_releases_lift(config, backend):
+    b = backend([sample(840), sample(840, 2), sample(834, 2),
+                 sample(500, 1), sample(35, 2), sample(35, 2), sample(3, 1), sample(3)])
+    robot = RobotAPI(config, b)
+    robot.close_gripper()
+    robot.move(300, 0, 100, 0)
+    completion = robot.actions[0].gripper_result['completion']
+    assert completion['reason'] == 'measured_target_reached'
+    assert len(completion['samples']) == 7
+    assert all(row['completion_reason'] is None for row in completion['samples'][:-1])
+    assert b.arm.moves[0]['samples_read'] == 8
+    assert robot.actions[0].gripper_result['feedback']['position_pulse'] == 3
+
+
+def test_grasp_contact_above_closed_target_waits_for_operator(config, backend):
+    b = backend([sample(840), sample(500, 1)] + [sample(35, 2)]*260 + [KeyboardInterrupt()])
+    robot = RobotAPI(config, b)
+    with pytest.raises(KeyboardInterrupt):
+        robot.close_gripper()
+    with pytest.raises(RobotExecutionError, match='halted'):
+        robot.move(300, 0, 100, 0)
+    assert not b.arm.moves
+    assert len(b.arm.commands) == 1
+    assert all(row['completion_reason'] is None
+               for row in robot.actions[0].gripper_result['completion']['samples'])
 
 
 @pytest.mark.parametrize('samples', [
@@ -360,3 +379,71 @@ def test_failed_emergency_release_also_blocks_home(tmp_path, config, backend, mo
     assert runner.gripper_completion_failed
     assert not result['emergency_cleanup']['home_completed']
     assert result['emergency_cleanup']['gripper_completion']['status'] == 'FAILED'
+
+
+@pytest.mark.parametrize('route', ['fold_pipeline', 'replay_script'])
+@pytest.mark.parametrize('reaches_closed_target', [True, False])
+def test_both_entrypoints_use_strict_close_gate(
+        tmp_path, config, backend, monkeypatch, route, reaches_closed_target):
+    import json
+    from scripts import replay_gripper_test as replay
+    from cloth_agent.config import ExperimentConfig
+    from cloth_agent.fold_exploration_pipeline import FoldExplorationPipeline
+    from cloth_agent.session import AgentSession
+
+    samples = [sample(840), sample(840),  # open already reached
+               sample(840), sample(840, 2), sample(834, 2)]
+    if reaches_closed_target:
+        samples += [sample(3, 1), sample(3),  # only last one can release lift
+                    sample(3), sample(39, 2), sample(840)]  # release open
+    else:
+        samples += [sample(834, 2)]*60 + [KeyboardInterrupt()]
+    b = backend(samples)
+    b.close = lambda: None
+    home_calls = []
+    def home(*args):
+        home_calls.append(b.arm.index)
+        return [300, 0, 200, 180, 0, 0], {}
+    b.home = home
+    monkeypatch.setattr('cloth_agent.experiment.XArmBackend', lambda config: b)
+    monkeypatch.setattr('cloth_agent.experiment.validate_controller_trajectory', lambda *args: None)
+    if route == 'replay_script':
+        monkeypatch.setattr(replay, 'PROJECT_ROOT', tmp_path)
+        monkeypatch.setattr(replay.RobotConfig, 'load', lambda *args: config)
+        assert replay.main(['--real', '--confirm-real']) == (0 if reaches_closed_target else 130)
+        run = next((tmp_path / 'runs').iterdir())
+        result = json.loads((run / 'results' / 'recorded_gripper_test.json').read_text())
+    else:
+        run = tmp_path / 'runs' / 'fold_test'
+        session = AgentSession(tmp_path, run, config, ExperimentConfig())
+        (run / 'run_metadata.json').write_text(json.dumps({
+            'last_perception_mode': 'single_camera_rgbd', 'last_active_cameras': ['A']}))
+        source = session.workspace / 'fold_test.py'
+        source.write_text(replay.RECORDED_SOURCE)
+        pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+        pipeline.real = pipeline.confirm_real = True
+        pipeline.record_video = False
+        pipeline.observer_camera_serial = None
+        pipeline.session = session
+        pipeline._debug = lambda *args, **kwargs: None
+        def execute():
+            return pipeline._execute(source, SimpleNamespace(active_camera_labels=('A',)), run,
+                                     label='strict_close_test')
+        if reaches_closed_target:
+            result, _ = execute()
+        else:
+            with pytest.raises(KeyboardInterrupt):
+                execute()
+            result = json.loads((run / 'results' / 'fold_test.json').read_text())
+            assert session.last_return_home_outcome['attempted'] is False
+    assert result['execution_completed'] is reaches_closed_target
+    if reaches_closed_target:
+        # Third Cartesian call is the lift. It must follow the seventh feedback
+        # read (position=3, stop), never the fifth (position=834, grasp).
+        assert len(b.arm.moves) == 6
+        assert b.arm.moves[2]['samples_read'] == 7
+        assert home_calls
+    else:
+        assert len(b.arm.moves) == 2  # approach + descend only
+        assert not home_calls
+        assert result['gripper_completion_failed'] is True

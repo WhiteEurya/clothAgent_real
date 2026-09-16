@@ -673,8 +673,8 @@ class XArmBackend:
                 reason = None
                 if state in {'stop', 'grasp'} and at_target:
                     reason = 'measured_target_reached'
-                elif target == 'close' and state == 'grasp' and progress > trace['position_tolerance_pulse']:
-                    reason = 'measured_closing_progress_and_grasp'
+                # Real telemetry reports grasp even near the open endpoint
+                # and during travel. It must never bypass measured position.
                 elapsed = record_sample(feedback, 'after_command', progress=progress, reason=reason)
                 if reason:
                     trace.update(status='COMPLETED', reason=reason, duration_s=elapsed)
