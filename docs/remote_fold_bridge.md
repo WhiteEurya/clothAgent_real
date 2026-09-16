@@ -144,6 +144,14 @@ python scripts/remote_fold_smoke.py \
 
 ## 数据与动作边界
 
+### 夹爪完成反馈
+
+真实执行时，open/close 发出命令后由本地持续读取夹爪位置、状态和错误码；只有实际到达目标位置（容差 5 pulse，且非 moving），或者关闭时检测到向目标方向的位移并收到 grasp 状态，才允许后续动作。初始张开位置上的旧 stop/grasp 状态、单纯位置不再变化，都不能证明本次闭合完成。grasp 是控制器的机械接触反馈，不保证夹住的就是目标衣物，视觉 hold 检查仍需执行。
+
+默认确认超时为 10 秒，旧配置自动使用此默认值。可在 robot 配置的 `gripper.completion_timeout_s` 调整；`settle_s` 只保留为兼容的超时下限扩展，不是固定等待时间。读失败、夹爪报错、反馈不支持或超时会终止当前轨迹，并阻止自动释放、自动 Home 和后续折叠动作，等待人工检查。
+
+动作记录的 `gripper_result.completion` 保存命令前状态、目标 pulse、逐次反馈、耗时及放行／失败原因，失败记录也保留。对应实验的 `.trace.json` 和 `.stdout.txt` 可用于确认是否确实等到闭合；实际反馈必须在 Alienware 真机上验证。
+
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前新增一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，并 Read 最终选定图；本地验证像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
 Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 `Claude → Molmo → Claude` 交接状态、实际输入路径／哈希和三个坐标系的点。`claude_molmo_orientation/molmo_input/camera_0_A.png` 是 Molmo 实际输入，`molmo_handoff.json` 保存提示词，`molmo_sleeve_locator/pixel_mapping.json` 保存映射。方向不明确、未 Read、哈希／来源不合法或调用失败会停止交接，不会退回旧图。新增调用会增加每次袖子步骤的耗时；其他本地安全检查继续执行。完整文件说明见 [fold_garment_frame.md](fold_garment_frame.md)。

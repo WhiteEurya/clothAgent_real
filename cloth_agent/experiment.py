@@ -588,7 +588,14 @@ class ExperimentRunner:
         except BaseException as exc:
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            if error is not None:
+            gripper_failed = any(
+                (a.get('gripper_result') or {}).get('completion', {}).get('status') == 'FAILED'
+                for a in robot.action_dicts())
+            if error is not None and gripper_failed:
+                emergency_cleanup = {'attempted': False, 'released': False,
+                    'home_completed': False, 'reason': 'gripper completion unconfirmed; operator inspection required',
+                    'errors': []}
+            elif error is not None:
                 emergency_cleanup = {
                     "attempted": True,
                     "released": False,
@@ -602,13 +609,16 @@ class ExperimentRunner:
                     emergency_cleanup["errors"].append(
                         f"open_gripper: {type(exc).__name__}: {exc}"
                     )
-                try:
-                    backend.home(self.config)
-                    emergency_cleanup["home_completed"] = True
-                except BaseException as exc:
-                    emergency_cleanup["errors"].append(
-                        f"home: {type(exc).__name__}: {exc}"
-                    )
+                    emergency_cleanup['gripper_completion_failed'] = True
+                    emergency_cleanup['gripper_completion'] = getattr(exc, 'gripper_completion', None)
+                else:
+                    try:
+                        backend.home(self.config)
+                        emergency_cleanup["home_completed"] = True
+                    except BaseException as exc:
+                        emergency_cleanup["errors"].append(
+                            f"home: {type(exc).__name__}: {exc}"
+                        )
 
         result = self._result(
             preflight,
@@ -623,6 +633,9 @@ class ExperimentRunner:
         result["checkpoint_action_indices"] = list(indices)
         result["checkpoint_abort_actions"] = clean_abort
         result["emergency_cleanup"] = emergency_cleanup
+        if emergency_cleanup and emergency_cleanup.get('gripper_completion_failed'):
+            result['gripper_completion_failed'] = True
+            self.gripper_completion_failed = True
         try:
             self._save_result(result)
         finally:
@@ -636,6 +649,10 @@ class ExperimentRunner:
         errors = [a["error"] for a in actions if a.get("error")]
         if error and error not in errors:
             errors.append(error)
+        gripper_failed = physical and any(
+            (a.get('gripper_result') or {}).get('completion', {}).get('status') == 'FAILED'
+            for a in actions)
+        self.gripper_completion_failed = gripper_failed
         return {
             "created_at": _now(),
             "started_at": actions[0].get("requested_at") if actions else None,
@@ -646,6 +663,7 @@ class ExperimentRunner:
             "physical_execution": physical,
             "preflight_completed": preflight.error is None,
             "execution_completed": completed,
+            "gripper_completion_failed": gripper_failed,
             "robot_errors": errors,
             "notes": notes,
             "stdout": stdout if stdout is not None else preflight.stdout,
@@ -658,6 +676,7 @@ class ExperimentRunner:
                 "home_speed_deg_s": self.config.home_speed_deg_s,
                 "home_acceleration_deg_s2": self.config.home_acceleration_deg_s2,
                 "gripper_speed": self.config.gripper_speed,
+                "gripper_completion_timeout_s": self.config.gripper_completion_timeout_s,
             },
         }
 

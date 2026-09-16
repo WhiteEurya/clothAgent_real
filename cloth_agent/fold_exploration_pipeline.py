@@ -4092,6 +4092,8 @@ class FoldExplorationPipeline:
             recording_errors=len(recording_errors),
             duration_s=round(time.monotonic() - started, 3),
         )
+        if execution.get('gripper_completion_failed'):
+            raise RuntimeError('gripper completion unconfirmed; fold loop stopped before any further motion; inspect execution trace')
         return execution, recording
 
     def _locate_sleeve_with_molmo(

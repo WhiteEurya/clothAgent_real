@@ -205,6 +205,7 @@ class RobotConfig:
     gripper_close: float = 0.0
     # Feedback confirmation timeout extension after a gripper command.
     gripper_settle_s: float = 0.5
+    gripper_completion_timeout_s: float = 10.0
     # Effective jaw-to-jaw span used only to account for the gripper body when
     # the TCP is close to a Y workspace edge.  A value of 0 keeps the legacy
     # fixed Y bounds until the installed tool is measured and configured.
@@ -439,6 +440,7 @@ class RobotConfig:
             gripper_open=_number(gripper.get("open", 850.0), "gripper open"),
             gripper_close=_number(gripper.get("close", 0.0), "gripper close"),
             gripper_settle_s=_number(gripper.get("settle_s", 0.5), "gripper settle time"),
+            gripper_completion_timeout_s=_number(gripper.get("completion_timeout_s", 10.0), "gripper completion timeout"),
             gripper_width_mm=_number(gripper_width_mm, "gripper width"),
         )
 
@@ -472,6 +474,8 @@ class RobotConfig:
             raise ConfigError("real gripper speed must be positive")
         if not math.isfinite(self.gripper_settle_s) or self.gripper_settle_s < 0:
             raise ConfigError("gripper settle time must be finite and non-negative")
+        if not math.isfinite(self.gripper_completion_timeout_s) or self.gripper_completion_timeout_s <= 0:
+            raise ConfigError("gripper completion timeout must be finite and positive")
         if not math.isfinite(self.gripper_width_mm) or self.gripper_width_mm < 0:
             raise ConfigError("gripper width must be finite and non-negative")
         if self.perception_joints_deg is not None and len(

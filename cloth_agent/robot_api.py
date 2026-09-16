@@ -60,13 +60,12 @@ def _validated_live_tcp_offset(arm: Any, config: RobotConfig) -> tuple[float, ..
 
 
 def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
-    """Read vendor gripper telemetry without making it a motion precondition.
+    """Read vendor telemetry and retain failures for the caller to interpret.
 
     xArm gripper firmware >= 3.4.3 exposes a status register whose low two
     bits distinguish stop (0), motion (1), and catch/grasp (2).  Reads are
-    deliberately best-effort: older or third-party end effectors may not
-    implement every getter, and telemetry must never turn a completed motion
-    into a false robot failure.
+    best-effort for general diagnostics. The gripper command completion gate
+    separately requires all getters to succeed; unsupported feedback blocks it.
     """
 
     feedback: dict[str, Any] = {
@@ -83,12 +82,12 @@ def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
     def result_value(name: str, getter: Any) -> Any:
         try:
             result = getter()
-        except BaseException as exc:  # telemetry is diagnostic only
+        except Exception as exc:
             feedback["read_errors"].append(
                 {"field": name, "error": f"{type(exc).__name__}: {exc}"}
             )
             return None
-        if isinstance(result, tuple) and len(result) >= 2:
+        if isinstance(result, (tuple, list)) and len(result) >= 2:
             code = int(result[0])
             feedback[f"{name}_code"] = code
             if code != 0:
@@ -97,8 +96,8 @@ def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
                 )
                 return None
             return result[1]
-        feedback[f"{name}_code"] = int(result) if isinstance(result, int) else None
-        return result
+        feedback["read_errors"].append({"field": name, "error": "invalid SDK result", "result": repr(result)})
+        return None
 
     position = result_value("position", getattr(arm, "get_gripper_position", None))
     if position is not None:
@@ -579,37 +578,74 @@ class XArmBackend:
             state["servo_angles_deg"] = [float(value) for value in angles[1]]
         return pose, state
 
-    def _gripper_settled_state(self, config: RobotConfig, *, target: str):
-        """Read xArm feedback until the requested gripper command completes.
+    def _checked_gripper_feedback(self):
+        feedback = _read_gripper_feedback(self.arm)
+        if (not getattr(self.arm, 'connected', True) or feedback['read_errors'] or
+                feedback['position_pulse'] is None or feedback['error_code'] != 0 or
+                feedback['state'] not in {'stop', 'moving', 'grasp'}):
+            exc = RobotExecutionError(f'xArm gripper feedback invalid: {feedback}')
+            exc.gripper_feedback = feedback
+            raise exc
+        return feedback
 
-        ``set_gripper_position(wait=True)`` only waits for the SDK call.  The
-        controller feedback is authoritative here.  A missing/unknown status
-        is never treated as success because that could start a move while the
-        jaws are still travelling.
-        """
-
-        deadline = time.monotonic() + max(1.0, float(config.gripper_settle_s) + 1.0)
-        last_feedback: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            pose, state = self._state()
-            feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
-            if isinstance(feedback, dict):
-                last_feedback = feedback
-                status = feedback.get("state")
-                position = feedback.get("position_pulse")
-                # A close may stop above pulse zero when cloth is held, so its
-                # position is diagnostic; status must be stop or grasp.
-                if status in {"stop", "grasp"} and position is not None:
-                    if target == "open":
-                        if abs(float(position) - float(config.gripper_open)) <= 25.0:
-                            return pose, state
-                    else:
-                        return pose, state
-            time.sleep(0.05)
-        raise RobotExecutionError(
-            "xArm gripper completion could not be confirmed from feedback: "
-            f"target={target}, feedback={last_feedback}"
-        )
+    def _command_gripper(self, config: RobotConfig, *, target: str):
+        """Wait for measured completion, not a stale terminal status or SDK ACK."""
+        target_position = config.gripper_open if target == 'open' else config.gripper_close
+        started = time.monotonic()
+        trace = {'target': target, 'target_position_pulse': target_position,
+                 'position_tolerance_pulse': 5.0, 'samples': [], 'status': 'WAITING',
+                 'timeout_s': max(config.gripper_completion_timeout_s, config.gripper_settle_s + 1.)}
+        last_print = -1.
+        try:
+            before = self._checked_gripper_feedback()
+            trace['before_command'] = before
+            if before['state'] == 'moving':
+                raise RobotExecutionError('gripper is already moving before a new command')
+            initial = before['position_pulse']
+            direction = 1 if target_position > initial else -1
+            print(f'[gripper] {target}: before={initial}, target={target_position}; waiting for measured completion', flush=True)
+            # The SDK's wait=True itself has status/no-progress success paths.
+            # Keep its default wait_motion=True, but own gripper completion here.
+            result = self._check('set_gripper_position', self.arm.set_gripper_position(
+                target_position, speed=config.gripper_speed, wait=False))
+            trace['command_result'] = result
+            deadline = started + trace['timeout_s']
+            while time.monotonic() < deadline:
+                feedback = self._checked_gripper_feedback()
+                elapsed = time.monotonic() - started
+                position = feedback['position_pulse']
+                state = feedback['state']
+                progress = direction * (position - initial)
+                at_target = abs(position - target_position) <= trace['position_tolerance_pulse']
+                reason = None
+                if state in {'stop', 'grasp'} and at_target:
+                    reason = 'measured_target_reached'
+                elif target == 'close' and state == 'grasp' and progress > trace['position_tolerance_pulse']:
+                    reason = 'measured_closing_progress_and_grasp'
+                trace['samples'].append({'elapsed_s': elapsed, 'feedback': feedback,
+                                         'progress_pulse': progress, 'completion_reason': reason})
+                if elapsed - last_print >= .5 or reason:
+                    print(f'[gripper] {target}: elapsed={elapsed:.2f}s, position={position}, '
+                          f'state={state}, progress={progress}, result={reason or "WAITING"}', flush=True)
+                    last_print = elapsed
+                if reason:
+                    trace.update(status='COMPLETED', reason=reason, duration_s=elapsed)
+                    pose, robot_state = self._state()
+                    robot_state['gripper_feedback'] = feedback
+                    robot_state['gripper_completion'] = trace
+                    return {'command_result': result, 'feedback': feedback, 'completion': trace}, (pose, robot_state)
+                time.sleep(.05)
+            raise RobotExecutionError(
+                f'xArm gripper {target} completion timeout; target={target_position}, '
+                f'last_feedback={trace["samples"][-1] if trace["samples"] else None}')
+        except BaseException as exc:
+            trace.update(status='FAILED', duration_s=time.monotonic()-started,
+                         error=f'{type(exc).__name__}: {exc}')
+            if hasattr(exc, 'gripper_feedback'):
+                trace['failed_feedback'] = exc.gripper_feedback
+            exc.gripper_completion = trace
+            print(f'[gripper] {target}: FAILED; next robot action blocked: {exc}', flush=True)
+            raise
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
         code = self.arm.set_position(
@@ -628,22 +664,10 @@ class XArmBackend:
         return self._state()
 
     def open_gripper(self, config: RobotConfig):
-        result = self._check(
-            "set_gripper_position",
-            self.arm.set_gripper_position(config.gripper_open, speed=config.gripper_speed, wait=True),
-        )
-        pose, state = self._gripper_settled_state(config, target="open")
-        feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
-        return {"command_result": result, "feedback": feedback}, (pose, state)
+        return self._command_gripper(config, target='open')
 
     def close_gripper(self, config: RobotConfig):
-        result = self._check(
-            "set_gripper_position",
-            self.arm.set_gripper_position(config.gripper_close, speed=config.gripper_speed, wait=True),
-        )
-        pose, state = self._gripper_settled_state(config, target="close")
-        feedback = state.get("gripper_feedback") if isinstance(state, dict) else None
-        return {"command_result": result, "feedback": feedback}, (pose, state)
+        return self._command_gripper(config, target='close')
 
     def shake(self, config: RobotConfig):
         from .shake_once import shake
@@ -792,6 +816,8 @@ class RobotAPI:
     def _fail(self, record: ActionRecord, exc: BaseException) -> None:
         record.completed_at = _timestamp()
         record.error = f"{type(exc).__name__}: {exc}"
+        if hasattr(exc, 'gripper_completion'):
+            record.gripper_result = {'completion': exc.gripper_completion}
         self.halted = True
 
     def move(self, x: float, y: float, z: float, yaw: float) -> None:

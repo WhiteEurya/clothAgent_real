@@ -35,6 +35,7 @@
     "open": 850,
     "close": 0,
     "settle_s": 0.5,
+    "completion_timeout_s": 10.0,
     "width_mm": 86.0
   }
 }

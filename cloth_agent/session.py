@@ -152,6 +152,7 @@ class AgentSession:
                         "open": robot_config.gripper_open,
                         "close": robot_config.gripper_close,
                         "settle_s": robot_config.gripper_settle_s,
+                        "completion_timeout_s": robot_config.gripper_completion_timeout_s,
                         "width_mm": robot_config.gripper_width_mm,
                     },
                     "yaw_dependent_y_workspace": {
@@ -675,7 +676,10 @@ class AgentSession:
         return outcome
 
     def _attempt_return_home(self, *, notes: str) -> dict[str, Any]:
-        """Attempt a fresh, isolated Home command without masking the rollout result."""
+        """Attempt isolated Home unless gripper completion requires inspection."""
+        if getattr(self.runner, 'gripper_completion_failed', False):
+            return {'attempted': False, 'completed': False,
+                    'reason': 'gripper completion unconfirmed; automatic Home blocked; operator inspection required'}
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         source_name = f"_mandatory_return_home_{stamp}.py"
