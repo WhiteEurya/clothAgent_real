@@ -32,6 +32,10 @@ def parse_claude_json(stdout: str) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError) as exc:
         raise PlannerBackendError("Claude returned an invalid JSON envelope") from exc
     if not isinstance(outer, dict) or outer.get("is_error") is True:
+        detail = outer.get("result") if isinstance(outer, dict) else None
+        if detail:
+            detail = str(detail).replace("\n", " ")[:1200]
+            raise PlannerBackendError(f"Claude returned an error envelope: {detail}")
         raise PlannerBackendError("Claude returned an error envelope")
     if str(outer.get("subtype", "success")).startswith("error"):
         raise PlannerBackendError("Claude did not complete successfully")

@@ -2552,11 +2552,11 @@ class FoldSupervisor:
                     "Sleeve completion rubric: mark an inward sleeve complete when its distal lobe no longer protrudes outward from its torso side and the fabric lies over/inboard on the torso. A wrinkled, curled, or bunched cuff is still complete if it is visibly deposited inboard; do not require a perfectly flat cuff or a strong height-map ridge. Do not mark it complete when the sleeve remains extended outside the torso silhouette or when only the torso/print changed.",
                     "If both garment-frame left and right sleeves satisfy that rubric, completed_steps MUST contain both left_sleeve and right_sleeve and current_step MUST be left_side. Never leave current_step at right_sleeve merely because the second cuff is bunched.",
                     "A later ambiguous/occluded frame must not undo a sleeve completion that is supported by an earlier non-fallback supervisor observation in the recent history. Fallback/bookkeeping entries are not visual evidence.",
-                    "current_step means the single fold action the host should execute next, not the step after it. Do not return a next_step field.",
+                    "current_step means the single garment-state label that is still incomplete, not an instruction to control any device. Do not return a next_step field.",
                     "Set current_step to the earliest incomplete action in the required order, based on completed_steps. With completed_steps empty, current_step must be left_sleeve.",
                     "Camera-A border contact is PARTIAL diagnostics only. This pipeline has no recovery phase, so border contact alone must not block folding.",
-                    "Keep trajectory_decision=CONTINUE unless folding is genuinely impossible or unsafe from the supplied evidence.",
-                    "Do not propose robot coordinates. Return exactly the supplied supervisor JSON schema.",
+                    "Keep trajectory_decision=CONTINUE unless the garment state is genuinely impossible to assess from the supplied evidence. This is a visual classification task only.",
+                    "Do not control, command, plan, or advise any robot, gripper, trajectory, or physical action. Do not propose coordinates. Return exactly the supplied supervisor JSON schema.",
                     "",
                 ]
             ),
@@ -2657,7 +2657,7 @@ class FoldSupervisor:
             completed = self.backend.invoke(prompt=prompt_remote,
                 debug_dir=image_debug,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
-                system_prompt="Read-only fold state supervisor. Read the supplied RGB and return the requested JSON. No robot access.")
+                system_prompt="You are a read-only visual state classifier. Inspect the supplied RGB evidence and return only the requested garment-state JSON. You have no robot access and must not discuss or plan physical actions.")
             result = _normalize_supervisor_current_step(
                 validate_supervisor_payload(parse_claude_json(completed.stdout)))
             result.update(duration_s=time.monotonic() - started,
