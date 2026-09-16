@@ -677,6 +677,7 @@ class ExperimentRunner:
                 "home_acceleration_deg_s2": self.config.home_acceleration_deg_s2,
                 "gripper_speed": self.config.gripper_speed,
                 "gripper_completion_timeout_s": self.config.gripper_completion_timeout_s,
+                "gripper_open_tolerance_pulse": self.config.gripper_open_tolerance_pulse,
             },
         }
 

@@ -612,7 +612,8 @@ class XArmBackend:
         target_position = config.gripper_open if target == 'open' else config.gripper_close
         started = time.monotonic()
         trace = {'target': target, 'target_position_pulse': target_position,
-                 'position_tolerance_pulse': 5.0, 'samples': [], 'status': 'WAITING',
+                 'position_tolerance_pulse': config.gripper_open_tolerance_pulse if target == 'open' else 5.0,
+                 'samples': [], 'status': 'WAITING',
                  'timeout_s': None, 'wait_policy': 'feedback_until_complete_or_interrupt',
                  'warning_after_s': config.gripper_completion_timeout_s,
                  'sample_count': 0, 'dropped_sample_count': 0}
@@ -634,7 +635,8 @@ class XArmBackend:
             if elapsed - last_print >= interval or reason:
                 waiting = 'READ_RETRY' if not feedback['usable_for_completion'] else 'WAITING'
                 _gripper_log(f'[gripper] {target}: phase={phase}, elapsed={elapsed:.2f}s, '
-                    f'position={feedback["position_pulse"]}, state={feedback["state"]}, '
+                    f'position={feedback["position_pulse"]}, target={target_position}, '
+                    f'tolerance={trace["position_tolerance_pulse"]}, state={feedback["state"]}, '
                     f'progress={progress}, result={reason or waiting}, '
                     f'read_errors={feedback["read_errors"]}; '
                     + ('completion confirmed' if reason else 'arm stays still; Ctrl+C to interrupt'))

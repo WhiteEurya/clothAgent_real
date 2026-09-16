@@ -203,6 +203,8 @@ class RobotConfig:
     gripper_speed: float = 500.0
     gripper_open: float = 850.0
     gripper_close: float = 0.0
+    # Opening endpoint tolerance is independent of closure/contact detection.
+    gripper_open_tolerance_pulse: float = 15.0
     # Legacy field retained for saved configurations; no fixed settle delay.
     gripper_settle_s: float = 0.5
     # Legacy name: now the slow-wait reporting threshold, not an abort deadline.
@@ -441,6 +443,7 @@ class RobotConfig:
             gripper_speed=_number(gripper.get("speed", 500.0), "gripper speed"),
             gripper_open=_number(gripper.get("open", 850.0), "gripper open"),
             gripper_close=_number(gripper.get("close", 0.0), "gripper close"),
+            gripper_open_tolerance_pulse=_number(gripper.get("open_tolerance_pulse", 15.0), "gripper open tolerance"),
             gripper_settle_s=_number(gripper.get("settle_s", 0.5), "gripper settle time"),
             gripper_completion_timeout_s=_number(gripper.get("completion_timeout_s", 10.0), "gripper completion timeout"),
             gripper_width_mm=_number(gripper_width_mm, "gripper width"),
@@ -474,6 +477,8 @@ class RobotConfig:
             )
         if self.gripper_speed <= 0:
             raise ConfigError("real gripper speed must be positive")
+        if not math.isfinite(self.gripper_open_tolerance_pulse) or not 0 <= self.gripper_open_tolerance_pulse <= 25:
+            raise ConfigError("gripper open tolerance must be finite and in [0, 25] pulse")
         if not math.isfinite(self.gripper_settle_s) or self.gripper_settle_s < 0:
             raise ConfigError("gripper settle time must be finite and non-negative")
         if not math.isfinite(self.gripper_completion_timeout_s) or self.gripper_completion_timeout_s <= 0:

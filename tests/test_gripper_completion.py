@@ -153,6 +153,42 @@ def test_already_closed_and_list_sdk_results(config, backend):
     assert result['completion']['duration_s'] == 0
 
 
+def test_open_840_stopped_accepts_850_target(config, backend):
+    b = backend([sample(840), sample(840)])
+    result, _ = b.open_gripper(config)
+    assert result['completion']['reason'] == 'measured_target_reached'
+    assert result['completion']['position_tolerance_pulse'] == 15.
+    assert b.arm.commands[0][0] == 850.
+
+
+def test_open_tolerance_never_accepts_moving_or_far_stopped_position(config, backend):
+    b = backend([sample(0), sample(830), sample(840, 1), sample(840)])
+    result, _ = b.open_gripper(config)
+    assert [r['completion_reason'] for r in result['completion']['samples']] == [
+        None, None, 'measured_target_reached']
+
+
+def test_open_tolerance_does_not_relax_close(config, backend):
+    b = backend([sample(850), sample(10), sample(4)])
+    result, _ = b.close_gripper(replace(config, gripper_open_tolerance_pulse=25))
+    assert result['completion']['position_tolerance_pulse'] == 5.
+    assert result['completion']['samples'][0]['completion_reason'] is None
+    assert result['feedback']['position_pulse'] == 4
+
+
+def test_configured_open_tolerance_is_used(config, backend):
+    b = backend([sample(840), sample(840), sample(848)])
+    result, _ = b.open_gripper(replace(config, gripper_open_tolerance_pulse=3))
+    assert result['completion']['samples'][0]['completion_reason'] is None
+    assert result['completion']['position_tolerance_pulse'] == 3.
+
+
+@pytest.mark.parametrize('tolerance', [-1, 26, float('nan'), float('inf')])
+def test_invalid_open_tolerance_rejected(config, tolerance):
+    with pytest.raises(ConfigError, match='open tolerance'):
+        replace(config, gripper_open_tolerance_pulse=tolerance).validate_for_real()
+
+
 def test_failed_command_blocks_following_action(config, backend):
     b = backend([sample(850)])
     b.arm.result = 23
@@ -255,12 +291,16 @@ def test_completion_timeout_loads_with_backward_compatible_default(tmp_path):
     root = Path(__file__).resolve().parents[1]
     raw = json.loads((root / 'config' / 'robot.example.json').read_text())
     raw['gripper'].pop('completion_timeout_s', None)
+    raw['gripper'].pop('open_tolerance_pulse', None)
     path = tmp_path / 'config.json'
     path.write_text(json.dumps(raw))
     assert RobotConfig.load(root, path).gripper_completion_timeout_s == 10.
+    assert RobotConfig.load(root, path).gripper_open_tolerance_pulse == 15.
     raw['gripper']['completion_timeout_s'] = 15.
+    raw['gripper']['open_tolerance_pulse'] = 12.
     path.write_text(json.dumps(raw))
     assert RobotConfig.load(root, path).gripper_completion_timeout_s == 15.
+    assert RobotConfig.load(root, path).gripper_open_tolerance_pulse == 12.
 
 
 @pytest.mark.parametrize('timeout', [0, -1, float('nan'), float('inf')])
