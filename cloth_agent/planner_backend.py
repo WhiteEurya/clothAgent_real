@@ -456,6 +456,12 @@ class RemoteClaudeBackend:
             self._finish_phase("ssh_download_and_claude", started)
             if completed is not None:
                 self._remote_timings(completed.stderr)
+                # Preserve the complete CLI streams in the run artifact.  The
+                # live fold log intentionally truncates long stderr messages,
+                # which previously hid the actual schema/CLI rejection.
+                if self._debug_session is not None:
+                    self._debug_session.write("claude_stdout.txt", completed.stdout or "")
+                    self._debug_session.write("claude_stderr.txt", completed.stderr or "")
             # A local SSH timeout may prevent the remote shell's EXIT trap.
             # The independent best-effort cleanup is bounded and job-specific.
             cleanup_started = time.monotonic()
@@ -470,9 +476,10 @@ class RemoteClaudeBackend:
             finally:
                 self._finish_phase("cleanup", cleanup_started)
         if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
             raise PlannerBackendError(
                 f"remote Claude exited with {completed.returncode}: "
-                f"{completed.stderr.strip() or completed.stdout.strip()}"
+                f"{detail}"
             )
         parse_started = time.monotonic()
         try:

@@ -2785,7 +2785,7 @@ class FoldExplorationPipeline:
         reuse_latest_perception: bool = False,
         screen_margin_px: int = 8,
         max_replans: int = 4,
-        max_stage_retries: int = 1,
+        max_stage_retries: int = 0,
         retry_backoff_s: float = 5.0,
         unattended: bool = False,
         host_compile_acquisition_probe: bool = False,
@@ -6485,7 +6485,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--supervisor-timeout-s", type=int, default=900)
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means continuous until supervisor COMPLETE or a hard failure")
     parser.add_argument("--max-replans", type=int, default=4)
-    parser.add_argument("--max-stage-retries", type=int, default=1, help="extra retries for capture, supervisor, and evaluation failures")
+    parser.add_argument("--max-stage-retries", type=int, default=0, help="extra retries for capture, supervisor, and evaluation failures (default: none)")
     parser.add_argument("--retry-backoff-s", type=float, default=5.0)
     parser.add_argument(
         "--host-compile-acquisition-probe",
