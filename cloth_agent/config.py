@@ -203,8 +203,10 @@ class RobotConfig:
     gripper_speed: float = 500.0
     gripper_open: float = 850.0
     gripper_close: float = 0.0
-    # Feedback confirmation timeout extension after a gripper command.
+    # Legacy field retained for saved configurations; no fixed settle delay.
     gripper_settle_s: float = 0.5
+    # Legacy name: now the slow-wait reporting threshold, not an abort deadline.
+    # Feedback waits continue until completion, hardware fault or Ctrl+C.
     gripper_completion_timeout_s: float = 10.0
     # Effective jaw-to-jaw span used only to account for the gripper body when
     # the TCP is close to a Y workspace edge.  A value of 0 keeps the legacy

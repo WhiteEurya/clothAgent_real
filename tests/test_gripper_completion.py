@@ -58,6 +58,7 @@ def backend(monkeypatch):
     now = [0.]
     monkeypatch.setattr('cloth_agent.robot_api.time.monotonic', lambda: now[0])
     monkeypatch.setattr('cloth_agent.robot_api.time.sleep', lambda seconds: now.__setitem__(0, now[0]+seconds))
+    monkeypatch.setattr('cloth_agent.robot_api._gripper_log', lambda message: None)
     def build(samples):
         result = XArmBackend.__new__(XArmBackend)
         result.arm = Arm(samples)
@@ -96,9 +97,11 @@ def test_fabric_contact_requires_new_closing_progress(config, backend):
     [sample(850), sample(0, 1)],
 ])
 def test_stale_stopped_wrong_direction_or_still_moving_blocks_next_action(config, backend, samples):
-    b = backend(samples)
+    # Last unconfirmed sample persists beyond the former timeout; then the
+    # operator interrupts. No completion is invented and no command is resent.
+    b = backend(samples + [samples[-1]]*60 + [KeyboardInterrupt()])
     robot = RobotAPI(config, b)
-    with pytest.raises(RobotExecutionError, match='timeout'):
+    with pytest.raises(KeyboardInterrupt):
         robot.close_gripper()
     with pytest.raises(RobotExecutionError, match='halted'):
         robot.move(300, 0, 100, 0)
@@ -107,17 +110,31 @@ def test_stale_stopped_wrong_direction_or_still_moving_blocks_next_action(config
     assert trace['status'] == 'FAILED'
     assert trace['samples']
     assert trace['duration_s'] >= 2.
+    assert len(b.arm.commands) == 1
+    assert trace['timeout_s'] is None
 
 
 @pytest.mark.parametrize('bad', [
     sample(850, status_result=(7, 0)), sample(850, position_result=(9, 0)),
-    sample(850, error=3), sample(850, status=3), sample(850, position_result=0),
-    sample(850, position_result=(0, None)),
+    sample(850, position_result=0), sample(850, position_result=(0, None)),
+    sample(850, position_result=(0, float('nan'))),
+    sample(850, status_result=('bad_code', 0)),
 ])
-def test_bad_feedback_is_never_completion(config, backend, bad):
-    b = backend([sample(850), bad])
+def test_bad_reads_retry_then_complete_without_resending(config, backend, bad):
+    b = backend([sample(850)] + [bad]*60 + [sample(300, 1), sample(0)])
     robot = RobotAPI(config, b)
-    with pytest.raises(RobotExecutionError, match='feedback invalid'):
+    robot.close_gripper()
+    robot.move(300, 0, 100, 0)
+    assert not robot.halted
+    assert b.arm.moves[0]['samples_read'] == 63
+    assert len(b.arm.commands) == 1
+    assert robot.actions[0].gripper_result['completion']['duration_s'] >= 3.
+
+
+@pytest.mark.parametrize('bad', [sample(850, error=3), sample(850, status=3)])
+def test_hardware_fault_still_blocks_motion(config, backend, bad):
+    robot = RobotAPI(config, backend([sample(850), bad]))
+    with pytest.raises(RobotExecutionError, match='hardware fault'):
         robot.close_gripper()
     assert robot.halted
     assert robot.action_dicts()[0]['gripper_result']['completion']['failed_feedback']
@@ -163,16 +180,61 @@ def test_read_failure_before_command_does_not_send_command(config, backend):
 
 
 def test_already_moving_does_not_send_another_command(config, backend):
-    b = backend([sample(500, 1)])
-    with pytest.raises(RobotExecutionError, match='already moving'):
-        b.close_gripper(config)
-    assert not b.arm.commands
+    b = backend([sample(500, 1)]*60 + [sample(850), sample(0)])
+    b.close_gripper(config)
+    assert len(b.arm.commands) == 1
+    assert b.arm.index == 62
+
+
+def test_initial_read_failure_waits_before_sending_command(config, backend):
+    b = backend([sample(850, status_result=(7, 0))]*60 + [sample(850), sample(0)])
+    result, _ = b.close_gripper(config)
+    assert result['completion']['duration_s'] == pytest.approx(3.)
+    assert b.arm.index == 62
+    assert len(b.arm.commands) == 1
+
+
+@pytest.mark.parametrize('target,initial,final', [('open', 0, 850), ('close', 850, 0)])
+def test_long_motion_waits_until_feedback_confirms_completion(config, backend, target, initial, final):
+    b = backend([sample(initial)] + [sample(400, 1)]*260 + [sample(final)])
+    result, _ = getattr(b, target + '_gripper')(config)
+    trace = result['completion']
+    assert trace['duration_s'] >= 13.
+    assert trace['status'] == 'COMPLETED'
+    assert trace['reason'] == 'measured_target_reached'
+    assert len(trace['samples']) == 200
+    assert trace['dropped_sample_count'] == 61
+    assert trace['sample_count'] == 261
+    assert len(b.arm.commands) == 1
+
+
+def test_permanently_unavailable_feedback_waits_for_interrupt(config, backend):
+    b = backend([sample(850)] + [sample(850, status_result=(7, 0))]*260 + [KeyboardInterrupt()])
+    robot = RobotAPI(config, b)
+    with pytest.raises(KeyboardInterrupt):
+        robot.close_gripper()
+    assert robot.halted
+    assert not b.arm.moves
+    assert robot.actions[0].gripper_result['completion']['duration_s'] >= 13.
+
+
+def test_wait_log_is_visible_and_captured(monkeypatch):
+    import io
+    import sys
+    from cloth_agent.robot_api import _gripper_log
+    captured, terminal = io.StringIO(), io.StringIO()
+    with monkeypatch.context() as context:
+        context.setattr(sys, 'stdout', captured)
+        context.setattr(sys, '__stdout__', terminal)
+        _gripper_log('[gripper] close: READ_RETRY; arm stays still')
+    assert captured.getvalue() == terminal.getvalue()
+    assert 'READ_RETRY' in terminal.getvalue()
 
 
 def test_failed_gripper_result_suppresses_session_home(config, backend):
     from cloth_agent.experiment import ExperimentRunner
     from cloth_agent.session import AgentSession
-    robot = RobotAPI(config, backend([sample(850), sample(850)]))
+    robot = RobotAPI(config, backend([sample(850), sample(850, error=3)]))
     with pytest.raises(RobotExecutionError):
         robot.close_gripper()
     runner = ExperimentRunner.__new__(ExperimentRunner)
@@ -215,7 +277,7 @@ def test_runner_does_not_lift_release_or_home_after_unconfirmed_close(
     workspace.mkdir()
     (workspace / 'test.py').write_text(
         'def run():\n    close_gripper()\n    move(300, 0, 100, 0)\n    open_gripper()\n    home()\n')
-    b = backend([sample(850), sample(850)])
+    b = backend([sample(850), sample(850, error=3)])
     b.close = lambda: None
     b.open_gripper = lambda *args: pytest.fail('no automatic release after unconfirmed gripper')
     b.home = lambda *args: pytest.fail('no automatic Home after unconfirmed gripper')
@@ -243,7 +305,7 @@ def test_failed_emergency_release_also_blocks_home(tmp_path, config, backend, mo
     workspace.mkdir()
     (workspace / 'test.py').write_text(
         'def run():\n    move(300, 0, 100, 0)\n    close_gripper()\n    home()\n')
-    b = backend([sample(0), sample(0)])  # release never starts
+    b = backend([sample(0), sample(0, error=3)])  # release reports hardware fault
     b.close = lambda: None
     b.move = lambda *args: (_ for _ in ()).throw(RobotExecutionError('motion failed'))
     b.home = lambda *args: pytest.fail('no Home after failed emergency release')

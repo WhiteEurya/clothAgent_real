@@ -727,7 +727,7 @@ class _FoldViserState:
         self.debug_panel.content = "### Debug tail\n\n```text\n" + _short(debug_tail, 12000) + "\n```"
 
 
-def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refresh_s: float = 0.5, open_browser: bool = True) -> int:
+def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refresh_s: float = 0.5, open_browser: bool = False) -> int:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise PermissionError("fold exploration Viser must bind to loopback")
     if not 0.1 <= float(refresh_s) <= 30.0:
@@ -780,10 +780,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--refresh-s", type=float, default=0.5)
-    parser.add_argument("--no-open-browser", action="store_true")
+    browser = parser.add_mutually_exclusive_group()
+    browser.add_argument("--open-browser", dest="open_browser", action="store_true",
+                         help="open the viewer URL in a browser (default: only print the URL)")
+    browser.add_argument("--no-open-browser", dest="open_browser", action="store_false")
+    parser.set_defaults(open_browser=False)
     args = parser.parse_args(argv)
     return run_viewer(args.source, host=args.host, port=args.port, refresh_s=args.refresh_s,
-                      open_browser=not args.no_open_browser)
+                      open_browser=args.open_browser)
 
 
 if __name__ == "__main__":  # pragma: no cover
