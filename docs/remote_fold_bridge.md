@@ -162,7 +162,7 @@ python scripts/remote_fold_smoke.py \
 
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前新增一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，并 Read 最终选定图；本地验证像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
-方向准备、supervisor、视觉规划、动作提案和评价各自最多尝试 6 次新编辑，旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。每次远端 CLI 调用还通过 `--max-turns 16` 限制模型轮次，防止编辑额度耗尽后仍无限读图；这不是 16 次工具调用或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
+方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑、16 轮模型调用。状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑、8 轮模型调用。旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。模型轮数通过 CLI `--max-turns` 限制，防止编辑额度耗尽后仍无限读图；这不是工具调用次数或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
 
 工具响应附带 `inspection_history`，列出已有图片的 ID、路径、父图、操作参数与成功 Read 次数；Claude 可用 `list_images` 查询完整目录。远端 job 内保存 `inspection_history.json` 快照和 `image_tool_calls.jsonl` 日志。相同源 image_id、相同操作和参数会返回已有图片及 `reused=true`，不新增文件、不消耗新编辑额度，但仍计入工具调用次数。MCP 重启从日志恢复图片目录、编辑缓存和调用计数。历史只属于当前 job，不自动跨阶段共享；本地 `claude_image_tools/<stage>/events.jsonl`、`image_debug.json` 和 `images/` 长期保留对应操作、读取记录与经像素校验的重建图，远端目录按原流程清理。成功 Read 仅证明工具返回过图片，不代表模型理解正确。
 
@@ -175,6 +175,28 @@ Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 
 原有 Rxxx 可执行性、任务模式、工作区、IK 和执行校验继续生效。网络/Claude/schema/grounding 失败不返回 Proposal；重试耗尽后远程 supervisor/evaluator 不使用旧的默认状态 fallback。每个远端 job 使用 UUID 临时目录、远端 EXIT trap 和本地 finally 的有界尽力清理。公网中转服务的文件按一小时有效期处理，删除远端目录不会删除公网副本。
 
 ## 离线回归
+
+## Claude 对话与传输计时
+
+远端调用使用 `--output-format stream-json --verbose`，逐条接收 CLI 公开消息；只把终止 `result` 信封交给原 planner parser，中间 assistant 消息不能替代最终方案。没有最终结果或最终结果为错误时，不执行动作。
+
+在 Viser 的 `Claude image operations / <stage>` 中可展开以下文件。磁盘位置为本轮 `iteration_*/claude_image_tools/<stage>_<id>/`：
+
+- `prompt.txt`、`system_prompt.txt`：应用实际发送的完整文本；`request.json` 包含图片清单、schema、远端路径和命令。原始输入图片与处理图保存在 `images/`。
+- `claude_transcript.md`：Claude 公开文字、接口提供的 reasoning（如果有）、工具输入与返回结果。隐藏或被删减的内部推理不可获取，不会补写或猜测。
+- `claude_events.jsonl`：每条 CLI 消息、接收时间、相对耗时和距上条消息的间隔；`stdout.log` 保留原始流。消息间隔包含网络、排队、工具和模型等待，不是纯推理时长，也不是完整的底层 API 请求日志。
+- `timing.md` / `timing.json`：逐图字节数、Alienware HTTPS 上传、公司电脑 HTTPS 下载、SHA256 校验，以及 SSH、Claude、清理、总调用耗时。未知时长不填零；SSH 等父阶段包含子阶段，不能直接相加。
+- `claude_result.json`：最终 CLI 返回，包含 CLI 实际提供的模型、token、轮次、API 耗时和费用统计。没有最终结果（如超时）时此文件不存在，之前的逐条记录仍保留。
+
+Viser 实时更新消息数量和最后消息时间；详细输入、对话和计时均可展开。跨机器耗时使用各侧测量值，消息接收时间使用本地时钟；不能据此精确拆分服务端排队和模型计算。日志功能不增加模型调用，不要求模型额外生成解释。
+
+## 单腕部 Cam A 抓取检查
+
+正式折叠执行在两个同步动作完成回调中保存 RGB：夹爪反馈确认闭合后、下一次抬升前的 `hold_check/camera_A_grasp_after_close.png`；第一次抬升完成、后续运输前的 `hold_check/camera_A_grasp_after_lift.png`。`grasp_snapshots.json` 记录动作编号、拍照状态、来源和耗时。开启录像时等待正在使用的 Cam A 流中的新帧（最多 3 秒，不重新打开设备）；`--no-video` 时用配置中的 A 相机单独拍摄 RGB，拍照期间不移动机械臂。模拟模式不打开相机。可选 Cam C 保持独立，但这两张证据图不依赖它。
+
+照片在 Viser 中可见，也会通过 RGB 白名单送入执行后评价，分别标注闭合后和抬升后。腕部视角随机械臂运动，不能把画面位移或夹爪闭合当成成功抓取的证明。缺失、遮挡或不明确的证据要求评价保持 UNKNOWN。拍照失败会保存 FAILED 及原因，不沿用旧图；这些照片是诊断证据，不新增“暂停轨迹等待 Claude 判断”的控制关卡，原有夹爪反馈等待与本地安全检查保留。
+
+正式 FOLD/REPAIR_SLEEVE 轨迹现在在主执行器中加入在线抓取关卡：夹爪确认闭合后，先沿同一 XY 方向抬升最多 10 mm（不超过模型原始首个抬升），暂停并读取上述两张 Cam A 图。只有 Claude 返回 `GRASP_CONFIRMED` 且置信度至少 0.80，才继续原始首个抬升和后续运输；`EMPTY`、`UNKNOWN`、低置信度、缺图、超时、拒绝或 schema 错误都会走预验证的下降、打开、回到小抬升高度、Home 中止路径。中止不生成折叠动作，也不会用 unattended 重启刷过这一关。该视觉判定调用最多 4 轮、0 次图像编辑和 90 秒总预算。
 
 ## 越界点离线诊断
 

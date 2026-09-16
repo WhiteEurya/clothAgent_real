@@ -49,6 +49,7 @@ RGB_NAMES = frozenset({
     "camera_a_rgb_contact_sheet.png", "camera_b_rgb_contact_sheet.png",
     "camera_c_rgb_contact_sheet.png", "camera_c.png",
     "camera_c_observer_rgb.png", "camera_c_observer_rgb_hold_check.png",
+    "camera_a_grasp_after_close.png", "camera_a_grasp_after_lift.png",
     "fold_reference_source.png", "fold_reference_target.png",
     "camera_a_molmo_frame_hint.png", "camera_a_molmo_hint_upright.png",
     "camera_a_molmo_hint_collar_up.png",
@@ -351,6 +352,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
     def _ask(self, stage, context, schema, images, root, instructions):
+        evaluation_stage = stage in {'evaluation', 'acquisition_evaluation'}
         instructions = instructions.replace('with [u,v] in the CURRENT upright RGB for transport destinations.',
             'with image_id naming the exact source RGB/view and pixel_xy in that view; the host maps transport destinations.')
         instructions = instructions.replace(
@@ -369,7 +371,8 @@ class RemoteFoldClient(ClaudeAutoClient):
         try:
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
                 debug_dir=image_debug,
-                image_edit_limit=6,
+                image_edit_limit=2 if evaluation_stage else 6,
+                max_turns=8 if evaluation_stage else None,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
                 system_prompt="You are a garment reasoning assistant. Inspect RGB using Read and image tools as needed. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)
@@ -503,8 +506,14 @@ class RemoteFoldClient(ClaudeAutoClient):
         video = rgb_evidence(video, run_dir)
         observers = rgb_evidence(observer_images, run_dir)
         images = [*before, *after, *video, *observers]
+        snapshot_roles = {
+            'camera_a_grasp_after_close.png': 'Camera A wrist RGB after confirmed closure, BEFORE lift',
+            'camera_a_grasp_after_lift.png': 'Camera A wrist RGB after first lift, BEFORE transport',
+        }
         roles = (["before"] * len(before) + ["after"] * len(after) +
-                 ["rollout RGB contact sheet"] * len(video) + ["observer after"] * len(observers))
+                 ["rollout RGB contact sheet"] * len(video) +
+                 [snapshot_roles.get(p.name.lower(), 'observer RGB evidence; use its capture label for chronology')
+                  for p in observers])
         context = {"task": semantic_task(objective or "Evaluate the current garment task."),
             "acquisition_only": acquisition,
             "proposed_strategy": semantic_history(proposal.reveal_strategy),
@@ -513,7 +522,16 @@ class RemoteFoldClient(ClaudeAutoClient):
                        for i, (path, role) in enumerate(zip(images, roles))]}
         payload, result, prompt, _ = self._ask("acquisition_evaluation" if acquisition else "evaluation",
             context, AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
-            "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. No telemetry or depth is supplied. Mark acquisition/target UNKNOWN when images do not establish them. For acquisition-only probes, transport status must be UNKNOWN, laydown NOT_REACHED, task_progress NEUTRAL; do not claim that returning to the initial scene proves successful acquisition. Provide the full requested evaluation schema, with causal next_experiment suggestions.")
+            "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. "
+            "Use after-close and after-lift Camera A stills when supplied to assess whether fabric was acquired and lifted. "
+            "Camera A is wrist-mounted and moves with the gripper: image displacement alone is not proof of cloth motion. "
+            "Closure confirmation is not proof of grasping cloth. No telemetry or depth is supplied. "
+            "Mark acquisition/target UNKNOWN when images do not establish them, including occluded or missing grasp evidence. "
+            "Read the supplied evidence first. At most TWO new image edits are allowed for a specific ambiguity; "
+            "reuse saved views and finish within EIGHT model turns. Do not re-plan the fold or repeatedly rotate/crop. "
+            "For acquisition-only probes, transport status must be UNKNOWN, laydown NOT_REACHED, task_progress NEUTRAL; "
+            "do not claim that returning to the initial scene proves successful acquisition. "
+            "Provide the full requested evaluation schema, with causal next_experiment suggestions.")
         evaluation = validate_evaluation_payload(payload)
         if acquisition and (evaluation.transport.status != "UNKNOWN" or
                 evaluation.laydown.status != "NOT_REACHED" or evaluation.task_progress.status != "NEUTRAL"):

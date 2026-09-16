@@ -237,7 +237,7 @@ def _iter_images(iteration_dir: Path) -> list[Path]:
             rank = 0
         elif "trajectory" in text or "proposal" in text:
             rank = 1
-        elif "rollout_recording" in text:
+        elif "rollout_recording" in text or "hold_check" in text:
             rank = 2
         elif "after_raw" in text:
             rank = 3
@@ -272,7 +272,7 @@ def _debug_markdown(source: Path) -> str:
         age = 0.
     lines = [f"Current / last event: **{last.get('stage')} — {_short(last.get('message'), 300)}**",
              f"\nRun elapsed at last event: {last.get('elapsed_s', 0):.1f} s · last update {age:.1f} s ago",
-             "\nSSH active includes downloads and Claude. Remote subphase durations arrive when SSH returns.",
+             "\nSSH includes downloads and Claude. Transfer timings and public Claude messages stream as available; message gaps are not pure reasoning time.",
              "\nRecent timed stages (nested durations overlap; do not sum rows):\n",
              "| Run time | Stage | Event | Duration |", "| ---: | --- | --- | ---: |"]
     timed = [e for e in events if isinstance(e.get("fields", {}).get("duration_s"), (float, int))]
@@ -404,6 +404,11 @@ def _image_tool_summary(data):
         f"Elapsed: {data.get('elapsed_s', 0):.1f}s | "
         f"Audit: {'complete' if data.get('audit_complete') else 'in progress / incomplete'}",
         "READ_COMPLETED means the Read tool succeeded; it does not prove visual understanding."]
+    last_message = data.get('last_claude_event')
+    if last_message:
+        lines.append(f"Claude public messages: {data.get('claude_event_count', 0)}; "
+                     f"last: {last_message.get('type')} at +{last_message.get('received_elapsed_s', 0):.1f}s. "
+                     'See claude_transcript.md and timing.md below. Hidden reasoning is not available.')
     if not any(e.get("tool") in {"rotate_image", "crop_image", "resize_image"} for e in data.get("events", [])):
         lines.append("No image transformation calls recorded so far.")
     if data.get("error"):
@@ -609,7 +614,9 @@ class _FoldViserState:
                             self.tool_image_handles[key] = self.server.gui.add_image(pixels, label=label)
                 # Complete request, tool results/matrices/hashes, stdout and
                 # stderr remain expandable; do not truncate diagnostic files.
-                for name in ("request.json", "image_debug.json", "stdout.log", "stderr.log", "exception.log"):
+                for name in ("prompt.txt", "system_prompt.txt", "claude_transcript.md", "timing.md",
+                             "timing.json", "claude_result.json", "claude_events.jsonl",
+                             "request.json", "image_debug.json", "stdout.log", "stderr.log", "exception.log"):
                     path = manifest.parent / name
                     if not path.exists():
                         continue
@@ -624,6 +631,8 @@ class _FoldViserState:
                     self.tool_raw_mtimes[key] = mtime
                     fence = "`" * max(4, 1 + max((len(m.group()) for m in re.finditer(r"`+", content)), default=0))
                     markdown = fence + "text\n" + content + "\n" + fence
+                    if name.endswith('.md'):
+                        markdown = content
                     if key not in self.tool_raw_panels:
                         self.tool_raw_folders[key] = self.server.gui.add_folder(name, expand_by_default=False)
                         with self.tool_raw_folders[key]:

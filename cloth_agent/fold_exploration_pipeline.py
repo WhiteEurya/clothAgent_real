@@ -23,13 +23,11 @@ continues to the next iteration.  Failures in perception/evaluation and other
 non-physical stages may restart a fresh timestamped attempt; explicit user
 interrupts and physical execution failures remain stop conditions.
 
-An optional Camera-C observer is enabled by default through
-``--observer-camera-serial``.  It records RGB-only before/after frames and a
-rollout video for grasp and occlusion evaluation.  After the first move above
-the selected grasp, the host also saves a dedicated ``hold_check`` still from
-the recorder's live frame stream; this is the primary visual witness for
-short-term acquisition.  Camera C is deliberately uncalibrated and is never
-used for depth fusion, point grounding, workspace checks, or robot commands.
+Camera A saves diagnostic RGB after confirmed closure and after the first
+post-close lift. Frames come from the active recorder, or a one-shot RGB
+capture when video is disabled. An explicitly configured Camera-C observer
+remains optional; grasp evidence does not require it. These moving-camera
+stills are visual evidence only and are never used for coordinate grounding.
 
 Claude remains the strategy authority.  In acquisition-learning iterations it
 must return the reversible lift probe itself; the host validates and compiles
@@ -50,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +82,7 @@ from .free_exploration import (
 )
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
+from .grasp_checkpoint import compile_grasp_checkpoint, inspect_grasp, GraspCheckpointRejected
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
@@ -507,7 +507,7 @@ def _proposal_actions(value: Any) -> list[Mapping[str, Any]]:
 def _first_post_close_move_index(value: Any) -> int | None:
     """Return the zero-based first lift move after ``close_gripper``.
 
-    The fold executor uses this action boundary to save a Camera-C still while
+    The fold executor uses this action boundary to save a Camera-A still while
     the gripper is already above the grasp.  It is an observation hook only:
     it does not alter the validated trajectory or gate robot motion.
     """
@@ -550,6 +550,46 @@ def _first_post_close_move_index(value: Any) -> int | None:
         if post_z > grasp_z:
             return index
     return None
+
+
+def _capture_grasp_check_rgb(config, recorder, path: Path, after_ns: int) -> dict[str, Any]:
+    """Save current wrist RGB without moving the arm or re-opening an owned camera."""
+    if 'A' not in config.active_camera_labels:
+        raise RuntimeError('Camera A is not active for grasp evidence')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if recorder is not None:
+        frame = recorder.wait_for_latest_rgbd(after_monotonic_ns=after_ns,
+                                              timeout_s=3.0, labels=('A',))['A']
+        if frame.host_monotonic_ns <= after_ns:
+            raise RuntimeError('refusing stale Camera A grasp evidence')
+        Image.fromarray(frame.rgb).convert('RGB').save(path)
+        metadata = {'source': 'active_camera_A_recorder', 'frame_monotonic_ns': frame.host_monotonic_ns,
+                    'frame_number': frame.color_frame_number, 'frame_utc': frame.host_utc}
+    else:
+        spec = next(camera for camera in config.cameras if camera.label == 'A')
+        # No recorder owns A. This helper opens only RGB and never changes the
+        # robot pose; it is also used when --no-video is selected.
+        manifest = capture_observer_rgb(spec.serial, path.parent / path.stem,
+            label='A', width=config.width, height=config.height, fps=config.fps,
+            color_exposure=spec.color_exposure, color_white_balance=spec.color_white_balance,
+            warmup_frames=config.warmup_frames)
+        Path(manifest['rgb_image']).replace(path)
+        manifest['rgb_image'] = str(path.resolve())
+        _write_json(path.parent / path.stem / 'camera_A_observer_manifest.json', manifest)
+        metadata = {'source': 'camera_A_single_rgb_capture', 'capture_manifest': manifest}
+    return {'status': 'CAPTURED', 'label': 'A', 'image': str(path.resolve()),
+            'requested_after_monotonic_ns': after_ns, 'geometry_used': False, **metadata}
+
+
+def _grasp_check_images(recording: Mapping[str, Any]) -> list[Path]:
+    result = []
+    for stage in ('after_close', 'after_lift'):
+        item = recording.get('grasp_snapshots', {}).get(stage, {})
+        if item.get('status') == 'CAPTURED' and item.get('image'):
+            path = Path(item['image']).resolve()
+            if path.is_file():
+                result.append(path)
+    return result
 
 
 def _is_reference_grounding_mismatch(error: BaseException) -> bool:
@@ -2660,7 +2700,8 @@ class FoldSupervisor:
             image_debug = debug_directory(images_remote, Path(context_bundle["directory"]), "supervisor")
             completed = self.backend.invoke(prompt=prompt_remote,
                 debug_dir=image_debug,
-                image_edit_limit=6,
+                image_edit_limit=2,
+                max_turns=8,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
                 system_prompt="You are a read-only visual state classifier for a real T-shirt folding experiment. Inspect the supplied RGB evidence, determine the garment's folding state using the stated five-step task, and return only the requested garment-state JSON. The host handles calibration, safety, and execution; you have no robot access and must not discuss or plan physical actions.")
             result = _normalize_supervisor_current_step(
@@ -2988,7 +3029,7 @@ class FoldExplorationPipeline:
         supervisor, evaluation, and process-level faults).
         """
 
-        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, MolmoOrientationError)):
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, MolmoOrientationError, GraspCheckpointRejected)):
             return False
         if operational_stage == "execution":
             return False
@@ -3813,9 +3854,14 @@ class FoldExplorationPipeline:
         *,
         label: str,
         hold_action_index: int | None = None,
+        grasp_gate: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = time.monotonic()
         single_view_confirmed = self._single_view_execution_confirmation(config)
+        if grasp_gate is not None:
+            hold_action_index = int(grasp_gate['checkpoint_action_index'])
+            if self.real and getattr(getattr(self, 'client', None), 'backend', None) is None:
+                raise GraspCheckpointRejected('live grasp verification requires the remote Claude backend; no motion started')
         self._debug("execution", "starting trajectory execution", label=label,
                     source=str(source_path), single_view_confirmed=single_view_confirmed,
                     active_cameras=list(config.active_camera_labels))
@@ -3828,6 +3874,7 @@ class FoldExplorationPipeline:
         observer_recording_result: dict[str, Any] = {}
         recording_errors: list[str] = []
         hold_snapshot: dict[str, Any] | None = None
+        grasp_snapshots: dict[str, Any] = {}
         if self.real and self.record_video:
             self._debug("recording", "starting configured-camera rollout recorder",
                         directory=str(recording_dir), active_cameras=list(config.active_camera_labels))
@@ -3925,7 +3972,7 @@ class FoldExplorationPipeline:
             if thread is not None or observer_thread is not None:
                 time.sleep(0.25)
         def on_robot_action(action_index: int, action: Mapping[str, Any]) -> None:
-            """Capture one Camera-C still immediately after the first lift move."""
+            """Capture A at successful action boundaries, before the next move."""
 
             nonlocal hold_snapshot
             action_payload = dict(action)
@@ -3941,6 +3988,29 @@ class FoldExplorationPipeline:
                     else None
                 ),
             )
+            stage = ('after_close' if action_payload.get('name') == 'close_gripper'
+                     else 'after_lift' if hold_action_index is not None and action_index == hold_action_index
+                     else None)
+            if stage and stage not in grasp_snapshots:
+                capture_started = time.monotonic()
+                after_ns = time.monotonic_ns()
+                path = iteration_dir / 'hold_check' / f'camera_A_grasp_{stage}.png'
+                snapshot = {'status': 'SKIPPED', 'reason': 'simulation; no physical camera capture'}
+                try:
+                    if self.real:
+                        snapshot = _capture_grasp_check_rgb(config, recorder, path, after_ns)
+                except Exception as exc:
+                    snapshot = {'status': 'FAILED', 'error': f'{type(exc).__name__}: {exc}'}
+                    self._debug_exception('grasp-check', exc, nonfatal=True, capture_stage=stage)
+                snapshot.update(action_index=action_index, action=action_payload, captured_after=stage,
+                                duration_s=round(time.monotonic() - capture_started, 3))
+                grasp_snapshots[stage] = snapshot
+                _write_json(iteration_dir / 'hold_check' / 'grasp_snapshots.json', grasp_snapshots)
+                self._debug('grasp-check', 'Camera A grasp evidence capture finished', capture_stage=stage,
+                            status=snapshot['status'], image=snapshot.get('image'),
+                            duration_s=snapshot['duration_s'])
+            if not self.observer_camera_serial:
+                return
             if hold_action_index is None or action_index != hold_action_index:
                 return
             if hold_snapshot is not None:
@@ -4012,6 +4082,32 @@ class FoldExplorationPipeline:
                     nonfatal=True,
                 )
 
+        def verify_grasp_before_continuation():
+            decision_path = iteration_dir / 'hold_check' / 'grasp_decision.json'
+            _write_json(decision_path, {'status': 'INSPECTING', 'continue_transport': False})
+            self._debug('grasp-check', 'paused at small lift; assessing retained fabric',
+                        lift_mm=grasp_gate['lift_mm'])
+            started_check = time.monotonic()
+            try:
+                if not self.real:
+                    decision = {'status': 'SIMULATED', 'classification': 'UNKNOWN',
+                                'continue_transport': False, 'reason': 'no real visual evidence in simulation'}
+                else:
+                    images = _grasp_check_images({'grasp_snapshots': grasp_snapshots})
+                    decision = inspect_grasp(self.client.backend, images,
+                        iteration_dir / 'claude_image_tools' / f'grasp_checkpoint_{uuid.uuid4().hex[:12]}')
+            except BaseException as exc:
+                decision = {'status': 'FAILED_CLOSED', 'classification': 'UNKNOWN',
+                            'continue_transport': False, 'error': f'{type(exc).__name__}: {exc}'}
+                if not isinstance(exc, Exception):
+                    _write_json(decision_path, decision)
+                    raise
+            decision.update(duration_s=round(time.monotonic() - started_check, 3),
+                            lift_mm=grasp_gate['lift_mm'], checkpoint_action_index=hold_action_index)
+            _write_json(decision_path, decision)
+            self._debug('grasp-check', 'grasp decision completed', **decision)
+            return decision
+
         execution_interrupted = False
         try:
             self._debug("execution", "sending validated trajectory to session runner", real=self.real)
@@ -4022,7 +4118,14 @@ class FoldExplorationPipeline:
                 "notes": f"Closed-loop five-step folding {label}.",
             }
             session_kwargs["action_callback"] = on_robot_action
-            execution = self.session.run_experiment(source_path.name, **session_kwargs)
+            if grasp_gate is None:
+                execution = self.session.run_experiment(source_path.name, **session_kwargs)
+            else:
+                execution = self.session.run_checkpointed_experiment(source_path.name,
+                    checkpoint_action_index=hold_action_index,
+                    abort_actions=grasp_gate['abort_actions'],
+                    checkpoint_callback=verify_grasp_before_continuation,
+                    required_classification='GRASP_CONFIRMED', **session_kwargs)
         except KeyboardInterrupt:
             # Do not turn an operator stop into an ordinary failed rollout.
             # The session's finally block still attempts mandatory Home; use a
@@ -4055,6 +4158,7 @@ class FoldExplorationPipeline:
                 observer_recorder.close()
                 observer_thread.join(timeout=3.0)
         recording = {
+            'grasp_snapshots': grasp_snapshots,
             "status": "failed"
             if recording_errors
             else ("completed" if recorder is not None or observer_recorder is not None else "disabled"),
@@ -5734,6 +5838,15 @@ class FoldExplorationPipeline:
                                     "probe_validation": acquisition_probe_plan,
                                     "grasp_height_resolution": grasp_height_resolution,
                                 }
+                        grasp_gate_plan = None
+                        if action_mode in {'FOLD', 'REPAIR_SLEEVE'}:
+                            execution_proposal, grasp_gate_plan = compile_grasp_checkpoint(execution_proposal)
+                            host_compilation.update(
+                                authority='Claude+host_grasp_height+host_grasp_checkpoint',
+                                rewritten=bool(host_compilation.get('rewritten') or grasp_gate_plan['inserted_micro_lift']),
+                                execution_action_count=len(execution_proposal.actions),
+                                grasp_checkpoint=grasp_gate_plan)
+                            _write_json(iteration_dir / 'grasp_checkpoint_plan.json', grasp_gate_plan)
                         source_path.write_text(
                             exploration_source(execution_proposal),
                             encoding="utf-8",
@@ -6034,9 +6147,16 @@ class FoldExplorationPipeline:
                     iteration_dir,
                     label=f"iteration_{iteration:03d}_{mode.lower()}",
                     hold_action_index=_first_post_close_move_index(execution_proposal),
+                    grasp_gate=grasp_gate_plan,
                 )
                 _write_json(iteration_dir / "execution.json", execution)
                 _write_json(iteration_dir / "recording.json", recording)
+                if grasp_gate_plan is not None and (
+                        execution.get('execution_completed') is not True or
+                        execution.get('checkpoint', {}).get('executed_branch') != 'CONTINUATION'):
+                    raise GraspCheckpointRejected(
+                        'grasp checkpoint did not authorize continuation; fold stopped; '
+                        'inspect hold_check/grasp_decision.json and execution.json')
                 gripper_telemetry = _extract_gripper_telemetry(execution)
                 _write_json(iteration_dir / "gripper_telemetry.json", gripper_telemetry)
                 self._debug(
@@ -6056,7 +6176,7 @@ class FoldExplorationPipeline:
                     stage="after perception",
                 )
                 observer_after_images = _select_observer_images(after_images)
-                hold_check_images: list[Path] = []
+                hold_check_images: list[Path] = _grasp_check_images(recording)
                 observer_recording = recording.get("observer")
                 if isinstance(observer_recording, Mapping):
                     hold_check = observer_recording.get("hold_check")

@@ -401,6 +401,11 @@ def test_both_entrypoints_use_strict_close_gate(
     b = backend(samples)
     b.close = lambda: None
     home_calls = []
+    capture_samples = []
+    def snapshot(*args):
+        capture_samples.append(b.arm.index)
+        return {'status': 'UNAVAILABLE', 'reason': 'camera mocked in gripper test'}
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', snapshot)
     def home(*args):
         home_calls.append(b.arm.index)
         return [300, 0, 200, 180, 0, 0], {}
@@ -442,8 +447,11 @@ def test_both_entrypoints_use_strict_close_gate(
         # read (position=3, stop), never the fifth (position=834, grasp).
         assert len(b.arm.moves) == 6
         assert b.arm.moves[2]['samples_read'] == 7
+        if route == 'fold_pipeline':
+            assert capture_samples == [7]  # photo only after measured closure
         assert home_calls
     else:
         assert len(b.arm.moves) == 2  # approach + descend only
         assert not home_calls
         assert result['gripper_completion_failed'] is True
+        assert capture_samples == []

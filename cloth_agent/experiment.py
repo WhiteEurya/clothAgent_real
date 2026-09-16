@@ -223,6 +223,7 @@ def _execute(
 def _execute_action_sequence(
     robot: RobotAPI,
     actions: Sequence[Mapping[str, Any]],
+    action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
 ) -> None:
     """Execute an already validated action slice on one persistent backend."""
 
@@ -248,6 +249,9 @@ def _execute_action_sequence(
             robot.home()
         else:  # pragma: no cover - guarded by source validation
             raise ExperimentValidationError(f"unsupported checkpoint action {name!r}")
+        if action_callback is not None:
+            records = robot.action_dicts()
+            action_callback(len(records) - 1, records[-1])
 
 
 def format_action_sequence(actions: list[dict[str, Any]]) -> str:
@@ -411,11 +415,16 @@ class ExperimentRunner:
         checkpoint_action_indices: Sequence[int] | None = None,
         abort_actions: Sequence[Mapping[str, Any]],
         checkpoint_callback: Callable[..., Mapping[str, Any]],
+        action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
+        required_classification: str = 'INDEPENDENT_LAYER_SUPPORTED',
         real: bool = False,
         confirmed: bool = False,
         notes: str = "",
     ) -> dict[str, Any]:
         """Execute one or more checkpoints, then continue or release on one backend."""
+
+        if required_classification not in {'INDEPENDENT_LAYER_SUPPORTED', 'GRASP_CONFIRMED'}:
+            raise ExperimentValidationError('unknown checkpoint approval contract')
 
         preflight = self.preflight(path)
         print(preflight.stdout, end="" if preflight.stdout.endswith("\n") or not preflight.stdout else "\n")
@@ -532,11 +541,12 @@ class ExperimentRunner:
                     _execute_action_sequence(
                         robot,
                         preflight.actions[segment_start : index + 1],
+                        action_callback,
                     )
                     try:
                         raw_decision = checkpoint_callback(checkpoint_number)
                         checkpoint_records.append(dict(raw_decision))
-                    except BaseException as exc:
+                    except Exception as exc:
                         checkpoint_records.append(
                             {
                                 "status": "FAILED_CLOSED",
@@ -555,13 +565,13 @@ class ExperimentRunner:
                     "runtime_decision": "REVERSE_RELEASE",
                     "executed_branch": "REVERSE_RELEASE",
                 }
-                _execute_action_sequence(robot, clean_abort)
+                _execute_action_sequence(robot, clean_abort, action_callback)
             else:
-                _execute_action_sequence(robot, acquisition)
+                _execute_action_sequence(robot, acquisition, action_callback)
                 try:
                     raw_decision = checkpoint_callback()
                     checkpoint = dict(raw_decision)
-                except BaseException as exc:
+                except Exception as exc:
                     checkpoint = {
                         "status": "FAILED_CLOSED",
                         "classification": "UNKNOWN",
@@ -570,9 +580,9 @@ class ExperimentRunner:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 continue_transport = bool(
-                    checkpoint.get("continue_transport")
+                    checkpoint.get("continue_transport") is True
                     and checkpoint.get("classification")
-                    == "INDEPENDENT_LAYER_SUPPORTED"
+                    == required_classification
                 )
                 checkpoint["continue_transport"] = continue_transport
                 checkpoint["executed_branch"] = (
@@ -581,6 +591,7 @@ class ExperimentRunner:
                 _execute_action_sequence(
                     robot,
                     continuation if continue_transport else clean_abort,
+                    action_callback,
                 )
         except KeyboardInterrupt as exc:
             interrupted = exc
@@ -591,7 +602,10 @@ class ExperimentRunner:
             gripper_failed = any(
                 (a.get('gripper_result') or {}).get('completion', {}).get('status') == 'FAILED'
                 for a in robot.action_dicts())
-            if error is not None and gripper_failed:
+            if interrupted is not None:
+                emergency_cleanup = {'attempted': False, 'released': False, 'home_completed': False,
+                    'reason': 'operator interrupted; no automatic motion', 'errors': []}
+            elif error is not None and gripper_failed:
                 emergency_cleanup = {'attempted': False, 'released': False,
                     'home_completed': False, 'reason': 'gripper completion unconfirmed; operator inspection required',
                     'errors': []}
@@ -629,6 +643,8 @@ class ExperimentRunner:
             actual_actions=robot.action_dicts(),
         )
         result["checkpoint"] = checkpoint
+        result['operator_interrupted'] = interrupted is not None
+        self.operator_interrupted = interrupted is not None
         result["checkpoint_action_index"] = int(final_checkpoint_index)
         result["checkpoint_action_indices"] = list(indices)
         result["checkpoint_abort_actions"] = clean_abort
@@ -653,6 +669,7 @@ class ExperimentRunner:
             (a.get('gripper_result') or {}).get('completion', {}).get('status') == 'FAILED'
             for a in actions)
         self.gripper_completion_failed = gripper_failed
+        self.operator_interrupted = False
         return {
             "created_at": _now(),
             "started_at": actions[0].get("requested_at") if actions else None,

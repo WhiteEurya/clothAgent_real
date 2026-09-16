@@ -25,12 +25,33 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 
-def parse_claude_json(stdout: str) -> dict[str, Any]:
-    """Decode the CLI envelope and a fenced/prose-wrapped planner object."""
+def claude_result_envelope(stdout: str) -> dict[str, Any]:
+    """Accept legacy JSON or the terminal result of verbose stream-json.
+
+    An assistant/tool message is never a substitute for a terminal result.
+    """
     try:
         outer = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise PlannerBackendError("Claude returned an invalid JSON envelope") from exc
+    except (TypeError, json.JSONDecodeError):
+        results = []
+        for line in (stdout or '').splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise PlannerBackendError('Claude returned an invalid JSON stream') from exc
+            if isinstance(item, dict) and item.get('type') == 'result':
+                results.append(item)
+        if len(results) != 1:
+            raise PlannerBackendError('Claude stream did not contain exactly one final result')
+        outer = results[0]
+    if not isinstance(outer, dict) or outer.get('type') in {'assistant', 'user', 'system', 'stream_event'}:
+        raise PlannerBackendError('Claude returned no final result envelope')
+    return outer
+
+
+def parse_claude_json(stdout: str) -> dict[str, Any]:
+    """Decode the CLI envelope and a fenced/prose-wrapped planner object."""
+    outer = claude_result_envelope(stdout)
     if not isinstance(outer, dict) or outer.get("is_error") is True:
         detail = outer.get("result") if isinstance(outer, dict) else None
         if detail:
@@ -124,6 +145,7 @@ class RemoteClaudeBackend:
         if type(max_turns) is not int or max_turns < 1:
             raise ValueError('max_turns must be a positive integer')
         self.max_turns = max_turns
+        self._overall_deadline = None
         self.progress_callback = None
         self.last_timings: dict[str, float] = {}
         self.last_image_tool_events: list[dict[str, Any]] = []
@@ -133,6 +155,14 @@ class RemoteClaudeBackend:
         if self.timeout_s <= 0 or not ssh_host or ssh_host.startswith("-"):
             raise ValueError("positive timeout and a valid SSH host are required")
 
+    def _remaining_timeout(self, limit):
+        if self._overall_deadline is None:
+            return limit
+        remaining = self._overall_deadline - time.monotonic()
+        if remaining <= 0:
+            raise PlannerBackendError('remote Claude overall deadline exceeded')
+        return min(limit, remaining)
+
     def _upload(self, image: Path) -> str:
         command = [
             self.curl_binary, "-fsS", "-X", "POST", self.upload_url,
@@ -140,7 +170,7 @@ class RemoteClaudeBackend:
         ]
         try:
             completed = subprocess.run(command, text=True, capture_output=True,
-                                       timeout=self.timeout_s, check=False, shell=False)
+                                       timeout=self._remaining_timeout(self.timeout_s), check=False, shell=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PlannerBackendError(f"HTTPS image upload failed: {exc}") from exc
         if completed.returncode != 0:
@@ -199,7 +229,15 @@ class RemoteClaudeBackend:
     def invoke(self, *, prompt: str, image_paths: Iterable[Path],
                schema: dict[str, Any], system_prompt: str,
                timeout_s: int | None = None, debug_dir: Path | None = None,
-               image_edit_limit: int | None = None) -> BackendResult:
+               image_edit_limit: int | None = None, max_turns: int | None = None,
+               overall_timeout_s: float | None = None) -> BackendResult:
+        if overall_timeout_s is not None and (type(overall_timeout_s) not in (int, float)
+                or not 0 < overall_timeout_s < float('inf')):
+            raise ValueError('overall_timeout_s must be finite and positive')
+        self._overall_deadline = None if overall_timeout_s is None else time.monotonic() + overall_timeout_s
+        if max_turns is not None and (type(max_turns) is not int or max_turns < 1):
+            raise ValueError('max_turns must be a positive integer')
+        self._call_max_turns = self.max_turns if max_turns is None else max_turns
         if image_edit_limit is not None and (type(image_edit_limit) is not int or not 0 <= image_edit_limit <= 24):
             raise ValueError('image_edit_limit must be an integer in [0, 24]')
         self._image_edit_limit = image_edit_limit
@@ -214,6 +252,8 @@ class RemoteClaudeBackend:
             self._debug_session = ImageDebugSession(debug_dir, image_paths,
                 {"prompt": prompt, "system_prompt": system_prompt, "schema": schema,
                  "image_edit_limit": image_edit_limit,
+                 "max_turns": self._call_max_turns,
+                 "overall_timeout_s": overall_timeout_s,
                  "image_paths": [str(p) for p in image_paths]})
         started = time.monotonic()
         try:
@@ -292,7 +332,9 @@ class RemoteClaudeBackend:
             f'"$cloth_image_python" {quoted_job}/image_tools.py --prepare '
             f'--job {quoted_job} --image-count {count}{budget_flag}; '
         )
-        flags = (f"--allowedTools {shlex.quote(','.join(('Read', *TOOL_NAMES)))} --tools Read "
+        allowed = TOOL_NAMES if limit != 0 else tuple(t for t in TOOL_NAMES
+            if not t.endswith(('__crop_image', '__rotate_image', '__resize_image')))
+        flags = (f"--allowedTools {shlex.quote(','.join(('Read', *allowed)))} --tools Read "
                  f"--mcp-config {quoted_job}/image_tools.mcp.json --strict-mcp-config "
                  f"--settings {quoted_job}/image_tools.settings.json "
                  "--disable-slash-commands ")
@@ -342,11 +384,18 @@ class RemoteClaudeBackend:
             self._debug_session.append_stream(name + ".log", line)
             if name == "stderr":
                 self._remote_timings(line)
+            else:
+                event = self._debug_session.consume_claude_line(line)
+                if event:
+                    self._progress('claude_message', 'received',
+                        message_type=event.get('type'), sequence=event['sequence'],
+                        since_previous_event_s=event['since_previous_event_s'])
 
         try:
             while len(closed) < 2 or process.poll() is None:
                 if time.monotonic() - started >= timeout_s:
-                    raise subprocess.TimeoutExpired(command, timeout_s)
+                    raise subprocess.TimeoutExpired(command, timeout_s,
+                        output=''.join(output['stdout']), stderr=''.join(output['stderr']))
                 try:
                     receive(*inbox.get(timeout=.1))
                 except queue.Empty:
@@ -395,6 +444,7 @@ class RemoteClaudeBackend:
                 urls.append(self._upload(path))
             finally:
                 self._finish_phase(f"upload_{i}", started)
+        call_timeout = self._remaining_timeout(call_timeout)
         job = f"/tmp/cloth_remote_{uuid.uuid4().hex}"
         quoted_job = shlex.quote(job)
         setup, tool_flags, tool_prompt = (self._image_tool_setup(job, len(images))
@@ -428,8 +478,8 @@ class RemoteClaudeBackend:
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
-            f"timeout {call_timeout}s claude -p --output-format json --permission-mode dontAsk "
-            f"{tool_flags}--no-session-persistence --max-turns {self.max_turns} "
+            f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --permission-mode dontAsk "
+            f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"
         )
@@ -439,7 +489,7 @@ class RemoteClaudeBackend:
             f"{prompt}\n\nRGB files available to inspect:\n" +
             "\n".join(f"- {job}/image_{i}.png" for i in range(len(images))) +
             tool_prompt +
-            f"\nThis call allows at most {self.max_turns} model turns. Reuse saved image history and finish promptly. "
+            f"\nThis call allows at most {self._call_max_turns} model turns. Reuse saved image history and finish promptly. "
             "If evidence is insufficient, report it using the requested schema; never invent an action. " +
             "\nReturn only the requested JSON object."
         )
@@ -449,6 +499,7 @@ class RemoteClaudeBackend:
         if self._debug_session:
             self._debug_session.request.update(remote_prompt=remote_prompt, command=command)
             self._debug_session.write("request.json", self._debug_session.request)
+            self._debug_session.save_prompt(remote_prompt)
         started = time.monotonic()
         self._progress("ssh_download_and_claude", "started", image_count=len(images))
         completed = None
@@ -470,8 +521,8 @@ class RemoteClaudeBackend:
                 # live fold log intentionally truncates long stderr messages,
                 # which previously hid the actual schema/CLI rejection.
                 if self._debug_session is not None:
-                    self._debug_session.write("claude_stdout.txt", completed.stdout or "")
-                    self._debug_session.write("claude_stderr.txt", completed.stderr or "")
+                    (self._debug_session.directory / 'claude_stdout.txt').write_text(completed.stdout or '', encoding='utf-8')
+                    (self._debug_session.directory / 'claude_stderr.txt').write_text(completed.stderr or '', encoding='utf-8')
             # A local SSH timeout may prevent the remote shell's EXIT trap.
             # The independent best-effort cleanup is bounded and job-specific.
             cleanup_started = time.monotonic()
@@ -488,12 +539,12 @@ class RemoteClaudeBackend:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             try:
-                envelope = json.loads(completed.stdout)
+                envelope = claude_result_envelope(completed.stdout)
                 if isinstance(envelope, dict):
                     detail = json.dumps({key: envelope[key] for key in
                         ('subtype', 'stop_reason', 'terminal_reason', 'num_turns', 'result', 'errors')
                         if key in envelope}, ensure_ascii=False) + '\n' + detail
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, PlannerBackendError):
                 pass
             raise PlannerBackendError(
                 f"remote Claude exited with {completed.returncode}: "
@@ -504,4 +555,7 @@ class RemoteClaudeBackend:
             parse_claude_json(completed.stdout)
         finally:
             self._finish_phase("json_parse", parse_started)
-        return BackendResult(completed.stdout, completed.stderr, completed.returncode, tuple(command))
+        # Preserve the raw stream in stdout.log; existing planner consumers
+        # continue receiving the same final JSON envelope as before.
+        return BackendResult(json.dumps(claude_result_envelope(completed.stdout)),
+                             completed.stderr, completed.returncode, tuple(command))

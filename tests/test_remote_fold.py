@@ -236,10 +236,22 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
     proposal, _ = compile_pixel_motion(motion_payload(), validate_visual_plan_payload(visual_payload()),
                                       grounding, session.robot_config, (30, 40))
     client = RemoteFoldClient(backend=backend, binary="missing")
+    snapshots = []
+    for name in ('camera_A_grasp_after_close.png', 'camera_A_grasp_after_lift.png'):
+        path = session.run_dir / name
+        Image.new('RGB', (10, 10), 'blue').save(path)
+        snapshots.append(path)
     client.evaluate(images, images, proposal=proposal, run_dir=session.run_dir,
-                    gripper_telemetry={"secret": "private_robot"})
+                    gripper_telemetry={"secret": "private_robot"}, observer_images=snapshots)
     client.evaluate_acquisition_probe(images, images, proposal=proposal, run_dir=session.run_dir)
     assert len(backend.calls) == 3
+    for call in backend.calls:
+        assert call['max_turns'] == 8
+        assert call['image_edit_limit'] == 2
+    assert all(path in backend.calls[1]['image_paths'] for path in snapshots)
+    assert 'BEFORE lift' in backend.calls[1]['prompt']
+    assert 'BEFORE transport' in backend.calls[1]['prompt']
+    assert 'Closure confirmation is not proof' in backend.calls[1]['prompt']
     for call in backend.calls:
         assert str(session.run_dir) not in call["prompt"]
         assert "123456" not in call["prompt"]

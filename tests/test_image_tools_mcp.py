@@ -221,6 +221,10 @@ def test_real_bridge_bootstrap_tool_call_and_cleanup(scene, monkeypatch, claude_
 from pathlib import Path
 config = json.loads(Path(sys.argv[sys.argv.index("--mcp-config") + 1]).read_text())
 server = config["mcpServers"]["cloth_image"]
+assert sys.argv[sys.argv.index('--output-format') + 1] == 'stream-json'
+assert '--verbose' in sys.argv
+print(json.dumps({'type': 'assistant', 'message': {'content': [
+    {'type': 'text', 'text': 'Inspecting the sleeve before selecting a point.'}]}}), flush=True)
 request = {"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{
     "name":"rotate_image", "arguments":{"image_id":"image_0", "degrees_clockwise":90}}}
 completed = subprocess.run([server["command"], *server["args"]], input=json.dumps(request)+"\\n",
@@ -244,7 +248,7 @@ if os.environ.get("TEST_DEBUG_MANIFEST"):
         time.sleep(.05)
     else:
         raise RuntimeError("debug did not become visible before Claude finished")
-print(json.dumps({"result": "{\\"ok\\":true}"}))
+print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
 ''')
     if claude_fails:
         with stub.open("a") as stream:

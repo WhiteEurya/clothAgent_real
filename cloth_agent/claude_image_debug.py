@@ -6,6 +6,7 @@ import posixpath
 import re
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -40,13 +41,94 @@ class ImageDebugSession:
         self.reads = {}
         self.started = time.monotonic()
         self.request = request
+        self.last_message_at = None
+        self.claude_event_count = 0
+        self.phase_durations = {}
+        self.transfer_images = [dict(image_index=i, path=str(p), bytes=p.stat().st_size)
+                                for i, p in enumerate(self.images)]
         self.state = {"schema_version": 1, "status": "RUNNING", "audit_complete": False,
             "stage": self.directory.name.rsplit("_", 1)[0], "events": [], "progress": [],
             "point_overlays": [], "views": [{**view, "source_local_path": str(self.images[i]),
                        "verification": "AWAITING_REMOTE_HASH", "read_status": "UNKNOWN"}
                       for i, view in enumerate(self.tools.views.values())], "errors": []}
         self.write("request.json", request)
+        self.append_stream('claude_transcript.md',
+            '# Claude public conversation\n\nOnly CLI-exposed messages are recorded; hidden reasoning and '
+            'provider-internal requests are unavailable. Receipt gaps include model, tools, queueing and network time.\n\n')
         self.flush()
+
+    def save_prompt(self, prompt):
+        """Exact application-supplied input, not a reconstruction of API internals."""
+        (self.directory / 'prompt.txt').write_text(prompt, encoding='utf-8')
+        (self.directory / 'system_prompt.txt').write_text(self.request['system_prompt'], encoding='utf-8')
+
+    def consume_claude_line(self, line):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return  # Raw stdout.log still preserves incomplete/non-JSON lines.
+        if not isinstance(event, dict):
+            return
+        elapsed = time.monotonic() - self.started
+        gap = None if self.last_message_at is None else elapsed - self.last_message_at
+        self.last_message_at = elapsed
+        self.claude_event_count += 1
+        row = {'sequence': self.claude_event_count, 'received_at': datetime.now(timezone.utc).isoformat(),
+               'received_elapsed_s': elapsed, 'since_previous_event_s': gap, 'event': event}
+        self.append_stream('claude_events.jsonl', json.dumps(row, ensure_ascii=False) + '\n')
+        self.state['last_claude_event'] = {k: v for k, v in row.items() if k != 'event'} | {
+            'type': event.get('type'), 'subtype': event.get('subtype')}
+        self.state['claude_event_count'] = self.claude_event_count
+        header = f"## {self.claude_event_count}. {event.get('type', 'message')} at +{elapsed:.3f}s"
+        if gap is not None:
+            header += f" (receipt gap {gap:.3f}s)"
+        parts = [header]
+        message = event.get('message') or {}
+        content = message.get('content', []) if isinstance(message, dict) else []
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                kind = block.get('type')
+                if kind == 'text':
+                    parts.append(str(block.get('text', '')))
+                elif kind == 'thinking':
+                    parts.append('Provider-exposed reasoning (may be partial):\n' + str(block.get('thinking', '')))
+                elif kind == 'redacted_thinking':
+                    parts.append('Provider withheld reasoning; no text available.')
+                elif kind == 'tool_use':
+                    parts.append('Tool input: ' + json.dumps(block, ensure_ascii=False))
+                elif kind == 'tool_result':
+                    parts.append('Tool result: ' + json.dumps(block, ensure_ascii=False))
+        if event.get('type') == 'result':
+            self.write('claude_result.json', event)
+            self.state['claude_metrics'] = {key: event[key] for key in (
+                'duration_ms', 'duration_api_ms', 'num_turns', 'usage', 'modelUsage',
+                'total_cost_usd', 'stop_reason', 'subtype', 'is_error') if key in event}
+            parts.append(json.dumps(event, ensure_ascii=False, indent=2))
+        if len(parts) == 1:
+            parts.append(json.dumps(event, ensure_ascii=False))
+        self.append_stream('claude_transcript.md', '\n\n'.join(parts) + '\n\n')
+        self.flush()
+        return self.state['last_claude_event']
+
+    def save_timings(self):
+        summary = {'phases_s': self.phase_durations, 'images': self.transfer_images,
+            'note': 'SSH includes download, hash, setup and Claude; phases overlap. Missing durations are unknown, not zero. '
+                    'Claude message receipt gaps are not pure inference durations.',
+            'claude_metrics': self.state.get('claude_metrics', {})}
+        self.write('timing.json', summary)
+        lines = ['# Transfer and invocation timing', '', summary['note'], '',
+            '| Image | Bytes | Upload (s) | Download (s) | SHA256 (s) |',
+            '| --- | ---: | ---: | ---: | ---: |']
+        for row in self.transfer_images:
+            values = [f"{row[k]:.3f}" if k in row else 'unknown' for k in ('upload_s', 'download_s', 'hash_s')]
+            lines.append(f"| image_{row['image_index']} / {Path(row['path']).name} | {row['bytes']} | " + ' | '.join(values) + ' |')
+        lines += ['', '| Phase | Duration (s) |', '| --- | ---: |']
+        lines += [f'| {key} | {value:.3f} |' for key, value in self.phase_durations.items()]
+        (self.directory / 'timing.md').write_text('\n'.join(lines), encoding='utf-8')
 
     def _point_overlay(self, view, point, label, sequence):
         with Image.open(view["path"]) as original:
@@ -80,6 +162,12 @@ class ImageDebugSession:
     def progress(self, stage, event, duration_s, details):
         self.state["progress"].append(dict(stage=stage, event=event, duration_s=duration_s,
                                           elapsed_s=time.monotonic()-self.started, **details))
+        if duration_s is not None and event in {'finished', 'measured', 'completed', 'failed'}:
+            self.phase_durations[stage] = duration_s
+            match = re.fullmatch(r'(upload|remote_download|remote_hash)_(\d+)', stage)
+            if match and int(match[2]) < len(self.transfer_images):
+                self.transfer_images[int(match[2])][match[1].removeprefix('remote_') + '_s'] = duration_s
+            self.save_timings()
         self.flush()
 
     def append_stream(self, name, text):
@@ -164,5 +252,6 @@ class ImageDebugSession:
 
     def finish(self, status, error=None):
         self.state.update(status=status, error=error)
+        self.save_timings()
         self._match_reads()
         self.flush()

@@ -548,6 +548,8 @@ class AgentSession:
         checkpoint_action_indices: Sequence[int] | None = None,
         abort_actions: Sequence[Mapping[str, Any]],
         checkpoint_callback: Callable[..., Mapping[str, Any]],
+        action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
+        required_classification: str = 'INDEPENDENT_LAYER_SUPPORTED',
         real: bool = False,
         confirmed: bool = False,
         single_view_confirmed: bool = False,
@@ -598,6 +600,8 @@ class AgentSession:
                 checkpoint_action_indices=checkpoint_action_indices,
                 abort_actions=abort_actions,
                 checkpoint_callback=checkpoint_callback,
+                action_callback=action_callback,
+                required_classification=required_classification,
                 real=real,
                 confirmed=confirmed,
                 notes=notes,
@@ -678,6 +682,9 @@ class AgentSession:
 
     def _attempt_return_home(self, *, notes: str) -> dict[str, Any]:
         """Attempt isolated Home unless gripper completion requires inspection."""
+        if getattr(self.runner, 'operator_interrupted', False):
+            return {'attempted': False, 'completed': False,
+                    'reason': 'operator interrupted checkpoint; automatic Home blocked'}
         if getattr(self.runner, 'gripper_completion_failed', False):
             return {'attempted': False, 'completed': False,
                     'reason': 'gripper completion unconfirmed; automatic Home blocked; operator inspection required'}
