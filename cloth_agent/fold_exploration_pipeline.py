@@ -2539,6 +2539,10 @@ class FoldSupervisor:
                 [
                     "# Folding supervisor task",
                     "",
+                    "This is a real garment-folding experiment. Your job in this call is to inspect the current T-shirt folding state and identify which folding sub-action is complete or remains incomplete.",
+                    "Use the garment-frame convention: collar above hem; left_sleeve and right_sleeve mean the visual left and visual right sleeves in that normalized garment view.",
+                    "The host program separately performs all calibration, geometry, safety checks, and any eventual execution. You provide only the visual state assessment needed by that host.",
+                    "",
                     "Inspect one T-shirt using only the evidence listed in 04_evidence_manifest.json.",
                     "The required order has exactly five sub-actions:",
                     "1. left sleeve inward",
@@ -2657,7 +2661,7 @@ class FoldSupervisor:
             completed = self.backend.invoke(prompt=prompt_remote,
                 debug_dir=image_debug,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
-                system_prompt="You are a read-only visual state classifier. Inspect the supplied RGB evidence and return only the requested garment-state JSON. You have no robot access and must not discuss or plan physical actions.")
+                system_prompt="You are a read-only visual state classifier for a real T-shirt folding experiment. Inspect the supplied RGB evidence, determine the garment's folding state using the stated five-step task, and return only the requested garment-state JSON. The host handles calibration, safety, and execution; you have no robot access and must not discuss or plan physical actions.")
             result = _normalize_supervisor_current_step(
                 validate_supervisor_payload(parse_claude_json(completed.stdout)))
             result.update(duration_s=time.monotonic() - started,
