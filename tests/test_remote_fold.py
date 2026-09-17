@@ -261,7 +261,8 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
         assert call['image_edit_limit'] == 2
     assert all(path in backend.calls[1]['image_paths'] for path in snapshots)
     assert 'BEFORE lift' in backend.calls[1]['prompt']
-    assert 'BEFORE transport' in backend.calls[1]['prompt']
+    assert 'captured asynchronously during continued motion' in backend.calls[1]['prompt']
+    assert 'lift >=30 mm' in backend.calls[1]['prompt']
     assert 'Closure confirmation is not proof' in backend.calls[1]['prompt']
     for call in backend.calls:
         assert str(session.run_dir) not in call["prompt"]

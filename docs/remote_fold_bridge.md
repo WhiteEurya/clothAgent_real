@@ -213,19 +213,21 @@ Viser 的 `Claude image operations` 显示操作过程及每张图的内容验�
 
 Viser 显示原始事件数（不是模型轮数）、事件子类型、工具调用数和最后消息时间；详细输入、对话和计时均可展开。跨机器耗时使用各侧测量值，消息接收时间使用本地时钟；不能据此精确拆分服务端排队和模型计算。日志功能不增加模型调用，不要求模型额外生成解释。
 
-## 单腕部 Cam A 抓取检查
+## 单腕部 Cam A 抬升取证与最终评估
 
-正式折叠执行在两个同步动作完成回调中保存 RGB：夹爪反馈确认闭合后、下一次抬升前的 `hold_check/camera_A_grasp_after_close.png`；第一次抬升完成、后续运输前的 `hold_check/camera_A_grasp_after_lift.png`。`grasp_snapshots.json` 记录动作编号、拍照状态、来源和耗时。开启录像时等待正在使用的 Cam A 流中的新帧（最多 3 秒，不重新打开设备）；`--no-video` 时用配置中的 A 相机单独拍摄 RGB，拍照期间不移动机械臂。模拟模式不打开相机。可选 Cam C 保持独立，但这两张证据图不依赖它。
+正式 FOLD/REPAIR_SLEEVE 轨迹的首次抓后动作必须垂直抬升至少 **30 mm**（相对夹爪闭合处的机器人 Z）。原计划抬升更高则保留，不足 30 mm 的正向垂直抬升提高到 30 mm；编译后的完整轨迹仍须通过工作区、预执行和 IK 校验。`grasp_capture_plan.json` 记录原计划是否被调整及拍照触发动作。没有额外插入 10 mm 停顿或在线视觉关卡。
 
-照片在 Viser 中可见，也会通过 RGB 白名单送入执行后评价，分别标注闭合后和抬升后。腕部视角随机械臂运动，不能把画面位移或夹爪闭合当成成功抓取的证明。缺失、遮挡或不明确的证据要求评价保持 UNKNOWN。拍照失败会保存 FAILED 及原因，不沿用旧图；原有夹爪反馈等待与本地安全检查保留。
+该抬升动作完成后，动作回调只提交后台拍照任务，立即继续后续搬运、放下、松爪和回位，不等待取帧、图片编码或 Claude 判断。保存路径为 `hold_check/camera_A_grasp_after_lift.png`；不再在闭合后、抬升前停下来拍照。`grasp_snapshots.json` 记录触发动作、触发时抬升高度、请求／帧时间、异步标记、状态和耗时。开启录像时复用 Cam A 录像流的新帧（最多等 3 秒）；`--no-video` 时在后台单独打开配置中的 A 相机拍 RGB。后台任务串行使用相机，动作结束后收齐结果并关闭设备，再进入最终评估。模拟模式不打开相机。可选 Cam C 同样在后台拍照。
 
-正式 FOLD/REPAIR_SLEEVE 轨迹在主执行器中加入在线抓取关卡：夹爪确认闭合后，先沿同一 XY 方向抬升最多 10 mm（不超过模型原始首个抬升），暂停并读取上述两张 Cam A 图。只有 Claude 返回 `GRASP_CONFIRMED` 且置信度至少 0.80，才继续原始首个抬升和后续运输；`EMPTY`、`UNKNOWN`、低置信度、缺图、超时、拒绝或 schema 错误都会走预验证的下降、打开、回到小抬升高度、Home 中止路径。视觉调用最多 4 轮、0 次图像编辑和 90 秒总预算。图片灰度第 99 百分位低于 12 时，本地直接记录 `EVIDENCE_UNUSABLE/UNKNOWN`，不浪费远端调用；该门槛只识别近黑图片，不能判定夹爪是否可见。
+照片通过 RGB 白名单与 before/after、视频关键帧一起送入最后的 evaluation，判断抓取、滑脱及折叠结果。腕部视角随机械臂运动，异步取得的图片可能已经包含搬运动作，不能标成“运输前静止图”；画面位移或夹爪闭合不等于抓取成功。已到释放完成之后的迟到帧标记为 `MISSED_WINDOW`，不当作抬升抓取证据上传；拍照失败记录 `FAILED`，均不改变已校验轨迹的继续执行。缺失、遮挡或不明确的证据要求评价保持 UNKNOWN。原有夹爪硬件反馈等待和本地运动校验保留。
+
+ACQUISITION_PROBE 仍按模型明确给出的可逆探测轨迹执行；只在已完成抬升达到 30 mm 的动作处异步采集，较低探测动作不拍抬升照片，也不为了照片增加探测动作。旧 `grasp_checkpoint` 视觉判断辅助接口留作兼容，正式 fold 流程不再调用它，不产生中途 `grasp_decision.json`。
 
 ## Overnight 经验与恢复
 
-`bash scripts/start_fold_exploration.sh --viser --real --confirm-real` 默认启用 unattended。`--no-unattended` 可恢复遇错停止的方式。所有动作仍需原有实机确认、工作区、IK、夹爪反馈和视觉关卡。
+`bash scripts/start_fold_exploration.sh --viser --real --confirm-real` 默认启用 unattended。`--no-unattended` 可恢复遇错停止的方式。所有动作仍需原有实机确认、工作区、IK 和夹爪硬件反馈。
 
-- 空抓/无法判断：保存 `evaluation.json`、`failure_detection.json`、`record.json`、evidence 索引和 `workspace/fold_experience/experiences.jsonl`。阶段切换还保存 `partial_record.json`，便于异常退出后定位进度。只有执行记录确认回退、释放及 Home 全部成功，才允许新一轮重新拍照规划；不推进折叠步骤。连续两轮抓取关卡或抓取探测证据不可用/无法判断时停止，防止不断重复同一不可见视角。
+- 空抓/无法判断：在最终 evaluation 中评估，保存 `evaluation.json`、`failure_detection.json`、`record.json`、evidence 索引和 `workspace/fold_experience/experiences.jsonl`。阶段切换还保存 `partial_record.json`，便于异常退出后定位进度。执行、释放及 Home 必须确认完成才能进入下一轮；未成功的折叠不推进步骤。中途照片不再触发关卡中止或关卡重试，下一轮沿用现有评估反馈和探测预算。
 - 执行后评估异常：unattended 模式先用同一批已存图片重试一次，不重放机械臂动作。仍失败则保存部分执行经验；只有释放/Home 已确认才允许重新观察。
 - 规划失败：保存失败和纠正要求供下一轮使用；默认最多一次轨迹纠正。连续三轮规划失败或三次外围非物理阶段失败后停止并保留诊断。硬件异常、未确认回位、人工 Ctrl+C 不自动重启。watchdog 尊重主流程的 `restart_safe=false`，不以最后一条普通日志覆盖执行状态。
 - 评估中的 `skill_update` 进入 run-local 候选；当前 run 的候选指导会进入下一轮。结束时由原 skill 审核/汇总机制处理持久化。已验证的规划纠正也会形成候选。确认空抓可记录失败检测 skill；黑图、遮挡、API 故障不能学习成空抓。

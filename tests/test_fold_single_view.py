@@ -1,6 +1,7 @@
 """Single-camera consent wiring, without opening cameras or robot connections."""
 import json
 import time
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -79,47 +80,52 @@ def test_dry_run_and_dual_camera_do_not_claim_single_view_consent(tmp_path, real
     assert pipeline.session.run_experiment.call_args.kwargs["single_view_confirmed"] is False
 
 
-def test_cam_a_grasp_stills_precede_lift_and_transport_without_observer(tmp_path, monkeypatch):
+def test_cam_a_photo_wait_does_not_block_transport_without_observer(tmp_path, monkeypatch):
     pipeline = pipeline_for(tmp_path)
     order = []
+    transported = threading.Event()
     def capture(config, recorder, path, after_ns):
         assert recorder is None
+        assert transported.wait(2), 'photo must not block transport'
         order.append(path.stem)
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new('RGB', (4, 4)).save(path)
-        return {'status': 'CAPTURED', 'image': str(path)}
+        return {'status': 'CAPTURED', 'image': str(path), 'frame_monotonic_ns': after_ns + 1}
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', capture)
     def run(*args, **kwargs):
         callback = kwargs['action_callback']
+        callback(2, {'name': 'move', 'args': {'z': 20}})
         order.append('closure_feedback_confirmed')
         callback(3, {'name': 'close_gripper', 'success': True})
         order.append('lift_motion')
         callback(4, {'name': 'move', 'args': {'z': 80}, 'success': True})
         order.append('transport_motion')
+        transported.set()
         callback(5, {'name': 'move', 'args': {'z': 80}, 'success': True})
         return {'status': 'SUCCESS'}
     pipeline.session.run_experiment = run
     _, recording = pipeline._execute(tmp_path / 'plan.py', SimpleNamespace(active_camera_labels=('A',)),
                                      tmp_path, label='fold', hold_action_index=4)
-    assert order == ['closure_feedback_confirmed', 'camera_A_grasp_after_close', 'lift_motion',
-                     'camera_A_grasp_after_lift', 'transport_motion']
-    assert len(_grasp_check_images(recording)) == 2
+    assert order == ['closure_feedback_confirmed', 'lift_motion', 'transport_motion', 'camera_A_grasp_after_lift']
+    assert len(_grasp_check_images(recording)) == 1
     manifest = json.loads((tmp_path / 'hold_check' / 'grasp_snapshots.json').read_text())
-    assert manifest['after_close']['action_index'] == 3
+    assert 'after_close' not in manifest
     assert manifest['after_lift']['action_index'] == 4
+    assert manifest['after_lift']['requested_lift_mm'] == 60
 
 
-def test_acquisition_probe_captures_each_lift_and_reverse_move(tmp_path, monkeypatch):
+def test_acquisition_probe_only_captures_moves_at_least_30mm_above_contact(tmp_path, monkeypatch):
     pipeline = pipeline_for(tmp_path)
     captured = []
     def capture(config, recorder, path, after_ns):
         captured.append(path.name)
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new('RGB', (4, 4), 'white').save(path)
-        return {'status': 'CAPTURED', 'image': str(path)}
+        return {'status': 'CAPTURED', 'image': str(path), 'frame_monotonic_ns': after_ns + 1}
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', capture)
     def run(*args, **kwargs):
         callback = kwargs['action_callback']
+        callback(2, {'name': 'move', 'args': {'z': 20}})
         callback(3, {'name': 'close_gripper'})
         for index, z in enumerate((30, 40, 50, 20), 4):
             callback(index, {'name': 'move', 'args': {'z': z}})
@@ -129,9 +135,9 @@ def test_acquisition_probe_captures_each_lift_and_reverse_move(tmp_path, monkeyp
     pipeline.session.run_experiment = run
     _, recording = pipeline._execute(tmp_path / 'probe.py', SimpleNamespace(active_camera_labels=('A',)),
                                      tmp_path, label='probe', hold_action_index=4, acquisition_probe=True)
-    assert len(recording['lift_snapshots']) == 4
-    assert [item['action']['args']['z'] for item in recording['lift_snapshots']] == [30, 40, 50, 20]
-    assert captured.count('camera_A_grasp_after_close.png') == 1
+    assert len(recording['lift_snapshots']) == 1
+    assert [item['action']['args']['z'] for item in recording['lift_snapshots']] == [50]
+    assert captured == ['camera_A_lift_checkpoint_01.png']
     assert (tmp_path / 'lift_checkpoints/snapshots.json').is_file()
 
 
@@ -176,10 +182,12 @@ def test_snapshot_failure_logged_without_claiming_grasp_success(tmp_path, monkey
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb',
                         Mock(side_effect=TimeoutError('no fresh frame')))
     def run(*args, **kwargs):
+        kwargs['action_callback'](2, {'name': 'move', 'args': {'z': 20}})
         kwargs['action_callback'](3, {'name': 'close_gripper', 'success': True})
+        kwargs['action_callback'](4, {'name': 'move', 'args': {'z': 50}})
         return {'status': 'SUCCESS'}
     pipeline.session.run_experiment = run
     _, recording = pipeline._execute(tmp_path / 'plan.py', SimpleNamespace(active_camera_labels=('A',)),
                                      tmp_path, label='fold')
-    assert recording['grasp_snapshots']['after_close']['status'] == 'FAILED'
+    assert recording['grasp_snapshots']['after_lift']['status'] == 'FAILED'
     assert _grasp_check_images(recording) == []

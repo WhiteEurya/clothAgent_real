@@ -445,6 +445,9 @@ class RemoteFoldClient(ClaudeAutoClient):
             'For target=grasp, image_id=null and pixel_xy=null; the selected current Rxxx fixes the grasp.')
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
+            "For FOLD and REPAIR_SLEEVE, the first move after closure must lift vertically at least 30 mm above the grasp. "
+            "The host raises shorter positive vertical lifts to 30 mm and revalidates the full trajectory. "
+            "A lift photo is collected asynchronously for final evaluation; there is no mid-motion visual approval pause. "
             "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. If fold_state_reference is present, use its target image only as a semantic visual goal for the current step. Select grasp and transport pixels exclusively from the CURRENT Camera-A RGB/Rxxx evidence; never copy reference-image pixels, coordinates, scale, depth, or XYZ. Do not send measured XYZ or code.")
         rgb = next(p for p in self._remote_images if p.name.lower() == "camera_a_rgb_upright.png")
         with Image.open(rgb) as image:
@@ -514,7 +517,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         images = [*before, *after, *video, *observers]
         snapshot_roles = {
             'camera_a_grasp_after_close.png': 'Camera A wrist RGB after confirmed closure, BEFORE lift',
-            'camera_a_grasp_after_lift.png': 'Camera A wrist RGB after first lift, BEFORE transport',
+            'camera_a_grasp_after_lift.png': 'Camera A wrist RGB requested after lift >=30 mm; captured asynchronously during continued motion',
         }
         roles = (["before"] * len(before) + ["after"] * len(after) +
                  ["rollout RGB contact sheet"] * len(video) +
@@ -533,7 +536,9 @@ class RemoteFoldClient(ClaudeAutoClient):
         payload, result, prompt, _ = self._ask("acquisition_evaluation" if acquisition else "evaluation",
             context, AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
             "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. "
-            "Use after-close and after-lift Camera A stills when supplied to assess whether fabric was acquired and lifted. "
+            "Use supplied Camera A grasp/lift stills to assess whether fabric was acquired and lifted. "
+            "Current lift photos are requested after a completed lift of at least 30 mm, captured asynchronously while motion continues; "
+            "do not assume they precede transport or show a stationary arm. Historical after-close stills may also be supplied. "
             "Camera A is wrist-mounted and moves with the gripper: image displacement alone is not proof of cloth motion. "
             "Closure confirmation is not proof of grasping cloth. No telemetry or depth is supplied. "
             "Mark acquisition/target UNKNOWN when images do not establish them, including occluded or missing grasp evidence. "

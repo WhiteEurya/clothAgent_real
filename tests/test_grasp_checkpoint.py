@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -6,10 +8,9 @@ import pytest
 from PIL import Image
 
 from cloth_agent.config import RobotConfig, WorkspaceBounds, ExperimentConfig
-from cloth_agent.free_exploration import ExplorationPlanningError, exploration_source
-from cloth_agent.grasp_checkpoint import compile_grasp_checkpoint, validate_grasp_decision, GraspCheckpointRejected
+from cloth_agent.free_exploration import ExplorationPlanningError
+from cloth_agent.grasp_checkpoint import compile_grasp_checkpoint, compile_grasp_capture, validate_grasp_decision, GraspCheckpointRejected
 from cloth_agent.fold_exploration_pipeline import FoldExplorationPipeline
-from cloth_agent.planner_backend import BackendResult, PlannerBackendError
 from cloth_agent.robot_api import SimulatedBackend
 from cloth_agent.session import AgentSession
 
@@ -57,16 +58,60 @@ def test_invalid_confidence_cannot_authorize_motion(value):
         validate_grasp_decision(decision(confidence=value))
 
 
-@pytest.mark.parametrize('outcome', ['positive', 'empty', 'uncertain', 'low_confidence',
-                                   'invalid', 'timeout', 'refusal', 'capture_failure', 'interrupt'])
-def test_production_pipeline_gates_transport_and_handles_abort(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize('lift,expected,extended', [(25, 50, True), (50, 50, False), (80, 80, False)])
+def test_capture_lift_minimum_preserves_other_actions(lift, expected, extended):
+    original = proposal(lift=lift)
+    compiled, plan = compile_grasp_capture(original)
+    assert compiled.actions[4]['args']['z'] == expected
+    assert original.actions[4]['args']['z'] == lift
+    assert compiled.actions[:4] == original.actions[:4]
+    assert compiled.actions[5:] == original.actions[5:]
+    assert plan['lift_mm'] >= 30
+    assert plan['lift_extended'] is extended
+    assert plan['blocking'] is False and plan['evaluation_stage'] == 'final'
+
+
+@pytest.mark.parametrize('bad', ['lateral', 'down', 'nan'])
+def test_capture_lift_rejects_invalid_geometry(bad):
+    original = proposal()
+    original.actions[4]['args']['x' if bad == 'lateral' else 'z'] = (
+        310 if bad == 'lateral' else 10 if bad == 'down' else float('nan'))
+    with pytest.raises(ExplorationPlanningError):
+        compile_grasp_capture(original)
+
+
+def test_raised_capture_pose_still_fails_workspace_preflight(tmp_path):
+    config = RobotConfig(robot_ip='test', boundaries=WorkspaceBounds(x_min=0, x_max=600,
+        y_min=-300, y_max=300, z_min=0, z_max=500), init_joints_deg=(0,)*6,
+        init_pose_mm_deg=(300, 0, 200, 180, 0, 0), orientation_roll_deg=180, orientation_pitch_deg=0)
+    session = AgentSession(tmp_path, tmp_path / 'runs' / 'run', config, ExperimentConfig())
+    original = proposal(lift=490)
+    original.actions[2]['args']['z'] = 480
+    compiled, _ = compile_grasp_capture(original)
+    assert compiled.actions[4]['args']['z'] == 510
+    source = session.workspace / 'fold.py'
+    lines = ['def run():']
+    for action in compiled.actions:
+        args = action['args']
+        lines.append('    ' + (f"move({args['x']}, {args['y']}, {args['z']}, {args['yaw']})"
+                              if action['name'] == 'move' else action['name'] + '()'))
+    source.write_text('\n'.join(lines) + '\n')
+    assert session.runner.preflight(source).error
+
+
+@pytest.mark.parametrize('outcome', ['captured', 'capture_failure', 'late'])
+def test_production_pipeline_continues_motion_while_lift_photo_is_pending(tmp_path, monkeypatch, outcome):
     robot_config = RobotConfig(robot_ip='test', boundaries=WorkspaceBounds(x_min=0, x_max=600,
         y_min=-300, y_max=300, z_min=0, z_max=500), init_joints_deg=(0,)*6,
         init_pose_mm_deg=(300, 0, 200, 180, 0, 0), orientation_roll_deg=180, orientation_pitch_deg=0)
     log = []
+    transport = threading.Event()
+    trajectory_finished = threading.Event()
     class Arm(SimulatedBackend):
         def move(self, x, y, z, yaw, config):
             log.append(('move', x, z))
+            if x == 400:
+                transport.set()
             return super().move(x, y, z, yaw, config)
         def close_gripper(self, config):
             log.append(('close',))
@@ -85,7 +130,7 @@ def test_production_pipeline_gates_transport_and_handles_abort(tmp_path, monkeyp
     session = AgentSession(tmp_path, run, robot_config, ExperimentConfig())
     (run / 'run_metadata.json').write_text(json.dumps({
         'last_perception_mode': 'single_camera_rgbd', 'last_active_cameras': ['A']}))
-    compiled, gate = compile_grasp_checkpoint(proposal())
+    compiled, capture_plan = compile_grasp_capture(proposal(lift=25))
     # Use the restricted runtime's normal program format.
     source = session.workspace / 'fold.py'
     lines = ['def run():']
@@ -95,35 +140,21 @@ def test_production_pipeline_gates_transport_and_handles_abort(tmp_path, monkeyp
                               if action['name'] == 'move' else action['name'] + '()'))
     source.write_text('\n'.join(lines) + '\n')
     def snapshot(config, recorder, path, after_ns):
+        # A synchronous callback would time out here and fail this test.
+        assert transport.wait(2), 'camera blocked transport'
+        if outcome == 'late':
+            assert trajectory_finished.wait(2)
         log.append(('snapshot', path.name))
         if outcome == 'capture_failure':
             raise TimeoutError('no fresh frame')
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new('RGB', (12, 12), (180, 180, 180)).save(path)
-        return {'status': 'CAPTURED', 'image': str(path)}
+        return {'status': 'CAPTURED', 'image': str(path),
+                'frame_monotonic_ns': time.monotonic_ns() if outcome == 'late' else after_ns + 1}
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', snapshot)
-    calls = []
     class Backend:
         def invoke(self, **kwargs):
-            calls.append(kwargs)
-            log.append(('judge',))
-            assert log.index(('move', 300, 30)) < len(log) - 1
-            assert ('move', 300, 80) not in log and ('move', 400, 80) not in log
-            assert kwargs['max_turns'] == 4 and kwargs['image_edit_limit'] == 0
-            assert kwargs['overall_timeout_s'] == 90
-            assert len(kwargs['image_paths']) == 2
-            if outcome == 'interrupt':
-                raise KeyboardInterrupt()
-            if outcome == 'timeout':
-                raise PlannerBackendError('timed out')
-            payload = decision()
-            if outcome == 'empty': payload = decision('EMPTY')
-            if outcome == 'uncertain': payload = decision('UNKNOWN')
-            if outcome == 'low_confidence': payload = decision(confidence=.5)
-            if outcome == 'invalid': payload = {'classification': 'GRASP_CONFIRMED'}
-            envelope = {'result': json.dumps(payload)}
-            if outcome == 'refusal': envelope = {'is_error': True, 'result': 'API refusal'}
-            return BackendResult(json.dumps(envelope), '', 0, ())
+            pytest.fail('No mid-motion Claude call is permitted')
     pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
     pipeline.real = pipeline.confirm_real = True
     pipeline.record_video = False
@@ -132,22 +163,25 @@ def test_production_pipeline_gates_transport_and_handles_abort(tmp_path, monkeyp
     pipeline.client = SimpleNamespace(backend=Backend())
     pipeline._debug = lambda *args, **kwargs: None
     pipeline._debug_exception = lambda *args, **kwargs: None
-    execute = lambda: pipeline._execute(source, SimpleNamespace(active_camera_labels=('A',)),
-        run / 'iteration_001', label='fold', grasp_gate=gate)
-    if outcome == 'interrupt':
-        with pytest.raises(KeyboardInterrupt): execute()
-        assert log[-1] == ('judge',)
-        assert session.last_return_home_outcome['attempted'] is False
-        return
-    result, recording = execute()
-    assert len(checked_paths) >= 2  # both full continuation and alternate path checked
-    assert result['checkpoint']['executed_branch'] == ('CONTINUATION' if outcome == 'positive' else 'ABORT_RELEASE')
-    assert (('move', 400, 80) in log) == (outcome == 'positive')
-    assert (('move', 300, 80) in log) == (outcome == 'positive')
-    assert len(calls) == (0 if outcome == 'capture_failure' else 1)
-    assert log.index(('close',)) < log.index(('snapshot', 'camera_A_grasp_after_close.png')) < log.index(('move', 300, 30))
-    saved = json.loads((run / 'iteration_001/hold_check/grasp_decision.json').read_text())
-    assert saved['continue_transport'] is (outcome == 'positive')
+    run_experiment = session.run_experiment
+    def execute_trajectory(*args, **kwargs):
+        try:
+            return run_experiment(*args, **kwargs)
+        finally:
+            trajectory_finished.set()
+    session.run_experiment = execute_trajectory
+    result, recording = pipeline._execute(source, SimpleNamespace(active_camera_labels=('A',)),
+        run / 'iteration_001', label='fold', grasp_capture=capture_plan)
+    assert checked_paths  # compiled full trajectory still goes through controller checks
+    assert result['execution_completed'] is True
+    assert 'checkpoint' not in result
+    assert ('move', 400, 25) in log
+    assert ('move', 300, 50) in log
+    assert not (run / 'iteration_001/hold_check/grasp_decision.json').exists()
+    saved = recording['grasp_snapshots']['after_lift']
+    assert saved['requested_lift_mm'] == 30
+    assert saved['asynchronous'] is True
+    assert saved['status'] == {'captured': 'CAPTURED', 'capture_failure': 'FAILED', 'late': 'MISSED_WINDOW'}[outcome]
 
 
 def test_checkpoint_rejection_never_unattended_restarts():

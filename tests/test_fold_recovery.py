@@ -181,12 +181,27 @@ def make_loop(tmp_path, monkeypatch, *, kind="EMPTY", safe=True):
             raise KeyboardInterrupt()  # observe next-iteration feedback, no second motion
         return proposal
     pipe._plan_fold_with_retries = plan
-    pipe._execute = lambda *a, **kw: (execution(kind, success=safe), {"status": "disabled"})
+    def execute(source, config, iteration_dir, **kwargs):
+        assert kwargs['grasp_capture']['lift_mm'] >= 30
+        result = execution(kind, success=safe)
+        result.pop('checkpoint')
+        image = iteration_dir / 'hold_check' / 'camera_A_grasp_after_lift.png'
+        image.parent.mkdir(parents=True)
+        Image.new('RGB', (16, 16), 'white').save(image)
+        return result, {'status': 'disabled', 'grasp_snapshots': {'after_lift': {
+            'status': 'CAPTURED', 'image': str(image), 'asynchronous': True, 'requested_lift_mm': 60}}}
+    pipe._execute = execute
+    def evaluate(before, after, **kwargs):
+        assert any(p.name == 'camera_A_grasp_after_lift.png' for p in kwargs['observer_images'])
+        assert 'at least 30 mm' in kwargs['objective']
+        assert 'not stationary pre-transport checkpoints' in kwargs['objective']
+        return checkpoint_evaluation(execution(kind)['checkpoint']), None
+    pipe._evaluate_with_retries = evaluate
     return pipe, plans
 
 
 @pytest.mark.parametrize("kind", ["EMPTY", "UNKNOWN"])
-def test_full_loop_recovers_gate_abort_and_next_plan_sees_failure(tmp_path, monkeypatch, kind):
+def test_full_loop_final_evaluation_receives_lift_photo_and_next_plan_sees_failure(tmp_path, monkeypatch, kind):
     pipe, plans = make_loop(tmp_path, monkeypatch, kind=kind)
     with pytest.raises(KeyboardInterrupt):
         pipe.run()

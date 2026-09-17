@@ -1,4 +1,4 @@
-"""Small lift followed by an explicit visual gate, before fold transport."""
+"""Lift evidence preparation and legacy opt-in visual checkpoint helpers."""
 from __future__ import annotations
 
 import copy
@@ -27,6 +27,36 @@ GRASP_SCHEMA = {
     },
     'required': ['classification', 'confidence', 'evidence', 'reason'],
 }
+
+
+def compile_grasp_capture(proposal, minimum_lift_mm=30.0):
+    """Ensure the first vertical lift is high enough for asynchronous evidence.
+
+    The compiled trajectory still needs normal workspace/controller validation.
+    There is no visual decision or alternate motion branch at this boundary.
+    """
+    if not math.isfinite(minimum_lift_mm) or minimum_lift_mm < 30:
+        raise ExplorationPlanningError('grasp evidence requires at least 30 mm lift')
+    actions = copy.deepcopy(list(proposal.actions))
+    closes = [i for i, action in enumerate(actions) if action['name'] == 'close_gripper']
+    if len(closes) != 1:
+        raise ExplorationPlanningError('fold grasp capture requires exactly one closure')
+    close = closes[0]
+    if (close == 0 or close + 1 >= len(actions) or
+            actions[close - 1]['name'] != 'move' or actions[close + 1]['name'] != 'move'):
+        raise ExplorationPlanningError('grasp capture requires contact and immediate vertical lift moves')
+    grasp, lift = actions[close - 1]['args'], actions[close + 1]['args']
+    if any(not math.isfinite(float(p[k])) for p in (grasp, lift) for k in ('x', 'y', 'z', 'yaw')):
+        raise ExplorationPlanningError('grasp capture contains nonfinite poses')
+    if math.hypot(lift['x'] - grasp['x'], lift['y'] - grasp['y']) > 1e-6 or lift['z'] <= grasp['z']:
+        raise ExplorationPlanningError('grasp capture requires a positive vertical lift before transport')
+    old_z = lift['z']
+    lift['z'] = max(old_z, grasp['z'] + minimum_lift_mm)
+    return replace(proposal, actions=tuple(actions)), {
+        'capture_action_index': close + 1, 'minimum_lift_mm': minimum_lift_mm,
+        'lift_mm': lift['z'] - grasp['z'], 'lift_extended': lift['z'] != old_z,
+        'evaluation_stage': 'final', 'blocking': False,
+    }
 
 
 def compile_grasp_checkpoint(proposal, lift_mm=10.0):

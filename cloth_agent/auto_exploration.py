@@ -3481,18 +3481,18 @@ class ClaudeAutoClient:
         ]
         if observer_paths:
             image_lines.append(
-                "Uncalibrated Camera C observer RGB images (visual evidence only; no geometry):"
+                "Supplemental camera RGB images (use camera labels; visual evidence only, no geometry):"
             )
             hold_paths = [path for path in observer_paths if "hold_check" in path.name.lower()]
             other_paths = [path for path in observer_paths if path not in hold_paths]
             if hold_paths:
                 image_lines.append(
-                    "Camera C lift hold-check still(s), captured immediately after the first "
-                    "post-close lift action (primary evidence for short-term acquisition):"
+                    "Lift evidence still(s). Consult capture metadata and the objective for timing; "
+                    "asynchronous fold photos may include subsequent motion and are not stationary checkpoints:"
                 )
                 image_lines.extend(f"- {path}" for path in hold_paths)
             if other_paths:
-                image_lines.append("Other Camera C observer stills:")
+                image_lines.append("Other labelled observer / wrist-camera stills:")
                 image_lines.extend(f"- {path}" for path in other_paths)
         evaluation_mode_instruction = (
             ""
@@ -3901,18 +3901,18 @@ class ClaudeAutoClient:
         ]
         if observer_paths:
             evidence_lines.append(
-                "Uncalibrated Camera C observer RGB images (visual evidence only; no geometry):"
+                "Supplemental camera RGB images (use camera labels; visual evidence only, no geometry):"
             )
             hold_paths = [path for path in observer_paths if "hold_check" in path.name.lower()]
             other_paths = [path for path in observer_paths if path not in hold_paths]
             if hold_paths:
                 evidence_lines.append(
-                    "Camera C lift hold-check still(s), captured immediately after the first "
-                    "post-close lift action (primary acquisition evidence):"
+                    "Lift evidence still(s). Consult capture metadata and the objective for timing; "
+                    "asynchronous fold photos may include subsequent motion and are not stationary checkpoints:"
                 )
                 evidence_lines.extend(f"- {path}" for path in hold_paths)
             if other_paths:
-                evidence_lines.append("Other Camera C observer stills:")
+                evidence_lines.append("Other labelled observer / wrist-camera stills:")
                 evidence_lines.extend(f"- {path}" for path in other_paths)
 
         prompt = (

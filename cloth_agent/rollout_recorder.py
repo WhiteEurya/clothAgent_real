@@ -1519,6 +1519,7 @@ def capture_observer_rgb(
         for _ in range(int(warmup_frames)):
             pipeline.wait_for_frames(2000)
         frames = pipeline.wait_for_frames(2000)
+        host_monotonic_ns = time.monotonic_ns()
         color = frames.get_color_frame()
         if not color:
             raise RolloutRecorderError(
@@ -1542,6 +1543,7 @@ def capture_observer_rgb(
             "fps": int(fps),
             "color_frame_number": int(color.get_frame_number()),
             "color_device_timestamp_ms": float(color.get_timestamp()),
+            "host_monotonic_ns": host_monotonic_ns,
             "rgb_image": str(image_path.resolve()),
         }
         (output / f"camera_{str(label)}_observer_manifest.json").write_text(
