@@ -119,6 +119,11 @@ class Gui:
         self.markdowns.append(result)
         return result
 
+    def add_html(self, content):
+        result = Folder()
+        result.content = content
+        return result
+
     def add_image(self, image, label):
         result = Folder()
         result.label = label

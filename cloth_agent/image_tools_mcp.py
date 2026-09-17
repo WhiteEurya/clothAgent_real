@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import sys
 import time
@@ -92,16 +93,126 @@ def audit(job, event):
 
 def read_hook(job):
     payload = json.load(sys.stdin)
-    if payload.get("tool_name") != "Read":
+    tool = payload.get("tool_name", "")
+    if tool != "Read" and not tool.startswith("mcp__cloth_image__"):
         return
     event = payload.get("hook_event_name")
     status = {"PreToolUse": "started", "PostToolUse": "completed",
               "PostToolUseFailure": "failed"}.get(event, "unknown")
     args = payload.get("tool_input") or {}
-    audit(job, {"kind": "read", "tool": "Read", "status": status,
+    response = payload.get('tool_response')
+    if isinstance(response, dict) and (response.get('isError') or response.get('is_error')):
+        status = 'failed'
+    audit(job, {"kind": "read" if tool == "Read" else "tool_lifecycle",
+                "tool": tool, "status": status,
                 "tool_use_id": payload.get("tool_use_id"),
-                "arguments": {"file_path": args.get("file_path")},
+                "arguments": {"file_path": args.get("file_path")} if tool == "Read" else args,
                 "error": str(payload.get("error", "")) if status == "failed" else None})
+
+
+def orientation_guard(job, payload):
+    """One correction inside Claude's current loop, never a new model session.
+
+    StructuredOutput uses PreToolUse; plain JSON answers use Stop. Both share
+    a persisted allowance. Missing/incomplete audit is not evidence of success.
+    """
+    event = payload.get('hook_event_name')
+    candidate = None
+    if event == 'PreToolUse' and payload.get('tool_name') == 'StructuredOutput':
+        candidate = payload.get('tool_input')
+    elif event == 'Stop':
+        text = payload.get('last_assistant_message', '')
+        if isinstance(text, str):
+            try:
+                candidate = json.loads(text[text.index('{'):text.rindex('}') + 1])
+            except (ValueError, json.JSONDecodeError):
+                pass
+    else:
+        return {}
+
+    facts = {}
+    response = {}
+    classification = 'NO_UNCERTAIN_RESULT'
+    required = {'status', 'image_id', 'collar_pixel_xy', 'hem_pixel_xy', 'reason'}
+    valid = (isinstance(candidate, dict) and set(candidate) == required and
+             candidate.get('status') == 'UNCERTAIN' and isinstance(candidate.get('reason'), str) and
+             all(candidate[k] is None for k in ('image_id', 'collar_pixel_xy', 'hem_pixel_xy')))
+    if valid:
+        reason = candidate['reason'].lower()
+        tool_claim = bool(re.search(
+            r'(?:tools?|rotate_image|list_images|read)(?:\s+(?:calls?|requests?|service))?\s+'
+            r'(?:(?:has|have|had|is|are|was|were)\s+)?'
+            r'(?:fail(?:ed|ing|s)?|unavailable|timed out|stopped returning|'
+            r'return(?:ed|s)? no (?:result|response|output)|gave no response|did not return|didn.t return)|'
+            r'(?:工具|rotate_image|list_images|read)[^。.;\n]{0,24}(?:失败|无响应|没有返回|未返回|不返回)',
+            reason))
+        classification = 'NO_TOOL_FAILURE_CLAIM'
+        if tool_claim:
+            classification = 'AUDIT_INCOMPLETE'
+            try:
+                events = [json.loads(line) for line in
+                          (job / 'image_tool_calls.jsonl').read_text(encoding='utf-8').splitlines()]
+                budget = json.loads((job / 'image_edit_budget.json').read_text(encoding='utf-8'))
+                if (not all(isinstance(e, dict) for e in events) or not isinstance(budget, dict) or
+                        type(budget.get('limit')) is not int or type(budget.get('used')) is not int or
+                        not 0 <= budget['used'] <= budget['limit'] <= MAX_VIEWS):
+                    raise ValueError('invalid audit/budget')
+                lifecycles = [e for e in events if e.get('kind') in {'read', 'tool_lifecycle'}]
+                started = {e['tool_use_id'] for e in lifecycles if e.get('status') == 'started'}
+                finished = {e['tool_use_id'] for e in lifecycles if e.get('status') in {'completed', 'failed'}}
+                failures = [e.get('event_id') for e in events if e.get('status') in {'error', 'failed'}]
+                reads = sum(e.get('kind') == 'read' and e.get('status') == 'completed' for e in lifecycles)
+                calls = [e for e in events if e.get('tool') in {t['name'] for t in TOOLS}]
+                facts = {'edit_limit': budget['limit'], 'edits_used': budget['used'],
+                         'edits_remaining': budget['limit'] - budget['used'],
+                         'tool_calls': len(calls), 'completed_reads': reads,
+                         'rotation_requests': sum(e.get('tool') == 'rotate_image' for e in calls),
+                         'failure_event_ids': failures,
+                         'pending_tool_use_ids': sorted(str(x) for x in started - finished)}
+                if failures:
+                    classification = 'AUDITED_TOOL_FAILURE'
+                elif (not lifecycles or None in started or started != finished or not reads or
+                      not any(e.get('kind') == 'session' for e in events)):
+                    classification = 'AUDIT_INCOMPLETE'
+                elif facts['edits_remaining'] <= 0 or len(calls) >= MAX_CALLS:
+                    classification = 'BUDGET_EXHAUSTED'
+                else:
+                    classification = 'UNSUPPORTED_TOOL_FAILURE_CLAIM'
+            except (OSError, ValueError, KeyError, TypeError):
+                classification = 'AUDIT_INCOMPLETE'
+    # Lock the allowance so both hooks (or repeated hook delivery) cannot grant
+    # another pass. It is independent of Stop's stop_hook_active compatibility.
+    if classification == 'UNSUPPORTED_TOOL_FAILURE_CLAIM':
+        with (job / 'orientation_correction.json').open('a+', encoding='utf-8') as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            stream.seek(0)
+            previous = stream.read()
+            if previous or payload.get('stop_hook_active'):
+                classification = 'CORRECTION_ALREADY_USED'
+            else:
+                message = (
+                    'One orientation correction in this same session. Your UNCERTAIN reason claims missing '
+                    'tool results, but all recorded inspection requests completed and none failed. '
+                    f"Rotation requests actually recorded: {facts['rotation_requests']}. "
+                    f"Remaining edits: {facts['edits_remaining']} of {facts['edit_limit']}; "
+                    'the existing images, edit budget, turn limit and deadline remain in force. '
+                    'Use the saved views. If rotation is needed, choose its angle from the RGB, actually '
+                    'call rotate_image and Read its returned path before selecting the whole-garment view. '
+                    'Do not claim a tool failed unless a real request returned an error. '
+                    'If the collar/hem is genuinely unclear, return UNCERTAIN with that visual reason; '
+                    'do not invent coordinates or force READY. This is the only correction pass.'
+                )
+                response = ({'decision': 'block', 'reason': message} if event == 'Stop' else
+                            {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                                'permissionDecision': 'deny', 'permissionDecisionReason': message}})
+                json.dump({'used': 1, 'candidate': candidate, 'audit_facts': facts,
+                           'feedback': message}, stream, ensure_ascii=False)
+                stream.flush()
+    audit(job, {'kind': 'orientation_guard', 'tool': 'orientation_correction',
+                'status': 'requested' if response else 'not_requested',
+                'trigger': event, 'classification': classification, 'candidate': candidate,
+                'audit_facts': facts, 'feedback': response})
+    return response
 
 
 def forward_audit(job):
@@ -408,12 +519,17 @@ def main(argv=None):
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--read-hook", action="store_true")
     parser.add_argument("--audit-forward", action="store_true")
+    parser.add_argument('--orientation-correction', action='store_true')
+    parser.add_argument('--orientation-hook', action='store_true')
     args = parser.parse_args(argv)
     if args.read_hook:
         read_hook(args.job.resolve(strict=True))
         return 0
     if args.audit_forward:
         forward_audit(args.job.resolve(strict=True))
+        return 0
+    if args.orientation_hook:
+        print(json.dumps(orientation_guard(args.job.resolve(strict=True), json.load(sys.stdin))), flush=True)
         return 0
     tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit)
     if args.prepare:
@@ -427,9 +543,16 @@ def main(argv=None):
             "edit_budget": tools.edit_budget()}, indent=2), encoding="utf-8")
         hook_command = shlex.join([sys.executable, str(Path(__file__).resolve()),
             "--job", str(tools.job), "--image-count", str(args.image_count), "--read-hook"])
-        settings = {"hooks": {event: [{"matcher": "Read", "hooks": [
+        matcher = 'Read|mcp__cloth_image__.*' if args.orientation_correction else 'Read'
+        settings = {"hooks": {event: [{"matcher": matcher, "hooks": [
             {"type": "command", "command": hook_command, "timeout": 10}]}]
             for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure")}}
+        if args.orientation_correction:
+            guard_command = shlex.join([sys.executable, str(Path(__file__).resolve()),
+                '--job', str(tools.job), '--image-count', str(args.image_count), '--orientation-hook'])
+            guard = {'type': 'command', 'command': guard_command, 'timeout': 10}
+            settings['hooks']['PreToolUse'].append({'matcher': 'StructuredOutput', 'hooks': [guard]})
+            settings['hooks']['Stop'] = [{'hooks': [guard]}]
         (tools.job / "image_tools.settings.json").write_text(json.dumps(settings), encoding="utf-8")
         audit(tools.job, {"kind": "session", "tool": "image_tools_ready", "status": "ok",
             "images": list(tools.views.values()), "tools": TOOLS, "settings": settings,

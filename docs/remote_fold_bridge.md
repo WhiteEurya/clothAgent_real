@@ -164,6 +164,10 @@ python scripts/remote_fold_smoke.py \
 
 方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑、16 轮模型调用。状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑、8 轮模型调用。旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。模型轮数通过 CLI `--max-turns` 限制，防止编辑额度耗尽后仍无限读图；这不是工具调用次数或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
 
+方向准备新增一次**原会话内纠正**：如果 Claude 提交 `UNCERTAIN` 并声称工具未返回／失败，但工具生命周期审计全部完成且没有失败、编辑额度仍有余额，提交前的 hook 会反馈实际旋转调用数和余额，要求完成必要的调用和 Read 验证，或明确说明视觉歧义。StructuredOutput 提交和普通 JSON Stop 共用一个持久化的纠正名额，最多触发一次。不会新建会话、重新上传、重拍，也不会重置六次编辑、16 轮和总时限。真正的工具失败、未完成的工具记录、预算耗尽或单纯看不清衣领仍按原逻辑停止。`selection.json` 的 `correction_checks`、工具日志、对话记录和 Viser 会显示审计原因与反馈；远端 CLI 禁用 hooks 时不尝试纠正，保留最终结果校验。
+
+StructuredOutput 的这次本地纠正可能出现在 CLI 最终信封的 `permission_denials` 中，对应 `orientation_correction: requested`；这是提交结果的事实校验，不是 API 安全拒绝。2026-09-17 用真实 Claude CLI 2.1.228、合成图片与本地模拟 API 验证过：同一会话在第一次 StructuredOutput 被要求纠正后，实际调用旋转、Read，再提交 READY；编辑累计 2/6。此测试验证 CLI/hooks 接线，不验证真实模型识别准确率或机器人动作。
+
 工具响应附带 `inspection_history`，列出已有图片的 ID、路径、父图、操作参数与成功 Read 次数；Claude 可用 `list_images` 查询完整目录。远端 job 内保存 `inspection_history.json` 快照和 `image_tool_calls.jsonl` 日志。相同源 image_id、相同操作和参数会返回已有图片及 `reused=true`，不新增文件、不消耗新编辑额度，但仍计入工具调用次数。MCP 重启从日志恢复图片目录、编辑缓存和调用计数。历史只属于当前 job，不自动跨阶段共享；本地 `claude_image_tools/<stage>/events.jsonl`、`image_debug.json` 和 `images/` 长期保留对应操作、读取记录与经像素校验的重建图，远端目录按原流程清理。成功 Read 仅证明工具返回过图片，不代表模型理解正确。
 
 Viser 的 `Claude image operations` 显示操作过程；iteration 摘要显示 `Claude → Molmo → Claude` 交接状态、实际输入路径／哈希和三个坐标系的点。`claude_molmo_orientation/molmo_input/camera_0_A.png` 是 Molmo 实际输入，`molmo_handoff.json` 保存提示词，`molmo_sleeve_locator/pixel_mapping.json` 保存映射。方向不明确、未 Read、哈希／来源不合法或调用失败会停止交接，不会退回旧图。新增调用会增加每次袖子步骤的耗时；其他本地安全检查继续执行。完整文件说明见 [fold_garment_frame.md](fold_garment_frame.md)。

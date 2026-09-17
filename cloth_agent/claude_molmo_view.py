@@ -51,6 +51,12 @@ VIEW_PROMPT = (
     "remaining edits. Stop as soon as the view is suitable; do not aim for perfection. "
     "At zero edits, do not request more edits: Read existing views, select and verify "
     "the best suitable one, or return UNCERTAIN. Do not restart to obtain more edits."
+    " If you infer that rotation is needed, actually call rotate_image and Read its result "
+    "before concluding it cannot be verified. Only report a tool failure when a real call "
+    "returned an error, citing the tool and error in your reason. A planned but unissued "
+    "tool call is not a tool failure. One audit-backed correction may be requested in this "
+    "same session; it shares the existing edit, turn and time budgets. Visual ambiguity "
+    "is still a valid reason to return UNCERTAIN; never invent collar/hem coordinates."
 )
 
 
@@ -69,13 +75,17 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
     debug = debug_directory([canonical_image], output, "molmo_orientation")
     report = {"status": "RUNNING", "canonical_image": str(canonical_image),
               "edit_limit": ORIENTATION_EDIT_LIMIT, "automatic_retry_allowed": False,
+              "same_session_correction_limit": 1,
               "image_debug_directory": str(debug)}
     report_path = output / "selection.json"
+    audit_events = ()
     try:
         result = backend.invoke(prompt=VIEW_PROMPT, image_paths=[canonical_image],
             schema=VIEW_SCHEMA, debug_dir=debug, timeout_s=timeout_s,
             image_edit_limit=ORIENTATION_EDIT_LIMIT,
+            orientation_correction=True, overall_timeout_s=timeout_s,
             system_prompt="Inspect current RGB with Read and the image tools. Prepare a collar-up view for Molmo. No robot access.")
+        audit_events = result.image_tool_events
         payload = parse_claude_json(result.stdout)
         report.update(response=payload, timings=result.timings,
                       image_sources=list(result.image_sources))
@@ -128,9 +138,13 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
         image.save(output / "claude_orientation_debug.png")
         return report
     except BaseException as exc:
+        audit_events = getattr(exc, 'image_tool_events', audit_events)
         report.update(status="FAILED_NO_MOLMO", error=f"{type(exc).__name__}: {exc}")
         if isinstance(exc, Exception):
             raise MolmoOrientationError(f'Claude orientation failed; no automatic budget reset: {exc}') from exc
         raise
     finally:
+        report['correction_checks'] = [e for e in audit_events if e.get('kind') == 'orientation_guard']
+        report['correction_hook_observed'] = bool(report['correction_checks'])
+        report['correction_applied'] = any(e.get('status') == 'requested' for e in report['correction_checks'])
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

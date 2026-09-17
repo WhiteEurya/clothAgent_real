@@ -29,6 +29,8 @@ class OrientationBackend:
 
     def invoke(self, **kwargs):
         assert kwargs['image_edit_limit'] == 6
+        assert kwargs['orientation_correction'] is True
+        assert kwargs['overall_timeout_s'] == kwargs['timeout_s']
         debug = ImageDebugSession(kwargs['debug_dir'], kwargs['image_paths'], kwargs['prompt'])
         tools = ImageTools(debug.image_dir, 1, edit_limit=kwargs['image_edit_limit'])
         debug.consume({'kind': 'session', 'images': list(tools.views.values())})
@@ -106,6 +108,30 @@ def test_timeout_keeps_selection_failure(tmp_path):
     with pytest.raises(MolmoOrientationError, match='no automatic budget reset'):
         prepare_molmo_view(FailedBackend(), canonical_image(tmp_path), tmp_path / 'orientation', timeout_s=30)
     assert json.loads((tmp_path / 'orientation' / 'selection.json').read_text())['status'] == 'FAILED_NO_MOLMO'
+
+
+def test_timeout_after_correction_preserves_audit_without_another_invocation(tmp_path):
+    check = {'kind': 'orientation_guard', 'status': 'requested',
+             'classification': 'UNSUPPORTED_TOOL_FAILURE_CLAIM',
+             'audit_facts': {'edits_remaining': 5}}
+    class FailedBackend:
+        calls = 0
+        def invoke(self, **kwargs):
+            self.calls += 1
+            error = TimeoutError('original orientation deadline exceeded')
+            error.image_tool_events = (check,)
+            raise error
+    backend = FailedBackend()
+    output = tmp_path / 'orientation'
+    with pytest.raises(MolmoOrientationError):
+        prepare_molmo_view(backend, canonical_image(tmp_path), output, timeout_s=30)
+    report = json.loads((output / 'selection.json').read_text())
+    assert backend.calls == 1
+    assert report['correction_checks'] == [check]
+    assert report['correction_hook_observed'] is True
+    assert report['correction_applied'] is True
+    assert report['status'] == 'FAILED_NO_MOLMO'
+    assert not (output / 'molmo_input').exists()
 
 
 def test_select_existing_final_view_after_all_six_edits(tmp_path):

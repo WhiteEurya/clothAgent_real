@@ -216,6 +216,9 @@ class ImageDebugSession:
                     read["duration_s"] = (event["timestamp_ns"]-read["started_ns"])/1e9
             elif event.get("tool") == "audit_finished":
                 self.state["audit_complete"] = True
+            elif event.get('kind') == 'orientation_guard':
+                self.append_stream('claude_transcript.md',
+                    '## Host orientation audit\n\n' + json.dumps(event, ensure_ascii=False, indent=2) + '\n\n')
             elif event.get("status") == "ok" and event.get("tool") in {
                     "rotate_image", "crop_image", "resize_image"}:
                 if event.get('result', {}).get('reused'):

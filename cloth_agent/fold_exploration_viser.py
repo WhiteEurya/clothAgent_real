@@ -450,6 +450,11 @@ def _image_tool_summary(data):
                      'See claude_transcript.md and timing.md below. Hidden reasoning is not available.')
     if not any(e.get("tool") in {"rotate_image", "crop_image", "resize_image"} for e in data.get("events", [])):
         lines.append("No image transformation calls recorded so far.")
+    checks = [e for e in data.get('events', []) if e.get('kind') == 'orientation_guard']
+    if checks:
+        requested = sum(e.get('status') == 'requested' for e in checks)
+        lines.append(f"Orientation correction: {requested}/1 in the same session; "
+                     f"last audit: {checks[-1].get('classification')}. Edit/turn/time budgets are shared.")
     if data.get("error"):
         lines.append(f"Error: {data['error']}")
     lines.extend(str(e) for e in data.get("errors", []))

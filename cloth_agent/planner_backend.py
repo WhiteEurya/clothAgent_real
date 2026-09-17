@@ -230,7 +230,8 @@ class RemoteClaudeBackend:
                schema: dict[str, Any], system_prompt: str,
                timeout_s: int | None = None, debug_dir: Path | None = None,
                image_edit_limit: int | None = None, max_turns: int | None = None,
-               overall_timeout_s: float | None = None) -> BackendResult:
+               overall_timeout_s: float | None = None,
+               orientation_correction: bool = False) -> BackendResult:
         if overall_timeout_s is not None and (type(overall_timeout_s) not in (int, float)
                 or not 0 < overall_timeout_s < float('inf')):
             raise ValueError('overall_timeout_s must be finite and positive')
@@ -241,6 +242,9 @@ class RemoteClaudeBackend:
         if image_edit_limit is not None and (type(image_edit_limit) is not int or not 0 <= image_edit_limit <= 24):
             raise ValueError('image_edit_limit must be an integer in [0, 24]')
         self._image_edit_limit = image_edit_limit
+        if orientation_correction and (not self.image_tools or image_edit_limit is None):
+            raise ValueError('orientation correction requires audited image tools and a finite edit budget')
+        self._orientation_correction = bool(orientation_correction)
         self.last_timings = {}
         self.last_image_tool_events = []
         self._seen_events = set()
@@ -254,6 +258,7 @@ class RemoteClaudeBackend:
                  "image_edit_limit": image_edit_limit,
                  "max_turns": self._call_max_turns,
                  "overall_timeout_s": overall_timeout_s,
+                 "orientation_correction": self._orientation_correction,
                  "image_paths": [str(p) for p in image_paths]})
         started = time.monotonic()
         try:
@@ -314,6 +319,10 @@ class RemoteClaudeBackend:
                 self._progress("image_tool", event.get("status", "unknown"),
                                event.get("duration_s"), tool=event.get("tool"),
                                edit_budget=event.get('edit_budget'))
+                if event.get('kind') == 'orientation_guard':
+                    self._progress('orientation_correction', event['status'],
+                                   classification=event.get('classification'),
+                                   audit_facts=event.get('audit_facts'))
 
     def _image_tool_setup(self, job, count):
         """Stage the small tool implementation over SSH, never additional RGB."""
@@ -326,11 +335,12 @@ class RemoteClaudeBackend:
         quoted_job = shlex.quote(job)
         limit = getattr(self, '_image_edit_limit', None)
         budget_flag = f' --edit-limit {limit}' if limit is not None else ''
+        correction_flag = ' --orientation-correction' if getattr(self, '_orientation_correction', False) else ''
         setup = (
             'cloth_image_python=${CLOTH_REMOTE_IMAGE_PYTHON:-python3}; '
             f'"$cloth_image_python" -c {shlex.quote(bootstrap)}; '
             f'"$cloth_image_python" {quoted_job}/image_tools.py --prepare '
-            f'--job {quoted_job} --image-count {count}{budget_flag}; '
+            f'--job {quoted_job} --image-count {count}{budget_flag}{correction_flag}; '
         )
         allowed = TOOL_NAMES if limit != 0 else tuple(t for t in TOOL_NAMES
             if not t.endswith(('__crop_image', '__rotate_image', '__resize_image')))

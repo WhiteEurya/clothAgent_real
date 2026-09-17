@@ -36,7 +36,18 @@ but should finish as soon as a suitable view exists. Tool replies and Viser show
 and remaining edits. At zero, all further edits are rejected; Read, image_info and
 map_point remain available to inspect/select existing images (the general call/time
 limits still apply). Budget state persists inside the remote job across MCP restarts.
-An orientation failure, UNCERTAIN response or timeout is non-retriable, including in
+Before the orientation response is committed, an audit hook may request **one correction
+in the same Claude session** when UNCERTAIN claims a tool failure but completed
+inspection records show no failure and edits remain. The hook reports actual rotation
+requests and remaining edits; it does not choose an angle or force READY. It checks
+StructuredOutput submissions and plain JSON Stop responses, sharing one persisted
+correction allowance. Genuine visual ambiguity, actual tool errors, incomplete audit
+and exhausted budgets do not trigger correction. Existing images, the six-edit budget,
+16-turn cap and overall deadline (including upload) stay in force; no new upload or
+Claude process is started. If the remote CLI disables these hooks, no correction is
+attempted and normal result validation still applies.
+
+A final orientation failure, UNCERTAIN response or timeout is non-retriable, including in
 unattended mode: it stops before Molmo/robot execution rather than starting another
 Claude call with fresh budget. Successful selection after using all 6 edits is allowed.
 Other Claude stages retain their existing limits. Six edits bounds image mutations,
@@ -56,7 +67,9 @@ For each iteration inspect:
 - `claude_image_tools/molmo_orientation_*/`: prompt, all operations/Read events,
   original and replayed images, timings, hashes and failures.
 - `claude_molmo_orientation/selection.json`: exact selected view, source chain,
-  collar/hem coordinates, validation status and Claude's reasoning.
+  collar/hem coordinates, validation status, Claude's reason and `correction_checks`
+  (initial candidate, audit facts and exact feedback). `correction_hook_observed` and
+  `correction_applied` distinguish a missing hook from a completed check or correction.
 - `claude_molmo_orientation/molmo_input/camera_0_A.png`: exact RGB given to Molmo.
 - `claude_molmo_orientation/claude_orientation_debug.png`: collar/hem annotations
   for humans; this annotated copy is not given to Molmo.
