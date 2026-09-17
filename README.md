@@ -141,6 +141,15 @@ python -m cloth_agent session \
 
 ## 常用命令
 
+RealSense 实时画面和滑块调参（曝光、增益、白平衡等）：
+
+```bash
+conda activate cali
+python scripts/tune_realsense.py
+```
+
+手动打开 <http://127.0.0.1:8086>，默认选择 Cam A。支持保存参数、截图，以及将曝光 / 白平衡写回折叠配置。[详细使用说明](docs/realsense_tuner.md)
+
 当你希望把流程拆开执行时，可以使用以下子命令：
 
 ```bash
