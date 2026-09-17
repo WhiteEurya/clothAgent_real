@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "kind": "realsense_rgb_controls",
+  "saved_at_utc": "20260917T064552358234Z",
+  "serial": "317222073552",
+  "sensor": "RGB Camera",
+  "options": {
+    "backlight_compensation": 0.0,
+    "brightness": -14.0,
+    "contrast": 58.0,
+    "exposure": 321.0,
+    "gain": 65.0,
+    "gamma": 306.0,
+    "hue": 0.0,
+    "saturation": 66.0,
+    "sharpness": 54.0,
+    "white_balance": 3280.0,
+    "enable_auto_exposure": 0.0,
+    "enable_auto_white_balance": 0.0,
+    "frames_queue_size": 16.0,
+    "power_line_frequency": 3.0,
+    "auto_exposure_priority": 0.0,
+    "global_time_enabled": 1.0
+  }
+}

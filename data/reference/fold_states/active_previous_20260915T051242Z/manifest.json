@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "reference_type": "static_cross_garment_fold_states",
+  "collection_name": "active",
+  "created_at": "2026-09-15T05:07:56.218+00:00",
+  "source_garment": "operator-provided reference garment; no trajectory data",
+  "camera": {
+    "label": "A",
+    "serial": "317222073552",
+    "stream": "RGB color only",
+    "raw_resolution": [
+      1280,
+      720
+    ],
+    "image_resolution": [
+      720,
+      1280
+    ],
+    "orientation": "clockwise90_upright (same as fold planner Camera-A RGB)",
+    "fps": 15
+  },
+  "states": [
+    {
+      "state_id": "state_00_unfolded",
+      "step": null,
+      "description": "unfolded shirt",
+      "filename": "state_00_unfolded.png",
+      "captured_at": "2026-09-15T05:07:15.049+00:00",
+      "frame_number": 454,
+      "device_timestamp_ms": 1789448834781.6445
+    },
+    {
+      "state_id": "state_01_left_sleeve",
+      "step": "left_sleeve",
+      "description": "after folding the image-left sleeve inward",
+      "filename": "state_01_left_sleeve.png",
+      "captured_at": "2026-09-15T05:07:28.121+00:00",
+      "frame_number": 640,
+      "device_timestamp_ms": 1789448847893.5051
+    },
+    {
+      "state_id": "state_02_right_sleeve",
+      "step": "right_sleeve",
+      "description": "after folding the image-right sleeve inward",
+      "filename": "state_02_right_sleeve.png",
+      "captured_at": "2026-09-15T05:07:33.068+00:00",
+      "frame_number": 710,
+      "device_timestamp_ms": 1789448852828.262
+    },
+    {
+      "state_id": "state_03_left_side",
+      "step": "left_side",
+      "description": "after folding the first torso side inward",
+      "filename": "state_03_left_side.png",
+      "captured_at": "2026-09-15T05:07:43.299+00:00",
+      "frame_number": 855,
+      "device_timestamp_ms": 1789448863049.8289
+    },
+    {
+      "state_id": "state_04_right_side",
+      "step": "right_side",
+      "description": "after folding the second torso side inward",
+      "filename": "state_04_right_side.png",
+      "captured_at": "2026-09-15T05:07:47.830+00:00",
+      "frame_number": 919,
+      "device_timestamp_ms": 1789448867561.1897
+    },
+    {
+      "state_id": "state_05_bottom_hem",
+      "step": "bottom_hem",
+      "description": "after folding the bottom hem upward",
+      "filename": "state_05_bottom_hem.png",
+      "captured_at": "2026-09-15T05:07:56.218+00:00",
+      "frame_number": 1038,
+      "device_timestamp_ms": 1789448875949.9944
+    }
+  ],
+  "coordinate_policy": "static semantic reference only; no pixel transfer, depth, XYZ, calibration, or robot action",
+  "manifest_path": "/home/sja/clothAgent_real/data/reference/fold_states/active/manifest.json"
+}

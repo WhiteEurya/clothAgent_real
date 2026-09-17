@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
+# Restore the complete saved RGB preset before any capture or robot action.
+# Override CAMERA_PRESET / CAMERA_PYTHON when using a different camera or SDK env.
+CAMERA_PRESET="${CAMERA_PRESET:-$ROOT/config/realsense_rgb_317222073552.json}"
+CAMERA_PYTHON="${CAMERA_PYTHON:-$PYTHON}"
+"$CAMERA_PYTHON" "$ROOT/scripts/apply_realsense_preset.py" "$CAMERA_PRESET"
 ARGS=("$@")
 has_existing_run=0
 has_recovery_mode=0

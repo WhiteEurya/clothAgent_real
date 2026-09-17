@@ -4,22 +4,15 @@
       "label": "A",
       "serial": "317222073552",
       "extrinsics_file": "config/extrinsics_A.yaml",
-      "color_exposure": 321.0,
-      "color_white_balance": 3280.0
+      "color_exposure": 700,
+      "color_white_balance": 3800
     }
   ],
-  "active_cameras": [
-    "A"
-  ],
+  "active_cameras": ["A"],
   "table_appearance_mode": "border_background",
   "table_plane_mode": "camera_parallel",
   "table_reference_clearance_px": 12,
-  "table_roi_xyxy": [
-    0.18,
-    0.03,
-    0.77,
-    0.98
-  ],
+  "table_roi_xyxy": [0.18, 0.03, 0.77, 0.98],
   "width": 1280,
   "height": 720,
   "fps": 30,
