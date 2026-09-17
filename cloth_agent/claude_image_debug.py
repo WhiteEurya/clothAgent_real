@@ -11,7 +11,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .image_tools_mcp import ImageTools, IMAGE_TOOLS, image_content_summary, returned_image_metadata, image_matches
+from .image_tools_mcp import (ImageTools, IMAGE_TOOLS, VERIFIED_DELIVERIES, image_content_summary,
+                             returned_image_metadata, image_matches, verify_image_delivery)
+from .claude_stream import urgent_event
 
 
 def debug_directory(images, fallback, stage):
@@ -40,7 +42,9 @@ class ImageDebugSession:
         self.remote_paths = {}
         self.reads = {}
         self.inspections = {}
+        self.delivery_checks = {}
         self.started = time.monotonic()
+        self._last_snapshot = float('-inf')
         self.request = request
         self.last_message_at = None
         self.claude_event_count = 0
@@ -63,7 +67,7 @@ class ImageDebugSession:
         (self.directory / 'prompt.txt').write_text(prompt, encoding='utf-8')
         (self.directory / 'system_prompt.txt').write_text(self.request['system_prompt'], encoding='utf-8')
 
-    def consume_claude_line(self, line):
+    def consume_claude_line(self, line, *, on_event=None):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -80,10 +84,23 @@ class ImageDebugSession:
         self.state['last_claude_event'] = {k: v for k, v in row.items() if k != 'event'} | {
             'type': event.get('type'), 'subtype': event.get('subtype')}
         self.state['claude_event_count'] = self.claude_event_count
+        counts = self.state.setdefault('claude_event_counts', {})
+        label = str(event.get('type', 'unknown'))
+        if event.get('subtype'):
+            label += '.' + str(event['subtype'])
+        counts[label] = counts.get(label, 0) + 1
+        # Keep every raw event above, but do not turn status/token notifications
+        # into thousands of transcript headings or rerun image verification.
+        if event.get('type') in {'system', 'stream_event'} and not urgent_event(event):
+            if on_event:
+                on_event(event)
+            self.flush()
+            return self.state['last_claude_event']
         header = f"## {self.claude_event_count}. {event.get('type', 'message')} at +{elapsed:.3f}s"
         if gap is not None:
             header += f" (receipt gap {gap:.3f}s)"
         parts = [header]
+        inspections_changed = False
         message = event.get('message') or {}
         content = message.get('content', []) if isinstance(message, dict) else []
         if isinstance(content, str):
@@ -102,12 +119,14 @@ class ImageDebugSession:
                 elif kind == 'tool_use':
                     tool = block.get('name', '')
                     if block.get('id') and (tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS):
+                        inspections_changed = True
                         inspection = self.inspections.setdefault(block['id'], {'tool_use_id': block['id']})
                         inspection.update(tool=tool, arguments=block.get('input', {}))
                     parts.append('Tool input: ' + json.dumps(block, ensure_ascii=False))
                 elif kind == 'tool_result':
+                    inspections_changed = True
                     identity = block.get('tool_use_id')
-                    summary = image_content_summary(block.get('content'))
+                    summary = image_content_summary(block.get('content'), on_image=self._save_returned_image)
                     inspection = self.inspections.setdefault(identity, {'tool_use_id': identity})
                     inspection.update(stream_content=summary, stream_error=bool(block.get('is_error')))
                     metadata = returned_image_metadata(block.get('content'))
@@ -133,8 +152,11 @@ class ImageDebugSession:
         if len(parts) == 1:
             parts.append(json.dumps(event, ensure_ascii=False))
         self.append_stream('claude_transcript.md', '\n\n'.join(parts) + '\n\n')
-        self._match_reads()
-        self.flush()
+        if inspections_changed:
+            self._match_reads()
+        if on_event:
+            on_event(event)
+        self.flush(force=event.get('type') == 'result')
         return self.state['last_claude_event']
 
     def save_timings(self):
@@ -178,13 +200,23 @@ class ImageDebugSession:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
 
-    def flush(self):
-        self.state["elapsed_s"] = time.monotonic() - self.started
+    def flush(self, *, force=False):
+        now = time.monotonic()
+        if not force and now - self._last_snapshot < 1:
+            return
+        self.state["elapsed_s"] = now - self.started
         self.write("image_debug.json", self.state)
+        self._last_snapshot = now
 
     def progress(self, stage, event, duration_s, details):
         self.state["progress"].append(dict(stage=stage, event=event, duration_s=duration_s,
                                           elapsed_s=time.monotonic()-self.started, **details))
+        if stage in {'claude_stream', 'claude_text'}:
+            self.append_stream('claude_transcript.md',
+                f'## {stage} at +{time.monotonic()-self.started:.3f}s\n\n' +
+                json.dumps(details, ensure_ascii=False) + '\n\n')
+        if stage == 'claude_stream':
+            self.state['claude_stream'] = details
         if duration_s is not None and event in {'finished', 'measured', 'completed', 'failed'}:
             self.phase_durations[stage] = duration_s
             match = re.fullmatch(r'(upload|remote_download|remote_hash)_(\d+)', stage)
@@ -199,6 +231,29 @@ class ImageDebugSession:
 
     def _view(self, image_id):
         return next(v for v in self.state["views"] if v["image_id"] == image_id)
+
+    def _save_returned_image(self, raw, details):
+        directory = self.directory / 'returned_images'
+        directory.mkdir(exist_ok=True)
+        suffix = '.jpg' if details['mime_type'] == 'image/jpeg' else '.png'
+        path = directory / (details['encoded_sha256'] + suffix)
+        if not path.exists():
+            path.write_bytes(raw)
+        return {'saved_path': str(path)}
+
+    def _delivery_check(self, summary, view):
+        if image_matches(summary, view):
+            return {'status': 'VERIFIED', 'method': 'exact_rgb_sha256'}
+        images = summary.get('images', []) if isinstance(summary, dict) else []
+        raw = None
+        key = (view['image_id'], view.get('rgb_sha256'), json.dumps(summary, sort_keys=True))
+        if key not in self.delivery_checks:
+            if len(images) == 1 and images[0].get('saved_path'):
+                path = Path(images[0]['saved_path'])
+                if path.resolve().parent == self.directory / 'returned_images' and not path.is_symlink():
+                    raw = path.read_bytes()
+            self.delivery_checks[key] = verify_image_delivery(summary, view, view['path'], raw)
+        return self.delivery_checks[key]
 
     def _match_reads(self):
         for view in self.state["views"]:
@@ -227,21 +282,45 @@ class ImageDebugSession:
                     continue
                 hook = record.get('hook_content')
                 stream = record.get('stream_content')
-                returned = 'VERIFIED' if image_matches(hook, view) else 'UNAVAILABLE' if hook is not None else 'UNKNOWN'
-                emitted = 'VERIFIED' if image_matches(stream, view) else 'UNAVAILABLE' if stream is not None else 'UNKNOWN'
-                valid = (emitted == 'VERIFIED' and returned != 'UNAVAILABLE' and
+                check = self._delivery_check(stream, view)
+                emitted = check['status']
+                # Metadata must describe this exact source, including remote identity.
+                metadata_valid = not metadata or (
+                    metadata.get('image_id') == view['image_id'] and
+                    metadata.get('size') == view['size'] and
+                    metadata.get('rgb_sha256') == view['rgb_sha256'] and
+                    self.remote_paths.get(metadata.get('path')) == view['image_id'])
+                if not metadata_valid or (emitted == 'VERIFIED_TRANSCODE' and
+                        tool != 'Read' and not metadata):
+                    emitted = 'IDENTITY_MISMATCH'
+                    check = {'status': emitted, 'reason': 'missing or mismatched source metadata'}
+                returned = ('VERIFIED' if image_matches(hook, view) else
+                    emitted if emitted in VERIFIED_DELIVERIES and stream and
+                        image_matches(hook, stream['images'][0]) else
+                    'UNAVAILABLE' if hook is not None else 'UNKNOWN')
+                valid = (emitted in VERIFIED_DELIVERIES and returned != 'UNAVAILABLE' and
                          record.get('hook_status') != 'failed' and not record.get('stream_error'))
                 inspections.append({**record, 'returned_image_status': returned,
-                    'stream_image_status': emitted, 'image_delivery_status': 'VERIFIED' if valid else
-                    'UNAVAILABLE' if 'UNAVAILABLE' in (returned, emitted) or record.get('stream_error')
-                    or record.get('hook_status') == 'failed' else 'UNKNOWN'})
+                    'stream_image_status': emitted, 'delivery_check': check,
+                    'image_delivery_status': emitted if valid else
+                    emitted if emitted in {'CONTENT_MISMATCH', 'SIZE_MISMATCH', 'IDENTITY_MISMATCH'} else
+                    'UNAVAILABLE' if returned == 'UNAVAILABLE' or record.get('stream_error')
+                    or record.get('hook_status') == 'failed' else emitted})
             view['image_inspections'] = inspections
+            view.pop('delivered_image', None)
+            accepted = [record for record in inspections if record['image_delivery_status'] in VERIFIED_DELIVERIES]
+            if accepted:
+                best = next((record for record in accepted if record['image_delivery_status'] == 'VERIFIED'), accepted[0])
+                view['delivered_image'] = {**best['stream_content']['images'][0],
+                    'tool_use_id': best['tool_use_id'], 'validation': best['delivery_check']}
             for field in ('returned_image_status', 'stream_image_status', 'image_delivery_status'):
                 statuses = {record[field] for record in inspections}
-                view[field] = 'VERIFIED' if 'VERIFIED' in statuses else 'UNAVAILABLE' if 'UNAVAILABLE' in statuses else 'UNKNOWN'
+                view[field] = next((s for s in ('VERIFIED', 'VERIFIED_TRANSCODE', 'IDENTITY_MISMATCH',
+                    'SIZE_MISMATCH', 'CONTENT_MISMATCH', 'UNAVAILABLE') if s in statuses), 'UNKNOWN')
         self.state['delivery_evidence_note'] = (
-            'VERIFIED image delivery means exact pixels appeared in a CLI tool_result without a known '
-            'hook failure for that call. It does not prove provider receipt or model understanding.')
+            'VERIFIED means exact RGB; VERIFIED_TRANSCODE means a same-size JPEG passed bounded full-pixel '
+            're-encoding comparison with its verified source. Actual returned bytes are saved separately. '
+            'Neither proves provider receipt or model understanding.')
 
     def consume(self, event):
         row = dict(event, received_elapsed_s=time.monotonic()-self.started)
@@ -322,4 +401,4 @@ class ImageDebugSession:
         self.state.update(status=status, error=error)
         self.save_timings()
         self._match_reads()
-        self.flush()
+        self.flush(force=True)

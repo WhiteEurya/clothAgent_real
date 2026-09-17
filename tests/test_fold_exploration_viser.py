@@ -1,14 +1,56 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+from PIL import Image
 
 from cloth_agent.fold_exploration_viser import (
     _claude_input_groups,
     _planning_images_from_prompt,
     _run_root,
     _debug_markdown, _workspace_markdown, _iter_images,
+    _FoldViserState,
 )
+
+
+def test_dashboard_displays_actual_returned_jpeg_separately_and_only_inside_job(tmp_path):
+    iteration = tmp_path / 'iteration_001'
+    debug = iteration / 'claude_image_tools' / 'orientation_test'
+    debug.mkdir(parents=True)
+    source = debug / 'source.png'
+    returned = debug / 'returned.jpg'
+    outside = tmp_path / 'outside.jpg'
+    Image.new('RGB', (12, 10), 'white').save(source)
+    Image.new('RGB', (12, 10), (20, 80, 140)).save(returned)
+    Image.new('RGB', (12, 10), 'red').save(outside)
+    (debug / 'image_debug.json').write_text(json.dumps({'views': [{
+        'image_id': 'image_0', 'path': str(source), 'verification': 'VERIFIED',
+        'image_delivery_status': 'VERIFIED_TRANSCODE', 'image_inspections': [{
+            'stream_content': {'images': [
+                {'saved_path': str(returned), 'mime_type': 'image/jpeg'},
+                {'saved_path': str(outside), 'mime_type': 'image/jpeg'}]}}]}]}))
+    shown = []
+    state = _FoldViserState.__new__(_FoldViserState)
+    state.server = SimpleNamespace(gui=SimpleNamespace(
+        add_markdown=lambda content: SimpleNamespace(content=content),
+        add_folder=lambda *args, **kwargs: nullcontext(),
+        add_image=lambda pixels, label: shown.append((pixels.copy(), label))))
+    state._folder = lambda *args: nullcontext()
+    state._relative_to_run = str
+    for name in ('tool_panels', 'tool_image_panels', 'tool_image_handles',
+                 'tool_raw_mtimes', 'tool_raw_panels', 'tool_raw_folders'):
+        setattr(state, name, {})
+    state._render_image_tools(iteration)
+    state._render_image_tools(iteration)
+    assert len(shown) == 2  # Cached rerender, and no outside-job image.
+    assert shown[1][1] == 'CLI RETURNED IMAGE | image_0 | image/jpeg'
+    with Image.open(returned) as image:
+        np.testing.assert_array_equal(shown[1][0], np.asarray(image.convert('RGB')))
+    assert not np.array_equal(shown[0][0], shown[1][0])
 
 
 def test_remote_failure_manifest_and_workspace_are_visible_without_trajectory(tmp_path):

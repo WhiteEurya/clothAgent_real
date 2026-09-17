@@ -18,10 +18,15 @@ The remote fold path uses this order for each sleeve step:
 2. Claude uses `view_image` for current RGB, then chooses rotation/crop/resize as
    needed. Each edit returns the actual image, with no extra Read required.
    An already aligned original can be selected.
-3. The host verifies the image hash, current-source ancestry, exact image content
-   in a correlated CLI tool_result (with no known hook failure) and
-   declared collar/hem alignment (within 14 degrees of vertical). It stages that exact
-   RGB for Molmo. This alignment check validates Claude's declaration, not the semantic
+3. The host verifies the source image hash and current-source ancestry, then checks
+   image content in a correlated CLI tool_result (with no known hook failure).
+   Exact RGB matches are `VERIFIED`; same-size JPEGs must pass bounded full-pixel
+   and local-tile re-encoding comparison to become `VERIFIED_TRANSCODE` (see
+   `remote_fold_bridge.md` for thresholds and approximate-verification limits).
+   Implicit resizing or mismatched source metadata blocks handoff. The host checks
+   declared collar/hem alignment (within 14 degrees of vertical) and stages the
+   actual returned image's decoded RGB losslessly for Molmo, retaining the verified
+   source coordinate map. This alignment check validates Claude's declaration, not the semantic
    correctness of the landmarks. Ambiguity, timeout, missing pixels, invalid transform or
    invalid selection stops the handoff; no guessed orientation is used.
 4. Molmo sees only this selected RGB and a literal IMAGE LEFT/RIGHT sleeve request.
@@ -68,6 +73,9 @@ For each iteration inspect:
 
 - `claude_image_tools/molmo_orientation_*/`: prompt, all operations/Read events,
   original and replayed images, timings, hashes and failures.
+- `claude_image_tools/molmo_orientation_*/returned_images/`: original encoded bytes
+  from CLI image results; Viser displays these separately from replayed source views.
+  `selection.json` records `delivered_image`, encoding and pixel hashes, and validation metrics.
 - `claude_molmo_orientation/selection.json`: exact selected view, source chain,
   collar/hem coordinates, content validation, Claude's reason, `failure_reason` and
   `failure_reason_source`. Historical `correction_checks` now contain classification

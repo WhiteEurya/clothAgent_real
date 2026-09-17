@@ -44,7 +44,7 @@ python scripts/remote_image_tools_test.py test.png --host company-planner
 python scripts/remote_image_tools_test.py --local-claude
 ```
 
-在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。若 CLI 自动压缩或缩小大图导致尺寸／像素变化，内容会显示不匹配，不能用原始坐标直接放行。
+在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。CLI 自动将 PNG 转为同尺寸 JPEG 时，使用下述转码校验；CLI 隐式缩放、错误图片或超出容差的内容变化仍会阻止交接。
 
 正常 fold 命令不变。规划阶段的 `<stage>_invocation.json` 新增 `image_tool_events` 和 `image_debug_directory`。监督、规划、运动提案和评估的每次调用，都在当前 iteration 下自动建立 `claude_image_tools/<阶段>_<ID>/`。没有 iteration 的独立调用使用对应诊断目录。
 
@@ -75,7 +75,13 @@ python scripts/remote_image_tools_test.py --local-claude
 | `returned_image_status=VERIFIED` | PostToolUse 返回中有可解码、与该视图匹配的图片 |
 | `stream_image_status=VERIFIED` | 关联的 CLI tool_result 中有与该视图匹配的图片 |
 | `image_delivery_status=VERIFIED` | CLI 图片匹配，且同次调用没有已知 hook 内容失败；不证明服务端收到或模型理解 |
-| 内容状态 `UNAVAILABLE` / `UNKNOWN` | 已观察到空、损坏、不匹配或失败返回 / 尚无足够证据 |
+| 内容状态 `VERIFIED_TRANSCODE` | 同尺寸 JPEG 通过来源关联、重新编码及有界像素比较；这是近似内容校验，不是像素哈希相等 |
+| 内容状态 `SIZE_MISMATCH` / `CONTENT_MISMATCH` / `IDENTITY_MISMATCH` | 返回尺寸变化 / 像素内容校验失败 / 来源元数据不一致 |
+| 内容状态 `UNAVAILABLE` / `UNKNOWN` | 已观察到空、损坏或失败返回 / 尚无足够证据 |
+
+原始 PNG 和本地重建视图仍要求远端／本地 RGB 哈希完全一致。JPEG 校验使用返回文件的量化表和色度采样参数重新编码源图，再逐像素比较解码结果，不做对齐、缩放、模糊或感知哈希匹配。每个颜色通道的整图平均绝对差不超过 2、均方根差不超过 4、任意 32×32 分块均方根差不超过 6，同时返回图相对原图的平均绝对差不超过 15（均为 0–255 单位）。非标准 EXIF 方向和不支持的颜色模式会被拒绝。阈值允许编码器差异，也意味着容差以内的细微变化无法被完全排除；它不验证衣领识别是否正确。
+
+通过校验后，Molmo 使用 CLI 实际返回图片解码得到的 RGB，以 PNG 无损保存；坐标映射仍使用已验证的同尺寸源视图。交接前再次检查源图像素哈希和返回文件字节／像素哈希。Viser 分别显示重建源图与 `CLI RETURNED IMAGE`。错误分类与转码差异分开记录，不增加重试或重置编辑预算。
 
 Ctrl-C、超时或网络中断后，保留已收到的图片和事件，并标明 `INTERRUPTED`/`FAILED`。尚未收到的数据不会补造为成功，未收到结束标记时 `audit_complete=false`。缺少 hook 时对应状态为 UNKNOWN；CLI 内的实际图片仍可独立验证。若 CLI 没有输出可验证图片，方向交接和在线图片测试不会仅凭工具成功状态放行。
 
@@ -91,6 +97,7 @@ iteration_001/claude_image_tools/<阶段>_<ID>/
     stderr.log
     exception.log       # 异常时写入
     images/             # 原图快照及处理图
+    returned_images/    # CLI 实际返回的图片原始字节，按 encoded_sha256 命名
     points/             # 本地选点调试标记
 ```
 
@@ -106,6 +113,8 @@ python -m cloth_agent.fold_exploration_viser results/image_tools_smoke/<测试�
 `--local-claude` 使用同一份生产工具注册、Read hooks、远端工作目录清理和本地调试流，只将图片传输换成本机文件读取。它调用真正的 Claude，仍需 Claude 登录及模型网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。
 
 2026-09-15 的旧版测试曾记录到原图/旋转图/放大图的成功 Read hook，不能据此证明返回含图片。2026-09-17 的新验证使用真实 Claude CLI 2.1.228、合成图片与本地模拟 API：`view_image` 和 `rotate_image` 的图片在 PostToolUse、CLI tool_result、下一次本地 API 请求中均可解码且像素哈希一致，方向交接校验通过，全程没有额外 Read。这验证本机 CLI/MCP/校验接线，不验证远端生产 API、模型视觉准确率或机器人动作。
+
+同日使用仓库真实衣服照片（720×1280 PNG）重复该 CLI／本地模拟 API 测试，复现原图及旋转图自动转为 JPEG。两图均通过 `VERIFIED_TRANSCODE`，重新编码比较的最大通道平均绝对差约 0.69，最差分块均方根差约 2.24；下一次本地 API 请求也包含相应 JPEG，Molmo 输入准备成功。此测试没有调用真实模型或机器人。
 
 ## 快速测试
 
@@ -187,7 +196,11 @@ Viser 的 `Claude image operations` 显示操作过程及每张图的内容验�
 
 ## Claude 对话与传输计时
 
-远端调用使用 `--output-format stream-json --verbose`，逐条接收 CLI 公开消息；只把终止 `result` 信封交给原 planner parser，中间 assistant 消息不能替代最终方案。没有最终结果或最终结果为错误时，不执行动作。
+远端调用使用 `--output-format stream-json --verbose --include-partial-messages`，持续接收 CLI 公开消息和正文增量；只把终止 `result` 信封交给原 planner parser，中间 assistant 消息或正文片段不能替代最终方案。没有最终结果或最终结果为错误时，不执行动作。
+
+终端中 `claude_text` 约每秒显示一次新增正文的末尾摘要（最多 160 字符，标明新增字符数及是否截取）；没有正文时不编造“思考内容”。`claude_stream` 每 5 秒显示累计原始事件数、实际类型／子类型、模型发出的工具调用数、距上条事件的秒数。没有新事件时也显示等待状态。工具请求／返回、错误、重试通知和最终结果即时显示。`raw_events=1500` 只是事件数，不能当成模型调用轮数；真实 `num_turns` 从最终结果读取。
+
+每条原始消息仍逐条追加到 `stdout.log` 和 `claude_events.jsonl`。高频系统通知和增量片段不再各占一个对话标题；`claude_transcript.md` 保留正文摘要、完整 assistant 消息、工具结果、重要通知和状态汇总。`image_debug.json` 常规更新最多每秒一次，最终结果、退出、超时和中断时强制保存最终状态。图片返回校验即时更新内存，写盘节流不改变 Molmo 的放行条件。
 
 在 Viser 的 `Claude image operations / <stage>` 中可展开以下文件。磁盘位置为本轮 `iteration_*/claude_image_tools/<stage>_<id>/`：
 
@@ -198,7 +211,7 @@ Viser 的 `Claude image operations` 显示操作过程及每张图的内容验�
 - `timing.md` / `timing.json`：逐图字节数、Alienware HTTPS 上传、公司电脑 HTTPS 下载、SHA256 校验，以及 SSH、Claude、清理、总调用耗时。未知时长不填零；SSH 等父阶段包含子阶段，不能直接相加。
 - `claude_result.json`：最终 CLI 返回，包含 CLI 实际提供的模型、token、轮次、API 耗时和费用统计。没有最终结果（如超时）时此文件不存在，之前的逐条记录仍保留。
 
-Viser 实时更新消息数量和最后消息时间；详细输入、对话和计时均可展开。跨机器耗时使用各侧测量值，消息接收时间使用本地时钟；不能据此精确拆分服务端排队和模型计算。日志功能不增加模型调用，不要求模型额外生成解释。
+Viser 显示原始事件数（不是模型轮数）、事件子类型、工具调用数和最后消息时间；详细输入、对话和计时均可展开。跨机器耗时使用各侧测量值，消息接收时间使用本地时钟；不能据此精确拆分服务端排队和模型计算。日志功能不增加模型调用，不要求模型额外生成解释。
 
 ## 单腕部 Cam A 抓取检查
 

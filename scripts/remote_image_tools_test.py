@@ -135,7 +135,7 @@ def main(argv=None):
             inspected_views = [e["result"]["image_id"] for e in success
                                if e.get("tool") in {"rotate_image", "resize_image"}]
             delivered = {view['image_id'] for view in result.image_sources
-                         if view.get('image_delivery_status') == 'VERIFIED'}
+                         if view.get('image_delivery_status') in {'VERIFIED', 'VERIFIED_TRANSCODE'}}
             if not {'image_0', *inspected_views} <= delivered:
                 raise ValueError("CLI output did not contain verified original/rotated/enlarged images; inspect image_delivery.jsonl")
             if payload.get("image_read") is not True or not isinstance(payload.get("observation"), str) or not payload["observation"].strip():

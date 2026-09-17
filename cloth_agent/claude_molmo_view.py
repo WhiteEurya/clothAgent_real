@@ -1,6 +1,8 @@
 """Claude-selected collar-up RGB passed to Molmo, with an audited pixel map."""
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -8,7 +10,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .claude_image_debug import debug_directory
-from .image_tools_mcp import pixel_hash
+from .image_tools_mcp import pixel_hash, VERIFIED_DELIVERIES
 from .motion_image_sources import resolve_motion_sources
 from .planner_backend import parse_claude_json
 
@@ -78,7 +80,7 @@ def map_molmo_pixel(selection, pixel):
 
 
 def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_s: int):
-    """Require exact pixels in CLI tool output; never substitute a guessed orientation."""
+    """Require a verified source and checked CLI pixels; never guess orientation."""
     output.mkdir(parents=True, exist_ok=False)
     debug = debug_directory([canonical_image], output, "molmo_orientation")
     report = {"status": "RUNNING", "canonical_image": str(canonical_image),
@@ -115,9 +117,13 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
             raise ValueError("Claude must select an explicit image_id for Molmo")
         sources = {view["image_id"]: view for view in result.image_sources}
         selected = sources.get(selected_id, {})
-        if selected.get('image_delivery_status') != 'VERIFIED':
-            report.update(failure_reason='IMAGE_UNAVAILABLE', failure_reason_source='host_content_validation')
-            raise ValueError('IMAGE_UNAVAILABLE: selected pixels were not verified in a CLI image result; tool completion alone is insufficient')
+        delivery_status = selected.get('image_delivery_status', 'UNKNOWN')
+        report['image_delivery_status'] = delivery_status
+        if delivery_status not in VERIFIED_DELIVERIES:
+            category = {'CONTENT_MISMATCH': 'IMAGE_CONTENT_MISMATCH', 'SIZE_MISMATCH': 'IMAGE_SIZE_MISMATCH',
+                        'IDENTITY_MISMATCH': 'IMAGE_IDENTITY_MISMATCH'}.get(delivery_status, 'IMAGE_UNAVAILABLE')
+            report.update(failure_reason=category, failure_reason_source='host_content_validation')
+            raise ValueError(f'{category}: selected image delivery status={delivery_status}; inspect image_inspections/delivery_check')
         if selected.get("verification") != "VERIFIED":
             raise ValueError("Molmo input must be pixel-verified")
         path = Path(selected["path"]).resolve(strict=True)
@@ -127,6 +133,23 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
             image = source.convert("RGB")
         if pixel_hash(image) != selected.get("rgb_sha256"):
             raise ValueError("selected Molmo image changed after verification")
+        delivered = selected.get('delivered_image')
+        if not delivered or not delivered.get('saved_path'):
+            raise ValueError('verified returned image bytes were not saved')
+        delivered_path = Path(delivered['saved_path']).resolve(strict=True)
+        if debug.resolve() not in delivered_path.parents:
+            raise ValueError('returned image is outside this Claude invocation')
+        delivered_bytes = delivered_path.read_bytes()
+        if hashlib.sha256(delivered_bytes).hexdigest() != delivered.get('encoded_sha256'):
+            raise ValueError('saved returned image bytes changed after verification')
+        with Image.open(io.BytesIO(delivered_bytes)) as source:
+            returned = source.convert('RGB')
+        if returned.size != image.size or pixel_hash(returned) != delivered['rgb_sha256']:
+            raise ValueError('saved returned image changed after verification')
+        # Preserve the source's coordinate map, but give Molmo the pixels actually
+        # returned to Claude, including JPEG decoding. Save losslessly, no re-encode.
+        image = returned
+        report['delivered_image'] = delivered
         report["image_id"] = selected_id
         endpoints = []
         for key in ("collar_pixel_xy", "hem_pixel_xy"):

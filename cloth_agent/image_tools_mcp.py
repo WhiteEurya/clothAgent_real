@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat, JpegImagePlugin
 
 SERVER_NAME = "cloth_image"
 MAX_PIXELS = 16_777_216
@@ -28,6 +28,7 @@ MAX_VIEWS = 24
 MAX_CALLS = 64
 EDIT_TOOLS = frozenset({'rotate_image', 'crop_image', 'resize_image'})
 IMAGE_TOOLS = EDIT_TOOLS | {'view_image'}
+VERIFIED_DELIVERIES = frozenset({'VERIFIED', 'VERIFIED_TRANSCODE'})
 IDENTITY = [1., 0., 0., 0., 1., 0.]
 INSTRUCTIONS = (
     "Use cloth_image tools to inspect the supplied RGB: rotate_image (positive "
@@ -84,11 +85,11 @@ def pixel_hash(image):
     return hashlib.sha256(f"{rgb.width}x{rgb.height}:RGB:".encode() + rgb.tobytes()).hexdigest()
 
 
-def image_content_summary(response):
+def image_content_summary(response, *, on_image=None):
     """Validate Read, MCP and CLI image blocks; return metadata, never base64.
 
     This verifies content at the observed boundary, not provider receipt or model
-    understanding. CLI may resize images; mismatched pixels are not verified.
+    understanding. This only decodes content; source and JPEG checks are separate.
     """
     images = []
     errors = []
@@ -113,9 +114,12 @@ def image_content_summary(response):
                         actual_mime = Image.MIME.get(image.format)
                         if mime != actual_mime:
                             raise ValueError('image MIME does not match encoded bytes')
-                        images.append({'mime_type': mime, 'bytes': len(raw),
+                        details = {'mime_type': mime, 'bytes': len(raw),
                             'size': list(image.size), 'rgb_sha256': pixel_hash(image),
-                            'encoded_sha256': hashlib.sha256(raw).hexdigest()})
+                            'encoded_sha256': hashlib.sha256(raw).hexdigest()}
+                        if on_image:
+                            details.update(on_image(raw, details) or {})
+                        images.append(details)
                 except (ValueError, TypeError, OSError, Image.DecompressionBombError) as exc:
                     errors.append(str(exc))
                 return
@@ -160,6 +164,66 @@ def image_matches(summary, view):
             and summary['images'][0].get('size') == view.get('size'))
 
 
+def verify_image_delivery(summary, view, source_path, raw=None):
+    """Validate an exact image or a bounded, same-size JPEG re-encoding.
+
+    JPEG identity is approximate, not a cryptographic equivalence claim. Re-encode
+    the verified source with the received quantization tables and chroma sampling,
+    then compare ALL pixels, including worst 32x32 tiles. Do not align, resize,
+    blur or use a perceptual hash to hide geometric/content changes.
+    """
+    if not isinstance(summary, dict):
+        return {'status': 'UNKNOWN'}
+    if summary.get('status') != 'VALID_IMAGE' or summary.get('image_count') != 1:
+        return {'status': 'UNAVAILABLE', 'reason': summary.get('status', 'NO_IMAGE')}
+    actual = summary['images'][0]
+    if actual['size'] != view.get('size'):
+        return {'status': 'SIZE_MISMATCH', 'expected_size': view.get('size'), 'actual_size': actual['size']}
+    if image_matches(summary, view):
+        return {'status': 'VERIFIED', 'method': 'exact_rgb_sha256'}
+    if actual['mime_type'] != 'image/jpeg' or raw is None:
+        return {'status': 'CONTENT_MISMATCH', 'reason': 'non-exact image without supported JPEG evidence'}
+    try:
+        if hashlib.sha256(raw).hexdigest() != actual['encoded_sha256']:
+            raise ValueError('saved returned image changed')
+        with Image.open(source_path) as source:
+            if pixel_hash(source) != view.get('rgb_sha256'):
+                raise ValueError('source image changed')
+            source = source.convert('RGB')
+        with Image.open(io.BytesIO(raw)) as received:
+            if received.format != 'JPEG' or received.size != source.size:
+                raise ValueError('unsupported returned image encoding or dimensions')
+            if received.getexif().get(274, 1) != 1:
+                raise ValueError('JPEG orientation metadata would change coordinates')
+            sampling = JpegImagePlugin.get_sampling(received)
+            if sampling not in (0, 1, 2) or received.mode != 'RGB':
+                raise ValueError('unsupported JPEG color mode or sampling')
+            expected_bytes = io.BytesIO()
+            source.save(expected_bytes, format='JPEG', qtables=received.quantization, subsampling=sampling)
+            actual_pixels = received.convert('RGB')
+        with Image.open(io.BytesIO(expected_bytes.getvalue())) as expected:
+            difference = ImageChops.difference(expected.convert('RGB'), actual_pixels)
+        stats = ImageStat.Stat(difference)
+        # Bounds allow small JPEG encoder/decoder differences, not content edits.
+        limits = {'mean_abs_max': 2.0, 'rms_max': 4.0, 'tile_rms_max': 6.0,
+                  'source_mean_abs_max': 15.0}
+        worst = 0.
+        for y in range(0, source.height, 32):
+            for x in range(0, source.width, 32):
+                tile = difference.crop((x, y, min(x+32, source.width), min(y+32, source.height)))
+                worst = max(worst, *ImageStat.Stat(tile).rms)
+        metrics = {'mean_abs_max': max(stats.mean), 'rms_max': max(stats.rms),
+                   'tile_rms_max': worst,
+                   'source_mean_abs_max': max(ImageStat.Stat(ImageChops.difference(source, actual_pixels)).mean)}
+        passed = all(metrics[key] <= limit for key, limit in limits.items())
+        return {'status': 'VERIFIED_TRANSCODE' if passed else 'CONTENT_MISMATCH',
+                'method': 'jpeg_reencode_full_pixels_v1', 'metrics': metrics, 'limits': limits,
+                'sampling': sampling, 'coordinate_change': False,
+                'note': 'Bounded JPEG consistency, not exact pixel identity or proof of model understanding.'}
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        return {'status': 'CONTENT_MISMATCH', 'reason': str(exc)}
+
+
 def audit(job, event):
     event = dict(event, event_id=uuid.uuid4().hex, timestamp_ns=time.time_ns())
     # One append keeps independent Read hooks and the MCP process from mixing
@@ -186,7 +250,9 @@ def read_hook(job):
         status = 'failed'
     details = {}
     if event == 'PostToolUse' and (tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS):
-        details['image_content'] = image_content_summary(response)
+        image_bytes = []
+        details['image_content'] = image_content_summary(response,
+            on_image=lambda raw, _: image_bytes.append(raw))
         details['image_metadata'] = returned_image_metadata(response)
         path = args.get('file_path') if tool == 'Read' else details['image_metadata'].get('path')
         details['image_content']['identity_status'] = 'UNVERIFIED'
@@ -196,8 +262,16 @@ def read_hook(job):
                 raise ValueError('no job-local image identity')
             with Image.open(candidate) as image:
                 expected = {'size': list(image.size), 'rgb_sha256': pixel_hash(image)}
+            metadata = details['image_metadata']
+            if tool != 'Read' and (metadata.get('size') != expected['size'] or
+                    metadata.get('rgb_sha256') != expected['rgb_sha256'] or
+                    metadata.get('image_id') != candidate.stem):
+                raise ValueError('returned metadata does not identify the saved source')
+            check = verify_image_delivery(details['image_content'], expected, candidate,
+                                          image_bytes[0] if len(image_bytes) == 1 else None)
+            details['image_content']['identity_check'] = check
             details['image_content']['identity_status'] = (
-                'VERIFIED' if image_matches(details['image_content'], expected) else 'MISMATCH')
+                check['status'] if check['status'] in VERIFIED_DELIVERIES else 'MISMATCH')
         except (ValueError, OSError) as exc:
             details['image_content']['identity_error'] = str(exc)
     audit(job, {"kind": "read" if tool == "Read" else "tool_lifecycle",
@@ -334,11 +408,12 @@ class ImageTools:
                 path = event.get('arguments', {}).get('file_path')
                 if isinstance(path, str):
                     path = str((self.job / path).resolve())
-                    if event.get('image_content', {}).get('identity_status') == 'VERIFIED':
+                    if event.get('image_content', {}).get('identity_status') in VERIFIED_DELIVERIES:
                         reads.setdefault(path, set()).add(event.get('tool_use_id') or event.get('event_id'))
             if event.get('kind') == 'tool_lifecycle' and event.get('status') == 'completed':
                 metadata = event.get('image_metadata', {})
-                if image_matches(event.get('image_content'), metadata):
+                if (image_matches(event.get('image_content'), metadata) or
+                        event.get('image_content', {}).get('identity_status') in VERIFIED_DELIVERIES):
                     deliveries.setdefault(metadata.get('image_id'), set()).add(event.get('tool_use_id'))
         return [{k: view.get(k) for k in ('image_id', 'path', 'size', 'parent_image_id', 'operation', 'arguments')}
                 | {'completed_reads': len(reads.get(view['path'], ())),

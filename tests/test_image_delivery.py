@@ -108,7 +108,7 @@ def test_stdio_returns_images_directly_and_view_does_not_spend_edit_budget(scene
 @pytest.mark.parametrize('hook,stream,expected', [
     ('valid', 'valid', 'VERIFIED'), ('missing', 'valid', 'VERIFIED'),
     ('empty', 'valid', 'UNAVAILABLE'), ('valid', 'empty', 'UNAVAILABLE'),
-    ('valid', 'wrong', 'UNAVAILABLE'), ('failed', 'valid', 'UNAVAILABLE'),
+    ('valid', 'wrong', 'SIZE_MISMATCH'), ('failed', 'valid', 'UNAVAILABLE'),
     ('valid', 'missing', 'UNKNOWN'), ('valid', 'error', 'UNAVAILABLE'),
 ])
 def test_delivery_requires_correlated_cli_pixels_not_just_a_completed_hook(

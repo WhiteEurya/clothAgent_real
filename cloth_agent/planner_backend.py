@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from .claude_stream import ClaudeStreamProgress
+
 
 def claude_result_envelope(stdout: str) -> dict[str, Any]:
     """Accept legacy JSON or the terminal result of verbose stream-json.
@@ -383,7 +385,7 @@ class RemoteClaudeBackend:
         for thread in threads:
             thread.start()
         started = time.monotonic()
-        last_flush = started
+        stream_progress = ClaudeStreamProgress(self._progress)
         closed = set()
 
         def receive(name, line):
@@ -395,11 +397,7 @@ class RemoteClaudeBackend:
             if name == "stderr":
                 self._remote_timings(line)
             else:
-                event = self._debug_session.consume_claude_line(line)
-                if event:
-                    self._progress('claude_message', 'received',
-                        message_type=event.get('type'), sequence=event['sequence'],
-                        since_previous_event_s=event['since_previous_event_s'])
+                self._debug_session.consume_claude_line(line, on_event=stream_progress.consume)
 
         try:
             while len(closed) < 2 or process.poll() is None:
@@ -410,9 +408,8 @@ class RemoteClaudeBackend:
                     receive(*inbox.get(timeout=.1))
                 except queue.Empty:
                     pass
-                if time.monotonic() - last_flush >= 1:
-                    self._debug_session.flush()
-                    last_flush = time.monotonic()
+                stream_progress.tick()
+                self._debug_session.flush()
         finally:
             # Stop inherited pipe owners too. Killing only the shell can leave
             # Claude/audit children alive and stream.close() blocked forever.
@@ -425,6 +422,8 @@ class RemoteClaudeBackend:
                 thread.join(timeout=1)
             while not inbox.empty():
                 receive(*inbox.get_nowait())
+            stream_progress.tick(force=True)
+            self._debug_session.flush(force=True)
             for stream in (process.stdout, process.stderr):
                 stream.close()
         return subprocess.CompletedProcess(command, process.returncode,
@@ -488,7 +487,7 @@ class RemoteClaudeBackend:
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
-            f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --permission-mode dontAsk "
+            f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"

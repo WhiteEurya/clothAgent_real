@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -22,11 +24,12 @@ from cloth_agent.remote_fold import RemoteFoldClient, rgb_evidence
 
 class OrientationBackend:
     """Actual image tools/replay, only Claude's choices are simulated."""
-    def __init__(self, *, angle=90, zoom=1, failure=None, extra_edits=0, category='VISUAL_AMBIGUITY'):
+    def __init__(self, *, angle=90, zoom=1, failure=None, extra_edits=0, category='VISUAL_AMBIGUITY', jpeg=False):
         self.angle, self.zoom, self.failure = angle, zoom, failure
         self.extra_edits = extra_edits
         self.category = category
         self.called = False
+        self.jpeg = jpeg
 
     def invoke(self, **kwargs):
         assert kwargs['image_edit_limit'] == 6
@@ -47,6 +50,12 @@ class OrientationBackend:
                            'arguments': {'file_path': selected['path']}})
             if self.failure != 'lifecycle_only':
                 content = tools.image_result(selected)['content']
+                if self.jpeg:
+                    with Image.open(selected['path']) as image:
+                        buffer = io.BytesIO()
+                        image.convert('RGB').save(buffer, format='JPEG', quality=85)
+                    content[-1] = {'type': 'image', 'mimeType': 'image/jpeg',
+                                   'data': base64.b64encode(buffer.getvalue()).decode()}
                 if self.failure == 'empty':
                     content = []
                 elif self.failure == 'text_only':
@@ -76,6 +85,10 @@ class OrientationBackend:
         debug.finish('COMPLETED')
         if self.failure == 'tampered':
             Image.new('RGB', (w, h), 'black').save(debug.state['views'][-1]['path'])
+        elif self.failure == 'returned_tampered':
+            # Trailing bytes preserve decoded pixels but alter the audited file.
+            returned_path = Path(debug.state['views'][-1]['delivered_image']['saved_path'])
+            returned_path.write_bytes(returned_path.read_bytes() + b'changed')
         self.called = True
         self.debug, self.selected = debug, selected
         return BackendResult(json.dumps({'result': json.dumps(response)}), '', 0, ('fake-claude',),
@@ -117,8 +130,32 @@ def test_invalid_orientation_stops_handoff_and_keeps_debug(tmp_path, failure):
     assert Path(report['image_debug_directory'], 'image_debug.json').is_file()
     assert not (output / 'molmo_input').exists()
     if failure in {'unread', 'lifecycle_only', 'empty', 'text_only', 'corrupt', 'wrong_image'}:
-        assert report['failure_reason'] == 'IMAGE_UNAVAILABLE'
+        assert report['failure_reason'] == ('IMAGE_SIZE_MISMATCH' if failure == 'wrong_image' else 'IMAGE_UNAVAILABLE')
         assert report['failure_reason_source'] == 'host_content_validation'
+
+
+def test_molmo_receives_actual_jpeg_pixels_with_source_coordinate_map(tmp_path):
+    canonical = canonical_image(tmp_path)
+    backend = OrientationBackend(jpeg=True)
+    report = prepare_molmo_view(backend, canonical, tmp_path / 'orientation', timeout_s=30)
+    assert report['image_delivery_status'] == 'VERIFIED_TRANSCODE'
+    actual = report['delivered_image']
+    assert actual['mime_type'] == 'image/jpeg'
+    assert actual['rgb_sha256'] != backend.selected['rgb_sha256']
+    with Image.open(report['selected_image']) as molmo, Image.open(actual['saved_path']) as returned:
+        assert molmo.tobytes() == returned.convert('RGB').tobytes()
+        assert pixel_hash(molmo) == actual['rgb_sha256'] == report['selected_rgb_sha256']
+    mapped = map_molmo_pixel(report, [20., 30.])
+    assert mapped['mapped_pixel_xy_float'] == [30., 59.]
+
+
+def test_modified_returned_bytes_block_molmo_even_when_pixels_still_match(tmp_path):
+    output = tmp_path / 'orientation'
+    with pytest.raises(MolmoOrientationError, match='saved returned image bytes changed'):
+        prepare_molmo_view(OrientationBackend(jpeg=True, failure='returned_tampered'),
+                          canonical_image(tmp_path), output, timeout_s=30)
+    assert not (output / 'molmo_input').exists()
+    assert json.loads((output / 'selection.json').read_text())['status'] == 'FAILED_NO_MOLMO'
 
 
 def test_timeout_keeps_selection_failure(tmp_path):

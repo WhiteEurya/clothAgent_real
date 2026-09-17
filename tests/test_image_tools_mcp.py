@@ -227,6 +227,7 @@ config = json.loads(Path(sys.argv[sys.argv.index("--mcp-config") + 1]).read_text
 server = config["mcpServers"]["cloth_image"]
 assert sys.argv[sys.argv.index('--output-format') + 1] == 'stream-json'
 assert '--verbose' in sys.argv
+assert '--include-partial-messages' in sys.argv
 print(json.dumps({'type': 'assistant', 'message': {'content': [
     {'type': 'text', 'text': 'Inspecting the sleeve before selecting a point.'}]}}), flush=True)
 request = {"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{

@@ -442,12 +442,18 @@ def _image_tool_summary(data):
     lines = [f"**{data.get('stage', 'Claude')} | {data.get('status', 'RUNNING')}**",
         f"Elapsed: {data.get('elapsed_s', 0):.1f}s | "
         f"Audit: {'complete' if data.get('audit_complete') else 'in progress / incomplete'}",
-        "READ_COMPLETED records tool execution only. Image delivery VERIFIED requires matching image content in CLI output; it does not prove model understanding."]
+        "READ_COMPLETED records tool execution only. VERIFIED = exact pixels; VERIFIED_TRANSCODE = checked same-size JPEG. Neither proves model understanding."]
     last_message = data.get('last_claude_event')
     if last_message:
-        lines.append(f"Claude public messages: {data.get('claude_event_count', 0)}; "
-                     f"last: {last_message.get('type')} at +{last_message.get('received_elapsed_s', 0):.1f}s. "
+        lines.append(f"Claude raw events (not model turns): {data.get('claude_event_count', 0)}; "
+                     f"last: {last_message.get('type')}/{last_message.get('subtype') or '-'} "
+                     f"at +{last_message.get('received_elapsed_s', 0):.1f}s. "
                      'See claude_transcript.md and timing.md below. Hidden reasoning is not available.')
+        if data.get('claude_event_counts'):
+            lines.append('Event types: ' + json.dumps(data['claude_event_counts'], ensure_ascii=False))
+        if data.get('claude_stream'):
+            lines.append(f"Model-issued tool calls: {data['claude_stream'].get('tool_calls', 0)}; "
+                         'system and partial-text events are grouped in the live console.')
     if not any(e.get("tool") in {"rotate_image", "crop_image", "resize_image"} for e in data.get("events", [])):
         lines.append("No image transformation calls recorded so far.")
     checks = [e for e in data.get('events', []) if e.get('kind') == 'orientation_guard']
@@ -648,6 +654,19 @@ class _FoldViserState:
                         if pixels is not None:
                             self.tool_image_handles[key] = self.server.gui.add_image(pixels,
                                 label=f"{index:02d} {view.get('operation', 'Original')} | {view['image_id']}")
+                    for inspection in view.get('image_inspections', []):
+                        for returned in (inspection.get('stream_content') or {}).get('images', []):
+                            if not returned.get('saved_path'):
+                                continue
+                            actual_path = Path(returned['saved_path']).resolve()
+                            if manifest.parent not in actual_path.parents or not actual_path.is_file():
+                                continue
+                            actual_key = (manifest, str(actual_path))
+                            if actual_key not in self.tool_image_handles:
+                                pixels = _image(actual_path)
+                                if pixels is not None:
+                                    self.tool_image_handles[actual_key] = self.server.gui.add_image(pixels,
+                                        label=f"CLI RETURNED IMAGE | {view['image_id']} | {returned.get('mime_type')}")
                 for overlay in data.get("point_overlays", []):
                     path = Path(overlay.get("path", "")).resolve()
                     if manifest.parent not in path.parents or not path.is_file():

@@ -139,11 +139,13 @@ def test_viser_renders_live_views_once_and_updates_read_status(tmp_path):
     gui = Gui()
     viewer = _FoldViserState(SimpleNamespace(gui=gui), tmp_path)
     iteration = debug.directory.parent.parent
+    debug.flush(force=True)  # Render the next persisted snapshot, now batched in production.
     viewer._render_image_tools(iteration)
     assert len(gui.images) == 3
     assert _iter_images(iteration) == []  # managed images must not appear twice
     debug.consume({"kind": "read", "tool": "Read", "status": "completed", "tool_use_id": "r",
                    "arguments": {"file_path": event["result"]["path"]}})
+    debug.flush(force=True)
     viewer._render_image_tools(iteration)
     assert len(gui.images) == 3
     assert any("READ_COMPLETED" in p.content for p in viewer.tool_image_panels.values())
