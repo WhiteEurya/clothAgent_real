@@ -147,6 +147,10 @@ def test_saved_inventory_reads_and_duplicate_edits_survive_restart(scene):
     for status in ('started', 'completed'):
         audit(tools.job, {'kind': 'read', 'tool': 'Read', 'status': status,
               'tool_use_id': 'read-1', 'arguments': {'file_path': Path(first['path']).name}})
+    assert tools.inspection_history()[-1]['completed_reads'] == 0
+    audit(tools.job, {'kind': 'read', 'tool': 'Read', 'status': 'completed',
+          'tool_use_id': 'read-verified', 'arguments': {'file_path': Path(first['path']).name},
+          'image_content': {'identity_status': 'VERIFIED'}})
     duplicate = tools.call('crop_image', args)
     assert duplicate['reused'] is True
     assert duplicate['image_id'] == first['image_id']
@@ -292,7 +296,8 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
     result = backend.invoke(prompt="inspect", image_paths=[tools.job / "image_0.png"],
                             schema={}, system_prompt="inspect RGB", **kwargs)
     assert parse_claude_json(result.stdout) == {"ok": True}
-    assert len(result.image_tool_events) == 5
+    payload = next(e for e in result.image_tool_events if e['tool'] == 'image_payload')
+    assert payload['image_content']['status'] == 'VALID_IMAGE'
     rotation = next(e for e in result.image_tool_events if e["tool"] == "rotate_image")
     assert rotation["result"]["size"] == [9, 13]
     remote_path = Path(rotation["result"]["path"])
@@ -300,6 +305,7 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
     assert "--strict-mcp-config" in result.command[-1]
     assert "mcp__cloth_image__list_images" in result.command[-1]
     assert "mcp__cloth_image__image_info" in result.command[-1]
+    assert "mcp__cloth_image__view_image" in result.command[-1]
     assert "--max-turns 16" in result.command[-1]
     if live_debug:
         saved = json.loads((debug / "image_debug.json").read_text())
@@ -307,6 +313,7 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
         assert saved["audit_complete"] is True
         assert saved["views"][1]["verification"] == "VERIFIED"
         assert saved["views"][1]["read_status"] == "READ_COMPLETED"
+        assert saved['views'][1]['image_delivery_status'] == 'UNAVAILABLE'
         assert Path(saved["views"][1]["path"]).is_file()
         assert "MUST_NOT_BE_LOGGED" not in (debug / "events.jsonl").read_text()
 

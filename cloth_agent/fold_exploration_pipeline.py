@@ -2700,6 +2700,8 @@ class FoldSupervisor:
             # measurements and local manifests are never sent to the company.
             instructions = (Path(context_bundle["directory"]) / "01_instructions.md").read_text(encoding="utf-8")
             instructions = instructions.replace("04_evidence_manifest.json", "the inline image_index list below")
+            instructions = instructions.replace('Read and visually inspect every listed image.',
+                'Use view_image to visually inspect every listed image; editing tools return images directly.')
             prompt_remote = instructions + "\n" + json.dumps({
                 "images": image_manifest(images_remote, "current RGB or chronological rollout"),
                 "recent_experiences": semantic_history(history),

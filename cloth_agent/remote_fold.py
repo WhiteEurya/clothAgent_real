@@ -378,7 +378,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 image_edit_limit=2 if evaluation_stage else 6,
                 max_turns=8 if evaluation_stage else None,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
-                system_prompt="You are a garment reasoning assistant. Inspect RGB using Read and image tools as needed. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
+                system_prompt="You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)
         except Exception as exc:
             invocation.update(status="FAILED", error=f"{type(exc).__name__}: {exc}",
@@ -537,7 +537,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             "Camera A is wrist-mounted and moves with the gripper: image displacement alone is not proof of cloth motion. "
             "Closure confirmation is not proof of grasping cloth. No telemetry or depth is supplied. "
             "Mark acquisition/target UNKNOWN when images do not establish them, including occluded or missing grasp evidence. "
-            "Read the supplied evidence first. At most TWO new image edits are allowed for a specific ambiguity; "
+            "Inspect the supplied evidence using view_image first. At most TWO new image edits are allowed for a specific ambiguity; "
             "reuse saved views and finish within EIGHT model turns. Do not re-plan the fold or repeatedly rotate/crop. "
             "For acquisition-only probes, transport status must be UNKNOWN, laydown NOT_REACHED, task_progress NEUTRAL; "
             "do not claim that returning to the initial scene proves successful acquisition. "

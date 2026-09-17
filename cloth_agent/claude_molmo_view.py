@@ -16,6 +16,10 @@ from .planner_backend import parse_claude_json
 class MolmoOrientationError(ValueError):
     """A failed bounded orientation attempt must not restart with a fresh budget."""
 
+    def __init__(self, message, *, failure_reason='UNCLASSIFIED'):
+        super().__init__(message)
+        self.failure_reason = failure_reason
+
 
 ORIENTATION_EDIT_LIMIT = 6
 
@@ -26,18 +30,19 @@ VIEW_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
     "status": {"enum": ["READY", "UNCERTAIN"]},
     "image_id": {"type": ["string", "null"]},
     "collar_pixel_xy": _PIXEL, "hem_pixel_xy": _PIXEL,
+    "failure_reason": {"enum": [None, "IMAGE_UNAVAILABLE", "TOOL_ERROR", "VISUAL_AMBIGUITY"]},
     "reason": {"type": "string"}},
-    "required": ["status", "image_id", "collar_pixel_xy", "hem_pixel_xy", "reason"]}
+    "required": ["status", "image_id", "collar_pixel_xy", "hem_pixel_xy", "failure_reason", "reason"]}
 
 VIEW_PROMPT = (
     "Prepare the CURRENT Camera-A RGB (image_0) for a downstream Molmo sleeve locator. "
-    "Read the original. Identify the actual collar/neck opening and the opposite torso hem. "
+    "Call view_image(image_0) to inspect the original. Identify the actual collar/neck opening and the opposite torso hem. "
     "Use rotate_image as needed to put the collar ABOVE the hem, with their centerline "
     "approximately vertical. Choose the rotation yourself from visible garment evidence; "
     "the camera's upright filename does NOT mean the garment is aligned. "
     "You may crop or resize for visibility, but keep the whole visible garment, both sleeve "
-    "regions, collar and hem in the selected view. Never mirror. Read the final selected "
-    "view to verify it before responding. If already aligned, you may select image_0 "
+    "regions, collar and hem in the selected view. Never mirror. Each edit returns the actual image "
+    "alongside metadata; visually verify that returned image without an extra Read. If already aligned, you may select image_0 "
     "without a redundant transform. Return its exact image_id and collar/hem coordinates "
     "IN THAT VIEW, not coordinates mapped back to the original. "
     "In the selected collar-up, hem-down view, left_sleeve means the IMAGE LEFT sleeve "
@@ -45,17 +50,20 @@ VIEW_PROMPT = (
     "Do not locate a sleeve or choose a grasp here. Molmo will next inspect the selected "
     "RGB, then Claude will judge its fallible annotation and decide the fold. "
     "If the collar/hem orientation is ambiguous or cannot be verified, return UNCERTAIN "
-    "with null image_id and null coordinates. Return only the requested JSON."
+    "with null image_id and null coordinates. Set failure_reason=IMAGE_UNAVAILABLE when no image content "
+    "is visible, TOOL_ERROR when an actual tool call failed, or VISUAL_AMBIGUITY when images are visible "
+    "but the collar/hem cannot be identified or alignment verified. For READY use failure_reason=null. "
+    "A saved path or successful tool status alone is not proof of visible pixels. "
+    "If image content is unavailable, stop editing: resizing/cropping cannot repair delivery. Return only the requested JSON."
     " You may try and refine, but have at most 6 edit attempts across rotate_image, "
     "crop_image and resize_image, including invalid attempts. Every response reports "
     "remaining edits. Stop as soon as the view is suitable; do not aim for perfection. "
-    "At zero edits, do not request more edits: Read existing views, select and verify "
+    "At zero edits, do not request more edits: view_image can inspect existing views; select and verify "
     "the best suitable one, or return UNCERTAIN. Do not restart to obtain more edits."
-    " If you infer that rotation is needed, actually call rotate_image and Read its result "
+    " If you infer that rotation is needed, actually call rotate_image and inspect its attached image "
     "before concluding it cannot be verified. Only report a tool failure when a real call "
     "returned an error, citing the tool and error in your reason. A planned but unissued "
-    "tool call is not a tool failure. One audit-backed correction may be requested in this "
-    "same session; it shares the existing edit, turn and time budgets. Visual ambiguity "
+    "tool call is not a tool failure. No automatic correction or retry is granted. Visual ambiguity "
     "is still a valid reason to return UNCERTAIN; never invent collar/hem coordinates."
 )
 
@@ -70,12 +78,12 @@ def map_molmo_pixel(selection, pixel):
 
 
 def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_s: int):
-    """Require a verified, actually Read view; never substitute a guessed orientation."""
+    """Require exact pixels in CLI tool output; never substitute a guessed orientation."""
     output.mkdir(parents=True, exist_ok=False)
     debug = debug_directory([canonical_image], output, "molmo_orientation")
     report = {"status": "RUNNING", "canonical_image": str(canonical_image),
               "edit_limit": ORIENTATION_EDIT_LIMIT, "automatic_retry_allowed": False,
-              "same_session_correction_limit": 1,
+              "same_session_correction_limit": 0,
               "image_debug_directory": str(debug)}
     report_path = output / "selection.json"
     audit_events = ()
@@ -83,8 +91,9 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
         result = backend.invoke(prompt=VIEW_PROMPT, image_paths=[canonical_image],
             schema=VIEW_SCHEMA, debug_dir=debug, timeout_s=timeout_s,
             image_edit_limit=ORIENTATION_EDIT_LIMIT,
+            # Historical flag name retained for compatibility; hooks now only audit.
             orientation_correction=True, overall_timeout_s=timeout_s,
-            system_prompt="Inspect current RGB with Read and the image tools. Prepare a collar-up view for Molmo. No robot access.")
+            system_prompt="Inspect current RGB with view_image and the images returned by editing tools. Prepare a collar-up view for Molmo. No robot access.")
         audit_events = result.image_tool_events
         payload = parse_claude_json(result.stdout)
         report.update(response=payload, timings=result.timings,
@@ -92,15 +101,25 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
         if (set(payload) != set(VIEW_SCHEMA["required"]) or
                 not isinstance(payload.get("reason"), str)):
             raise ValueError("invalid Claude Molmo-view selection schema")
-        if payload.get("status") != "READY":
-            raise ValueError("Claude could not establish collar-up orientation: " + payload["reason"])
+        if payload.get('status') == 'UNCERTAIN':
+            category = payload.get('failure_reason')
+            if category not in {'IMAGE_UNAVAILABLE', 'TOOL_ERROR', 'VISUAL_AMBIGUITY'} or any(
+                    payload[k] is not None for k in ('image_id', 'collar_pixel_xy', 'hem_pixel_xy')):
+                raise ValueError('UNCERTAIN requires a structured failure_reason and null selection/coordinates')
+            report.update(failure_reason=category, failure_reason_source='model_report')
+            raise ValueError(f"{category}: Claude could not establish collar-up orientation: " + payload['reason'])
+        if payload.get('status') != 'READY' or payload.get('failure_reason') is not None:
+            raise ValueError('READY requires failure_reason=null')
         selected_id = payload.get("image_id")
         if not isinstance(selected_id, str):
             raise ValueError("Claude must select an explicit image_id for Molmo")
         sources = {view["image_id"]: view for view in result.image_sources}
         selected = sources.get(selected_id, {})
-        if selected.get("verification") != "VERIFIED" or selected.get("read_status") != "READ_COMPLETED":
-            raise ValueError("Molmo input must be pixel-verified and Read by Claude")
+        if selected.get('image_delivery_status') != 'VERIFIED':
+            report.update(failure_reason='IMAGE_UNAVAILABLE', failure_reason_source='host_content_validation')
+            raise ValueError('IMAGE_UNAVAILABLE: selected pixels were not verified in a CLI image result; tool completion alone is insufficient')
+        if selected.get("verification") != "VERIFIED":
+            raise ValueError("Molmo input must be pixel-verified")
         path = Path(selected["path"]).resolve(strict=True)
         if debug.resolve() not in path.parents:
             raise ValueError("selected Molmo image is outside this Claude invocation")
@@ -141,7 +160,8 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
         audit_events = getattr(exc, 'image_tool_events', audit_events)
         report.update(status="FAILED_NO_MOLMO", error=f"{type(exc).__name__}: {exc}")
         if isinstance(exc, Exception):
-            raise MolmoOrientationError(f'Claude orientation failed; no automatic budget reset: {exc}') from exc
+            raise MolmoOrientationError(f'Claude orientation failed; no automatic budget reset: {exc}',
+                failure_reason=report.get('failure_reason', 'UNCLASSIFIED')) from exc
         raise
     finally:
         report['correction_checks'] = [e for e in audit_events if e.get('kind') == 'orientation_guard']

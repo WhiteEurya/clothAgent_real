@@ -442,7 +442,7 @@ def _image_tool_summary(data):
     lines = [f"**{data.get('stage', 'Claude')} | {data.get('status', 'RUNNING')}**",
         f"Elapsed: {data.get('elapsed_s', 0):.1f}s | "
         f"Audit: {'complete' if data.get('audit_complete') else 'in progress / incomplete'}",
-        "READ_COMPLETED means the Read tool succeeded; it does not prove visual understanding."]
+        "READ_COMPLETED records tool execution only. Image delivery VERIFIED requires matching image content in CLI output; it does not prove model understanding."]
     last_message = data.get('last_claude_event')
     if last_message:
         lines.append(f"Claude public messages: {data.get('claude_event_count', 0)}; "
@@ -453,8 +453,8 @@ def _image_tool_summary(data):
     checks = [e for e in data.get('events', []) if e.get('kind') == 'orientation_guard']
     if checks:
         requested = sum(e.get('status') == 'requested' for e in checks)
-        lines.append(f"Orientation correction: {requested}/1 in the same session; "
-                     f"last audit: {checks[-1].get('classification')}. Edit/turn/time budgets are shared.")
+        lines.append(f"Orientation classification: {checks[-1].get('classification')}; "
+                     f"recorded correction requests: {requested}. Current hooks only audit; no automatic correction.")
     if data.get("error"):
         lines.append(f"Error: {data['error']}")
     lines.extend(str(e) for e in data.get("errors", []))
@@ -629,7 +629,10 @@ class _FoldViserState:
                         continue
                     key = (manifest, view["image_id"])
                     info = (f"**{index:02d} | {view.get('operation', 'Original RGB')} | {view['image_id']}**\n\n"
-                        f"{view.get('verification')} | {view.get('read_status')}\n\n"
+                        f"File: {view.get('verification')} | Tool: {view.get('read_status')}\n\n"
+                        f"Returned image: {view.get('returned_image_status', 'UNKNOWN')} | "
+                        f"CLI image: {view.get('stream_image_status', 'UNKNOWN')} | "
+                        f"Delivery: {view.get('image_delivery_status', 'UNKNOWN')}\n\n"
                         f"Original: image_{view.get('original_image_index')} | "
                         f"Parent: {view.get('parent_image_id')} | Size: {view.get('size')}\n\n"
                         f"Operation duration: {view.get('duration_s', 'n/a')} s | "
@@ -660,7 +663,7 @@ class _FoldViserState:
                 # Complete request, tool results/matrices/hashes, stdout and
                 # stderr remain expandable; do not truncate diagnostic files.
                 for name in ("prompt.txt", "system_prompt.txt", "claude_transcript.md", "timing.md",
-                             "timing.json", "claude_result.json", "claude_events.jsonl",
+                             "timing.json", "claude_result.json", "claude_events.jsonl", "image_delivery.jsonl",
                              "request.json", "image_debug.json", "stdout.log", "stderr.log", "exception.log"):
                     path = manifest.parent / name
                     if not path.exists():

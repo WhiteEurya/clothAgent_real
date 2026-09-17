@@ -6,12 +6,13 @@ affine map back to the originally supplied RGB. No camera or robot imports.
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
+import io
 import json
 import math
 import os
-import re
 import shlex
 import sys
 import time
@@ -26,12 +27,14 @@ MAX_SIDE = 8192
 MAX_VIEWS = 24
 MAX_CALLS = 64
 EDIT_TOOLS = frozenset({'rotate_image', 'crop_image', 'resize_image'})
+IMAGE_TOOLS = EDIT_TOOLS | {'view_image'}
 IDENTITY = [1., 0., 0., 0., 1., 0.]
 INSTRUCTIONS = (
     "Use cloth_image tools to inspect the supplied RGB: rotate_image (positive "
-    "degrees clockwise), crop_image, resize_image, image_info, map_point. "
-    "Choose operations yourself when useful, then Read the returned path to SEE "
-    "the result. Tool text alone is not a visual observation. Originals are "
+    "degrees clockwise), crop_image, resize_image, view_image, image_info, map_point. "
+    "Use view_image(image_id) to SEE an original or saved view. Each edit directly returns "
+    "the resulting IMAGE alongside its metadata: inspect it without a redundant Read. "
+    "Tool text or a saved path alone is not a visual observation. Originals are "
     "image_0, image_1, etc., matching the supplied image manifest. Derived views "
     "are RGB inspection views; an orientation response may select one as the exact "
     "downstream Molmo input. map_point can recover original image_index and pixel_xy. "
@@ -43,9 +46,10 @@ INSTRUCTIONS = (
     "a static reference or a crop/rotated view. Rxxx IDs keep their original "
     "identity. An image rotation never changes the task's garment-left/right "
     "definition. No mirroring, generated fabric, depth, or robot access is provided."
-    " Each tool result includes inspection_history with existing image paths and Read counts. "
+    " Each tool result includes inspection_history with existing image paths and validated image-return counts. "
     "Use list_images to recover this inventory. Reuse an existing suitable view rather than "
-    "recreating it. Identical edits return the same image. Inspect unread useful views, "
+    "recreating it. Identical edits return the same image. If no image is visible, report "
+    "IMAGE_UNAVAILABLE; do not repeatedly resize/crop to repair image delivery. Inspect useful views, "
     "then finish the requested decision; do not inspect indefinitely."
 )
 
@@ -59,14 +63,15 @@ def _tool(name, description, properties):
 
 
 TOOLS = [
-    {"name": "list_images", "description": "List saved images, operations and successful Read counts; reuse existing views.",
+    {"name": "list_images", "description": "List saved images, operations and image-return records; reuse existing views.",
      "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
-    _tool("image_info", "Get image dimensions, original identity and Read path.", {}),
-    _tool("rotate_image", "Rotate RGB by degrees clockwise, expanding the canvas; Read the returned path.",
+    _tool("image_info", "Get image dimensions and original identity; use view_image for pixels.", {}),
+    _tool("view_image", "Return a saved RGB image as image content, plus identity and pixel metadata; no edit.", {}),
+    _tool("rotate_image", "Rotate RGB by degrees clockwise, expanding the canvas; directly returns the image.",
           {"degrees_clockwise": {"type": "number", "minimum": -360, "maximum": 360}}),
-    _tool("crop_image", "Crop [left, top, right, bottom], right/bottom exclusive; Read the returned path.",
+    _tool("crop_image", "Crop [left, top, right, bottom], right/bottom exclusive; directly returns the image.",
           {"box": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "integer"}}}),
-    _tool("resize_image", "Enlarge/reduce while preserving aspect ratio. Scale > 1 zooms in; adds no detail.",
+    _tool("resize_image", "Enlarge/reduce preserving aspect ratio; directly returns the image. Scale > 1 adds no detail.",
           {"scale": {"type": "number", "exclusiveMinimum": 0, "maximum": 8}}),
     _tool("map_point", "Map a derived-view point to its original RGB. Rejects rotation padding/out-of-image points.",
           {"pixel_xy": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}}),
@@ -77,6 +82,82 @@ TOOL_NAMES = tuple("mcp__" + SERVER_NAME + "__" + tool["name"] for tool in TOOLS
 def pixel_hash(image):
     rgb = image.convert("RGB")
     return hashlib.sha256(f"{rgb.width}x{rgb.height}:RGB:".encode() + rgb.tobytes()).hexdigest()
+
+
+def image_content_summary(response):
+    """Validate Read, MCP and CLI image blocks; return metadata, never base64.
+
+    This verifies content at the observed boundary, not provider receipt or model
+    understanding. CLI may resize images; mismatched pixels are not verified.
+    """
+    images = []
+    errors = []
+
+    def inspect(value):
+        if isinstance(value, list):
+            for item in value:
+                inspect(item)
+        elif isinstance(value, dict):
+            if value.get('type') == 'image':
+                source = value.get('source') if isinstance(value.get('source'), dict) else {}
+                file = value.get('file') if isinstance(value.get('file'), dict) else {}
+                data = (source.get('data') if source.get('type') == 'base64' else
+                        file.get('base64') if isinstance(file, dict) and 'base64' in file else value.get('data'))
+                mime = source.get('media_type') or file.get('type') or value.get('mimeType')
+                try:
+                    if not isinstance(data, str) or not data or len(data) > 90_000_000:
+                        raise ValueError('missing/empty/oversized base64 image')
+                    raw = base64.b64decode(data, validate=True)
+                    with Image.open(io.BytesIO(raw)) as image:
+                        _size(*image.size)
+                        actual_mime = Image.MIME.get(image.format)
+                        if mime != actual_mime:
+                            raise ValueError('image MIME does not match encoded bytes')
+                        images.append({'mime_type': mime, 'bytes': len(raw),
+                            'size': list(image.size), 'rgb_sha256': pixel_hash(image),
+                            'encoded_sha256': hashlib.sha256(raw).hexdigest()})
+                except (ValueError, TypeError, OSError, Image.DecompressionBombError) as exc:
+                    errors.append(str(exc))
+                return
+            # MCP hooks wrap content in some CLI releases. Do not interpret JSON
+            # strings or paths in text as image content.
+            for key in ('content', 'result', 'tool_response'):
+                if key in value:
+                    inspect(value[key])
+
+    inspect(response)
+    return {'status': 'INVALID_IMAGE' if errors else 'VALID_IMAGE' if images else 'NO_IMAGE',
+            'image_count': len(images), 'images': images, 'errors': errors}
+
+
+def returned_image_metadata(response):
+    """Extract our tool's identity metadata from its text block, not its pixels."""
+    if isinstance(response, list):
+        for item in response:
+            metadata = returned_image_metadata(item)
+            if metadata:
+                return metadata
+    elif isinstance(response, dict):
+        if response.get('type') == 'text':
+            try:
+                value = json.loads(response.get('text', ''))
+                if isinstance(value, dict) and isinstance(value.get('image_id'), str) and isinstance(value.get('path'), str):
+                    return {key: value.get(key) for key in ('image_id', 'path', 'size', 'rgb_sha256')}
+            except (ValueError, TypeError):
+                pass
+        for key in ('content', 'result', 'tool_response'):
+            if key in response:
+                metadata = returned_image_metadata(response[key])
+                if metadata:
+                    return metadata
+    return {}
+
+
+def image_matches(summary, view):
+    return (isinstance(summary, dict) and summary.get('status') == 'VALID_IMAGE'
+            and summary.get('image_count') == 1 and len(summary.get('images', [])) == 1
+            and summary['images'][0].get('rgb_sha256') == view.get('rgb_sha256')
+            and summary['images'][0].get('size') == view.get('size'))
 
 
 def audit(job, event):
@@ -103,18 +184,35 @@ def read_hook(job):
     response = payload.get('tool_response')
     if isinstance(response, dict) and (response.get('isError') or response.get('is_error')):
         status = 'failed'
+    details = {}
+    if event == 'PostToolUse' and (tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS):
+        details['image_content'] = image_content_summary(response)
+        details['image_metadata'] = returned_image_metadata(response)
+        path = args.get('file_path') if tool == 'Read' else details['image_metadata'].get('path')
+        details['image_content']['identity_status'] = 'UNVERIFIED'
+        try:
+            candidate = job / path if isinstance(path, str) else None
+            if candidate is None or candidate.is_symlink() or candidate.resolve().parent != job:
+                raise ValueError('no job-local image identity')
+            with Image.open(candidate) as image:
+                expected = {'size': list(image.size), 'rgb_sha256': pixel_hash(image)}
+            details['image_content']['identity_status'] = (
+                'VERIFIED' if image_matches(details['image_content'], expected) else 'MISMATCH')
+        except (ValueError, OSError) as exc:
+            details['image_content']['identity_error'] = str(exc)
     audit(job, {"kind": "read" if tool == "Read" else "tool_lifecycle",
                 "tool": tool, "status": status,
                 "tool_use_id": payload.get("tool_use_id"),
                 "arguments": {"file_path": args.get("file_path")} if tool == "Read" else args,
-                "error": str(payload.get("error", "")) if status == "failed" else None})
+                "error": str(payload.get("error", "")) if status == "failed" else None, **details})
 
 
 def orientation_guard(job, payload):
-    """One correction inside Claude's current loop, never a new model session.
+    """Audit a structured orientation result; never contradict missing pixels.
 
-    StructuredOutput uses PreToolUse; plain JSON answers use Stop. Both share
-    a persisted allowance. Missing/incomplete audit is not evidence of success.
+    Kept under the historical hook name for existing CLI configurations. No
+    automatic correction is granted: content problems are diagnosed separately
+    from visual ambiguity, with no renewed edit/time/turn budget.
     """
     event = payload.get('hook_event_name')
     candidate = None
@@ -130,89 +228,14 @@ def orientation_guard(job, payload):
     else:
         return {}
 
-    facts = {}
-    response = {}
-    classification = 'NO_UNCERTAIN_RESULT'
-    required = {'status', 'image_id', 'collar_pixel_xy', 'hem_pixel_xy', 'reason'}
-    valid = (isinstance(candidate, dict) and set(candidate) == required and
-             candidate.get('status') == 'UNCERTAIN' and isinstance(candidate.get('reason'), str) and
-             all(candidate[k] is None for k in ('image_id', 'collar_pixel_xy', 'hem_pixel_xy')))
-    if valid:
-        reason = candidate['reason'].lower()
-        tool_claim = bool(re.search(
-            r'(?:tools?|rotate_image|list_images|read)(?:\s+(?:calls?|requests?|service))?\s+'
-            r'(?:(?:has|have|had|is|are|was|were)\s+)?'
-            r'(?:fail(?:ed|ing|s)?|unavailable|timed out|stopped returning|'
-            r'return(?:ed|s)? no (?:result|response|output)|gave no response|did not return|didn.t return)|'
-            r'(?:工具|rotate_image|list_images|read)[^。.;\n]{0,24}(?:失败|无响应|没有返回|未返回|不返回)',
-            reason))
-        classification = 'NO_TOOL_FAILURE_CLAIM'
-        if tool_claim:
-            classification = 'AUDIT_INCOMPLETE'
-            try:
-                events = [json.loads(line) for line in
-                          (job / 'image_tool_calls.jsonl').read_text(encoding='utf-8').splitlines()]
-                budget = json.loads((job / 'image_edit_budget.json').read_text(encoding='utf-8'))
-                if (not all(isinstance(e, dict) for e in events) or not isinstance(budget, dict) or
-                        type(budget.get('limit')) is not int or type(budget.get('used')) is not int or
-                        not 0 <= budget['used'] <= budget['limit'] <= MAX_VIEWS):
-                    raise ValueError('invalid audit/budget')
-                lifecycles = [e for e in events if e.get('kind') in {'read', 'tool_lifecycle'}]
-                started = {e['tool_use_id'] for e in lifecycles if e.get('status') == 'started'}
-                finished = {e['tool_use_id'] for e in lifecycles if e.get('status') in {'completed', 'failed'}}
-                failures = [e.get('event_id') for e in events if e.get('status') in {'error', 'failed'}]
-                reads = sum(e.get('kind') == 'read' and e.get('status') == 'completed' for e in lifecycles)
-                calls = [e for e in events if e.get('tool') in {t['name'] for t in TOOLS}]
-                facts = {'edit_limit': budget['limit'], 'edits_used': budget['used'],
-                         'edits_remaining': budget['limit'] - budget['used'],
-                         'tool_calls': len(calls), 'completed_reads': reads,
-                         'rotation_requests': sum(e.get('tool') == 'rotate_image' for e in calls),
-                         'failure_event_ids': failures,
-                         'pending_tool_use_ids': sorted(str(x) for x in started - finished)}
-                if failures:
-                    classification = 'AUDITED_TOOL_FAILURE'
-                elif (not lifecycles or None in started or started != finished or not reads or
-                      not any(e.get('kind') == 'session' for e in events)):
-                    classification = 'AUDIT_INCOMPLETE'
-                elif facts['edits_remaining'] <= 0 or len(calls) >= MAX_CALLS:
-                    classification = 'BUDGET_EXHAUSTED'
-                else:
-                    classification = 'UNSUPPORTED_TOOL_FAILURE_CLAIM'
-            except (OSError, ValueError, KeyError, TypeError):
-                classification = 'AUDIT_INCOMPLETE'
-    # Lock the allowance so both hooks (or repeated hook delivery) cannot grant
-    # another pass. It is independent of Stop's stop_hook_active compatibility.
-    if classification == 'UNSUPPORTED_TOOL_FAILURE_CLAIM':
-        with (job / 'orientation_correction.json').open('a+', encoding='utf-8') as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
-            stream.seek(0)
-            previous = stream.read()
-            if previous or payload.get('stop_hook_active'):
-                classification = 'CORRECTION_ALREADY_USED'
-            else:
-                message = (
-                    'One orientation correction in this same session. Your UNCERTAIN reason claims missing '
-                    'tool results, but all recorded inspection requests completed and none failed. '
-                    f"Rotation requests actually recorded: {facts['rotation_requests']}. "
-                    f"Remaining edits: {facts['edits_remaining']} of {facts['edit_limit']}; "
-                    'the existing images, edit budget, turn limit and deadline remain in force. '
-                    'Use the saved views. If rotation is needed, choose its angle from the RGB, actually '
-                    'call rotate_image and Read its returned path before selecting the whole-garment view. '
-                    'Do not claim a tool failed unless a real request returned an error. '
-                    'If the collar/hem is genuinely unclear, return UNCERTAIN with that visual reason; '
-                    'do not invent coordinates or force READY. This is the only correction pass.'
-                )
-                response = ({'decision': 'block', 'reason': message} if event == 'Stop' else
-                            {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                'permissionDecision': 'deny', 'permissionDecisionReason': message}})
-                json.dump({'used': 1, 'candidate': candidate, 'audit_facts': facts,
-                           'feedback': message}, stream, ensure_ascii=False)
-                stream.flush()
+    classification = 'INVALID_RESULT'
+    if isinstance(candidate, dict):
+        classification = candidate.get('failure_reason') or ('READY' if candidate.get('status') == 'READY' else 'UNCLASSIFIED')
     audit(job, {'kind': 'orientation_guard', 'tool': 'orientation_correction',
-                'status': 'requested' if response else 'not_requested',
+                'status': 'not_requested',
                 'trigger': event, 'classification': classification, 'candidate': candidate,
-                'audit_facts': facts, 'feedback': response})
-    return response
+                'feedback': {}, 'note': 'Classification is model-reported; host verifies image content separately.'})
+    return {}
 
 
 def forward_audit(job):
@@ -305,14 +328,22 @@ class ImageTools:
 
     def inspection_history(self):
         reads = {}
+        deliveries = {}
         for event in self._events():
             if event.get('kind') == 'read' and event.get('status') == 'completed':
                 path = event.get('arguments', {}).get('file_path')
                 if isinstance(path, str):
                     path = str((self.job / path).resolve())
-                    reads.setdefault(path, set()).add(event.get('tool_use_id') or event.get('event_id'))
+                    if event.get('image_content', {}).get('identity_status') == 'VERIFIED':
+                        reads.setdefault(path, set()).add(event.get('tool_use_id') or event.get('event_id'))
+            if event.get('kind') == 'tool_lifecycle' and event.get('status') == 'completed':
+                metadata = event.get('image_metadata', {})
+                if image_matches(event.get('image_content'), metadata):
+                    deliveries.setdefault(metadata.get('image_id'), set()).add(event.get('tool_use_id'))
         return [{k: view.get(k) for k in ('image_id', 'path', 'size', 'parent_image_id', 'operation', 'arguments')}
-                | {'completed_reads': len(reads.get(view['path'], ())) }
+                | {'completed_reads': len(reads.get(view['path'], ())),
+                   'validated_image_returns': len(deliveries.get(view['image_id'], ())) + len(reads.get(view['path'], ())),
+                   'note': 'Validated tool-return content; not proof of model understanding.'}
                 for view in self.views.values()]
 
     def edit_budget(self, *, consume=False):
@@ -335,7 +366,7 @@ class ImageTools:
             json.dump(state, stream)
             stream.flush()
         budget = {**state, 'remaining': state['limit'] - state['used'],
-            'next_step': ('Editing is exhausted. Do not request more edits. Read existing images and '
+            'next_step': ('Editing is exhausted. Do not request more edits. Use view_image for existing images and '
                           'finish using the existing evidence, or report insufficient evidence under the requested schema; do not restart.'
                           if state['used'] >= state['limit'] else
                           'Finish as soon as the view is suitable; do not use edits just to spend the budget.')}
@@ -364,7 +395,7 @@ class ImageTools:
                     raise ValueError("unknown image_id; use image_N or a returned view ID")
                 if cached is not None:
                     result = dict(self.views[cached], reused=True,
-                                  next_step='Reuse this saved image; Read it only if necessary.')
+                                  next_step='Inspect the attached saved image; no extra Read needed.')
                 else:
                     result = self._call(name, args, self.views[image_id])
                     if name in EDIT_TOOLS:
@@ -406,7 +437,7 @@ class ImageTools:
             view = self.views[view["parent_image_id"]]
 
     def _call(self, name, args, source):
-        if name == "image_info":
+        if name in {"image_info", "view_image"}:
             return dict(source)
         if name == "map_point":
             return self._map_point(source, args["pixel_xy"])
@@ -464,7 +495,22 @@ class ImageTools:
             parent_image_id=source["image_id"], to_parent=mapping)
         self.views[image_id] = view
         self.created += 1
-        return dict(view, next_step="Read this path to inspect the transformed image; map_point before using a pixel.")
+        return dict(view, next_step="Inspect the attached image; coordinates are in this view. No extra Read needed.")
+
+    def image_result(self, value):
+        """Construct an actual MCP image block and validate its exact saved pixels."""
+        path = Path(value['path'])
+        if path.is_symlink() or path.resolve().parent != self.job:
+            raise ValueError('image escaped job directory')
+        block = {'type': 'image', 'mimeType': 'image/png',
+                 'data': base64.b64encode(path.read_bytes()).decode('ascii')}
+        summary = image_content_summary(block)
+        if not image_matches(summary, value):
+            raise ValueError('image payload is empty, invalid, or changed since it was saved')
+        metadata = dict(value, image_content=summary)
+        audit(self.job, {'kind': 'image_delivery', 'tool': 'image_payload', 'status': 'prepared',
+                        'image_id': value['image_id'], 'path': str(path), 'image_content': summary})
+        return {'content': [{'type': 'text', 'text': json.dumps(metadata)}, block]}
 
 
 def serve_stdio(tools):
@@ -493,9 +539,12 @@ def serve_stdio(tools):
             elif method == "tools/call":
                 try:
                     value = tools.call(params.get("name"), params.get("arguments", {}))
-                    result = {"content": [{"type": "text", "text": json.dumps(value)}]}
+                    result = (tools.image_result(value) if params.get('name') in IMAGE_TOOLS else
+                              {"content": [{"type": "text", "text": json.dumps(value)}]})
                 except Exception as exc:
                     detail = str(exc)
+                    audit(tools.job, {'kind': 'image_delivery', 'tool': params.get('name'),
+                                     'status': 'failed', 'error': detail})
                     if tools.edit_limit is not None:
                         detail += '\nedit_budget: ' + json.dumps(tools.edit_budget())
                     detail += '\ninspection_history: ' + json.dumps(tools.inspection_history())
@@ -543,7 +592,7 @@ def main(argv=None):
             "edit_budget": tools.edit_budget()}, indent=2), encoding="utf-8")
         hook_command = shlex.join([sys.executable, str(Path(__file__).resolve()),
             "--job", str(tools.job), "--image-count", str(args.image_count), "--read-hook"])
-        matcher = 'Read|mcp__cloth_image__.*' if args.orientation_correction else 'Read'
+        matcher = 'Read|mcp__cloth_image__.*'
         settings = {"hooks": {event: [{"matcher": matcher, "hooks": [
             {"type": "command", "command": hook_command, "timeout": 10}]}]
             for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure")}}

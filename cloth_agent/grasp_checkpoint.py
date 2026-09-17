@@ -105,7 +105,7 @@ def inspect_grasp(backend, images, directory: Path):
                 'image_quality': quality, 'continue_transport': False, 'runtime_decision': 'ABORT_RELEASE'}
     result = backend.invoke(
         prompt=('This is a real T-shirt folding experiment paused at a small vertical lift. '
-                'Read BOTH images: image_0 is after confirmed jaw closure, BEFORE lifting; '
+                'Use view_image to inspect BOTH images: image_0 is after confirmed jaw closure, BEFORE lifting; '
                 'image_1 is after the small lift, BEFORE any transport. '
                 'Assess only whether fabric is visibly retained by the gripper and lifted from its support. '
                 'The camera is wrist-mounted and moves with the arm. Camera motion, jaw closure, '
@@ -113,7 +113,7 @@ def inspect_grasp(backend, images, directory: Path):
                 'Return GRASP_CONFIRMED only with clear visual evidence of retained lifted fabric; '
                 'EMPTY when clearly empty, UNKNOWN if occluded, ambiguous or insufficient. '
                 'This is not a single-layer classification task. Do not infer hidden cloth. '
-                'Do not edit images, design a fold, or prescribe actions. Read images in one batch '
+                'Do not edit images, design a fold, or prescribe actions. Request the two views in one batch '
                 'where possible, then return the requested JSON.'),
         system_prompt='Visual grasp evidence assessor for a paused cloth-folding experiment. No robot access.',
         image_paths=images, schema=GRASP_SCHEMA,

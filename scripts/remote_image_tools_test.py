@@ -106,10 +106,10 @@ def main(argv=None):
             payload = {"mode": "offline", "mapped_point": mapped, "claude_tested": False}
         else:
             prompt = (
-                "This is a tool integration smoke test, not a robot plan. Read image_0.png first. "
-                "You MUST call rotate_image on image_0 with degrees_clockwise=90, then Read its result. "
+                "This is a tool integration smoke test, not a robot plan. Use view_image on image_0 first. "
+                "You MUST call rotate_image on image_0 with degrees_clockwise=90, then inspect its attached image. "
                 f"Call crop_image on that rotated view with box={box}, then resize_image on the crop "
-                "with scale=2, and Read the enlarged result. Call map_point on this final resized "
+                "with scale=2, and inspect the attached enlarged result. No extra Read needed. Call map_point on this final resized "
                 "view at pixel_xy=[1,1]. Return JSON with image_read=true only if you actually saw "
                 "the images, observation describing what you see, and original_image_index and "
                 "mapped_pixel_xy copied from the map_point result. If tools fail, do not claim success."
@@ -124,7 +124,7 @@ def main(argv=None):
                 backend = RemoteClaudeBackend(ssh_host=args.host, timeout_s=args.timeout_s)
             result = backend.invoke(prompt=prompt, image_paths=[image], schema=SCHEMA,
                 debug_dir=output / "claude_image_tools" / "smoke",
-                system_prompt="Inspect RGB with Read and the supplied image tools. Return the required JSON.")
+                system_prompt="Inspect RGB with view_image and images returned by editing tools. Return the required JSON.")
             events = list(result.image_tool_events)
             (output / "image_tool_events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
             payload = parse_claude_json(result.stdout)
@@ -132,13 +132,12 @@ def main(argv=None):
             required = {"rotate_image", "crop_image", "resize_image", "map_point"}
             if not required <= {e.get("tool") for e in success}:
                 raise ValueError("Claude did not actually call all required image tools; inspect the audit")
-            read_paths = {e.get("arguments", {}).get("file_path") for e in events
-                          if e.get("kind") == "read" and e.get("status") == "completed"}
-            inspected_views = [e["result"]["path"] for e in success
+            inspected_views = [e["result"]["image_id"] for e in success
                                if e.get("tool") in {"rotate_image", "resize_image"}]
-            if not inspected_views or any(path not in read_paths and Path(path).name not in read_paths
-                                          for path in inspected_views):
-                raise ValueError("Read hooks did not confirm reading the rotated/enlarged views; inspect image_debug.json")
+            delivered = {view['image_id'] for view in result.image_sources
+                         if view.get('image_delivery_status') == 'VERIFIED'}
+            if not {'image_0', *inspected_views} <= delivered:
+                raise ValueError("CLI output did not contain verified original/rotated/enlarged images; inspect image_delivery.jsonl")
             if payload.get("image_read") is not True or not isinstance(payload.get("observation"), str) or not payload["observation"].strip():
                 raise ValueError("Claude did not confirm visual inspection")
             mappings = [e["result"] for e in success if e["tool"] == "map_point"]

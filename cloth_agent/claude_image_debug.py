@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .image_tools_mcp import ImageTools
+from .image_tools_mcp import ImageTools, IMAGE_TOOLS, image_content_summary, returned_image_metadata, image_matches
 
 
 def debug_directory(images, fallback, stage):
@@ -39,6 +39,7 @@ class ImageDebugSession:
         self.ids = {f"image_{i}": f"image_{i}" for i in range(len(self.images))}
         self.remote_paths = {}
         self.reads = {}
+        self.inspections = {}
         self.started = time.monotonic()
         self.request = request
         self.last_message_at = None
@@ -99,9 +100,30 @@ class ImageDebugSession:
                 elif kind == 'redacted_thinking':
                     parts.append('Provider withheld reasoning; no text available.')
                 elif kind == 'tool_use':
+                    tool = block.get('name', '')
+                    if block.get('id') and (tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS):
+                        inspection = self.inspections.setdefault(block['id'], {'tool_use_id': block['id']})
+                        inspection.update(tool=tool, arguments=block.get('input', {}))
                     parts.append('Tool input: ' + json.dumps(block, ensure_ascii=False))
                 elif kind == 'tool_result':
-                    parts.append('Tool result: ' + json.dumps(block, ensure_ascii=False))
+                    identity = block.get('tool_use_id')
+                    summary = image_content_summary(block.get('content'))
+                    inspection = self.inspections.setdefault(identity, {'tool_use_id': identity})
+                    inspection.update(stream_content=summary, stream_error=bool(block.get('is_error')))
+                    metadata = returned_image_metadata(block.get('content'))
+                    if metadata:
+                        inspection['image_metadata'] = metadata
+                    self.append_stream('image_delivery.jsonl', json.dumps({
+                        'tool_use_id': identity, 'boundary': 'cli_tool_result',
+                        'image_content': summary, 'image_metadata': inspection.get('image_metadata', {}),
+                        'is_error': inspection['stream_error']}, ensure_ascii=False) + '\n')
+                    # Raw streams retain exact content. Keep the readable transcript
+                    # useful instead of rendering megabytes of base64 in Viser.
+                    parts.append('Tool result: ' + json.dumps({
+                        'tool_use_id': identity, 'image_content': summary,
+                        'metadata': inspection.get('image_metadata', {}), 'is_error': inspection['stream_error']}, ensure_ascii=False)
+                        if summary['image_count'] or summary['errors'] else
+                        'Tool result: ' + json.dumps(block, ensure_ascii=False))
         if event.get('type') == 'result':
             self.write('claude_result.json', event)
             self.state['claude_metrics'] = {key: event[key] for key in (
@@ -111,6 +133,7 @@ class ImageDebugSession:
         if len(parts) == 1:
             parts.append(json.dumps(event, ensure_ascii=False))
         self.append_stream('claude_transcript.md', '\n\n'.join(parts) + '\n\n')
+        self._match_reads()
         self.flush()
         return self.state['last_claude_event']
 
@@ -180,19 +203,61 @@ class ImageDebugSession:
     def _match_reads(self):
         for view in self.state["views"]:
             reads = [r for r in self.reads.values() if self.remote_paths.get(r.get("path")) == view["image_id"]]
-            # A successful Read proves the tool returned the image, not that
-            # the model understood it. Keep all requests, including retries.
+            # Legacy lifecycle label, deliberately NOT an image-content gate.
             statuses = {r["status"] for r in reads}
             view["read_status"] = ("READ_COMPLETED" if "completed" in statuses else
                 "READ_STARTED" if "started" in statuses else "READ_FAILED" if "failed" in statuses else
                 "NO_READ_RECORDED" if self.state["audit_complete"] else "UNKNOWN")
             view["reads"] = reads
+            inspections = []
+            for record in self.inspections.values():
+                tool = record.get('tool', '')
+                if not record.get('tool_use_id') or not (tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS):
+                    continue
+                args = record.get('arguments', {})
+                metadata = record.get('image_metadata', {})
+                path = args.get('file_path')
+                if isinstance(path, str) and not posixpath.isabs(path) and self.state.get('remote_setup'):
+                    path = posixpath.normpath(posixpath.join(
+                        posixpath.dirname(self.state['remote_setup']['images'][0]['path']), path))
+                image_id = metadata.get('image_id') or self.remote_paths.get(path)
+                if image_id is None and record.get('tool', '').endswith('__view_image'):
+                    image_id = args.get('image_id')
+                if image_id != view['image_id']:
+                    continue
+                hook = record.get('hook_content')
+                stream = record.get('stream_content')
+                returned = 'VERIFIED' if image_matches(hook, view) else 'UNAVAILABLE' if hook is not None else 'UNKNOWN'
+                emitted = 'VERIFIED' if image_matches(stream, view) else 'UNAVAILABLE' if stream is not None else 'UNKNOWN'
+                valid = (emitted == 'VERIFIED' and returned != 'UNAVAILABLE' and
+                         record.get('hook_status') != 'failed' and not record.get('stream_error'))
+                inspections.append({**record, 'returned_image_status': returned,
+                    'stream_image_status': emitted, 'image_delivery_status': 'VERIFIED' if valid else
+                    'UNAVAILABLE' if 'UNAVAILABLE' in (returned, emitted) or record.get('stream_error')
+                    or record.get('hook_status') == 'failed' else 'UNKNOWN'})
+            view['image_inspections'] = inspections
+            for field in ('returned_image_status', 'stream_image_status', 'image_delivery_status'):
+                statuses = {record[field] for record in inspections}
+                view[field] = 'VERIFIED' if 'VERIFIED' in statuses else 'UNAVAILABLE' if 'UNAVAILABLE' in statuses else 'UNKNOWN'
+        self.state['delivery_evidence_note'] = (
+            'VERIFIED image delivery means exact pixels appeared in a CLI tool_result without a known '
+            'hook failure for that call. It does not prove provider receipt or model understanding.')
 
     def consume(self, event):
         row = dict(event, received_elapsed_s=time.monotonic()-self.started)
         self.state["events"].append(row)
         self.append_stream("events.jsonl", json.dumps(row, ensure_ascii=False) + "\n")
         try:
+            if event.get('kind') in {'read', 'tool_lifecycle'}:
+                tool = event.get('tool', '')
+                if tool == 'Read' or tool.removeprefix('mcp__cloth_image__') in IMAGE_TOOLS:
+                    identity = event.get('tool_use_id')
+                    record = self.inspections.setdefault(identity, {'tool_use_id': identity})
+                    record.update(tool=tool, arguments=event.get('arguments', {}), hook_status=event.get('status'))
+                    if 'image_content' in event:
+                        record['hook_content'] = event['image_content']
+                    if event.get('image_metadata'):
+                        record['image_metadata'] = event['image_metadata']
             if event.get("kind") == "session":
                 self.state["remote_setup"] = event
                 for remote in event.get("images", []):

@@ -14,7 +14,8 @@ from cloth_agent.planner_backend import RemoteClaudeBackend
 
 
 UNCERTAIN = dict(status='UNCERTAIN', image_id=None, collar_pixel_xy=None,
-                 hem_pixel_xy=None, reason='rotate_image and Read stopped returning results.')
+                 hem_pixel_xy=None, failure_reason='IMAGE_UNAVAILABLE',
+                 reason='Read returned empty output; no image was visible.')
 
 
 def hook_payload(candidate=UNCERTAIN, event='PreToolUse'):
@@ -41,21 +42,19 @@ def latest(tools):
 
 
 @pytest.mark.parametrize('event', ['PreToolUse', 'Stop'])
-def test_one_correction_uses_same_images_and_persisted_budget(inspected, event):
+def test_missing_pixels_are_audited_without_correction_or_budget_reset(inspected, event):
     tools = inspected
     before = tools.edit_budget()
     response = orientation_guard(tools.job, hook_payload(event=event))
-    assert response
+    assert response == {}
     check = latest(tools)
-    assert check['status'] == 'requested'
-    assert check['audit_facts']['edits_remaining'] == 5
-    assert check['audit_facts']['rotation_requests'] == 0
-    assert check['audit_facts']['completed_reads'] == 2
+    assert check['status'] == 'not_requested'
+    assert check['classification'] == 'IMAGE_UNAVAILABLE'
+    assert check['candidate'] == UNCERTAIN
     assert tools.edit_budget() == before
-    # Both hooks, including another delivery with stop_hook_active=False, share one allowance.
     assert orientation_guard(tools.job, hook_payload()) == {}
     assert orientation_guard(tools.job, hook_payload(event='Stop')) == {}
-    assert latest(tools)['classification'] == 'CORRECTION_ALREADY_USED'
+    assert not (tools.job / 'orientation_correction.json').exists()
     restarted = ImageTools(tools.job, 1, edit_limit=6)
     assert len(restarted.views) == 2
     rotated = restarted.call('rotate_image', {'image_id': 'image_0', 'degrees_clockwise': 90})
@@ -64,21 +63,16 @@ def test_one_correction_uses_same_images_and_persisted_budget(inspected, event):
     assert orientation_guard(tools.job, hook_payload()) == {}
 
 
-@pytest.mark.parametrize('case,classification', [
-    ('ambiguous', 'NO_TOOL_FAILURE_CLAIM'), ('ready', 'NO_UNCERTAIN_RESULT'),
-    ('malformed', 'NO_UNCERTAIN_RESULT'), ('budget', 'BUDGET_EXHAUSTED'),
-    ('error', 'AUDITED_TOOL_FAILURE'), ('read_error', 'AUDITED_TOOL_FAILURE'),
-    ('pending', 'AUDIT_INCOMPLETE'), ('missing_audit', 'AUDIT_INCOMPLETE'),
-    ('truncated_audit', 'AUDIT_INCOMPLETE'), ('no_reads', 'AUDIT_INCOMPLETE'),
-    ('active_hook', 'CORRECTION_ALREADY_USED'),
-])
-def test_no_correction_for_genuine_failure_or_unknown_audit(inspected, case, classification):
+@pytest.mark.parametrize('case', ['ambiguous', 'ready', 'malformed', 'budget', 'error',
+    'read_error', 'pending', 'missing_audit', 'truncated_audit', 'no_reads', 'active_hook'])
+def test_audit_conditions_never_override_a_missing_image_report(inspected, case):
     tools = inspected
     request = hook_payload()
     if case == 'ambiguous':
-        request = hook_payload({**UNCERTAIN, 'reason': 'The collar is hidden under fabric.'})
+        request = hook_payload({**UNCERTAIN, 'failure_reason': 'VISUAL_AMBIGUITY',
+                                'reason': 'The collar is hidden under fabric.'})
     elif case == 'ready':
-        request = hook_payload({**UNCERTAIN, 'status': 'READY'})
+        request = hook_payload({**UNCERTAIN, 'status': 'READY', 'failure_reason': None})
     elif case == 'malformed':
         request = hook_payload({'status': 'UNCERTAIN', 'reason': UNCERTAIN['reason']})
     elif case == 'budget':
@@ -104,7 +98,10 @@ def test_no_correction_for_genuine_failure_or_unknown_audit(inspected, case, cla
             rows = [row for row in path.read_text().splitlines() if json.loads(row).get('kind') != 'read']
             path.write_text('\n'.join(rows) + '\n')
     assert orientation_guard(tools.job, request) == {}
-    assert latest(tools)['classification'] == classification
+    assert latest(tools)['classification'] == {
+        'ambiguous': 'VISUAL_AMBIGUITY', 'ready': 'READY', 'malformed': 'UNCLASSIFIED',
+    }.get(case, 'IMAGE_UNAVAILABLE')
+    assert latest(tools)['status'] == 'not_requested'
 
 
 def test_backend_only_registers_guard_for_orientation(inspected, monkeypatch):
@@ -130,8 +127,9 @@ def test_backend_only_registers_guard_for_orientation(inspected, monkeypatch):
     '读取工具成功，但没有看清衣领，无法验证方向。',
 ])
 def test_visual_failure_is_not_misread_as_tool_failure(inspected, reason):
-    assert orientation_guard(inspected.job, hook_payload({**UNCERTAIN, 'reason': reason})) == {}
-    assert latest(inspected)['classification'] == 'NO_TOOL_FAILURE_CLAIM'
+    assert orientation_guard(inspected.job, hook_payload({**UNCERTAIN, 'reason': reason,
+                             'failure_reason': 'VISUAL_AMBIGUITY'})) == {}
+    assert latest(inspected)['classification'] == 'VISUAL_AMBIGUITY'
 
 
 @pytest.mark.parametrize('reason', [
@@ -140,9 +138,10 @@ def test_visual_failure_is_not_misread_as_tool_failure(inspected, reason):
     'The rotate_image tool failed to return a result.',
     '图像工具没有返回结果，无法验证旋转后的方向。',
 ])
-def test_reported_missing_tool_results_trigger_audited_correction(inspected, reason):
-    assert orientation_guard(inspected.job, hook_payload({**UNCERTAIN, 'reason': reason}))
-    assert latest(inspected)['status'] == 'requested'
+def test_reported_missing_tool_results_are_not_regex_corrected(inspected, reason):
+    assert orientation_guard(inspected.job, hook_payload({**UNCERTAIN, 'reason': reason})) == {}
+    assert latest(inspected)['classification'] == 'IMAGE_UNAVAILABLE'
+    assert latest(inspected)['status'] == 'not_requested'
 
 
 # Real shell/bootstrap, MCP, hooks and replay; just the model/transport are fake.
@@ -156,11 +155,11 @@ job = Path.cwd()
 assert sys.argv[sys.argv.index('--max-turns') + 1] == '16'
 assert '--no-session-persistence' in sys.argv
 assert (job / 'orientation_correction.json').exists() is False
-def hook(event, tool='', args=None, identity='test'):
+def hook(event, tool='', args=None, identity='test', response=None):
     result = {}
     payload = dict(hook_event_name=event, tool_name=tool, tool_use_id=identity,
                    tool_input=args or {}, last_assistant_message=json.dumps(args or {}),
-                   stop_hook_active=False)
+                   stop_hook_active=False, tool_response=response)
     for entry in settings['hooks'][event]:
         if re.fullmatch(entry.get('matcher', '.*'), tool):
             for spec in entry['hooks']:
@@ -169,12 +168,10 @@ def hook(event, tool='', args=None, identity='test'):
                 if out.stdout.strip():
                     result.update(json.loads(out.stdout))
     return result
-def read(path, identity):
-    assert Path(path).is_file()
-    for event in ('PreToolUse', 'PostToolUse'):
-        hook(event, 'Read', {'file_path': path}, identity)
 def call(name, args, identity):
     tool = 'mcp__cloth_image__' + name
+    print(json.dumps({'type':'assistant','message':{'content':[
+        {'type':'tool_use','id':identity,'name':tool,'input':args}]}}), flush=True)
     hook('PreToolUse', tool, args, identity)
     out = subprocess.run([server['command'], *server['args']],
         input=json.dumps({'jsonrpc':'2.0', 'id':1, 'method':'tools/call',
@@ -182,23 +179,21 @@ def call(name, args, identity):
         capture_output=True, text=True, check=True)
     result = json.loads(out.stdout)['result']
     assert not result.get('isError'), result
-    hook('PostToolUse', tool, args, identity)
+    assert result['content'][1]['type'] == 'image'
+    hook('PostToolUse', tool, args, identity, result)
+    print(json.dumps({'type':'user','message':{'content':[
+        {'type':'tool_result','tool_use_id':identity,'content':result['content']}]}}), flush=True)
     return json.loads(result['content'][0]['text'])
-read(str(job / 'image_0.png'), 'read-original')
+call('view_image', {'image_id':'image_0'}, 'view-original')
 crop = call('crop_image', {'image_id':'image_0','box':[10,10,90,60]}, 'crop')
-read(crop['path'], 'read-crop')
 uncertain = dict(status='UNCERTAIN', image_id=None, collar_pixel_xy=None, hem_pixel_xy=None,
-                 reason='rotate_image and Read stopped returning results.')
-reply = hook('PreToolUse', 'StructuredOutput', uncertain)
-assert reply['hookSpecificOutput']['permissionDecision'] == 'deny', reply
-assert 'Remaining edits: 5 of 6' in reply['hookSpecificOutput']['permissionDecisionReason']
+                 failure_reason='IMAGE_UNAVAILABLE', reason='No visual content was visible.')
 assert Path(crop['path']).is_file()
 if os.environ['ORIENTATION_STUB_OUTCOME'] == 'ready':
     rotated = call('rotate_image', {'image_id':'image_0','degrees_clockwise':90}, 'rotate')
     assert rotated['edit_budget']['used'] == 2
-    read(rotated['path'], 'read-rotated')
     answer = dict(status='READY', image_id=rotated['image_id'], collar_pixel_xy=[40,20],
-                  hem_pixel_xy=[40,95], reason='Collar above hem.')
+                  hem_pixel_xy=[40,95], failure_reason=None, reason='Collar above hem.')
 else:
     answer = uncertain
 assert hook('PreToolUse', 'StructuredOutput', answer) == {}
@@ -208,7 +203,7 @@ print(json.dumps({'type':'result','structured_output':answer,'is_error':False,'n
 
 
 @pytest.mark.parametrize('outcome', ['ready', 'uncertain'])
-def test_full_orientation_bridge_one_session_correction(tmp_path, monkeypatch, outcome):
+def test_full_orientation_bridge_direct_image_results_without_extra_reads(tmp_path, monkeypatch, outcome):
     image = tmp_path / 'camera_A_rgb_upright.png'
     Image.new('RGB', (120, 80), 'white').save(image)
     stub = tmp_path / 'stub.py'
@@ -244,7 +239,9 @@ def test_full_orientation_bridge_one_session_correction(tmp_path, monkeypatch, o
         prepare_molmo_view(backend, image, output, timeout_s=30)
     report = json.loads((output / 'selection.json').read_text())
     assert len(starts) == len(uploads) == 1
-    assert sum(e['status'] == 'requested' for e in report['correction_checks']) == 1
+    assert report['correction_checks']
+    assert all(e['status'] == 'not_requested' for e in report['correction_checks'])
+    assert report['correction_applied'] is False
     debug = Path(report['image_debug_directory'])
     assert 'Host orientation audit' in (debug / 'claude_transcript.md').read_text()
     assert json.loads((debug / 'request.json').read_text())['overall_timeout_s'] == 30
@@ -253,7 +250,10 @@ def test_full_orientation_bridge_one_session_correction(tmp_path, monkeypatch, o
     if outcome == 'ready':
         assert report['status'] == 'READY'
         assert len(report['image_sources']) == 3
-        assert all(v['verification'] == 'VERIFIED' and v['read_status'] == 'READ_COMPLETED'
+        assert all(v['verification'] == 'VERIFIED' and v['image_delivery_status'] == 'VERIFIED'
+                   and v['read_status'] == 'NO_READ_RECORDED'
                    for v in report['image_sources'])
     else:
         assert report['status'] == 'FAILED_NO_MOLMO'
+        assert report['failure_reason'] == 'IMAGE_UNAVAILABLE'
+        assert report['failure_reason_source'] == 'model_report'

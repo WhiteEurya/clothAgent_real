@@ -15,12 +15,14 @@ region checks; the fold loop no longer uses those bands to veto Claude's choice.
 The remote fold path uses this order for each sleeve step:
 
 1. Supervisor decides the current step using the same garment-relative convention.
-2. Claude Reads the current RGB, chooses rotation/crop/resize as needed, and Reads
-   its selected collar-up, hem-down view. An already aligned original can be selected.
-3. The host verifies the image hash, current-source ancestry, successful Read and
+2. Claude uses `view_image` for current RGB, then chooses rotation/crop/resize as
+   needed. Each edit returns the actual image, with no extra Read required.
+   An already aligned original can be selected.
+3. The host verifies the image hash, current-source ancestry, exact image content
+   in a correlated CLI tool_result (with no known hook failure) and
    declared collar/hem alignment (within 14 degrees of vertical). It stages that exact
    RGB for Molmo. This alignment check validates Claude's declaration, not the semantic
-   correctness of the landmarks. Ambiguity, timeout, missing Read, invalid transform or
+   correctness of the landmarks. Ambiguity, timeout, missing pixels, invalid transform or
    invalid selection stops the handoff; no guessed orientation is used.
 4. Molmo sees only this selected RGB and a literal IMAGE LEFT/RIGHT sleeve request.
    This RGB-only query does not load depth, transform geometry maps or install grasp
@@ -33,25 +35,25 @@ The remote fold path uses this order for each sleeve step:
 The orientation call has a hard shared budget of **6 edit attempts** across rotation,
 crop and resize (invalid attempts count too). Claude may iterate and correct its views,
 but should finish as soon as a suitable view exists. Tool replies and Viser show used
-and remaining edits. At zero, all further edits are rejected; Read, image_info and
+and remaining edits. At zero, all further edits are rejected; view_image, image_info and
 map_point remain available to inspect/select existing images (the general call/time
 limits still apply). Budget state persists inside the remote job across MCP restarts.
-Before the orientation response is committed, an audit hook may request **one correction
-in the same Claude session** when UNCERTAIN claims a tool failure but completed
-inspection records show no failure and edits remain. The hook reports actual rotation
-requests and remaining edits; it does not choose an angle or force READY. It checks
-StructuredOutput submissions and plain JSON Stop responses, sharing one persisted
-correction allowance. Genuine visual ambiguity, actual tool errors, incomplete audit
-and exhausted budgets do not trigger correction. Existing images, the six-edit budget,
-16-turn cap and overall deadline (including upload) stay in force; no new upload or
-Claude process is started. If the remote CLI disables these hooks, no correction is
-attempted and normal result validation still applies.
+Orientation responses require `failure_reason`: null for READY, otherwise
+`IMAGE_UNAVAILABLE` (no visible image content), `TOOL_ERROR` (an actual failed call),
+or `VISUAL_AMBIGUITY` (visible pixels, uncertain landmarks/alignment). Model-reported
+reasons are labelled separately from host content-validation failures.
+The previous automatic correction based on completed Read hooks is disabled:
+a successful tool invocation alone cannot establish that pixels reached Claude.
+Historical `orientation_correction` flags now register audit-only hooks; they never
+deny StructuredOutput/Stop or ask the model to change its answer. Existing images,
+the six-edit budget, 16-turn cap and overall deadline (including upload) stay in force.
+Missing image content does not trigger further edits, a new upload or a new session.
 
 A final orientation failure, UNCERTAIN response or timeout is non-retriable, including in
 unattended mode: it stops before Molmo/robot execution rather than starting another
 Claude call with fresh budget. Successful selection after using all 6 edits is allowed.
 Other Claude stages retain their existing limits. Six edits bounds image mutations,
-not total model latency or the number of Read calls.
+not total model latency or the number of view_image/Read calls.
 
 The early Molmo collar/hem pass is disabled for the remote fold path. Generated stale
 frame sidecars are still cleared. `--no-molmo-sleeve-grounding` skips the entire optional
@@ -67,9 +69,13 @@ For each iteration inspect:
 - `claude_image_tools/molmo_orientation_*/`: prompt, all operations/Read events,
   original and replayed images, timings, hashes and failures.
 - `claude_molmo_orientation/selection.json`: exact selected view, source chain,
-  collar/hem coordinates, validation status, Claude's reason and `correction_checks`
-  (initial candidate, audit facts and exact feedback). `correction_hook_observed` and
-  `correction_applied` distinguish a missing hook from a completed check or correction.
+  collar/hem coordinates, content validation, Claude's reason, `failure_reason` and
+  `failure_reason_source`. Historical `correction_checks` now contain classification
+  audits only; `same_session_correction_limit=0` and `correction_applied=false`.
+- `claude_image_tools/molmo_orientation_*/image_delivery.jsonl`: decoded image sizes,
+  byte counts and hashes at the CLI tool-result boundary. `image_debug.json` also
+  records hook/stream status per view. These prove observable content, not provider
+  receipt or model understanding; the raw CLI streams remain saved separately.
 - `claude_molmo_orientation/molmo_input/camera_0_A.png`: exact RGB given to Molmo.
 - `claude_molmo_orientation/claude_orientation_debug.png`: collar/hem annotations
   for humans; this annotated copy is not given to Molmo.

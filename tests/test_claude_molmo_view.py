@@ -22,9 +22,10 @@ from cloth_agent.remote_fold import RemoteFoldClient, rgb_evidence
 
 class OrientationBackend:
     """Actual image tools/replay, only Claude's choices are simulated."""
-    def __init__(self, *, angle=90, zoom=1, failure=None, extra_edits=0):
+    def __init__(self, *, angle=90, zoom=1, failure=None, extra_edits=0, category='VISUAL_AMBIGUITY'):
         self.angle, self.zoom, self.failure = angle, zoom, failure
         self.extra_edits = extra_edits
+        self.category = category
         self.called = False
 
     def invoke(self, **kwargs):
@@ -42,17 +43,32 @@ class OrientationBackend:
             debug.consume(json.loads((tools.job / 'image_tool_calls.jsonl').read_text().splitlines()[-1]))
         if self.failure != 'unread':
             debug.consume({'kind': 'read', 'status': 'completed', 'tool_use_id': 'read_final',
+                           'tool': 'Read',
                            'arguments': {'file_path': selected['path']}})
+            if self.failure != 'lifecycle_only':
+                content = tools.image_result(selected)['content']
+                if self.failure == 'empty':
+                    content = []
+                elif self.failure == 'text_only':
+                    content = content[:1]
+                elif self.failure == 'corrupt':
+                    content[-1]['data'] = 'not-base64'
+                elif self.failure == 'wrong_image':
+                    content[-1] = tools.image_result(tools.views['image_0'])['content'][-1]
+                debug.consume_claude_line(json.dumps({'type': 'user', 'message': {'content': [
+                    {'type': 'tool_result', 'tool_use_id': 'read_final', 'content': content}]}}))
         w, h = selected['size']
         response = {'status': 'READY', 'image_id': selected['image_id'],
                     'collar_pixel_xy': [w/2, h*.2], 'hem_pixel_xy': [w/2, h*.8],
+                    'failure_reason': None,
                     'reason': 'Collar above hem in the selected RGB.'}
         if self.failure == 'unknown':
             response['image_id'] = 'stale_view'
         elif self.failure == 'sideways':
             response.update(collar_pixel_xy=[w*.2, h/2], hem_pixel_xy=[w*.8, h/2])
         elif self.failure == 'uncertain':
-            response.update(status='UNCERTAIN', image_id=None, collar_pixel_xy=None, hem_pixel_xy=None)
+            response.update(status='UNCERTAIN', image_id=None, collar_pixel_xy=None, hem_pixel_xy=None,
+                            failure_reason=self.category)
         elif self.failure == 'padding':
             response['collar_pixel_xy'] = [0, 0]
         elif self.failure == 'unverified':
@@ -89,7 +105,8 @@ def test_selected_pixels_are_exact_and_mapped_through_all_transforms(tmp_path, a
     assert selection['side_convention'] == 'COLLAR_UP_IMAGE_LEFT_RIGHT'
 
 
-@pytest.mark.parametrize('failure', ['unread', 'unknown', 'sideways', 'uncertain', 'padding', 'unverified', 'tampered'])
+@pytest.mark.parametrize('failure', ['unread', 'unknown', 'sideways', 'uncertain', 'padding', 'unverified', 'tampered',
+                                     'lifecycle_only', 'empty', 'text_only', 'corrupt', 'wrong_image'])
 def test_invalid_orientation_stops_handoff_and_keeps_debug(tmp_path, failure):
     output = tmp_path / 'orientation'
     with pytest.raises(ValueError):
@@ -99,6 +116,9 @@ def test_invalid_orientation_stops_handoff_and_keeps_debug(tmp_path, failure):
     assert report['status'] == 'FAILED_NO_MOLMO'
     assert Path(report['image_debug_directory'], 'image_debug.json').is_file()
     assert not (output / 'molmo_input').exists()
+    if failure in {'unread', 'lifecycle_only', 'empty', 'text_only', 'corrupt', 'wrong_image'}:
+        assert report['failure_reason'] == 'IMAGE_UNAVAILABLE'
+        assert report['failure_reason_source'] == 'host_content_validation'
 
 
 def test_timeout_keeps_selection_failure(tmp_path):
@@ -110,10 +130,25 @@ def test_timeout_keeps_selection_failure(tmp_path):
     assert json.loads((tmp_path / 'orientation' / 'selection.json').read_text())['status'] == 'FAILED_NO_MOLMO'
 
 
-def test_timeout_after_correction_preserves_audit_without_another_invocation(tmp_path):
-    check = {'kind': 'orientation_guard', 'status': 'requested',
-             'classification': 'UNSUPPORTED_TOOL_FAILURE_CLAIM',
-             'audit_facts': {'edits_remaining': 5}}
+@pytest.mark.parametrize('category', ['IMAGE_UNAVAILABLE', 'TOOL_ERROR', 'VISUAL_AMBIGUITY'])
+def test_model_uncertainty_stays_classified_even_with_verified_cli_pixels(tmp_path, category):
+    backend = OrientationBackend(failure='uncertain', category=category)
+    output = tmp_path / 'orientation'
+    with pytest.raises(MolmoOrientationError) as error:
+        prepare_molmo_view(backend, canonical_image(tmp_path), output, timeout_s=30)
+    report = json.loads((output / 'selection.json').read_text())
+    assert error.value.failure_reason == category
+    assert report['failure_reason'] == category
+    assert report['failure_reason_source'] == 'model_report'
+    assert report['image_sources'][-1]['image_delivery_status'] == 'VERIFIED'
+    assert report['same_session_correction_limit'] == 0
+    assert report['correction_applied'] is False
+    assert not (output / 'molmo_input').exists()
+
+
+def test_timeout_preserves_classification_without_another_invocation(tmp_path):
+    check = {'kind': 'orientation_guard', 'status': 'not_requested',
+             'classification': 'IMAGE_UNAVAILABLE'}
     class FailedBackend:
         calls = 0
         def invoke(self, **kwargs):
@@ -129,7 +164,8 @@ def test_timeout_after_correction_preserves_audit_without_another_invocation(tmp
     assert backend.calls == 1
     assert report['correction_checks'] == [check]
     assert report['correction_hook_observed'] is True
-    assert report['correction_applied'] is True
+    assert report['correction_applied'] is False
+    assert report['same_session_correction_limit'] == 0
     assert report['status'] == 'FAILED_NO_MOLMO'
     assert not (output / 'molmo_input').exists()
 
