@@ -4,11 +4,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
 ARGS=("$@")
 has_existing_run=0
+has_recovery_mode=0
 for arg in "${ARGS[@]}"; do
   case "$arg" in
     --run-id|--run-id=*|--run-dir|--run-dir=*) has_existing_run=1 ;;
+    --unattended|--continue-on-error|--no-unattended) has_recovery_mode=1 ;;
   esac
 done
+if [[ "$has_recovery_mode" -eq 0 ]]; then
+  ARGS+=(--unattended)
+fi
 if [[ "$has_existing_run" -eq 0 ]]; then
   # A fresh run is required so the effective robot/tool configuration is
   # snapshotted from the current config instead of an older workspace copy.

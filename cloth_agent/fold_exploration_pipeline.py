@@ -83,6 +83,7 @@ from .free_exploration import (
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
 from .grasp_checkpoint import compile_grasp_checkpoint, inspect_grasp, GraspCheckpointRejected
+from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
@@ -270,13 +271,16 @@ class FoldDebugLogger:
             "stage": str(stage),
             "message": str(message),
             "fields": fields,
+            "level": fields.get("level", "ERROR" if fields.get("exception_type") or fields.get("error")
+                                or str(fields.get("status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAILED_CLOSED", "EVIDENCE_UNUSABLE"}
+                                or fields.get("event") == "failed" else "INFO"),
         }
         with self._lock:
             with self.log_path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
             with self.events_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
-        print(line, flush=True)
+        print(("\033[31m" + line + "\033[0m") if event["level"] == "ERROR" and sys.stdout.isatty() else line, flush=True)
 
     def exception(self, stage: str, exc: BaseException, **fields: Any) -> None:
         self.log(
@@ -372,6 +376,8 @@ def _compact_history(history: Sequence[Mapping[str, Any]], limit: int = 8) -> li
         if not isinstance(row, Mapping):
             continue
         item: dict[str, Any] = {
+            "inherited_lesson": bool(row.get("inherited_lesson")),
+            "failure_detection": row.get("failure_detection"),
             "iteration": row.get("iteration"),
             "mode": row.get("mode") or row.get("status"),
             "planned_step": row.get("planned_step"),
@@ -849,7 +855,7 @@ def _fold_acquisition_learning_state(
 
     attempts: list[dict[str, Any]] = []
     for row in history:
-        if not isinstance(row, Mapping) or row.get("planned_step") != step:
+        if not isinstance(row, Mapping) or row.get("inherited_lesson") or row.get("planned_step") != step:
             continue
         # Repair/fold records are not acquisition probes.  Counting their
         # evaluator output here would inflate the probe budget and could trap
@@ -1281,7 +1287,7 @@ def _acquisition_supervisor_reuse_step(
     if not history:
         return None
     latest = history[-1]
-    if not isinstance(latest, Mapping):
+    if not isinstance(latest, Mapping) or latest.get("inherited_lesson"):
         return None
     step = latest.get("planned_step")
     if step not in FOLD_STEP_IDS:
@@ -1331,7 +1337,7 @@ def _garment_condition_from_history(
     source_iteration: int | None = None
     matched_terms: list[str] = []
     for row in reversed(list(history)):
-        if not isinstance(row, Mapping) or row.get("planned_step") != step:
+        if not isinstance(row, Mapping) or row.get("inherited_lesson") or row.get("planned_step") != step:
             continue
         explicit = row.get("garment_condition")
         if not isinstance(explicit, str):
@@ -1862,7 +1868,7 @@ def _confirmed_completion_ledger(
 
     confirmed: set[str] = set()
     for row in records:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or row.get("inherited_lesson"):
             continue
         candidates = (
             row.get("supervisor_before"),
@@ -2028,6 +2034,8 @@ class FoldExperienceStore:
         return rows
 
     def append(self, experience: Mapping[str, Any]) -> dict[str, Any]:
+        if experience.get("record_id") and any(row.get("record_id") == experience["record_id"] for row in self._read()):
+            return self.refresh_summary()
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(experience), ensure_ascii=False, default=str) + "\n")
         condition_after = experience.get("garment_condition_after")
@@ -2826,11 +2834,12 @@ class FoldExplorationPipeline:
         real: bool = False,
         confirm_real: bool = False,
         record_video: bool = True,
+        prune_evaluated_video: bool = False,
         recording_native: bool = True,
         recording_codec: str = "mp4v",
         reuse_latest_perception: bool = False,
         screen_margin_px: int = 8,
-        max_replans: int = 4,
+        max_replans: int = 1,
         max_stage_retries: int = 0,
         retry_backoff_s: float = 5.0,
         unattended: bool = False,
@@ -2878,6 +2887,7 @@ class FoldExplorationPipeline:
         self.real = bool(real)
         self.confirm_real = bool(confirm_real)
         self.record_video = bool(record_video)
+        self.prune_evaluated_video = bool(prune_evaluated_video)
         self.recording_native = bool(recording_native)
         self.recording_codec = recording_codec
         self.reuse_latest_perception = bool(reuse_latest_perception)
@@ -2974,14 +2984,123 @@ class FoldExplorationPipeline:
         """
 
         approved_skills = self.skill_store.approved()
-        self.client.skill_guidance = self.skill_store.prompt()
+        self.client.skill_guidance = self._skill_prompt()
         self.client.skill_names = tuple(
             sorted({str(skill.name).strip().lower() for skill in approved_skills})
         )
 
+    def _skill_prompt(self) -> str:
+        ledger = getattr(self, "skill_ledger", None)
+        appendix = ledger.prompt_appendix() if ledger is not None else ""
+        return self.skill_store.prompt() + (("\n\n" + appendix) if appendix else "")
+
+    def _save_iteration_learning(self, iteration_dir: Path, record: dict[str, Any]) -> None:
+        record.setdefault("record_id", str(iteration_dir.resolve()))
+        record.setdefault("completed_at", _now())
+        record["failure_detection"] = failure_detection(record)
+        _write_json(iteration_dir / "failure_detection.json", record["failure_detection"])
+        _write_json(iteration_dir / "record.json", record)
+        if any(row.get("record_id") == record["record_id"] for row in self.experiences.history(limit=None)):
+            return
+        if record.get("execution") and not (iteration_dir / "evidence" / "04_post_grasp.json").is_file():
+            _write_fold_evidence_package(iteration_dir, stage="post_grasp", payload={
+                "schema_version": 1, "iteration": record["iteration"], "step": record.get("planned_step"),
+                "execution": record["execution"], "evaluation": record.get("evaluation"),
+                "after_images": record.get("after_images", []),
+                "grasp_snapshots": (record.get("recording") or {}).get("grasp_snapshots", {}),
+                "failure_detection": record["failure_detection"], "partial": True})
+        if not (iteration_dir / "evidence" / "05_experience_update.json").is_file():
+            record["evidence_package"] = _write_fold_evidence_package(iteration_dir, stage="experience_update", payload={
+                "schema_version": 1, "iteration": record["iteration"], "step": record.get("planned_step"),
+                "mode": record.get("mode"), "status": record.get("status"),
+                "evaluation": record.get("evaluation"), "failure_detection": record["failure_detection"]})
+        evaluation = record.get("evaluation") or {}
+        try:
+            proposal = SkillStore.parse_update(evaluation.get("skill_update")) or failure_skill(record)
+            review = self.skill_ledger.stage_skill_update(proposal, iteration=record["iteration"], source="fold_evaluation")
+            if review is not None:
+                record["skill_review"] = review.as_dict()
+                _write_json(iteration_dir / "skill_review.json", record["skill_review"])
+            attempts = record.get("planning_attempts") or []
+            accepted = next((item for item in reversed(attempts) if item.get("status") == "ACCEPTED"), None)
+            if accepted:
+                from .molmo_keypoint_cli import _recovery_skill_proposal
+                corrected_types = set()
+                for rejected in attempts:
+                    if rejected.get("status") != "REJECTED_BEFORE_EXECUTION":
+                        continue
+                    error_type = str(rejected.get("error", "")).split(":", 1)[0]
+                    if error_type in corrected_types:
+                        continue
+                    corrected_types.add(error_type)
+                    candidate = _recovery_skill_proposal({**rejected, "error_type": error_type},
+                                                        corrected_attempt=accepted["attempt"])
+                    self.skill_ledger.stage_skill_update(candidate, iteration=record["iteration"],
+                                                        source="validated_preexecution_correction")
+        except Exception as exc:
+            self._debug_exception("skills", exc, iteration=record["iteration"], nonfatal=True)
+            _write_json(iteration_dir / "skill_append_error.json", {"error": f"{type(exc).__name__}: {exc}"})
+        try:
+            record["evidence"] = build_evidence_record(record, iteration=record["iteration"], run_dir=self.session.run_dir)
+            record["evidence_artifacts"] = persist_evidence_record(self.session.run_dir, record["evidence"], iteration_dir=iteration_dir)
+        except Exception as exc:
+            self._debug_exception("evidence", exc, nonfatal=True)
+            record["evidence_error"] = str(exc)
+        try:
+            self.skill_ledger.append_experience(record)
+        except Exception as exc:
+            self._debug_exception("skills", exc, nonfatal=True)
+            record["skill_append_error"] = str(exc)
+        record["experience_summary"] = self.experiences.append(record)
+        try:
+            record["video_archive"] = archive_iteration_video(iteration_dir, record,
+                prune=getattr(self, "prune_evaluated_video", False))
+        except Exception as exc:
+            self._debug_exception("recording", exc, operation="archive_video", nonfatal=True)
+            record["video_archive"] = {"status": "FAILED", "error": str(exc)}
+        _write_json(iteration_dir / "record.json", record)
+
+    def _save_interrupted_iteration(self, exc: BaseException) -> dict[str, Any] | None:
+        active = getattr(self, "_active_iteration", None)
+        if not active:
+            return None
+        iteration_dir, context = active
+        if any(row.get("record_id") == str(iteration_dir.resolve()) for row in self.experiences.history(limit=None)):
+            return None
+        record = dict(context)
+        for key, filename in (("execution", "execution.json"), ("recording", "recording.json"),
+                              ("evaluation", "evaluation.json"), ("supervisor_before", "supervisor_before.json"),
+                              ("proposal", "claude_plan.json")):
+            path = iteration_dir / filename
+            if path.is_file():
+                record[key] = json.loads(path.read_text(encoding="utf-8"))
+        source = record.get("source_path")
+        if "execution" not in record and source:
+            result_path = self.session.results / (Path(source).stem + ".json")
+            if result_path.is_file():
+                record["execution"] = json.loads(result_path.read_text(encoding="utf-8"))
+        record.update(status="INTERRUPTED" if isinstance(exc, KeyboardInterrupt) else "FAILED",
+                      error=f"{type(exc).__name__}: {exc}", failed_stage=self._last_operational_stage)
+        if "evaluation" not in record:
+            record["evaluation"] = checkpoint_evaluation((record.get("execution") or {}).get("checkpoint") or {})
+        if not (record.get("execution") or {}).get("checkpoint"):
+            record["evaluation"]["next_experiment"] = {
+                "keep": ["ordered fold task and current safety constraints"],
+                "change": [f"resolve {record['failed_stage']} failure before repeating the rejected operation"],
+                "reason": record["error"],
+            }
+        self._save_iteration_learning(iteration_dir, record)
+        return record
+
     def _debug(self, stage: str, message: str, **fields: Any) -> None:
+        previous_stage = getattr(self, "_last_operational_stage", None)
         if stage != "run":
             self._last_operational_stage = str(stage)
+        active = getattr(self, "_active_iteration", None)
+        if active and stage != previous_stage:
+            _write_json(active[0] / "partial_record.json", {
+                **active[1], "last_event": {"stage": stage, "message": message, "timestamp": _now()},
+                "status": "IN_PROGRESS", "record_complete": False})
         logger = self._debug_logger
         if logger is None:
             print(f"[fold-debug] {stage}: {message}", flush=True)
@@ -3029,7 +3148,7 @@ class FoldExplorationPipeline:
         supervisor, evaluation, and process-level faults).
         """
 
-        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, MolmoOrientationError, GraspCheckpointRejected)):
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, MolmoOrientationError, GraspCheckpointRejected, RecoveryExhausted)):
             return False
         if operational_stage == "execution":
             return False
@@ -3037,6 +3156,9 @@ class FoldExplorationPipeline:
         if any(
             token in text
             for token in (
+                "robotexecutionerror", "configerror", "tcp offset changed", "emergency stop", "servo error",
+                "mandatory pre-run home", "motion command failed", "return_home failed",
+                "gripper completion", "operator interrupted", "api refusal", "safeguards flagged",
                 "no space left",
                 "disk quota",
                 "read-only file system",
@@ -3111,6 +3233,9 @@ class FoldExplorationPipeline:
             operational_stage=operational_stage,
             error=event["error"],
         )
+        active = getattr(self, "_active_iteration", None)
+        if active:
+            _write_json(active[0] / "recovery.json", {"status": "RECAPTURING", **event})
 
     def _persist_preexecution_planning_failure(
         self,
@@ -3390,29 +3515,8 @@ class FoldExplorationPipeline:
             "evaluation_raw": None,
             "completed_at": _now(),
         }
-        _write_json(iteration_dir / "record.json", record)
-        try:
-            self.skill_ledger.append_experience(
-                {
-                    "created_at": _now(),
-                    "iteration": iteration,
-                    "mode": "PLANNING_FAILURE",
-                    "supervisor_before": dict(supervisor_before),
-                    "supervisor_after": supervisor_after,
-                    "evaluation": None,
-                    "planning_failure": failure,
-                }
-            )
-        except Exception as skill_exc:
-            self._debug_exception(
-                "skills", skill_exc, iteration=iteration, nonfatal=True
-            )
-            _write_json(
-                iteration_dir / "skill_append_error.json",
-                {"error": f"{type(skill_exc).__name__}: {skill_exc}"},
-            )
-        experience_summary = self.experiences.append(record)
-        record["experience_summary"] = experience_summary
+        self._save_iteration_learning(iteration_dir, record)
+        experience_summary = record["experience_summary"]
         evidence_package = _write_fold_evidence_package(
             iteration_dir,
             stage="experience_update",
@@ -3436,6 +3540,7 @@ class FoldExplorationPipeline:
         record["evidence_package"] = evidence_package
         _write_json(iteration_dir / "record.json", record)
         history.append(record)
+        recent_failures = [row for row in history if not row.get("inherited_lesson")][-3:]
 
         summary["iterations"].append(
             {
@@ -3491,6 +3596,8 @@ class FoldExplorationPipeline:
                 self._debug_exception(
                     "cleanup", cleanup_exc, path=str(source_path), nonfatal=True
                 )
+        if len(recent_failures) == 3 and all(row.get("status") == "PLANNING_FAILURE" for row in recent_failures):
+            raise RecoveryExhausted("three consecutive planning iterations failed; all failure experience retained; inspect before restarting")
         return record
 
     def _start_viser(self, output: Path) -> None:
@@ -3855,6 +3962,7 @@ class FoldExplorationPipeline:
         label: str,
         hold_action_index: int | None = None,
         grasp_gate: Mapping[str, Any] | None = None,
+        acquisition_probe: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = time.monotonic()
         single_view_confirmed = self._single_view_execution_confirmation(config)
@@ -3875,6 +3983,9 @@ class FoldExplorationPipeline:
         recording_errors: list[str] = []
         hold_snapshot: dict[str, Any] | None = None
         grasp_snapshots: dict[str, Any] = {}
+        lift_snapshots: list[dict[str, Any]] = []
+        capturing_lift = False
+        lift_index = 0
         if self.real and self.record_video:
             self._debug("recording", "starting configured-camera rollout recorder",
                         directory=str(recording_dir), active_cameras=list(config.active_camera_labels))
@@ -3974,8 +4085,24 @@ class FoldExplorationPipeline:
         def on_robot_action(action_index: int, action: Mapping[str, Any]) -> None:
             """Capture A at successful action boundaries, before the next move."""
 
-            nonlocal hold_snapshot
+            nonlocal hold_snapshot, capturing_lift, lift_index
             action_payload = dict(action)
+            if action_payload.get("name") == "close_gripper":
+                capturing_lift = True
+            elif action_payload.get("name") == "open_gripper":
+                capturing_lift = False
+            if capturing_lift and action_payload.get("name") == "move" and acquisition_probe:
+                lift_index += 1
+                path = iteration_dir / "lift_checkpoints" / f"camera_A_lift_checkpoint_{lift_index:02d}.png"
+                try:
+                    snap = (_capture_grasp_check_rgb(config, recorder, path, time.monotonic_ns())
+                            if self.real else {"status": "SIMULATED"})
+                except Exception as exc:
+                    snap = {"status": "FAILED", "error": str(exc)}
+                    self._debug_exception("lift-checkpoint", exc, nonfatal=True)
+                snap.update(action_index=action_index, action=action_payload)
+                lift_snapshots.append(snap)
+                _write_json(iteration_dir / "lift_checkpoints" / "snapshots.json", lift_snapshots)
             self._debug(
                 "execution-action",
                 "robot action completed",
@@ -4157,8 +4284,15 @@ class FoldExplorationPipeline:
                 )
                 observer_recorder.close()
                 observer_thread.join(timeout=3.0)
+            _write_json(iteration_dir / "recording.json", {
+                "status": "INTERRUPTED" if execution_interrupted else "FINALIZED",
+                "directory": str(recording_dir.resolve()) if recorder is not None else None,
+                "grasp_snapshots": grasp_snapshots, "lift_snapshots": lift_snapshots,
+                "manifest": recording_result.get("manifest"), "errors": recording_errors,
+            })
         recording = {
             'grasp_snapshots': grasp_snapshots,
+            'lift_snapshots': lift_snapshots,
             "status": "failed"
             if recording_errors
             else ("completed" if recorder is not None or observer_recorder is not None else "disabled"),
@@ -4196,7 +4330,8 @@ class FoldExplorationPipeline:
             "execution",
             "trajectory execution completed",
             label=label,
-            execution_status=execution.get("status") if isinstance(execution, Mapping) else None,
+            execution_status=("COMPLETED" if execution.get("execution_completed") else "FAILED"),
+            executed_branch=(execution.get("checkpoint") or {}).get("executed_branch"),
             recording_status=recording["status"],
             recording_errors=len(recording_errors),
             duration_s=round(time.monotonic() - started, 3),
@@ -5047,7 +5182,7 @@ class FoldExplorationPipeline:
             "trajectory_decision": "CONTINUE",
             "confidence": 1.0,
             "evidence": [
-                "The latest action was acquisition-only or visibly closed empty.",
+                "The latest action was acquisition-only or transport was withheld by the grasp checkpoint.",
                 "No successful fold transport/laydown occurred, so the ordered fold ledger is unchanged.",
             ],
             "reason": reason,
@@ -5073,6 +5208,8 @@ class FoldExplorationPipeline:
 
         completed: list[str] = []
         for row in history:
+            if isinstance(row, Mapping) and row.get("inherited_lesson"):
+                continue
             after = row.get("supervisor_after") if isinstance(row, Mapping) else None
             if isinstance(after, Mapping):
                 for step in after.get("completed_steps", []):
@@ -5121,7 +5258,7 @@ class FoldExplorationPipeline:
         compact_video_errors: Sequence[str] = (),
         **kwargs: Any,
     ) -> tuple[Any, ClaudeEvaluationResult | None]:
-        attempts = self.max_stage_retries + 1
+        attempts = max(self.max_stage_retries + 1, 2 if getattr(self, "unattended", False) else 1)
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
@@ -5134,6 +5271,7 @@ class FoldExplorationPipeline:
                             "rollout_recording_dir",
                             "gripper_telemetry",
                             "observer_images",
+                            "skill_guidance",
                         )
                         if key in kwargs
                     }
@@ -5206,17 +5344,32 @@ class FoldExplorationPipeline:
         if not self.unattended:
             return self._run_once()
 
+        failures = 0
         while True:
             try:
                 return self._run_once()
             except (KeyboardInterrupt, SystemExit, GeneratorExit):
                 raise
             except Exception as exc:
+                failures += 1
                 if not self._unattended_error_is_retriable(
                     exc,
                     self._last_operational_stage,
                 ):
                     raise
+                if getattr(self, "_restart_safe", True) is not True:
+                    raise
+                if failures >= 3:
+                    self._restart_safe = False
+                    message = "three nonphysical recovery attempts failed; diagnostics retained; automatic restart disabled"
+                    logger = getattr(self, "_debug_logger", None)
+                    if logger is not None:
+                        summary_path = logger.output_dir / "summary.json"
+                        if summary_path.is_file():
+                            failed_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                            failed_summary.update(restart_safe=False, error=f"RecoveryExhausted: {message}")
+                            _write_json(summary_path, failed_summary)
+                    raise RecoveryExhausted(message) from exc
                 self._record_unattended_restart(
                     exc,
                     operational_stage=self._last_operational_stage,
@@ -5232,6 +5385,7 @@ class FoldExplorationPipeline:
 
     def _run_once(self) -> dict[str, Any]:
         self._last_operational_stage = None
+        self._active_iteration = None
         if self.real and not self.confirm_real:
             raise PermissionError("physical folding requires --real and --confirm-real")
         if self.max_iterations == 0:
@@ -5366,11 +5520,13 @@ class FoldExplorationPipeline:
         }
         _write_json(output / "summary.json", summary)
         iteration = 0
+        self._active_iteration = None
         try:
             while limit is None or iteration < limit:
                 iteration += 1
                 iteration_dir = output / f"iteration_{iteration:03d}"
                 iteration_dir.mkdir(parents=True, exist_ok=False)
+                self._active_iteration = (iteration_dir, {"iteration": iteration})
                 iteration_started = time.monotonic()
                 self._debug("iteration", f"starting iteration {iteration}", iteration=iteration)
                 before, before_path, before_images = self._capture_with_retries(
@@ -5379,6 +5535,7 @@ class FoldExplorationPipeline:
                     reuse=self.reuse_latest_perception and iteration == 1,
                     stage="before perception",
                 )
+                self._active_iteration[1].update(before_images=[str(path) for path in before_images])
                 single_view_confirmed = self._single_view_execution_confirmation(config, before)
                 self._debug("perception", "validated execution camera mode",
                             active_cameras=list(config.active_camera_labels),
@@ -5423,6 +5580,8 @@ class FoldExplorationPipeline:
                         history,
                     )
                 _write_json(iteration_dir / "supervisor_before.json", supervisor_before)
+                self._active_iteration[1].update(supervisor_before=supervisor_before,
+                                                planned_step=supervisor_before.get("current_step"))
                 self._debug(
                     "supervisor",
                     "saved before decision",
@@ -5526,6 +5685,8 @@ class FoldExplorationPipeline:
                     },
                 )
                 step_label = next((item["label"] for item in FOLD_STEPS if item["id"] == current_step), "the current incomplete fold step")
+                self._active_iteration[1].update(planned_step=current_step, mode=action_mode,
+                    supervisor_before=supervisor_before, before_images=[str(path) for path in before_images])
                 objective = (
                     "Fold this shirt using exactly five ordered steps: left sleeve inward, right sleeve inward, "
                     "first torso side inward, second torso side inward, bottom hem upward. "
@@ -5562,6 +5723,7 @@ class FoldExplorationPipeline:
                     "\nAcquisition learning state (physical evidence, not a grasp answer):\n"
                     + json.dumps(acquisition_learning, ensure_ascii=False, indent=2)
                 )
+                self.client.acquisition_learning = acquisition_learning
                 objective += (
                     "\nPlanning history rule: entries marked PLANNING_FAILURE were rejected "
                     "before any robot command and therefore did not change the garment. "
@@ -5595,7 +5757,7 @@ class FoldExplorationPipeline:
                     )
                 self._debug("planning", "asking Claude for fold proposal", iteration=iteration, current_step=current_step)
                 planning_attempts: list[dict[str, Any]] = []
-                source_path = self.session.workspace / f"_fold_experiment_{iteration:03d}.py"
+                source_path = self.session.workspace / f"_fold_experiment_{output.name}_{iteration:03d}.py"
                 preflight = None
                 controller = None
                 acquisition_strategy_validation: dict[str, Any] | None = None
@@ -6141,6 +6303,12 @@ class FoldExplorationPipeline:
                     transport_destinations=transport_points,
                     execution_debug=str(iteration_dir / "execution_debug.json"),
                 )
+                self._active_iteration[1].update(source_path=str(source_path),
+                    proposal=model_proposal.as_dict(), execution_proposal=execution_proposal.as_dict(),
+                    trajectory=trajectory, mode=mode, action_mode=action_mode, planning_attempts=planning_attempts)
+                summary["restart_safe"] = False
+                summary["last_operational_stage"] = "execution"
+                _write_json(output / "summary.json", summary)
                 execution, recording = self._execute(
                     source_path,
                     config,
@@ -6148,15 +6316,55 @@ class FoldExplorationPipeline:
                     label=f"iteration_{iteration:03d}_{mode.lower()}",
                     hold_action_index=_first_post_close_move_index(execution_proposal),
                     grasp_gate=grasp_gate_plan,
+                    acquisition_probe=(mode == "ACQUISITION_PROBE"),
                 )
                 _write_json(iteration_dir / "execution.json", execution)
                 _write_json(iteration_dir / "recording.json", recording)
+                self._active_iteration[1].update(execution=execution, recording=recording)
+                summary["restart_safe"] = released_and_homed(execution)
+                summary["last_operational_stage"] = "post_execution"
+                _write_json(output / "summary.json", summary)
                 if grasp_gate_plan is not None and (
                         execution.get('execution_completed') is not True or
                         execution.get('checkpoint', {}).get('executed_branch') != 'CONTINUATION'):
+                    decision = execution.get("checkpoint") or {}
+                    evaluation_payload = checkpoint_evaluation(decision)
+                    _write_json(iteration_dir / "evaluation.json", evaluation_payload)
+                    record = {**self._active_iteration[1], "status": "GRASP_REJECTED",
+                              "execution": execution, "recording": recording,
+                              "evaluation": evaluation_payload,
+                              "after_images": [str(path) for path in _grasp_check_images(recording)],
+                              "supervisor_after": self._local_acquisition_supervisor(
+                                  screen_before, history, step=current_step, base=supervisor_before,
+                                  reason="Grasp checkpoint denied transport; ordered fold step remains unchanged.")}
+                    self._save_iteration_learning(iteration_dir, record)
+                    _write_json(iteration_dir / "supervisor_after.json", record["supervisor_after"])
+                    history.append(record)
+                    summary["iterations"].append({"iteration": iteration, "status": "GRASP_REJECTED",
+                                                  "failure_detection": record["failure_detection"]})
+                    _write_json(output / "summary.json", summary)
+                    recent = [row for row in history if not row.get("inherited_lesson") and row.get("planned_step") == current_step]
+                    consecutive_unknown = 0
+                    for row in reversed(recent):
+                        if (row.get("failure_detection") or {}).get("category") not in {"GRASP_UNOBSERVABLE", "GRASP_INSPECTION_ERROR"}:
+                            break
+                        consecutive_unknown += 1
+                    if (self.unattended and decision.get("executed_branch") == "ABORT_RELEASE"
+                            and released_and_homed(execution) and consecutive_unknown < 2):
+                        _write_json(iteration_dir / "recovery.json", {"status": "RECOVERED", "next_step": current_step,
+                            "action": "fresh_capture_and_replan", "safe_return_confirmed": True})
+                        self._debug("recovery", "grasp denied; validated release and Home completed; recapturing next iteration",
+                                    level="ERROR", iteration=iteration, classification=decision.get("classification"),
+                                    recovery_status="RECOVERED", next_step=current_step)
+                        self.reuse_latest_perception = False
+                        continue
+                    _write_json(iteration_dir / "recovery.json", {"status": "STOPPED", "next_step": current_step,
+                        "safe_return_confirmed": released_and_homed(execution), "consecutive_unknown": consecutive_unknown})
                     raise GraspCheckpointRejected(
-                        'grasp checkpoint did not authorize continuation; fold stopped; '
+                        'grasp checkpoint did not authorize continuation; recovery unavailable or exhausted; '
                         'inspect hold_check/grasp_decision.json and execution.json')
+                if execution.get("execution_completed") is not True or not released_and_homed(execution):
+                    raise GraspCheckpointRejected("execution or release/Home is unconfirmed; no automatic retry")
                 gripper_telemetry = _extract_gripper_telemetry(execution)
                 _write_json(iteration_dir / "gripper_telemetry.json", gripper_telemetry)
                 self._debug(
@@ -6177,6 +6385,8 @@ class FoldExplorationPipeline:
                 )
                 observer_after_images = _select_observer_images(after_images)
                 hold_check_images: list[Path] = _grasp_check_images(recording)
+                hold_check_images.extend(Path(item["image"]) for item in recording.get("lift_snapshots", [])
+                                         if item.get("status") == "CAPTURED" and item.get("image"))
                 observer_recording = recording.get("observer")
                 if isinstance(observer_recording, Mapping):
                     hold_check = observer_recording.get("hold_check")
@@ -6246,7 +6456,7 @@ class FoldExplorationPipeline:
                     objective=evaluation_objective,
                     run_dir=self.session.run_dir,
                     rollout_recording_dir=(Path(recording["directory"]) if recording.get("status") == "completed" else None),
-                    skill_guidance=self.skill_store.prompt(),
+                    skill_guidance=self._skill_prompt(),
                     acquisition_probe=(mode == "ACQUISITION_PROBE"),
                     compact_video_images=video_images,
                     compact_video_references=video_refs,
@@ -6265,6 +6475,9 @@ class FoldExplorationPipeline:
                     task_progress=(evaluation.as_dict().get("task_progress") if hasattr(evaluation, "as_dict") else evaluation.get("task_progress") if isinstance(evaluation, Mapping) else None),
                 )
                 evaluation_payload = _evaluation_payload(evaluation)
+                _write_json(iteration_dir / "evaluation.json", evaluation_payload)
+                self._active_iteration[1].update(evaluation=evaluation_payload,
+                    after_images=[str(path) for path in after_images])
                 supervisor_history = [
                     *history,
                     {
@@ -6430,30 +6643,6 @@ class FoldExplorationPipeline:
                     "completed_at": _now(),
                 }
                 _write_json(iteration_dir / "record.json", record)
-                try:
-                    evidence = build_evidence_record(record, iteration=iteration, run_dir=self.session.run_dir)
-                except Exception as exc:
-                    # Evidence indexing must not discard a completed physical
-                    # iteration.  Preserve the error beside the iteration and
-                    # continue with the raw record/experience summary.
-                    self._debug_exception("evidence", exc, iteration=iteration, nonfatal=True)
-                    evidence = {
-                        "schema_version": 1,
-                        "iteration": iteration,
-                        "status": "UNAVAILABLE",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                    _write_json(iteration_dir / "evidence_error.json", evidence)
-                record["evidence"] = evidence
-                try:
-                    record["evidence_artifacts"] = persist_evidence_record(
-                        self.session.run_dir,
-                        evidence,
-                        iteration_dir=iteration_dir,
-                    )
-                except Exception as exc:
-                    self._debug_exception("evidence", exc, iteration=iteration, operation="persist", nonfatal=True)
-                    record["evidence_artifacts"] = {"status": "UNAVAILABLE", "error": f"{type(exc).__name__}: {exc}"}
                 evidence_package = _write_fold_evidence_package(
                     iteration_dir,
                     stage="experience_update",
@@ -6476,25 +6665,8 @@ class FoldExplorationPipeline:
                     },
                 )
                 record["evidence_package"] = evidence_package
-                try:
-                    self.skill_ledger.append_experience(
-                        {
-                            "created_at": _now(),
-                            "iteration": iteration,
-                            "mode": mode,
-                            "supervisor_before": supervisor_before,
-                            "supervisor_after": supervisor_after,
-                            "evaluation": record["evaluation"],
-                            "trajectory": trajectory,
-                            "video": recording,
-                            "evidence": evidence,
-                        }
-                    )
-                except Exception as exc:
-                    self._debug_exception("skills", exc, iteration=iteration, nonfatal=True)
-                    _write_json(iteration_dir / "skill_append_error.json", {"error": f"{type(exc).__name__}: {exc}"})
-                experience_summary = self.experiences.append(record)
-                record["experience_summary"] = experience_summary
+                self._save_iteration_learning(iteration_dir, record)
+                experience_summary = record["experience_summary"]
                 _write_json(iteration_dir / "record.json", record)
                 self._debug(
                     "experience",
@@ -6530,6 +6702,12 @@ class FoldExplorationPipeline:
                     next_step=supervisor_after.get("current_step"),
                     duration_s=round(time.monotonic() - iteration_started, 3),
                 )
+                recent = [row for row in history if not row.get("inherited_lesson") and row.get("planned_step") == current_step][-2:]
+                if (len(recent) == 2 and all((row.get("failure_detection") or {}).get("category") in
+                        {"GRASP_UNOBSERVABLE", "GRASP_INSPECTION_ERROR"} for row in recent)):
+                    _write_json(iteration_dir / "recovery.json", {"status": "STOPPED", "reason": "repeated_unusable_grasp_evidence",
+                        "safe_return_confirmed": released_and_homed(execution)})
+                    raise RecoveryExhausted("two acquisition attempts lacked usable evidence; release/Home completed; inspect camera view before another grasp")
                 if supervisor_after["status"] == "COMPLETE" or supervisor_after["current_step"] == "COMPLETE":
                     summary["status"] = "COMPLETE"
                     summary["completed_at"] = _now()
@@ -6553,6 +6731,22 @@ class FoldExplorationPipeline:
             self._debug("run", "reached configured iteration limit", status=summary["status"], iterations=iteration)
             return summary
         except BaseException as exc:
+            failed_stage = self._last_operational_stage
+            partial = None
+            try:
+                partial = self._save_interrupted_iteration(exc)
+                if partial is not None:
+                    summary["iterations"].append({"iteration": partial["iteration"], "status": partial["status"],
+                                                  "failure_detection": partial["failure_detection"]})
+            except Exception as save_error:
+                self._debug_exception("experience", save_error, operation="persist_partial_iteration")
+            self._last_operational_stage = failed_stage
+            self._restart_safe = self._unattended_error_is_retriable(exc, failed_stage)
+            active_context = self._active_iteration[1] if self._active_iteration else {}
+            if active_context.get("source_path"):
+                self._restart_safe = self._restart_safe and partial is not None and released_and_homed(partial.get("execution") or {})
+            summary["restart_safe"] = self._restart_safe
+            summary["last_operational_stage"] = failed_stage
             summary["status"] = "FAILED"
             summary["error"] = f"{type(exc).__name__}: {exc}"
             summary["failed_at"] = _now()
@@ -6609,7 +6803,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--supervisor-timeout-s", type=int, default=900)
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means continuous until supervisor COMPLETE or a hard failure")
-    parser.add_argument("--max-replans", type=int, default=4)
+    parser.add_argument("--max-replans", type=int, default=1)
     parser.add_argument("--max-stage-retries", type=int, default=0, help="extra retries for capture, supervisor, and evaluation failures (default: none)")
     parser.add_argument("--retry-backoff-s", type=float, default=5.0)
     parser.add_argument(
@@ -6638,6 +6832,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable the target-specific Molmo sleeve-region hint and use host RGB candidates only",
     )
+    parser.add_argument("--no-unattended", dest="unattended", action="store_false",
+                        help="stop after errors instead of recovering safe failures")
+    parser.set_defaults(unattended=False)
+    parser.add_argument("--no-inherit-experience", action="store_true",
+                        help="start without lessons from the most recent run")
     parser.add_argument("--molmo-confidence-threshold", type=float, default=0.50)
     parser.add_argument("--molmo-timeout-s", type=int, default=900)
     parser.add_argument("--molmo-python", type=Path)
@@ -6655,6 +6854,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--screen-margin-px", type=int, default=8)
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument("--prune-evaluated-video", action="store_true",
+                        help="after evaluation and cumulative-video archival, remove successful iteration video/native segments; retain failure videos")
     parser.add_argument("--recording-no-native", action="store_true")
     parser.add_argument("--recording-codec", default="mp4v")
     parser.add_argument("--viser", action="store_true", help="start a read-only Viser viewer for every run artifact")
@@ -6708,6 +6909,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_file = source / name
             if source_file.is_file():
                 shutil.copy2(source_file, destination / name)
+    elif not args.no_inherit_experience:
+        inheritance = inherit_fold_lessons(root, session.run_dir)
+        _write_json(session.workspace / "fold_experience" / "inheritance.json", inheritance)
     summary = FoldExplorationPipeline(
         session,
         perception_config=perception.resolve(),
@@ -6721,6 +6925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         real=args.real,
         confirm_real=args.confirm_real,
         record_video=not args.no_video,
+        prune_evaluated_video=args.prune_evaluated_video,
         recording_native=not args.recording_no_native,
         recording_codec=args.recording_codec,
         reuse_latest_perception=args.reuse_latest_perception,

@@ -60,6 +60,15 @@ def evaluation_payload():
             "keep": ["target"], "change": ["view angle"], "reason": "Need acquisition evidence"}}
 
 
+def test_remote_evaluator_receives_skill_body(saved_scene):
+    session, images, _ = saved_scene
+    backend = FakeBackend(evaluation_payload())
+    client = RemoteFoldClient(backend=backend, binary="not-installed")
+    client.evaluate(images, images, proposal=SimpleNamespace(reveal_strategy="fold", expected_observation="folded sleeve"),
+                    run_dir=session.run_dir, skill_guidance="Provisional detector: occlusion is UNKNOWN, never EMPTY.")
+    assert "Provisional detector: occlusion is UNKNOWN, never EMPTY." in backend.calls[0]["prompt"]
+
+
 class FakeBackend:
     def __init__(self, *responses):
         self.responses = list(responses)
@@ -108,11 +117,13 @@ def test_real_plan_path_remote_only_with_local_grounding(saved_scene, monkeypatc
     session, images, grounding = saved_scene
     backend = FakeBackend(visual_payload(), motion_payload())
     client = RemoteFoldClient(backend=backend, binary="definitely-not-installed")
+    client.skill_guidance = "Learned detector: do not confuse camera occlusion with an empty grasp."
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("local Claude/robot process invoked"))
     proposal = client.plan(images, session, "Probe the garment edge.\nEXECUTION CONTRACT — ACQUISITION PROBE",
         history=[{"robot_state": {"secret": "private_robot"}, "base_xyz_mm": [999, 999, 999],
                   "evaluation": {"grasp_acquisition": {"status": "UNKNOWN"}}}])
     assert len(backend.calls) == 2
+    assert client.skill_guidance in backend.calls[0]["prompt"]
     assert proposal.actions[2]["args"] == {"x": 500, "y": 40, "z": 27, "yaw": 0}
     _validate_model_acquisition_probe(proposal)
     assert client.last_reference_validation["reference_id"] == "R001"

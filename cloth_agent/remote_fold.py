@@ -61,7 +61,7 @@ def rgb_evidence(paths: Sequence[Path], root: Path) -> list[Path]:
     seen: set[tuple[str, str]] = set()
     for raw in paths:
         path = Path(raw).resolve()
-        if path.name.lower() not in RGB_NAMES:
+        if path.name.lower() not in RGB_NAMES and not re.fullmatch(r"camera_a_lift_checkpoint_\d+\.png", path.name.lower()):
             continue
         if root.resolve() not in path.parents or not path.is_file():
             raise ExplorationPlanningError("RGB evidence is missing or outside the run")
@@ -90,6 +90,9 @@ _SEMANTIC_KEYS = frozenset({
     "planned_step", "garment_visibility", "garment_condition_before", "garment_condition_after",
     "fallback", "completion_ledger_source", "local_deterministic",
     "visible_area_delta", "overlap_delta", "relief_delta", "boundary_change",
+    "failure_detection", "category", "safe_return_confirmed", "failed_stage", "inherited_lesson",
+    "acquisition_learning", "phase", "instruction", "consecutive_acquisition_failures",
+    "require_non_height_change", "height_only_retry_pattern", "uncertain_since_last_evidence",
 })
 
 
@@ -327,6 +330,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 }
             break
         self._remote_context = {**semantic_task(objective), "recent_outcomes": semantic_history(history or []),
+                                "acquisition_learning": semantic_history(getattr(self, "acquisition_learning", {})),
                                 "previous_candidate_rejected": rejection_category(feedback),
                                 "xy_eligible_transport_pixels_upright": transport_pixels,
                                 "fold_state_reference": fold_reference_context}
@@ -403,6 +407,8 @@ class RemoteFoldClient(ClaudeAutoClient):
             raise ExplorationPlanningError("remote visual stage has no current request")
         context = {**self._remote_context, "images": image_manifest(self._remote_images, "current/reference RGB"),
             "approved_skill_names": list(self.skill_names),
+            "skill_guidance": self.skill_guidance,
+            "skill_scope": "The task is ordered folding, not opening. Use transferable failure detectors and contact lessons only; discard guidance that contradicts the current fold step. Provisional lessons are hypotheses, not measured facts.",
             "locally_executable_reference_ids": (self.last_reference_candidate_report or {}).get("executable_reference_ids"),
             "rejected_references": [{"camera": r["camera"], "reference_id": r["reference_id"]}
                                     for r in self.last_rejected_visual_references]}
@@ -481,21 +487,21 @@ class RemoteFoldClient(ClaudeAutoClient):
         return record
 
     def evaluate(self, before_images, after_images, *, proposal, run_dir, objective=None,
-                 rollout_recording_dir=None, observer_images=(), **kwargs):
+                 rollout_recording_dir=None, observer_images=(), skill_guidance=None, **kwargs):
         return self._evaluate_remote(before_images, after_images, proposal=proposal,
             run_dir=run_dir, objective=objective, rollout_recording_dir=rollout_recording_dir,
-            observer_images=observer_images, acquisition=False)
+            observer_images=observer_images, acquisition=False, skill_guidance=skill_guidance)
 
     def evaluate_acquisition_probe(self, before_images, after_images, *, proposal, run_dir,
-            rollout_recording_dir=None, rollout_evidence_images=(), observer_images=(), **kwargs):
+            rollout_recording_dir=None, rollout_evidence_images=(), observer_images=(), skill_guidance=None, **kwargs):
         return self._evaluate_remote(before_images, after_images, proposal=proposal,
             run_dir=run_dir, rollout_recording_dir=rollout_recording_dir,
             rollout_evidence_images=rollout_evidence_images, observer_images=observer_images,
-            acquisition=True)
+            acquisition=True, skill_guidance=skill_guidance)
 
     def _evaluate_remote(self, before_images, after_images, *, proposal, run_dir,
             objective=None, rollout_recording_dir=None, rollout_evidence_images=(),
-            observer_images=(), acquisition=False):
+            observer_images=(), acquisition=False, skill_guidance=None):
         self.last_evaluation_result = None
         before, after = rgb_evidence(before_images, run_dir), rgb_evidence(after_images, run_dir)
         if not before or not after:
@@ -512,9 +518,13 @@ class RemoteFoldClient(ClaudeAutoClient):
         }
         roles = (["before"] * len(before) + ["after"] * len(after) +
                  ["rollout RGB contact sheet"] * len(video) +
-                 [snapshot_roles.get(p.name.lower(), 'observer RGB evidence; use its capture label for chronology')
+                 [snapshot_roles.get(p.name.lower(),
+                     'Sequential acquisition-probe move snapshot (may include reverse descent); use sequence number for chronology'
+                     if p.name.lower().startswith('camera_a_lift_checkpoint_') else
+                     'observer RGB evidence; use its capture label for chronology')
                   for p in observers])
         context = {"task": semantic_task(objective or "Evaluate the current garment task."),
+            "skill_guidance": skill_guidance if skill_guidance is not None else self.skill_guidance,
             "acquisition_only": acquisition,
             "proposed_strategy": semantic_history(proposal.reveal_strategy),
             "expected_observation": semantic_history(proposal.expected_observation),
@@ -531,7 +541,10 @@ class RemoteFoldClient(ClaudeAutoClient):
             "reuse saved views and finish within EIGHT model turns. Do not re-plan the fold or repeatedly rotate/crop. "
             "For acquisition-only probes, transport status must be UNKNOWN, laydown NOT_REACHED, task_progress NEUTRAL; "
             "do not claim that returning to the initial scene proves successful acquisition. "
-            "Provide the full requested evaluation schema, with causal next_experiment suggestions.")
+            "Provide the full requested evaluation schema, with causal next_experiment suggestions. "
+            "Optionally propose skill_update only for an evidence-supported reusable folding lesson or failure detector. "
+            "Keep workspace and execution safety constraints; UNKNOWN evidence is not empty grasp. "
+            "Do not import opening-only success criteria into folding or claim an untested correction succeeded.")
         evaluation = validate_evaluation_payload(payload)
         if acquisition and (evaluation.transport.status != "UNKNOWN" or
                 evaluation.laydown.status != "NOT_REACHED" or evaluation.task_progress.status != "NEUTRAL"):

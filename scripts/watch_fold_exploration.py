@@ -114,6 +114,10 @@ def _contains_physical_failure(text: str, *, last_event: dict[str, Any] | None) 
     # plain ``controller IK rejected`` is intentionally absent: that is a
     # read-only preflight failure and is safe for the watchdog to restart.
     unsafe_tokens = (
+        "graspcheckpointrejected",
+        "recoveryexhausted",
+        "gripper completion unconfirmed",
+        "operator interrupted",
         "robotexecutionerror",
         "robot execution",
         "execution failed",
@@ -151,6 +155,8 @@ def classify_child_exit(
         return "STOP"
     status = str(summary.get("status", "")) if isinstance(summary, dict) else ""
     error = str(summary.get("error", "")) if isinstance(summary, dict) else ""
+    if isinstance(summary, dict) and summary.get("restart_safe") is False:
+        return "STOP"
     event_text = ""
     if isinstance(last_event, dict):
         event_text = " ".join(

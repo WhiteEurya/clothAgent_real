@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import math
+import numpy as np
+from PIL import Image
 from dataclasses import replace
 from pathlib import Path
 
@@ -90,6 +92,17 @@ def inspect_grasp(backend, images, directory: Path):
     expected = ['camera_A_grasp_after_close.png', 'camera_A_grasp_after_lift.png']
     if [p.name for p in images] != expected or any(not p.is_file() for p in images):
         raise ValueError('both fresh closure and micro-lift RGB images are required')
+    quality = []
+    for path in images:
+        with Image.open(path) as image:
+            luma = np.asarray(image.convert('L'))
+        quality.append({'image': str(path), 'p99_luma': float(np.percentile(luma, 99)),
+                        'near_black_fraction': float(np.mean(luma < 8))})
+    if any(item['p99_luma'] < 12 for item in quality):
+        return {'status': 'EVIDENCE_UNUSABLE', 'classification': 'UNKNOWN', 'confidence': 0.0,
+                'evidence': ['At least one grasp image is nearly black; no grasp conclusion is supported.'],
+                'reason': 'Recapture from a usable observation pose; verify illumination/exposure and wrist occlusion.',
+                'image_quality': quality, 'continue_transport': False, 'runtime_decision': 'ABORT_RELEASE'}
     result = backend.invoke(
         prompt=('This is a real T-shirt folding experiment paused at a small vertical lift. '
                 'Read BOTH images: image_0 is after confirmed jaw closure, BEFORE lifting; '

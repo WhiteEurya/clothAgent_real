@@ -109,6 +109,32 @@ def test_cam_a_grasp_stills_precede_lift_and_transport_without_observer(tmp_path
     assert manifest['after_lift']['action_index'] == 4
 
 
+def test_acquisition_probe_captures_each_lift_and_reverse_move(tmp_path, monkeypatch):
+    pipeline = pipeline_for(tmp_path)
+    captured = []
+    def capture(config, recorder, path, after_ns):
+        captured.append(path.name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (4, 4), 'white').save(path)
+        return {'status': 'CAPTURED', 'image': str(path)}
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', capture)
+    def run(*args, **kwargs):
+        callback = kwargs['action_callback']
+        callback(3, {'name': 'close_gripper'})
+        for index, z in enumerate((30, 40, 50, 20), 4):
+            callback(index, {'name': 'move', 'args': {'z': z}})
+        callback(8, {'name': 'open_gripper'})
+        callback(9, {'name': 'move', 'args': {'z': 90}})
+        return {'execution_completed': True}
+    pipeline.session.run_experiment = run
+    _, recording = pipeline._execute(tmp_path / 'probe.py', SimpleNamespace(active_camera_labels=('A',)),
+                                     tmp_path, label='probe', hold_action_index=4, acquisition_probe=True)
+    assert len(recording['lift_snapshots']) == 4
+    assert [item['action']['args']['z'] for item in recording['lift_snapshots']] == [30, 40, 50, 20]
+    assert captured.count('camera_A_grasp_after_close.png') == 1
+    assert (tmp_path / 'lift_checkpoints/snapshots.json').is_file()
+
+
 def test_cam_a_snapshot_uses_fresh_active_recorder_and_rejects_stale(tmp_path, monkeypatch):
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline.capture_observer_rgb',
                         Mock(side_effect=AssertionError('must not reopen recorder-owned camera')))

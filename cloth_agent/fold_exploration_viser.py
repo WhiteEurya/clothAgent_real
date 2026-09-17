@@ -15,6 +15,7 @@ import re
 import threading
 import time
 import hashlib
+import html
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -285,6 +286,31 @@ def _debug_markdown(source: Path) -> str:
     return "\n".join(lines)
 
 
+def _error_html(source: Path) -> str:
+    """Keep failures visible even when subsequent recovery messages arrive."""
+    events = []
+    path = source / "debug_events.jsonl"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fields = event.get("fields", {})
+            if event.get("level") == "ERROR" or fields.get("exception_type") or fields.get("error"):
+                events.append(event)
+    if not events:
+        return '<div style="color:#2b8a3e">No errors recorded.</div>'
+    rows = []
+    for event in events[-6:]:
+        fields = event.get("fields", {})
+        detail = f"+{event.get('elapsed_s', 0):.1f}s · {event.get('stage')} · {event.get('message')}"
+        recovery = fields.get("recovery_status") or fields.get("operation") or "See current stage / recovery record"
+        rows.append('<div style="margin-bottom:10px"><strong>' + html.escape(detail) +
+                    '</strong><br>' + html.escape(str(recovery)) + '</div>')
+    return '<div role="alert" style="color:#ff6b6b;border-left:4px solid #e03131;padding:10px;overflow-wrap:anywhere">' + ''.join(rows) + '</div>'
+
+
 def _workspace_markdown(iteration_dir: Path) -> str:
     lines = []
     for path in sorted(iteration_dir.glob("planning_attempt_*/*/workspace_diagnostics.json")):
@@ -337,6 +363,15 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
         _run_root(iteration_dir.parent),
     )
     lines = [f"### {iteration_dir.name}", ""]
+    failure = _load_json(iteration_dir / "failure_detection.json")
+    recovery = _load_json(iteration_dir / "recovery.json")
+    if failure:
+        lines.extend([f"Failure detection: **{failure.get('category', 'UNKNOWN')}**",
+                      f"\nRelease/Home confirmed: `{failure.get('safe_return_confirmed')}`",
+                      f"\nRecovery: `{recovery.get('status', 'See current stage')}`",
+                      f"\nExperience: `{'SAVED' if record.get('record_id') else 'PENDING'}`\n"])
+    if record.get("skill_review"):
+        lines.append(f"Skill candidate: `{record['skill_review'].get('status')}`\n")
     lines.append(_workspace_markdown(iteration_dir))
     lines.append(f"- mode: `{record.get('status', trajectory.get('mode', 'RUNNING'))}`")
     lines.append(f"- images displayed: `{len(_iter_images(iteration_dir))}`")
@@ -388,6 +423,10 @@ def _markdown_for_iteration(iteration_dir: Path) -> str:
         "evaluation.json",
         "supervisor_after.json",
         "record.json",
+        "failure_detection.json",
+        "recovery.json",
+        "skill_review.json",
+        "video_archive.json",
         "perception_artifacts.json",
         "claude_molmo_orientation/selection.json",
         "molmo_handoff.json",
@@ -457,6 +496,7 @@ class _FoldViserState:
             f"### Folding exploration dashboard\n\nFollowing `{source}`. Waiting for iteration artifacts."
         )
         self.timing_panel = server.gui.add_markdown("Waiting for timing events.")
+        self.error_panel = server.gui.add_html(_error_html(source))
         with server.gui.add_folder("Raw debug log", expand_by_default=False):
             self.debug_panel = server.gui.add_markdown("Waiting for debug.log.")
 
@@ -716,6 +756,7 @@ class _FoldViserState:
                 panel.content = _markdown_for_iteration(iteration_dir)
         summary = _load_json(self.source / "summary.json")
         self.timing_panel.content = _debug_markdown(self.source)
+        self.error_panel.content = _error_html(self.source)
         debug_path = self.source / "debug.log"
         if debug_path.is_file():
             try:

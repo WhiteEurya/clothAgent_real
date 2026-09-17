@@ -99,7 +99,7 @@ def test_production_pipeline_gates_transport_and_handles_abort(tmp_path, monkeyp
         if outcome == 'capture_failure':
             raise TimeoutError('no fresh frame')
         path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new('RGB', (12, 12)).save(path)
+        Image.new('RGB', (12, 12), (180, 180, 180)).save(path)
         return {'status': 'CAPTURED', 'image': str(path)}
     monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', snapshot)
     calls = []
