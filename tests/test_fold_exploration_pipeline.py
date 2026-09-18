@@ -12,6 +12,7 @@ from PIL import Image
 
 from cloth_agent.auto_exploration import ReferenceReselectionExhaustedError
 from cloth_agent.config import RobotConfig, WorkspaceBounds
+from cloth_agent.free_exploration import ExplorationPlanningError, ExplorationProposal
 from cloth_agent.fold_exploration_pipeline import (
     FOLD_STEP_IDS,
     FoldExplorationPipeline,
@@ -157,12 +158,12 @@ def test_refresh_client_skills_keeps_prompt_and_validator_allow_list_in_sync() -
     )
 
 
-def _probe_proposal(*, lateral_after_close: float = 0.0) -> SimpleNamespace:
+def _probe_proposal(*, lateral_after_close: float = 0.0, lift_mm: float = 30.0) -> ExplorationProposal:
     actions = [
         {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 50.0, "yaw": 0.0}},
         {"name": "open_gripper", "args": {}},
         {"name": "close_gripper", "args": {}},
-        {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 65.0, "yaw": 0.0}},
+        {"name": "move", "args": {"x": 500.0, "y": -100.0, "z": 50.0 + lift_mm, "yaw": 0.0}},
     ]
     if lateral_after_close:
         actions.append(
@@ -171,7 +172,7 @@ def _probe_proposal(*, lateral_after_close: float = 0.0) -> SimpleNamespace:
                 "args": {
                     "x": 500.0,
                     "y": -100.0 + lateral_after_close,
-                    "z": 65.0,
+                    "z": 50.0 + lift_mm,
                     "yaw": 0.0,
                 },
             }
@@ -183,15 +184,33 @@ def _probe_proposal(*, lateral_after_close: float = 0.0) -> SimpleNamespace:
             {"name": "home", "args": {}},
         ]
     )
-    return SimpleNamespace(actions=tuple(actions), requires_lift_checkpoint=True)
+    return ExplorationProposal(
+        garment_observation="Visible sleeve", reveal_strategy="Lift and reverse",
+        confidence=0.8, actions=tuple(actions), expected_observation="Cloth follows lift",
+        safety_notes=(), requires_lift_checkpoint=True,
+    )
 
 
-def test_model_acquisition_probe_is_validated_without_host_rewrite() -> None:
-    result = _validate_model_acquisition_probe(_probe_proposal())
+@pytest.mark.parametrize("lift_mm", [30.0, 40.0, 80.0, 120.0])
+def test_model_acquisition_probe_is_validated_without_host_rewrite(lift_mm) -> None:
+    proposal = _probe_proposal(lift_mm=lift_mm)
+    before = json.dumps(proposal.actions)
+    _validate_acquisition_strategy_change(proposal, {"use_lift_only_probe": True})
+    result = _validate_model_acquisition_probe(proposal)
     assert result["status"] == "VALID"
     assert result["authority"] == "Claude"
     assert result["host_rewrite"] is False
-    assert result["max_lift_mm"] == pytest.approx(15.0)
+    assert result["max_lift_mm"] == pytest.approx(lift_mm)
+    assert json.dumps(proposal.actions) == before
+
+
+@pytest.mark.parametrize("lift_mm", [0.0, 15.0, 29.0, float("nan"), float("inf"), -float("inf")])
+def test_probe_lift_must_be_finite_and_sufficient_for_evidence(lift_mm) -> None:
+    proposal = _probe_proposal(lift_mm=lift_mm)
+    with pytest.raises(ExplorationPlanningError, match="finite first lift of at least 30 mm"):
+        _validate_model_acquisition_probe(proposal)
+    with pytest.raises(ExplorationPlanningError, match="finite first lift of at least 30 mm"):
+        _validate_acquisition_strategy_change(proposal, {"use_lift_only_probe": True})
 
 
 def test_model_acquisition_probe_rejects_lateral_transport() -> None:
@@ -1068,7 +1087,7 @@ def _failed_acquisition_record(
         {"name": "move", "args": {"x": entry_x, "y": y, "z": 35.0, "yaw": yaw}},
         {"name": "move", "args": {"x": x, "y": y, "z": z, "yaw": yaw}},
         {"name": "close_gripper", "args": {}},
-        {"name": "move", "args": {"x": x, "y": y, "z": z + 20.0, "yaw": yaw}},
+        {"name": "move", "args": {"x": x, "y": y, "z": z + 30.0, "yaw": yaw}},
         {"name": "open_gripper", "args": {}},
     ]
     return {
@@ -1172,7 +1191,7 @@ def test_acquisition_probe_requires_observable_short_lift() -> None:
         "args": {"x": 500.0, "y": 0.0, "z": 22.0, "yaw": 0.0},
     }
     too_small = _proposal_from_actions(actions, reason="two millimetre lift")
-    with pytest.raises(Exception, match="15-30 mm"):
+    with pytest.raises(Exception, match="at least 30 mm"):
         _validate_acquisition_strategy_change(too_small, learning)
 
 

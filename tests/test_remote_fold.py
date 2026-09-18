@@ -15,6 +15,7 @@ from PIL import Image
 from cloth_agent.config import ExperimentConfig, RobotConfig, SafetyError, WorkspaceBounds
 from cloth_agent.fold_exploration_pipeline import (
     FoldExplorationPipeline, FoldSupervisor, build_parser, _validate_model_acquisition_probe,
+    _validate_acquisition_strategy_change,
 )
 from cloth_agent.free_exploration import ExplorationPlanningError
 from cloth_agent.planner_backend import BackendResult, PlannerBackendError, RemoteClaudeBackend, parse_claude_json
@@ -113,9 +114,12 @@ def saved_scene(tmp_path):
     return session, images, GarmentGrounding(views)
 
 
-def test_real_plan_path_remote_only_with_local_grounding(saved_scene, monkeypatch):
+@pytest.mark.parametrize("lift_mm", [30, 40, 80])
+def test_real_plan_path_remote_only_with_local_grounding(saved_scene, monkeypatch, lift_mm):
     session, images, grounding = saved_scene
-    backend = FakeBackend(visual_payload(), motion_payload())
+    motion = motion_payload()
+    motion["actions"][4]["args"]["height_above_grasp_mm"] = lift_mm
+    backend = FakeBackend(visual_payload(), motion)
     client = RemoteFoldClient(backend=backend, binary="definitely-not-installed")
     client.skill_guidance = "Learned detector: do not confuse camera occlusion with an empty grasp."
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("local Claude/robot process invoked"))
@@ -125,7 +129,11 @@ def test_real_plan_path_remote_only_with_local_grounding(saved_scene, monkeypatc
     assert len(backend.calls) == 2
     assert client.skill_guidance in backend.calls[0]["prompt"]
     assert proposal.actions[2]["args"] == {"x": 500, "y": 40, "z": 27, "yaw": 0}
+    assert proposal.actions[4]["args"]["z"] == 27 + lift_mm
+    _validate_acquisition_strategy_change(proposal, {"use_lift_only_probe": True})
     _validate_model_acquisition_probe(proposal)
+    assert "at least 30 mm above the grasp" in backend.calls[1]["prompt"]
+    assert "no fixed probe lift upper limit" in backend.calls[1]["prompt"]
     assert client.last_reference_validation["reference_id"] == "R001"
     assert client.last_grounding_verification["authority"] == "local_pixel_compiler"
     for call in backend.calls:
@@ -211,7 +219,7 @@ def test_remote_claude_receives_molmo_rgb_hint_and_host_resolves_float_destinati
     assert list(session.run_dir.rglob('pixel_source_resolution.json'))
 
 
-@pytest.mark.parametrize("corruption", ["nan", "bad_pixel", "depth_hole", "unknown_action", "missing_contact", "workspace", "extra"])
+@pytest.mark.parametrize("corruption", ["nan", "bad_pixel", "depth_hole", "unknown_action", "missing_contact", "workspace", "probe_workspace", "extra"])
 def test_invalid_remote_motion_fails_closed(saved_scene, corruption):
     session, _, grounding = saved_scene
     motion = motion_payload()
@@ -230,6 +238,8 @@ def test_invalid_remote_motion_fails_closed(saved_scene, corruption):
         motion["actions"][2]["args"]["height_above_grasp_mm"] = 30
     elif corruption == "workspace":
         motion["actions"][0]["args"]["height_above_grasp_mm"] = 1000
+    elif corruption == "probe_workspace":
+        motion["actions"][4]["args"]["height_above_grasp_mm"] = 1000
     else:
         motion["xyz"] = [0, 0, 0]
     with pytest.raises((ExplorationPlanningError, ValueError, SafetyError)):
@@ -330,6 +340,27 @@ def test_repair_failure_clears_previous_proposal(saved_scene):
         client.repair_last_grounding_plan(session, "Probe the garment edge", feedback="workspace rejected")
     assert client.last_plan_result is None
     assert client.last_grounding_verification is None
+
+
+def test_probe_repair_receives_same_lift_contract_and_preserves_40mm(saved_scene):
+    session, images, _ = saved_scene
+    too_low = motion_payload()
+    too_low["actions"][4]["args"]["height_above_grasp_mm"] = 20
+    corrected = motion_payload()
+    corrected["actions"][4]["args"]["height_above_grasp_mm"] = 40
+    backend = FakeBackend(visual_payload(), too_low, corrected)
+    client = RemoteFoldClient(backend=backend)
+    objective = "Probe the garment edge.\nEXECUTION CONTRACT — ACQUISITION PROBE"
+    proposal = client.plan(images, session, objective)
+    with pytest.raises(ExplorationPlanningError, match="at least 30 mm") as rejected:
+        _validate_acquisition_strategy_change(proposal, {"use_lift_only_probe": True})
+    repaired = client.repair_last_grounding_plan(session, objective, feedback=str(rejected.value))
+    _validate_acquisition_strategy_change(repaired, {"use_lift_only_probe": True})
+    assert _validate_model_acquisition_probe(repaired)["max_lift_mm"] == 40
+    assert len(backend.calls) == 3  # One visual selection, one motion, one motion correction.
+    for call in backend.calls[1:]:
+        assert "at least 30 mm above the grasp" in call["prompt"]
+        assert "no fixed probe lift upper limit" in call["prompt"]
 
 
 def test_feedback_keeps_previous_visual_reference_excluded(saved_scene):

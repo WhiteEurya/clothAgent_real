@@ -16,6 +16,25 @@ class GraspCheckpointRejected(RuntimeError):
     """Physical checkpoint denied continuation; do not auto-restart this run."""
 
 
+MINIMUM_EVIDENCE_LIFT_MM = 30.0
+ACQUISITION_PROBE_LIFT_CONTRACT = (
+    "In ACQUISITION_PROBE mode, the first post-close move must lift near-vertically "
+    f"at least {MINIMUM_EVIDENCE_LIFT_MM:g} mm above the grasp. "
+    "There is no fixed probe lift upper limit; all poses must still pass local "
+    "workspace, preflight and IK checks. The host preserves the proposed probe "
+    "height and does not silently rewrite the probe."
+)
+
+
+def validate_acquisition_probe_lift(lift_mm):
+    if (not isinstance(lift_mm, (int, float)) or not math.isfinite(lift_mm)
+            or lift_mm < MINIMUM_EVIDENCE_LIFT_MM):
+        raise ExplorationPlanningError(
+            "acquisition probe requires a finite first lift of at least "
+            f"{MINIMUM_EVIDENCE_LIFT_MM:g} mm; planned first lift={lift_mm!r}"
+        )
+
+
 GRASP_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
@@ -29,13 +48,13 @@ GRASP_SCHEMA = {
 }
 
 
-def compile_grasp_capture(proposal, minimum_lift_mm=30.0):
+def compile_grasp_capture(proposal, minimum_lift_mm=MINIMUM_EVIDENCE_LIFT_MM):
     """Ensure the first vertical lift is high enough for asynchronous evidence.
 
     The compiled trajectory still needs normal workspace/controller validation.
     There is no visual decision or alternate motion branch at this boundary.
     """
-    if not math.isfinite(minimum_lift_mm) or minimum_lift_mm < 30:
+    if not math.isfinite(minimum_lift_mm) or minimum_lift_mm < MINIMUM_EVIDENCE_LIFT_MM:
         raise ExplorationPlanningError('grasp evidence requires at least 30 mm lift')
     actions = copy.deepcopy(list(proposal.actions))
     closes = [i for i, action in enumerate(actions) if action['name'] == 'close_gripper']

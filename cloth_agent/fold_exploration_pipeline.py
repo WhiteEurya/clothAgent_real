@@ -84,7 +84,10 @@ from .free_exploration import (
 )
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
-from .grasp_checkpoint import compile_grasp_capture, GraspCheckpointRejected
+from .grasp_checkpoint import (
+    ACQUISITION_PROBE_LIFT_CONTRACT, compile_grasp_capture,
+    GraspCheckpointRejected, validate_acquisition_probe_lift,
+)
 from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
@@ -777,10 +780,7 @@ def _validate_model_acquisition_probe(
         lateral_offsets.append(math.hypot(x - grasp_xy[0], y - grasp_xy[1]))
     max_lateral = max(lateral_offsets)
     max_lift = max(lifts)
-    if lifts[0] <= 0.0:
-        raise ExplorationPlanningError(
-            "acquisition probe first post-close move must lift above the grasp height"
-        )
+    validate_acquisition_probe_lift(lifts[0])
     if max_lateral > 5.0:
         raise ExplorationPlanningError(
             "Claude returned lateral transport in acquisition-probe mode "
@@ -999,12 +999,7 @@ def _validate_acquisition_strategy_change(
     if current is None:
         raise ExplorationPlanningError("cannot derive a grasp strategy signature")
     if bool(learning.get("use_lift_only_probe")) and proposal.requires_lift_checkpoint:
-        lift_mm = current.get("first_lift_mm")
-        if not isinstance(lift_mm, (int, float)) or not 15.0 <= float(lift_mm) <= 30.0:
-            raise ExplorationPlanningError(
-                "acquisition probe requires an observable, reversible first lift of "
-                f"15-30 mm; planned first lift={lift_mm!r}"
-            )
+        validate_acquisition_probe_lift(current.get("first_lift_mm"))
     if not bool(learning.get("require_non_height_change")):
         return {
             "status": "NOT_REQUIRED",
@@ -5747,6 +5742,7 @@ class FoldExplorationPipeline:
                         "contract and will not silently replace a full fold plan with a "
                         "different experiment. If the probe is not appropriate, explain "
                         "why in reveal_strategy, but still return a schema-valid plan."
+                        " " + ACQUISITION_PROBE_LIFT_CONTRACT
                     )
                 objective += (
                     "\nEvidence package (host gate is authoritative): the RGB selection, metric grounding, "

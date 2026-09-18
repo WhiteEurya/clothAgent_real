@@ -31,6 +31,7 @@ from .free_exploration import (
 )
 from .garment_grounding_mcp import GarmentGrounding
 from .grasp_height import resolve_grasp_height
+from .grasp_checkpoint import ACQUISITION_PROBE_LIFT_CONTRACT
 from .planner_backend import RemoteClaudeBackend, parse_claude_json
 from .config import SafetyError
 from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
@@ -443,6 +444,9 @@ class RemoteFoldClient(ClaudeAutoClient):
             'The host maps and rounds it; do not mix a view ID with already mapped coordinates. '
             'Only current RGB or verified tool views derived from it can supply transport pixels. '
             'For target=grasp, image_id=null and pixel_xy=null; the selected current Rxxx fixes the grasp.')
+        # Kept in every motion request, including repair: semantic_task strips
+        # the appended host objective, so that text alone cannot convey limits.
+        context['acquisition_probe_lift_contract'] = ACQUISITION_PROBE_LIFT_CONTRACT
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
             "For FOLD and REPAIR_SLEEVE, the first move after closure must lift vertically at least 30 mm above the grasp. "
