@@ -76,6 +76,9 @@ from .perception import (
 from .persistent_claude import PersistentClaudeSession
 from .robot_api import RobotExecutionError, validate_controller_trajectory
 from .rollout_recorder import DualRealSenseRolloutRecorder, build_rollout_phase_timeline
+from .perception_comparison import (
+    COMPARISON_SCHEMA, COMPARISON_INSTRUCTION, comparison_schema, validate_comparison,
+)
 from .report_figure import compose_camera_perception_report
 from .session import AgentSession
 from .skill_lifecycle import RunSkillLedger, SkillProposal, SkillStore
@@ -99,7 +102,7 @@ AUTO_EVALUATION_FIELDS = frozenset(
         "next_experiment",
     }
 )
-AUTO_EVALUATION_OPTIONAL_FIELDS = frozenset({"skill_update"})
+AUTO_EVALUATION_OPTIONAL_FIELDS = frozenset({"skill_update", "perception_comparison"})
 AUTO_EVALUATION_STAGE_FIELDS = frozenset({"status", "confidence", "evidence"})
 AUTO_EVALUATION_PROGRESS_FIELDS = frozenset({"status", "confidence", "metrics"})
 AUTO_EVALUATION_METRIC_FIELDS = frozenset(
@@ -256,6 +259,7 @@ AUTO_EVALUATION_JSON_SCHEMA["properties"].update(
         },
     }
 )
+AUTO_EVALUATION_JSON_SCHEMA['properties']['perception_comparison'] = COMPARISON_SCHEMA
 ACQUISITION_EVALUATION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -979,6 +983,7 @@ class ExplorationEvaluation:
     earliest_failure_stage: str
     next_experiment: NextExperiment
     skill_update: SkillProposal | None = None
+    perception_comparison: dict[str, Any] | None = None
 
     @property
     def useful(self) -> bool:
@@ -1024,6 +1029,8 @@ class ExplorationEvaluation:
         }
         if self.skill_update is not None:
             payload["skill_update"] = self.skill_update.as_dict()
+        if self.perception_comparison is not None:
+            payload['perception_comparison'] = dict(self.perception_comparison)
         return payload
 
 
@@ -1586,6 +1593,8 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
             reason=reason.strip(),
         ),
         skill_update=skill_update,
+        perception_comparison=(validate_comparison(value['perception_comparison'])
+                               if 'perception_comparison' in value else None),
     )
 
 
@@ -3420,13 +3429,15 @@ class ClaudeAutoClient:
         hold_checkpoint: dict[str, Any] | None = None,
         gripper_telemetry: Mapping[str, Any] | None = None,
         observer_images: Sequence[Path] = (),
+        perception_comparison: bool = False,
+        rollout_evidence_images: Sequence[Path] = (),
     ) -> ExplorationEvaluation:
         self.last_evaluation_result = None
         root = run_dir.resolve()
-        video_evidence_images: list[Path] = []
+        video_evidence_images: list[Path] = list(rollout_evidence_images)
         video_references: list[Path] = []
         video_evidence_errors: list[str] = []
-        if rollout_recording_dir is not None:
+        if not video_evidence_images and rollout_recording_dir is not None:
             try:
                 (
                     video_evidence_images,
@@ -3650,6 +3661,8 @@ class ClaudeAutoClient:
             f"Previous action program: {json.dumps(proposal.actions, ensure_ascii=False)}\n\n"
             + "\n".join(image_lines)
         )
+        if perception_comparison:
+            prompt += '\n\n' + COMPARISON_INSTRUCTION
         binary = self.planner.binary
         if Path(binary).name == binary:
             import shutil
@@ -3664,7 +3677,8 @@ class ClaudeAutoClient:
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(AUTO_EVALUATION_JSON_SCHEMA, separators=(",", ":")),
+            json.dumps(comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison
+                       else AUTO_EVALUATION_JSON_SCHEMA, separators=(",", ":")),
             "--permission-mode",
             "plan",
             "--allowedTools",

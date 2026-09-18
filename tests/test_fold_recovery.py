@@ -154,6 +154,7 @@ def make_loop(tmp_path, monkeypatch, *, kind="EMPTY", safe=True):
         joint_targets_rad={}, controller_warning_code=0, tcp_offset_mm_deg=(0,)*6, validated_sample_count=1))
     pipe._single_view_execution_confirmation = lambda *a: True
     def capture(config, path, **kwargs):
+        assert kwargs.get('reuse') is False
         path.mkdir(parents=True)
         rgb = path / "camera_A_rgb_upright.png"
         Image.new("RGB", (16, 16), (150, 150, 150)).save(rgb)
@@ -193,8 +194,8 @@ def make_loop(tmp_path, monkeypatch, *, kind="EMPTY", safe=True):
     pipe._execute = execute
     def evaluate(before, after, **kwargs):
         assert any(p.name == 'camera_A_grasp_after_lift.png' for p in kwargs['observer_images'])
-        assert 'at least 30 mm' in kwargs['objective']
-        assert 'not stationary pre-transport checkpoints' in kwargs['objective']
+        assert kwargs['perception_comparison'] is True
+        assert 'FINAL PERCEPTION COMPARISON POLICY' in kwargs['objective']
         return checkpoint_evaluation(execution(kind)['checkpoint']), None
     pipe._evaluate_with_retries = evaluate
     return pipe, plans
@@ -208,6 +209,39 @@ def test_full_loop_final_evaluation_receives_lift_photo_and_next_plan_sees_failu
     assert len(plans) == 2
     assert plans[1][-1]["failure_detection"]["category"] == ("EMPTY_GRASP" if kind == "EMPTY" else "GRASP_UNOBSERVABLE")
     assert plans[1][-1]["supervisor_after"]["current_step"] == "left_sleeve"
+
+
+def test_unchanged_perception_is_failure_not_unobservable_or_empty_jaw_skill():
+    from cloth_agent.perception_comparison import apply_comparison_policy
+    payload = checkpoint_evaluation({})
+    payload['perception_comparison'] = {'status': 'UNCHANGED', 'confidence': .9,
+        'evidence': ['Same sleeve outline and fold positions at the perception pose.']}
+    result = apply_comparison_policy(payload)
+    record = {'execution': execution(), 'evaluation': result}
+    record['execution'].pop('checkpoint')
+    assert failure_detection(record)['category'] == 'NO_CHANGE_AFTER_RETURN'
+    assert failure_skill(record) is None
+
+
+def test_unchanged_end_state_flows_into_next_plan_without_unobservable_stop(tmp_path, monkeypatch):
+    from types import MethodType
+    pipe, plans = make_loop(tmp_path, monkeypatch, kind='UNKNOWN')
+    payload = checkpoint_evaluation({})
+    payload['perception_comparison'] = {'status': 'UNCHANGED', 'confidence': .9,
+        'evidence': ['Same sleeve position, silhouette and folds after return.']}
+    pipe._evaluate_with_retries = MethodType(FoldExplorationPipeline._evaluate_with_retries, pipe)
+    pipe.client.evaluate = lambda *a, **kw: payload
+    pipe.client.last_evaluation_result = None
+    with pytest.raises(KeyboardInterrupt):
+        pipe.run()
+    assert len(plans) == 2
+    previous = plans[1][-1]
+    assert previous['failure_detection']['category'] == 'NO_CHANGE_AFTER_RETURN'
+    assert previous['evaluation']['grasp_acquisition']['status'] == 'FAILURE'
+    assert previous['supervisor_after']['current_step'] == 'left_sleeve'
+    reports = list(pipe.session.run_dir.rglob('perception_comparison.json'))
+    assert len(reports) == 1
+    assert json.loads(reports[0].read_text())['comparison']['status'] == 'UNCHANGED'
 
 
 def test_full_loop_never_retries_unconfirmed_abort(tmp_path, monkeypatch):

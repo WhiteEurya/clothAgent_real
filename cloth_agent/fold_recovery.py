@@ -77,6 +77,9 @@ def failure_detection(record: Mapping[str, Any]) -> dict[str, Any]:
         category = "EMPTY_GRASP" if acquisition.get("status") == "FAILURE" else "GRASP_UNOBSERVABLE"
         if checkpoint.get("status") == "FAILED_CLOSED":
             category = "GRASP_INSPECTION_ERROR"
+    elif (acquisition.get('status') == 'FAILURE'
+          and (evaluation.get('perception_comparison') or {}).get('status') == 'UNCHANGED'):
+        category = 'NO_CHANGE_AFTER_RETURN'
     elif acquisition.get("status") == "FAILURE":
         category = "EMPTY_GRASP"
     elif record.get("error") or record.get("planning_failure"):

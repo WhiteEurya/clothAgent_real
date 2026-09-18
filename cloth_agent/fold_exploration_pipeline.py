@@ -67,7 +67,9 @@ from .auto_exploration import (
     _json_from_claude_text,
     _now as _auto_now,
     prepare_rollout_video_evidence,
+    validate_evaluation_payload,
 )
+from .perception_comparison import COMPARISON_INSTRUCTION, apply_comparison_policy
 from .config import ExperimentConfig, RobotConfig, SafetyError
 from .evidence_ledger import build_evidence_record, persist_evidence_record
 from .experiment import ExperimentValidationError
@@ -5292,7 +5294,7 @@ class FoldExplorationPipeline:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                if acquisition_probe:
+                if acquisition_probe and not kwargs.get('perception_comparison'):
                     compact_kwargs = {
                         key: kwargs[key]
                         for key in (
@@ -5314,7 +5316,12 @@ class FoldExplorationPipeline:
                     )
                 else:
                     full_kwargs = dict(kwargs)
+                    if kwargs.get('perception_comparison'):
+                        full_kwargs.update(rollout_evidence_images=compact_video_images)
                     evaluation = self.client.evaluate(*args, **full_kwargs)
+                if kwargs.get('perception_comparison'):
+                    evaluation = validate_evaluation_payload(apply_comparison_policy(
+                        dict(_evaluation_payload(evaluation))))
                 return evaluation, self.client.last_evaluation_result
             except Exception as exc:
                 last_error = exc
@@ -5562,7 +5569,9 @@ class FoldExplorationPipeline:
                 before, before_path, before_images = self._capture_with_retries(
                     config,
                     iteration_dir / "before_raw",
-                    reuse=self.reuse_latest_perception and iteration == 1,
+                    # A current same-pose baseline is required for the final
+                    # comparison; a saved frame may predate physical changes.
+                    reuse=False,
                     stage="before perception",
                 )
                 self._active_iteration[1].update(before_images=[str(path) for path in before_images])
@@ -6429,7 +6438,8 @@ class FoldExplorationPipeline:
                     "short lift checkpoints followed by the reverse path and release at the "
                     "original contact. Judge whether cloth followed the gripper from the "
                     "chronological video. Do not expect or credit fold transport or a changed "
-                    "after image; task progress may remain NEUTRAL even when acquisition succeeds."
+                    "after image; keep transport UNKNOWN, laydown NOT_REACHED and task_progress NEUTRAL. "
+                    "Apply the final perception comparison policy to acquisition."
                     if mode == "ACQUISITION_PROBE"
                     else (
                         "This iteration repaired a gathered or rolled sleeve. Judge whether the "
@@ -6441,12 +6451,7 @@ class FoldExplorationPipeline:
                         else "Fold the shirt into the five ordered steps and a neat compact stack."
                     )
                 )
-                evaluation_objective += (
-                    ' Grasp lift photos are asynchronous evidence requested only after a completed lift of at least 30 mm. '
-                    'The arm continued its trajectory during capture; these are not stationary pre-transport checkpoints. '
-                    'Assess retained fabric, acquisition and any later slip using these photos together with before/after '
-                    'and chronological video evidence. Missing photos do not establish an empty grasp.'
-                )
+                evaluation_objective += ' ' + COMPARISON_INSTRUCTION
                 evaluation, evaluation_result = self._evaluate_with_retries(
                     list(before_images),
                     list(after_images),
@@ -6457,6 +6462,7 @@ class FoldExplorationPipeline:
                     rollout_recording_dir=(Path(recording["directory"]) if recording.get("status") == "completed" else None),
                     skill_guidance=self._skill_prompt(),
                     acquisition_probe=(mode == "ACQUISITION_PROBE"),
+                    perception_comparison=True,
                     compact_video_images=video_images,
                     compact_video_references=video_refs,
                     compact_video_errors=video_errors,
@@ -6474,6 +6480,14 @@ class FoldExplorationPipeline:
                     task_progress=(evaluation.as_dict().get("task_progress") if hasattr(evaluation, "as_dict") else evaluation.get("task_progress") if isinstance(evaluation, Mapping) else None),
                 )
                 evaluation_payload = _evaluation_payload(evaluation)
+                _write_json(iteration_dir / 'perception_comparison.json', {
+                    'policy': 'unchanged_after_return_means_unsuccessful_acquisition',
+                    'comparison': evaluation_payload.get('perception_comparison'),
+                    'before_images': [str(path) for path in before_images],
+                    'after_images': [str(path) for path in after_images],
+                    'grasp_acquisition': evaluation_payload.get('grasp_acquisition'),
+                    'note': 'Operational end-state criterion; not direct proof of empty jaws.',
+                })
                 _write_json(iteration_dir / "evaluation.json", evaluation_payload)
                 self._active_iteration[1].update(evaluation=evaluation_payload,
                     after_images=[str(path) for path in after_images])

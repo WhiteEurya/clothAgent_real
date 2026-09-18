@@ -70,6 +70,55 @@ def test_remote_evaluator_receives_skill_body(saved_scene):
     assert "Provisional detector: occlusion is UNKNOWN, never EMPTY." in backend.calls[0]["prompt"]
 
 
+@pytest.mark.parametrize('comparison,expected', [
+    ('UNCHANGED', 'FAILURE'), ('CHANGED', 'UNKNOWN'), ('UNCOMPARABLE', 'UNKNOWN')])
+@pytest.mark.parametrize('probe', [False, True])
+def test_final_perception_policy_reaches_evaluator_and_controls_acquisition(saved_scene, comparison, expected, probe):
+    session, images, _ = saved_scene
+    payload = evaluation_payload()
+    payload['perception_comparison'] = {'status': comparison, 'confidence': .9,
+        'evidence': ['Compared silhouette, location and folds in the same perception view.']}
+    backend = FakeBackend(payload)
+    client = RemoteFoldClient(backend=backend)
+    pipe = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipe.client = client
+    pipe.max_stage_retries = 0
+    pipe.unattended = False
+    pipe._debug = lambda *args, **kwargs: None
+    evaluation, raw = pipe._evaluate_with_retries(images, images, iteration=1,
+        acquisition_probe=probe, perception_comparison=True, run_dir=session.run_dir,
+        proposal=SimpleNamespace(reveal_strategy='fold', expected_observation='folded sleeve'))
+    assert evaluation.grasp_acquisition.status == expected
+    assert evaluation.perception_comparison['status'] == comparison
+    assert raw.evaluation.grasp_acquisition.status == 'UNKNOWN'
+    assert len(backend.calls) == 1
+    assert 'perception_comparison' in backend.calls[0]['schema']['required']
+    assert 'FINAL PERCEPTION COMPARISON POLICY' in backend.calls[0]['prompt']
+    if comparison == 'UNCHANGED':
+        assert evaluation.earliest_failure_stage == 'ACQUISITION'
+
+
+def test_neutral_metrics_do_not_substitute_for_explicit_perception_comparison():
+    from cloth_agent.perception_comparison import apply_comparison_policy
+    payload = evaluation_payload()
+    payload['task_progress']['metrics'].update(visible_area_delta='UNCHANGED',
+        overlap_delta='UNCHANGED', relief_delta='UNCHANGED')
+    with pytest.raises(ValueError, match='perception_comparison'):
+        apply_comparison_policy(payload)
+
+
+def test_end_state_policy_overrides_lift_success_without_claiming_empty_jaws():
+    from cloth_agent.perception_comparison import apply_comparison_policy
+    payload = evaluation_payload()
+    payload['grasp_acquisition']['status'] = 'SUCCESS'
+    payload['perception_comparison'] = {'status': 'UNCHANGED', 'confidence': .9,
+        'evidence': ['Garment returned to its initial visible state.']}
+    normalized = apply_comparison_policy(payload)
+    assert normalized['grasp_acquisition']['status'] == 'FAILURE'
+    assert 'not a direct observation of empty jaws' in normalized['grasp_acquisition']['evidence'][0]
+    assert payload['grasp_acquisition']['status'] == 'SUCCESS'
+
+
 class FakeBackend:
     def __init__(self, *responses):
         self.responses = list(responses)

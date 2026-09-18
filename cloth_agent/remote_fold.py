@@ -32,6 +32,7 @@ from .free_exploration import (
 from .garment_grounding_mcp import GarmentGrounding
 from .grasp_height import resolve_grasp_height
 from .grasp_checkpoint import ACQUISITION_PROBE_LIFT_CONTRACT
+from .perception_comparison import COMPARISON_INSTRUCTION, comparison_schema
 from .planner_backend import RemoteClaudeBackend, parse_claude_json
 from .config import SafetyError
 from .workspace_debug import WorkspaceTargetError, lateral_clearance, save_workspace_debug
@@ -93,6 +94,7 @@ _SEMANTIC_KEYS = frozenset({
     "fallback", "completion_ledger_source", "local_deterministic",
     "visible_area_delta", "overlap_delta", "relief_delta", "boundary_change",
     "failure_detection", "category", "safe_return_confirmed", "failed_stage", "inherited_lesson",
+    "perception_comparison",
     "acquisition_learning", "phase", "instruction", "consecutive_acquisition_failures",
     "require_non_height_change", "height_only_retry_pattern", "uncertain_since_last_evidence",
 })
@@ -498,7 +500,9 @@ class RemoteFoldClient(ClaudeAutoClient):
                  rollout_recording_dir=None, observer_images=(), skill_guidance=None, **kwargs):
         return self._evaluate_remote(before_images, after_images, proposal=proposal,
             run_dir=run_dir, objective=objective, rollout_recording_dir=rollout_recording_dir,
-            observer_images=observer_images, acquisition=False, skill_guidance=skill_guidance)
+            observer_images=observer_images, acquisition=False, skill_guidance=skill_guidance,
+            perception_comparison=kwargs.get('perception_comparison', False),
+            rollout_evidence_images=kwargs.get('rollout_evidence_images', ()))
 
     def evaluate_acquisition_probe(self, before_images, after_images, *, proposal, run_dir,
             rollout_recording_dir=None, rollout_evidence_images=(), observer_images=(), skill_guidance=None, **kwargs):
@@ -509,7 +513,7 @@ class RemoteFoldClient(ClaudeAutoClient):
 
     def _evaluate_remote(self, before_images, after_images, *, proposal, run_dir,
             objective=None, rollout_recording_dir=None, rollout_evidence_images=(),
-            observer_images=(), acquisition=False, skill_guidance=None):
+            observer_images=(), acquisition=False, skill_guidance=None, perception_comparison=False):
         self.last_evaluation_result = None
         before, after = rgb_evidence(before_images, run_dir), rgb_evidence(after_images, run_dir)
         if not before or not after:
@@ -539,8 +543,22 @@ class RemoteFoldClient(ClaudeAutoClient):
             "expected_observation": semantic_history(proposal.expected_observation),
             "images": [{"image_index": i, "role": role, "name": path.name}
                        for i, (path, role) in enumerate(zip(images, roles))]}
+        if perception_comparison:
+            context['final_perception_comparison_policy'] = COMPARISON_INSTRUCTION
+            def primary_index(paths, offset):
+                for name in ('camera_A_rgb_upright.png', 'camera_0_A.png'):
+                    for index, path in enumerate(paths):
+                        if path.name == name:
+                            return offset + index
+                raise ExplorationPlanningError('final comparison requires unannotated Camera A perception RGB')
+            context['perception_comparison_pair'] = {
+                'before_image_index': primary_index(before, 0),
+                'after_image_index': primary_index(after, len(before)),
+                'role': 'Primary same-perception-position pair; lift stills and video are supplementary.',
+            }
         payload, result, prompt, _ = self._ask("acquisition_evaluation" if acquisition else "evaluation",
-            context, AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
+            context, comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison
+            else AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
             "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. "
             "Use supplied Camera A grasp/lift stills to assess whether fabric was acquired and lifted. "
             "Compare the same-attempt before-lift and after-lift pair: look for fabric deformation, tension, "
