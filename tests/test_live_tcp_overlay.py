@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from cloth_agent.config import RobotConfig
+from cloth_agent.config import ConfigError, RobotConfig
 from cloth_agent.perception import RGBDFrame
 from scripts import live_tcp_overlay as script
 
@@ -110,8 +110,19 @@ def test_latest_mailbox_drops_old_samples():
 
 
 @pytest.mark.parametrize('capture_current', [True, False])
-def test_complete_workflow_with_read_only_monitor(monkeypatch, tmp_path, capture_current):
-    arm = ReadOnlyArm()
+@pytest.mark.parametrize('initial_report', ['ready', 'delayed', 'wrong'])
+def test_complete_workflow_with_read_only_monitor(monkeypatch, tmp_path, capture_current, initial_report):
+    class StartupArm(ReadOnlyArm):
+        offset_reads = 0
+
+        @property
+        def tcp_offset(self):
+            self.offset_reads += 1
+            if initial_report == 'wrong' or (initial_report == 'delayed' and self.offset_reads < 3):
+                return [0]*6
+            return [0, 0, 172, 0, 0, 0]
+
+    arm = StartupArm()
     fake_root = SimpleNamespace(withdraw=Mock(), destroy=Mock())
     monkeypatch.setitem(sys.modules, 'tkinter', SimpleNamespace(Tk=lambda: fake_root))
     monkeypatch.setitem(sys.modules, 'xarm', SimpleNamespace())
@@ -121,7 +132,8 @@ def test_complete_workflow_with_read_only_monitor(monkeypatch, tmp_path, capture
     k, transform, _ = projection()
     frame = RGBDFrame('A', 'test', np.zeros((120, 160, 3), np.uint8),
                      np.full((120, 160), .5), k, transform)
-    monkeypatch.setattr(script, 'capture_two_view_rgbd', lambda cfg: [frame])
+    capture = Mock(return_value=[frame])
+    monkeypatch.setattr(script, 'capture_two_view_rgbd', capture)
 
     def viewer(root, frame, latest, directory):
         sample = latest.get(timeout=2)
@@ -131,11 +143,21 @@ def test_complete_workflow_with_read_only_monitor(monkeypatch, tmp_path, capture
     monkeypatch.setattr(script, 'run_viewer', viewer)
     args = ['--output-dir', str(tmp_path)]
     args += ['--capture-current'] if capture_current else ['--real', '--confirm-real']
+    if initial_report == 'wrong':
+        with pytest.raises(ConfigError, match='TCP offset changed'):
+            script.main(args)
+        capture.assert_not_called()
+        assert arm.connected is False
+        directory, = tmp_path.iterdir()
+        assert json.loads((directory / 'session.json').read_text())['status'] == 'FAILED'
+        return
     assert script.main(args) == 0
     assert observation.call_count == (0 if capture_current else 1)
     assert set(arm.calls) == {'get_position', 'disconnect'}
     directory, = tmp_path.iterdir()
-    assert json.loads((directory / 'session.json').read_text())['status'] == 'CLOSED'
+    report = json.loads((directory / 'session.json').read_text())
+    assert report['status'] == 'CLOSED'
+    assert report['startup_tcp_offset_mm_deg'] == [0, 0, 172, 0, 0, 0]
     records = [json.loads(line) for line in (directory / 'tcp_samples.jsonl').read_text().splitlines()]
     assert records[0]['projection']['status'] == 'VISIBLE'
     assert (directory / 'result.json').is_file()

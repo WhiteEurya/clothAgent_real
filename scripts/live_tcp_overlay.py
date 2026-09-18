@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cloth_agent.config import RobotConfig
 from cloth_agent.perception import PerceptionConfig, camera_base_xyz_map_mm, capture_two_view_rgbd
-from cloth_agent.robot_api import move_robot_to_perception_position
+from cloth_agent.robot_api import _validated_live_tcp_offset, move_robot_to_perception_position
 from cloth_agent.run_storage import auxiliary_dir
 from scripts.manual_pixel_move import save_capture, write_json
 
@@ -238,6 +238,11 @@ def main(argv=None):
             observation = move_robot_to_perception_position(config)
         # Deliberately not XArmBackend: it enables motion and changes mode/state.
         arm = XArmAPI(config.robot_ip, is_radian=False)
+        # A new SDK connection initially exposes an all-zero report cache.
+        # Reuse the normal backend's read-only startup guard before read_pose
+        # performs strict per-sample checks. Never write/replace the live offset.
+        print('Waiting for the initial TCP offset report...', flush=True)
+        report['startup_tcp_offset_mm_deg'] = list(_validated_live_tcp_offset(arm, config))
         print('Hold still while capturing the reference image...', flush=True)
         before = read_pose(arm, config)
         frame, = capture_two_view_rgbd(perception)
