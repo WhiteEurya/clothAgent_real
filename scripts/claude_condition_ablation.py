@@ -50,6 +50,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+from cloth_agent.run_storage import auxiliary_dir, runs_root
 CONDITIONS = ("A", "B", "C", "D")
 LABELS = ("YES", "NO", "UNKNOWN")
 
@@ -889,7 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=50, help="number of segments to sample; 0 means all")
     parser.add_argument("--seed", type=int, default=20260828, help="deterministic segment sampling seed")
     parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, default=list(CONDITIONS))
-    parser.add_argument("--output-dir", type=Path, default=Path("runs/claude_condition_ablation"))
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--claude-timeout-s", type=int, default=900)
     parser.add_argument("--resume", action="store_true", help="reuse valid condition response files")
@@ -904,9 +906,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--limit must be non-negative")
     if args.claude_timeout_s <= 0:
         raise SystemExit("--claude-timeout-s must be positive")
-    output_dir = args.output_dir.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve() if args.output_dir else auxiliary_dir(PROJECT_ROOT, "claude_condition_ablation")
     output_dir.mkdir(parents=True, exist_ok=True)
-    roots = list(args.runs_root or ([] if args.recording else [Path("runs")]))
+    roots = list(args.runs_root or ([] if args.recording else [runs_root(PROJECT_ROOT)]))
     inputs = [path.expanduser().resolve() for path in [*roots, *args.recording]]
     manifests = _find_recording_manifests(inputs)
     segments = [segment for path in manifests if (segment := _segment_from_manifest(path)) is not None]

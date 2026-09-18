@@ -50,6 +50,8 @@ CALIBRATED_PYTHON = Path("/home/CNS2026330003/miniconda3/envs/cali/bin/python")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import auxiliary_dir
+
 
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -83,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("runs/camera_A_photos"),
+        default=None,
         help="parent directory for timestamped shot directories",
     )
     parser.add_argument("--width", type=int, default=1280)
@@ -163,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _validate_args(args)
     _reexec_in_cali_environment()
-    parent = args.output_dir.expanduser().resolve()
+    parent = args.output_dir.expanduser().resolve() if args.output_dir else auxiliary_dir(PROJECT_ROOT, "camera_photos")
     results: list[dict[str, Any]] = []
     for index in range(1, int(args.count) + 1):
         shot_dir = _shot_directory(

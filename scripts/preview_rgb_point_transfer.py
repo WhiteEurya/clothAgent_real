@@ -24,6 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import new_run_path, result_files
+
 from cloth_agent.free_exploration import _json_from_claude_text  # noqa: E402
 
 
@@ -43,7 +45,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _latest_result(root: Path) -> Path:
-    paths = list((root / "runs").glob("*/results/perception/*/result.json"))
+    paths = list(result_files(root, "results/perception/*/result.json"))
     if not paths:
         raise FileNotFoundError("no saved perception result found")
     return max(paths, key=lambda path: path.stat().st_mtime_ns).resolve()
@@ -312,9 +314,9 @@ def main() -> int:
     parser.add_argument("--claude-timeout-s", type=int, default=900)
     args = parser.parse_args()
     root = args.project_root.resolve()
-    run_dir = args.run_dir.resolve() if args.run_dir else root / "runs" / (
+    run_dir = args.run_dir.resolve() if args.run_dir else new_run_path(root, (
         "rgb_point_transfer_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    )
+    ))
     run_dir.mkdir(parents=True, exist_ok=True)
     perception_result = (
         args.perception_result.resolve()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from .run_storage import iter_runs
 from typing import Any, Mapping
 
 from .skill_lifecycle import SkillProposal
@@ -119,8 +120,8 @@ def inherit_fold_lessons(project_root: Path, run_dir: Path) -> dict[str, Any]:
     destination = run_dir / "workspace" / "fold_experience" / "experiences.jsonl"
     if destination.is_file():
         return {"status": "EXISTING_RUN", "count": 0}
-    candidates = [path for path in (project_root / "runs").glob("*/workspace/fold_experience/experiences.jsonl")
-                  if run_dir.resolve() not in path.resolve().parents]
+    candidates = [run / "workspace/fold_experience/experiences.jsonl" for run in iter_runs(project_root)
+                  if run != run_dir.resolve() and (run / "workspace/fold_experience/experiences.jsonl").is_file()]
     if not candidates:
         return {"status": "NO_PREVIOUS_EXPERIENCE", "count": 0}
     source = max(candidates, key=lambda path: path.stat().st_mtime_ns)

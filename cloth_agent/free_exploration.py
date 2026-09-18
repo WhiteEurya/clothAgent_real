@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from .run_storage import find_run
 from typing import Any
 
 import numpy as np
@@ -3318,7 +3319,6 @@ def _proposal_markdown(proposal: ExplorationProposal, source: str) -> str:
 
 def _load_or_create_session(root: Path, run_dir: Path | None, run_id: str | None, robot_config: Path | None) -> AgentSession:
     root = root.resolve()
-    runs_root = (root / "runs").resolve()
     if run_dir is not None:
         run = run_dir.resolve()
         metadata = json.loads((run / "run_metadata.json").read_text(encoding="utf-8"))
@@ -3334,8 +3334,8 @@ def _load_or_create_session(root: Path, run_dir: Path | None, run_id: str | None
         # trying to create its workspace a second time.
         if Path(run_id).name != run_id or run_id in {"", ".", ".."}:
             raise ValueError("run-id must be one simple directory name")
-        existing = runs_root / run_id
-        if existing.exists():
+        existing = find_run(root, run_id)
+        if existing is not None:
             if not existing.is_dir():
                 raise FileExistsError(f"run-id path is not a directory: {existing}")
             return _load_or_create_session(root, existing, None, robot_config)

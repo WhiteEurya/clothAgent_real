@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+from .run_storage import auxiliary_dir
 import queue
 import threading
 import time
@@ -384,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8086)
     parser.add_argument("--preset", type=Path, help="加载之前保存的完整参数，必须匹配相机序列号")
-    parser.add_argument("--output-dir", type=Path, default=Path("runs/camera_tuning"))
+    parser.add_argument("--output-dir", type=Path, default=None)
     return parser
 
 
@@ -449,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         server = viser.ViserServer(host=args.host, port=args.port, label="RealSense RGB 调参")
         ui = TunerUI(server, controls, width=width, height=height,
                      config_path=config_path if selected else None,
-                     output_dir=(root / args.output_dir).resolve())
+                     output_dir=(root / args.output_dir).resolve() if args.output_dir else auxiliary_dir(root, "camera_tuning"))
         url_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         print(f"手动打开 http://{url_host}:{server.get_port()} 。Ctrl+C 退出；不会自动打开浏览器。", flush=True)
         last_preview = last_refresh = 0.0

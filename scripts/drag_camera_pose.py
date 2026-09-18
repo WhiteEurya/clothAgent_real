@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import auxiliary_dir
 from cloth_agent.perception import (  # noqa: E402
     CameraSpec,
     PerceptionConfig,
@@ -208,7 +209,7 @@ def run(options: argparse.Namespace) -> int:
     output_npy = (
         _resolve_path(options.output_npy)
         if options.output_npy is not None
-        else PROJECT_ROOT / "runs" / "manual_camera_pose" / f"camera_{target_label}.npy"
+        else auxiliary_dir(PROJECT_ROOT, "manual_camera_pose") / f"camera_{target_label}.npy"
     )
     target_pose_path = (
         _resolve_path(options.initial_pose)

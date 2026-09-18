@@ -43,6 +43,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import new_run_path, result_files
+
 from cloth_agent.free_exploration import _json_from_claude_text  # noqa: E402
 
 
@@ -77,7 +79,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _latest_perception_result(root: Path) -> Path:
     candidates: list[Path] = []
-    for path in (root / "runs").glob("*/results/perception/*/result.json"):
+    for path in result_files(root, "results/perception/*/result.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             view = next(
@@ -865,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = (
         args.run_dir.expanduser().resolve()
         if args.run_dir
-        else root / "runs" / f"claude_rgb_diagnosis_{_stamp()}"
+        else new_run_path(root, f"claude_rgb_diagnosis_{_stamp()}")
     )
     if run_dir.exists():
         raise FileExistsError(run_dir)

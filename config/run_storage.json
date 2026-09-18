@@ -1,0 +1,4 @@
+{
+  "runs_root": "/mnt/newssd/sja/clothAgent_real/runs",
+  "required_mount": "/mnt/newssd"
+}

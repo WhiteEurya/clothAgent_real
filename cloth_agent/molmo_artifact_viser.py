@@ -800,22 +800,15 @@ def run_viewer(
         ) from exc
 
     source = source.expanduser().resolve()
-    # Resolve project/run roots from the stable ``runs/<run>`` ancestor so the
-    # viewer can follow both the historical molmo_keypoint_cli output and the
-    # standalone neat_fold output tree.
-    runs_ancestor = next(
-        (ancestor for ancestor in (source, *source.parents) if ancestor.name == "runs"),
-        None,
-    )
-    project_root = runs_ancestor.parent.resolve() if runs_ancestor is not None else source.resolve()
-    run_root = next(
-        (
-            ancestor
-            for ancestor in (source, *source.parents)
-            if ancestor.parent.name == "runs"
-        ),
-        source,
-    ).resolve()
+    run_root = next((p for p in (source, *source.parents)
+                     if (p / "run_metadata.json").is_file()), None)
+    if run_root is not None:
+        metadata = json.loads((run_root / "run_metadata.json").read_text())
+        project_root = Path(metadata.get("project_root", Path(__file__).resolve().parents[1])).resolve()
+    else:
+        runs_ancestor = next((p for p in (source, *source.parents) if p.name == "runs"), None)
+        project_root = runs_ancestor.parent if runs_ancestor else Path(__file__).resolve().parents[1]
+        run_root = next((p for p in (source, *source.parents) if p.parent.name == "runs"), source)
     robot_config_path = run_root / "workspace" / "robot_config.json"
     if not robot_config_path.is_file():
         robot_config_path = project_root / "config" / "robot.example.json"

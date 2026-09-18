@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import new_run_path, result_files
+
 from PIL import Image, ImageDraw, ImageFont
 
 from cloth_agent.garment_grounding_mcp import GarmentGrounding
@@ -24,7 +26,7 @@ def _font() -> ImageFont.ImageFont:
 def _latest_result(root: Path) -> Path:
     paths = [
         path
-        for path in (root / "runs").glob("*/results/perception/*/result.json")
+        for path in result_files(root, "results/perception/*/result.json")
         if (path.parent / "camera_A_base_xyz_mm.npy").is_file()
     ]
     if not paths:

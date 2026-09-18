@@ -45,6 +45,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cloth_agent.run_storage import new_run_path
+
 TERMINAL_STATUSES = frozenset({"COMPLETE", "BLOCKED", "SUPERVISOR_STOPPED"})
 FORBIDDEN_CHILD_OPTIONS = frozenset({"--run-id", "--run-dir", "--experience-dir"})
 
@@ -411,7 +414,7 @@ def run_watchdog(args: argparse.Namespace) -> int:
     watchdog_dir = (
         args.watchdog_dir.expanduser().resolve()
         if args.watchdog_dir
-        else root / "runs" / f"_{_safe_run_prefix(args.run_prefix)}_watchdog_{stamp}"
+        else new_run_path(root, f"_{_safe_run_prefix(args.run_prefix)}_watchdog_{stamp}")
     )
     watchdog_dir.mkdir(parents=True, exist_ok=True)
     events_path = watchdog_dir / "watchdog_events.jsonl"
@@ -486,7 +489,7 @@ def run_watchdog(args: argparse.Namespace) -> int:
                     raise ValueError("watchdog Viser port range exhausted")
                 command.extend(["--viser-port", str(port)])
             command.extend(child_args)
-            child_dir = root / "runs" / run_id
+            child_dir = new_run_path(root, run_id)
             _write_event(
                 events_path,
                 "child_starting",

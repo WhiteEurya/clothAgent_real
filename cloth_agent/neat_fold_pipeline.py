@@ -21,6 +21,7 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from .run_storage import find_run
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -1082,7 +1083,7 @@ def _load_fold_session(
 ) -> AgentSession:
     """Load an existing run or create one whose goal is specifically folding."""
 
-    if run_dir is not None or (run_id and (root / "runs" / run_id).is_dir()):
+    if run_dir is not None or (run_id and find_run(root, run_id) is not None):
         return _load_or_create_session(root, run_dir, run_id, robot_config)
     robot = RobotConfig.load(root, robot_config)
     return AgentSession.create(

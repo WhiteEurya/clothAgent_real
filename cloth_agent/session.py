@@ -14,6 +14,7 @@ from .config import ExperimentConfig, RobotConfig
 from .experiment import ExperimentRunner
 from .perception import ClothCenterPerception, PerceptionConfig, RGBDFrame
 from .skills import skill_prompt
+from .run_storage import new_run_path, storage_roots
 
 
 MANUAL_RESULTS = frozenset({"SUCCESS", "FAILED_GRASP", "FAILED_LIFT", "OTHER_FAILURE"})
@@ -60,9 +61,8 @@ class AgentSession:
     def __init__(self, project_root: Path, run_dir: Path, robot_config: RobotConfig, experiment_config: ExperimentConfig, claude: ClaudeCodeClient | None = None):
         self.project_root = project_root.resolve()
         self.run_dir = run_dir.resolve()
-        runs_root = (self.project_root / "runs").resolve()
-        if runs_root not in self.run_dir.parents:
-            raise PermissionError("run_dir must be inside the project's runs/ directory")
+        if not any(root in self.run_dir.parents for root in storage_roots(self.project_root)):
+            raise PermissionError("run_dir must be inside configured run storage")
         self.workspace = (self.run_dir / "workspace").resolve()
         self.results = (self.run_dir / "results").resolve()
         self.robot_config = robot_config
@@ -85,7 +85,7 @@ class AgentSession:
         run_id = run_id or datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ")
         if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
             raise ValueError("run_id must be one simple directory name")
-        run_dir = (project_root / "runs" / run_id).resolve()
+        run_dir = new_run_path(project_root.resolve(), run_id).resolve()
         workspace, results = run_dir / "workspace", run_dir / "results"
         workspace.mkdir(parents=True, exist_ok=False)
         results.mkdir(parents=True, exist_ok=True)
@@ -179,6 +179,9 @@ class AgentSession:
             json.dumps(
                 {
                     "created_at": _now(),
+                    "project_root": str(project_root.resolve()),
+                    "run_id": run_id,
+                    "storage_layout_version": 2,
                     "goal": goal,
                     "experiment_config": experiment_config.as_dict(),
                     "robot_config": asdict(robot_config),
@@ -198,10 +201,9 @@ class AgentSession:
             workspace_candidate = self.workspace / candidate
             candidate = workspace_candidate if workspace_candidate.exists() else self.project_root / candidate
         candidate = candidate.resolve()
-        if candidate != self.project_root and self.project_root not in candidate.parents:
+        if candidate != self.project_root and self.project_root not in candidate.parents and self.run_dir not in candidate.parents:
             raise PermissionError("inspect_file is limited to the project and current run workspace")
-        runs_root = (self.project_root / "runs").resolve()
-        if runs_root in candidate.parents and self.run_dir not in candidate.parents:
+        if any(root in candidate.parents for root in storage_roots(self.project_root)) and self.run_dir not in candidate.parents:
             raise PermissionError("inspect_file cannot read another run workspace")
         if not candidate.is_file():
             raise FileNotFoundError(candidate)

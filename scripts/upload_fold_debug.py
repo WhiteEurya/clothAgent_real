@@ -3,6 +3,9 @@
 from __future__ import annotations
 import argparse, json, subprocess, tempfile, tarfile
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cloth_agent.run_storage import iter_runs
 
 def main(argv=None):
     p=argparse.ArgumentParser()
@@ -10,7 +13,7 @@ def main(argv=None):
     p.add_argument('--run-dir', type=Path)
     p.add_argument('--expiry-hours', type=int, default=1)
     a=p.parse_args(argv); root=a.project_root.resolve()
-    run=a.run_dir.resolve() if a.run_dir else max((x for x in (root/'runs').iterdir() if x.is_dir()), key=lambda x:x.stat().st_mtime)
+    run=a.run_dir.resolve() if a.run_dir else max(iter_runs(root), key=lambda x:x.stat().st_mtime)
     with tempfile.TemporaryDirectory(prefix='cloth_debug_') as td:
         staging=Path(td)/run.name; staging.mkdir()
         # Preserve actionable records and generated overlays; exclude large/raw data.

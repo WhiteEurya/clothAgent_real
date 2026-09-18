@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cloth_agent.run_storage import new_run_path, result_files
+
 from cloth_agent.perception import (
     PerceptionConfig,
     capture_two_view_rgbd,
@@ -195,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
         if args.output_dir
-        else root / "runs" / f"landmarks_{stamp}"
+        else new_run_path(root, f"landmarks_{stamp}")
     )
     output_dir.mkdir(parents=True, exist_ok=False)
     capture_dir = output_dir / "capture"

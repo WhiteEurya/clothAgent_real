@@ -25,6 +25,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from .run_storage import find_run
 from typing import Any, Iterable, Mapping, Sequence
 
 from .config import ExperimentConfig, RobotConfig
@@ -620,8 +621,8 @@ def _load_or_create_session(
         values = json.loads(saved_experiment.read_text(encoding="utf-8")) if saved_experiment.is_file() else metadata.get("experiment_config", {})
         return AgentSession(root, run, robot, ExperimentConfig.from_mapping(values, allow_deferred=True))
     if run_id:
-        existing = root / "runs" / run_id
-        if existing.is_dir():
+        existing = find_run(root, run_id)
+        if existing is not None and existing.is_dir():
             return _load_or_create_session(root, run_dir=existing, run_id=None, robot_config=robot_config, instruction=instruction)
     robot = RobotConfig.load(root, robot_config)
     return AgentSession.create(root, f"Language instruction: {instruction}", robot, ExperimentConfig(), run_id=run_id)

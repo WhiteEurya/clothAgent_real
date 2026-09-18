@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from .run_storage import find_run
 
 from .config import ExperimentConfig, RobotConfig
 from .experiment import ExperimentValidationError, format_action_sequence, format_speed_profile
@@ -171,7 +172,7 @@ def _cmd_viewer(args: argparse.Namespace) -> int:
     if args.run_dir:
         session = _session(root, Path(args.run_dir).resolve())
     else:
-        existing = root / "runs" / args.run_id if args.run_id else None
+        existing = find_run(root, args.run_id) if args.run_id else None
         if existing is not None and existing.is_dir():
             session = _session(root, existing.resolve())
         else:
