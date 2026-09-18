@@ -29,6 +29,7 @@ from cloth_agent.robot_api import (
     validate_controller_trajectory,
 )
 from cloth_agent.run_storage import auxiliary_dir
+from cloth_agent.pixel_mapping_visualization import PixelMappingView
 
 
 def write_json(path, value):
@@ -113,23 +114,39 @@ def save_capture(directory, frame, xyz, observation, config):
         'note': 'Stationary temporal RGB-D aggregate; no online Z-bias correction.'})
 
 
-def choose_point(root, frame, xyz, valid, config, clearance_mm):
+def choose_point(root, frame, xyz, valid, config, clearance_mm, mapping=None):
     import tkinter as tk
     from PIL import ImageTk
 
-    root.title('Manual RGB-D point move — raw RGB')
+    root.title('Manual RGB-D point move — RGB / robot base XY')
     rgb = Image.fromarray(frame.rgb)
-    scale = min(1.0, (root.winfo_screenwidth() - 100) / rgb.width,
-                (root.winfo_screenheight() - 230) / rgb.height)
-    size = (max(1, int(rgb.width * scale)), max(1, int(rgb.height * scale)))
-    photo = ImageTk.PhotoImage(rgb.resize(size))
+    mapping = mapping or PixelMappingView(frame.rgb, xyz, valid)
+    combined = mapping.render()
+    scale = min(1.0, (root.winfo_screenwidth() - 100) / combined.width,
+                (root.winfo_screenheight() - 230) / combined.height)
+    size = (max(1, int(combined.width * scale)), max(1, int(combined.height * scale)))
+    raw_display_size = (rgb.width * size[0] / combined.width, size[1])
+    photo = ImageTk.PhotoImage(combined.resize(size))
     canvas = tk.Canvas(root, width=size[0], height=size[1], highlightthickness=0)
     canvas.pack()
-    canvas.create_image(0, 0, image=photo, anchor='nw')
-    info = tk.StringVar(value=f'Click a point. TCP clearance above measured surface: {clearance_mm:g} mm.')
+    canvas_image = canvas.create_image(0, 0, image=photo, anchor='nw')
+    info = tk.StringVar(value=f'Click LEFT image. G: toggle RGB grid. Clearance: {clearance_mm:g} mm.\n'
+                        'Right: computed XY mapping, not independent physical ground truth.')
     tk.Label(root, textvariable=info, justify='left').pack(padx=10, pady=10)
     chosen = None
     confirmed = False
+    show_grid = True
+
+    def redraw():
+        nonlocal photo
+        pixels = [chosen['raw_pixel_xy']] if chosen is not None else []
+        photo = ImageTk.PhotoImage(mapping.render(pixels, show_grid).resize(size))
+        canvas.itemconfigure(canvas_image, image=photo)
+
+    def toggle_grid(event=None):
+        nonlocal show_grid
+        show_grid = not show_grid
+        redraw()
 
     def confirm(event=None):
         nonlocal confirmed
@@ -142,29 +159,31 @@ def choose_point(root, frame, xyz, valid, config, clearance_mm):
 
     def click(event):
         nonlocal chosen
+        if event.x >= raw_display_size[0]:
+            return  # The XY projection is display-only, never a motion input.
         chosen = None
         button.configure(state='disabled')
-        canvas.delete('marker')
         try:
-            pixel = raw_pixel(event.x, event.y, size, rgb.size)
+            pixel = raw_pixel(event.x, event.y, raw_display_size, rgb.size)
             candidate = select_target(frame, xyz, valid, pixel, config, clearance_mm)
             build_actions(candidate, config)
             chosen = candidate
-            canvas.create_oval(event.x-5, event.y-5, event.x+5, event.y+5,
-                               outline='red', width=2, tags='marker')
             surface = chosen['measured_base_xyz_mm']
             target = chosen['target_tcp_xyz_mm']
             info.set(f'Raw pixel {pixel}; depth {chosen["depth_m"]*1000:.1f} mm\n'
                      f'Surface XYZ: {surface[0]:.2f}, {surface[1]:.2f}, {surface[2]:.2f} mm\n'
                      f'Target TCP: {target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f} mm\n'
-                     'Enter: validate IK, Home, approach, descend and hold. Esc: cancel.')
+                     'Enter: Home, approach, descend and hold. Esc: cancel. G: toggle grid.')
             button.configure(state='normal')
         except (ValueError, RuntimeError) as exc:
             info.set(str(exc))
+        redraw()
 
     canvas.bind('<Button-1>', click)
     root.bind('<Return>', confirm)
     root.bind('<Escape>', lambda event: root.quit())
+    root.bind('<g>', toggle_grid)
+    root.bind('<G>', toggle_grid)
     root.protocol('WM_DELETE_WINDOW', root.quit)
     root.deiconify()
     root.mainloop()
@@ -213,13 +232,16 @@ def main(argv=None):
         frame, = capture_two_view_rgbd(perception)
         xyz, valid = camera_base_xyz_map_mm(frame, perception)
         save_capture(directory, frame, xyz, report['observation'], config)
-        selection = choose_point(root, frame, xyz, valid, config, args.clearance_mm)
+        mapping = PixelMappingView(frame.rgb, xyz, valid)
+        mapping.render().save(directory / 'pixel_mapping.png')
+        selection = choose_point(root, frame, xyz, valid, config, args.clearance_mm, mapping)
         root.destroy()
         root = None
         if selection is None:
             report['status'] = 'CANCELLED_AT_OBSERVATION'
             return 0
         report['selection'] = selection
+        mapping.render([selection['raw_pixel_xy']]).save(directory / 'pixel_mapping.png')
         report['planned_actions'] = build_actions(selection, config)
         report['status'] = 'VALIDATING'
         write_json(report_path, report)
