@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-25T18:25:45.355+00:00",
+  "updated_at": "2026-09-18T05:16:30.510+00:00",
   "skills": [
     {
       "name": "collar-full-shake",
@@ -79,10 +79,31 @@
       "source": "reviewed"
     },
     {
+      "name": "sleeve-fold-carry-sufficiency",
+      "purpose": "Detect and correct the local-curl sleeve fold failure, where a sleeve grasp is real but the carry is shorter than the sleeve's own reach, producing a near-null fixed-view change.",
+      "guidance": "After a sleeve-in fold attempt, compare the fixed collar-up view before and after. If every far landmark (collar ring, opposite sleeve, hem and body edges, chest print) is exactly seated and the only difference is a small retraction or curl of the grasped sleeve tip, with no new ply boundary over the chest and no newly covered print, classify the run as a carry-distance failure rather than a direction or target error. On retry: bite the outermost cuff hem band so the sleeve hinges at the armhole; require planned horizontal carry at least equal to the measured cuff-to-armhole span so the grasp point ends beyond the hanging sleeve's reach and past the garment centerline; take a mid-transport confirmation still and abort or re-ground if the sleeve silhouette has not begun to swing; descend and release quasi-statically over the chest band only after that clearance is met. Do not re-tune pull direction, deposit region or release timing after a local-curl outcome, since those were never exercised, and keep grounding, workspace, IK and preflight checks mandatory.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
+      "name": "sleeve-fold-carry-sufficiency-confirmed",
+      "purpose": "Confirm a successful inward sleeve fold and record the carry-sufficiency criterion that distinguishes it from the local-curl failure mode.",
+      "guidance": "Grasp the outermost cuff hem band so the sleeve hinges at the armhole, and plan a horizontal carry at least equal to the measured cuff-to-armhole span so the grasp point finishes past the garment centerline. Confirm success in the fixed collar-up view with four joint signatures: (1) bare table newly exposed where the sleeve lay, (2) the garment-side outline straightening from a sleeve lobe to an armhole-level edge, (3) a new ply boundary showing the stitched cuff hem over the chest band, and (4) partial covering of a previously exposed chest feature such as a print. If instead every far landmark is seated and only the cuff tip curls, classify as carry-distance failure and lengthen the carry rather than re-tuning direction or deposit. Residual bunching of the deposited cuff ply indicates the release was slightly short of or above the intended chest band; correct by releasing closer to the centerline at lower height, not by re-choosing the anchor.",
+      "version": 1,
+      "source": "reviewed"
+    },
+    {
       "name": "translation-only-reanchor",
       "purpose": "Recognize when repeated congruent relocations disprove single-anchor peeling for a garment, and additionally retire the terminal end-cap of a rolled bundle as a ply anchor once a perpendicular carry only relocates the whole bundle.",
       "guidance": "Keep the existing stop rule, the free-boundary verification requirement, and the mandatory lift-phase abort. Add this appearance lesson: the rounded end of an elongated cloth roll, even when it presents solid measurable relief above the table and reads as an end-of-structure boundary with a visible tuck, is not evidence of a separable ply. A roll end is continuous with the body, so carrying it across the table perpendicular to the roll axis relocates the whole bundle instead of paying wound fabric out, and the distal lobe travels with the gripper rather than staying seated. Treat such an outcome as two separate findings: the grounding, engagement depth, approach clearance, fixed wrist orientation and quasi-static release are validated because cloth was held and carried and must be reused unchanged, while the terminal end-cap joins the retired anchor classes alongside the high-relief core, the planar raised shelf, the flat perimeter lip and the steep fold wall. Do not re-tune pull direction or pull distance after such a result, since no layer was isolated and the carry tested nothing. Require either a mechanically verified free fabric boundary with visible interior passage between plies, or opposition supplied by immobilizing material well away from the separation point, before the next lift. Also treat a deposit that lands back over a feature the previous view had exposed as an unhelpful laydown, and place the next deposit farther out on clear surface.",
       "version": 22,
+      "source": "reviewed"
+    },
+    {
+      "name": "wrist-lift-still-diagnosticity",
+      "purpose": "Prevent treating a fabric-flooded wrist-camera lift still as proof of acquisition, and define what a lift still must contain to classify hold versus miss.",
+      "guidance": "A wrist-mounted Camera A frame taken after a commanded lift is diagnostic only if it shows at least two of: (a) a jaw/fingertip silhouette in contact with a pinched ply, (b) background table visible UNDER the held fabric with a clear gap or cast shadow, (c) a tented/draped fabric contour hanging below the grasp point. A frame whose field of view is simply filled by fabric, even fabric showing a recognisable feature such as a stitched cuff hem, proves only that the wrist is near cloth; since the camera moves with the gripper, framing change is not cloth motion. When such a non-diagnostic still is combined with a fixed-view before/after that is congruent in every far landmark, record the outcome as UNKNOWN acquisition (not confirmed empty grasp, not carry-distance failure), leave pull direction, pull distance, deposit region and release untouched as untested, and on retry command the post-lift still at a pose/tilt that guarantees table background beneath the held ply, aborting the transport if that gap is absent.",
+      "version": 1,
       "source": "reviewed"
     }
   ]
