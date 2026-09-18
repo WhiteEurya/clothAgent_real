@@ -75,7 +75,7 @@ from .perception import (
 )
 from .persistent_claude import PersistentClaudeSession
 from .robot_api import RobotExecutionError, validate_controller_trajectory
-from .rollout_recorder import DualRealSenseRolloutRecorder
+from .rollout_recorder import DualRealSenseRolloutRecorder, build_rollout_phase_timeline
 from .report_figure import compose_camera_perception_report
 from .session import AgentSession
 from .skill_lifecycle import RunSkillLedger, SkillProposal, SkillStore
@@ -4268,6 +4268,7 @@ def _video_contact_sheet(
     *,
     sample_count: int = 16,
     columns: int = 4,
+    phase_timeline: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Extract a chronological contact sheet that Claude can inspect as images."""
 
@@ -4284,7 +4285,15 @@ def _video_contact_sheet(
         if frame_count <= 0:
             raise AutoExplorationError(f"rollout video has no frames: {video_path}")
         sample_count = max(2, min(int(sample_count), frame_count))
-        indices = np.rint(np.linspace(0, frame_count - 1, sample_count)).astype(int)
+        focused = []
+        if math.isfinite(fps) and fps > 0:
+            for phase in phase_timeline:
+                if any(term in phase['label'] for term in ('CLOSE GRIPPER', 'LIFT GARMENT', 'LIFT TO HOLD CHECK')):
+                    start, end = float(phase['start_s']), float(phase['end_s'])
+                    focused.extend(round(t * fps) for t in (start, (start + end) / 2, end))
+        focused = sorted({max(0, min(frame_count - 1, i)) for i in focused})[:sample_count - 2]
+        uniform = np.rint(np.linspace(0, frame_count - 1, sample_count - len(focused))).astype(int)
+        indices = sorted(set(focused) | set(uniform))
         frames: list[tuple[int, np.ndarray]] = []
         for index in indices:
             capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
@@ -4338,11 +4347,13 @@ def _video_contact_sheet(
         "source_frame_count": frame_count,
         "source_fps": fps,
         "sampled_frame_indices": [index for index, _ in frames],
+        "grasp_focused_frame_indices": focused,
     }
 
 
 def prepare_rollout_video_evidence(
     recording_dir: Path,
+    *, execution: Mapping[str, Any] | None = None,
 ) -> tuple[list[Path], list[Path], list[str]]:
     """Build temporal evidence for calibrated A/B and optional RGB observers."""
 
@@ -4352,23 +4363,19 @@ def prepare_rollout_video_evidence(
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     candidates: list[tuple[str, Path]] = []
-    composite_relative = manifest.get("composite_video")
-    if isinstance(composite_relative, str) and composite_relative.strip():
-        candidates.append(("AB_DEPTH", recording_dir / composite_relative))
-    elif (recording_dir / "composite_AB_depth.mp4").is_file():
-        candidates.append(("AB_DEPTH", recording_dir / "composite_AB_depth.mp4"))
-    if not candidates:
-        for camera in manifest.get("cameras", []):
-            if not isinstance(camera, dict):
-                continue
-            label = str(camera.get("label", "")).upper()
-            relative = camera.get("rgb_video")
-            if label and isinstance(relative, str) and relative.strip():
-                candidates.append((label, recording_dir / relative))
-    if not candidates:
-        candidates = [
-            (label, recording_dir / f"camera_{label}_rgb.mp4") for label in ("A", "B")
-        ]
+    # Evaluators consume RGB, not a mixed RGB/depth composite. In particular,
+    # an empty legacy AB file must never shadow a valid single-camera recording.
+    for camera in manifest.get("cameras", []):
+        if not isinstance(camera, dict):
+            continue
+        label = str(camera.get("label", "")).upper()
+        relative = camera.get("rgb_video")
+        if label and isinstance(relative, str) and relative.strip():
+            candidates.append((label, recording_dir / relative))
+    for label in ("A", "B"):
+        path = recording_dir / f"camera_{label}_rgb.mp4"
+        if path.is_file() and all(existing != path for _, existing in candidates):
+            candidates.append((label, path))
     observer_manifest_path = recording_dir / "observer_recording_manifest.json"
     if observer_manifest_path.is_file():
         try:
@@ -4395,6 +4402,7 @@ def prepare_rollout_video_evidence(
     references: list[Path] = []
     errors: list[str] = []
     manifest_items: list[dict[str, Any]] = []
+    phase_timeline = build_rollout_phase_timeline(execution, manifest)
     for label, video_path in candidates:
         if not video_path.is_file():
             errors.append(f"Camera {label} RGB video is missing: {video_path}")
@@ -4402,7 +4410,8 @@ def prepare_rollout_video_evidence(
         references.append(video_path.resolve())
         output_path = output_dir / f"camera_{label}_rgb_contact_sheet.png"
         try:
-            item = _video_contact_sheet(video_path, output_path)
+            item = _video_contact_sheet(video_path, output_path,
+                phase_timeline=phase_timeline if label in {'A', 'B'} else ())
         except Exception as exc:
             errors.append(f"Camera {label}: {type(exc).__name__}: {exc}")
             continue
@@ -4414,7 +4423,7 @@ def prepare_rollout_video_evidence(
             output_dir / "manifest.json",
             {
                 "created_at": _now(),
-                "sampling": "16 uniform chronological frames per selected rollout video",
+                "sampling": "Up to 16 chronological RGB frames; prioritize closure/lift when action timestamps are available",
                 "items": manifest_items,
                 "errors": errors,
             },

@@ -34,6 +34,23 @@ def _rollout_frame(label: str, timestamp_ns: int, value: int) -> RolloutRGBDFram
     )
 
 
+def test_pre_lift_frame_excludes_old_contact_and_future_frames(tmp_path):
+    recorder = DualRealSenseRolloutRecorder(SimpleNamespace(warmup_frames=0), tmp_path)
+    original = _rollout_frame('A', 900_000_000, 10)
+    recorder._latest_rgbd = {'A': original}
+    frozen = recorder.latest_pre_lift_rgb(after_ns=800_000_000, before_ns=1_000_000_000)
+    recorder._latest_rgbd = {'A': _rollout_frame('A', 1_100_000_000, 20)}
+    assert frozen is original
+    assert np.all(frozen.rgb == 10)
+    with pytest.raises(RuntimeError, match='No recent'):
+        recorder.latest_pre_lift_rgb(after_ns=800_000_000, before_ns=1_000_000_000)
+    recorder._latest_rgbd = {'A': original}
+    with pytest.raises(RuntimeError, match='No recent'):
+        recorder.latest_pre_lift_rgb(after_ns=900_000_000, before_ns=1_000_000_000)
+    with pytest.raises(RuntimeError, match='No recent'):
+        recorder.latest_pre_lift_rgb(after_ns=0, before_ns=2_000_000_000)
+
+
 def test_latest_rgbd_waits_for_both_fresh_camera_frames(tmp_path: Path) -> None:
     recorder = DualRealSenseRolloutRecorder(
         SimpleNamespace(warmup_frames=0),  # type: ignore[arg-type]

@@ -1282,12 +1282,15 @@ def test_evaluation_perception_images_are_only_labelled_rgb_and_depth(tmp_path: 
     assert (result_dir / "evaluation_evidence" / "after_manifest.json").is_file()
 
 
-def test_rollout_video_evidence_extracts_camera_contact_sheets(tmp_path: Path):
+@pytest.mark.parametrize('labels', [('A',), ('A', 'B')])
+def test_rollout_video_evidence_extracts_camera_contact_sheets(tmp_path: Path, labels):
     import cv2
     import numpy as np
 
     cameras = []
     for label, color in (("A", (20, 40, 200)), ("B", (180, 60, 20))):
+        if label not in labels:
+            continue
         video_path = tmp_path / f"camera_{label}_rgb.mp4"
         writer = cv2.VideoWriter(
             str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (64, 48)
@@ -1300,21 +1303,39 @@ def test_rollout_video_evidence_extracts_camera_contact_sheets(tmp_path: Path):
         writer.release()
         cameras.append({"label": label, "rgb_video": video_path.name})
     (tmp_path / "recording_manifest.json").write_text(
-        json.dumps({"cameras": cameras}), encoding="utf-8"
+        json.dumps({"cameras": cameras, 'composite_video': 'composite_AB_depth.mp4'}), encoding="utf-8"
     )
+    (tmp_path / 'composite_AB_depth.mp4').write_bytes(b'empty legacy composite')
 
     sheets, references, errors = prepare_rollout_video_evidence(tmp_path)
 
     assert errors == []
-    assert len(sheets) == 2
-    assert len(references) == 2
+    assert len(sheets) == len(labels)
+    assert len(references) == len(labels)
     assert all(path.is_file() for path in sheets)
     manifest = json.loads(
         (tmp_path / "evaluator_video_evidence" / "manifest.json").read_text(
             encoding="utf-8"
         )
     )
-    assert len(manifest["items"]) == 2
+    assert len(manifest["items"]) == len(labels)
+
+
+def test_video_sampling_keeps_short_grasp_window(tmp_path):
+    import cv2
+    from cloth_agent.auto_exploration import _video_contact_sheet
+    path = tmp_path / 'camera_A_rgb.mp4'
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 10, (64, 48))
+    assert writer.isOpened()
+    for i in range(100):
+        writer.write(np.full((48, 64, 3), i, dtype=np.uint8))
+    writer.release()
+    result = _video_contact_sheet(path, tmp_path / 'sheet.png', phase_timeline=[
+        {'label': 'CLOSE GRIPPER | GRASP', 'start_s': 3.1, 'end_s': 3.3},
+        {'label': 'LIFT GARMENT', 'start_s': 3.3, 'end_s': 3.7}])
+    assert {31, 32, 33, 35, 37}.issubset(result['sampled_frame_indices'])
+    assert result['sampled_frame_indices'] == sorted(set(result['sampled_frame_indices']))
+    assert len(result['sampled_frame_indices']) <= 16
 
 
 def test_auto_module_requires_explicit_real_flag(tmp_path: Path):

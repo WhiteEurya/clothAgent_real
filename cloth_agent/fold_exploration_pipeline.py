@@ -595,7 +595,7 @@ def _capture_grasp_check_rgb(config, recorder, path: Path, after_ns: int) -> dic
 
 def _grasp_check_images(recording: Mapping[str, Any]) -> list[Path]:
     result = []
-    for stage in ('after_close', 'after_lift'):
+    for stage in ('before_lift', 'after_close', 'after_lift'):
         item = recording.get('grasp_snapshots', {}).get(stage, {})
         if item.get('status') == 'CAPTURED' and item.get('image'):
             path = Path(item['image']).resolve()
@@ -3986,6 +3986,7 @@ class FoldExplorationPipeline:
         lift_index = 0
         grasp_z: float | None = None
         last_z: float | None = None
+        last_move_completed_ns: int | None = None
         release_ns: int | None = None
         lift_capture_scheduled = False
         if self.real and self.record_video:
@@ -3997,7 +3998,7 @@ class FoldExplorationPipeline:
                     recording_dir,
                     record_bag=self.recording_native,
                     record_depth_video=True,
-                    record_composite=True,
+                    record_composite={'A', 'B'}.issubset(config.active_camera_labels),
                     codec=self.recording_codec,
                 )
                 recorder.start()
@@ -4090,6 +4091,22 @@ class FoldExplorationPipeline:
         evidence_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='fold-evidence')
         evidence_jobs = []
 
+        def save_pre_lift(frame, action_index, boundary_ns):
+            path = iteration_dir / 'hold_check' / 'camera_A_grasp_before_lift.png'
+            snapshot = {'action_index': action_index, 'captured_before': 'lift',
+                        'closure_completed_monotonic_ns': boundary_ns,
+                        'frame_monotonic_ns': frame.host_monotonic_ns,
+                        'frame_number': frame.color_frame_number, 'frame_utc': frame.host_utc,
+                        'asynchronous': True, 'source': 'active_camera_A_recorder',
+                        'note': 'Contact-pose frame before lift; may be during closure, not proof of grasp.'}
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(frame.rgb).convert('RGB').save(path)
+                snapshot.update(status='CAPTURED', image=str(path.resolve()))
+            except Exception as exc:
+                snapshot.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
+            grasp_snapshots['before_lift'] = snapshot
+
         def capture_lift_evidence(action_index, action_payload, height, after_ns, probe_index):
             path = (iteration_dir / 'lift_checkpoints' / f'camera_A_lift_checkpoint_{probe_index:02d}.png'
                     if probe_index else iteration_dir / 'hold_check' / 'camera_A_grasp_after_lift.png')
@@ -4118,16 +4135,30 @@ class FoldExplorationPipeline:
             """Queue lift evidence at completed boundaries without waiting for it."""
 
             nonlocal capturing_lift, lift_index, grasp_z, last_z, release_ns, lift_capture_scheduled
+            nonlocal last_move_completed_ns
             action_payload = dict(action)
             if action_payload.get("name") == "close_gripper":
                 capturing_lift = True
                 grasp_z = last_z
+                boundary_ns = time.monotonic_ns()
+                if self.real and recorder is not None and last_move_completed_ns is not None:
+                    try:
+                        frame = recorder.latest_pre_lift_rgb(
+                            after_ns=last_move_completed_ns, before_ns=boundary_ns)
+                        evidence_jobs.append(evidence_pool.submit(save_pre_lift, frame, action_index, boundary_ns))
+                    except Exception as exc:
+                        grasp_snapshots['before_lift'] = {'status': 'UNAVAILABLE', 'reason': str(exc)}
+                else:
+                    grasp_snapshots['before_lift'] = {
+                        'status': 'UNAVAILABLE' if self.real else 'SIMULATED',
+                        'reason': 'Pre-lift evidence requires an active Camera A recorder and contact timestamp.'}
             elif action_payload.get("name") == "open_gripper":
                 if capturing_lift:
                     release_ns = time.monotonic_ns()
                 capturing_lift = False
             if action_payload.get('name') == 'move':
                 last_z = float(action_payload['args']['z'])
+                last_move_completed_ns = time.monotonic_ns()
             height = last_z - grasp_z if last_z is not None and grasp_z is not None else 0.
             if (capturing_lift and action_payload.get('name') == 'move' and height >= 30. - 1e-6
                     and (hold_action_index is None or action_index >= hold_action_index)
@@ -6379,7 +6410,8 @@ class FoldExplorationPipeline:
                 if recording.get("directory"):
                     self._debug("recording", "building rollout video contact sheets", iteration=iteration)
                     try:
-                        video_images, video_refs, video_errors = prepare_rollout_video_evidence(Path(recording["directory"]))
+                        video_images, video_refs, video_errors = prepare_rollout_video_evidence(
+                            Path(recording["directory"]), execution=execution)
                         self._debug(
                             "recording",
                             "rollout video evidence ready",

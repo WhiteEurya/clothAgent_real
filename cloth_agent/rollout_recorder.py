@@ -1059,6 +1059,8 @@ class DualRealSenseRolloutRecorder:
             for spec in self.config.cameras
             if spec.label in set(self.config.active_camera_labels)
         ]
+        self.record_composite = self.record_composite and {'A', 'B'}.issubset(
+            spec.label for spec in active_specs)
         try:
             for spec in active_specs:
                 self.states.append(self._start_camera(spec, rs))
@@ -1207,6 +1209,20 @@ class DualRealSenseRolloutRecorder:
                         "recorder closed before a fresh RGB-D snapshot became available"
                     )
                 self._snapshot_condition.wait(timeout=remaining)
+
+    def latest_pre_lift_rgb(self, *, after_ns: int, before_ns: int):
+        """Freeze a recent contact-pose RGB frame without waiting for camera I/O.
+
+        The callback calls this before allowing the next robot action. A frame
+        during closure is valid; this does not claim the jaws were fully closed.
+        Published snapshot arrays are replaced, never mutated by the recorder.
+        """
+        with self._snapshot_condition:
+            frame = self._latest_rgbd.get('A')
+            if (frame is None or not after_ns < frame.host_monotonic_ns <= before_ns
+                    or before_ns - frame.host_monotonic_ns > 500_000_000):
+                raise RolloutRecorderError('No recent Camera A frame at contact before lift')
+            return frame
 
     def _write_timestamp(self, frame: _CapturedFrame) -> None:
         if self.timestamp_writer is None or self.started_monotonic_ns is None:

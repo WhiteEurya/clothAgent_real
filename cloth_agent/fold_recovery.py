@@ -155,20 +155,29 @@ def archive_iteration_video(iteration_dir: Path, record: dict[str, Any], *, prun
     receipt = iteration_dir / "video_archive.json"
     if receipt.is_file():
         return json.loads(receipt.read_text(encoding="utf-8"))
-    source = root / "composite_AB_depth.mp4"
-    if not source.is_file():
-        source = root / "camera_A_rgb.mp4"
-    if not source.is_file():
+    sources = [path for path in (root / 'composite_AB_depth.mp4', root / 'camera_A_rgb.mp4')
+               if path.is_file()]
+    if not sources:
         return {"status": "NO_VIDEO"}
     labelled = root / ".fold_archive_labelled.mp4"
     accelerated = root / ".fold_archive_32x.mp4"
     cumulative = iteration_dir.parent / "combined_rollout.mp4"
     timeline = build_rollout_phase_timeline(record.get("execution"), (record.get("recording") or {}).get("manifest"))
     try:
-        label_iteration_mp4(source, labelled, iteration=record["iteration"], phase_timeline=timeline)
+        source_errors = []
+        for source in sources:
+            try:
+                label_iteration_mp4(source, labelled, iteration=record["iteration"], phase_timeline=timeline)
+                break
+            except Exception as exc:
+                source_errors.append({'source': str(source), 'error': f'{type(exc).__name__}: {exc}'})
+                labelled.unlink(missing_ok=True)
+        else:
+            raise RuntimeError(f'No usable archive video: {source_errors}')
         speed_up_mp4(labelled, accelerated, speed=32.0)
         info = append_mp4_to_cumulative(accelerated, cumulative)
-        result = {"status": "ARCHIVED", "video": str(cumulative), "speed": 32.0, "append": info}
+        result = {"status": "ARCHIVED", "video": str(cumulative), "speed": 32.0, "append": info,
+                  "source": str(source), "source_errors": source_errors}
         # Commit receipt before cleanup; an interrupted retry must not append twice.
         receipt.write_text(json.dumps(result, indent=2), encoding="utf-8")
         if (prune and record.get("status") in {"FOLD", "ACQUISITION_PROBE", "REPAIR_SLEEVE"}

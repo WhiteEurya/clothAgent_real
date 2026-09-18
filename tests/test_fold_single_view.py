@@ -159,6 +159,50 @@ def test_cam_a_snapshot_uses_fresh_active_recorder_and_rejects_stale(tmp_path, m
     assert not (tmp_path / 'stale.png').exists()
 
 
+def test_pre_lift_frame_is_frozen_before_motion_and_saved_off_callback(tmp_path, monkeypatch):
+    pipeline = pipeline_for(tmp_path)
+    pipeline.record_video = True
+    pipeline.recording_native = False
+    pipeline.recording_codec = 'mp4v'
+    recorder = Mock()
+    stopped = threading.Event()
+    transported = threading.Event()
+    recorder.record.side_effect = lambda: stopped.wait(3) or {}
+    recorder.request_stop.side_effect = lambda *a: stopped.set()
+    def freeze(**kwargs):
+        assert not transported.is_set()
+        return SimpleNamespace(rgb=np.full((4, 4, 3), 60, dtype=np.uint8),
+            host_monotonic_ns=kwargs['before_ns'] - 1, color_frame_number=10, host_utc='test')
+    recorder.latest_pre_lift_rgb.side_effect = freeze
+    factory = Mock(return_value=recorder)
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline.DualRealSenseRolloutRecorder', factory)
+    save = Image.Image.save
+    def slow_save(image, path, *args, **kwargs):
+        if str(path).endswith('before_lift.png'):
+            assert transported.wait(2), 'PNG encoding must not block robot motion'
+        return save(image, path, *args, **kwargs)
+    monkeypatch.setattr(Image.Image, 'save', slow_save)
+    def lift(config, rec, path, after_ns):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (4, 4), 'white').save(path)
+        return {'status': 'CAPTURED', 'image': str(path), 'frame_monotonic_ns': after_ns + 1}
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline._capture_grasp_check_rgb', lift)
+    def run(*args, **kwargs):
+        callback = kwargs['action_callback']
+        callback(2, {'name': 'move', 'args': {'z': 20}})
+        callback(3, {'name': 'close_gripper'})
+        callback(4, {'name': 'move', 'args': {'z': 60}})
+        transported.set()
+        return {'status': 'SUCCESS'}
+    pipeline.session.run_experiment = run
+    _, recording = pipeline._execute(tmp_path / 'plan.py', SimpleNamespace(active_camera_labels=('A',)),
+                                     tmp_path, label='fold')
+    assert factory.call_args.kwargs['record_composite'] is False
+    assert [p.name for p in _grasp_check_images(recording)] == [
+        'camera_A_grasp_before_lift.png', 'camera_A_grasp_after_lift.png']
+    assert recording['grasp_snapshots']['before_lift']['status'] == 'CAPTURED'
+
+
 def test_cam_a_one_shot_uses_configured_serial_when_video_disabled(tmp_path, monkeypatch):
     def capture(serial, directory, **kwargs):
         assert serial == 'wrist-camera'

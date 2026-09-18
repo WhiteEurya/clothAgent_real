@@ -287,11 +287,14 @@ def test_real_video_archive_and_opt_in_pruning(tmp_path):
         recording = iteration / "rollout_recording"
         recording.mkdir(parents=True)
         source = recording / "camera_A_rgb.mp4"
+        (recording / 'composite_AB_depth.mp4').write_bytes(b'invalid legacy composite')
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30",
                         "-t", "2", "-c:v", "libx264", str(source)], check=True, capture_output=True)
         record = {"iteration": i, "status": "FOLD", "recording": {"directory": str(recording)}}
         result = archive_iteration_video(iteration, record, prune=True)
         assert Path(result["video"]).is_file()
+        assert result['source'] == str(source)
+        assert len(result['source_errors']) == 1
         assert not source.exists()
         assert str(source) in result["pruned_files"]
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json",

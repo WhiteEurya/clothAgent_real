@@ -51,6 +51,7 @@ RGB_NAMES = frozenset({
     "camera_c_rgb_contact_sheet.png", "camera_c.png",
     "camera_c_observer_rgb.png", "camera_c_observer_rgb_hold_check.png",
     "camera_a_grasp_after_close.png", "camera_a_grasp_after_lift.png",
+    "camera_a_grasp_before_lift.png",
     "fold_reference_source.png", "fold_reference_target.png",
     "camera_a_molmo_frame_hint.png", "camera_a_molmo_hint_upright.png",
     "camera_a_molmo_hint_collar_up.png",
@@ -520,6 +521,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         observers = rgb_evidence(observer_images, run_dir)
         images = [*before, *after, *video, *observers]
         snapshot_roles = {
+            'camera_a_grasp_before_lift.png': 'Camera A wrist RGB at contact BEFORE lift; may be during jaw closure, not proof of completed closure',
             'camera_a_grasp_after_close.png': 'Camera A wrist RGB after confirmed closure, BEFORE lift',
             'camera_a_grasp_after_lift.png': 'Camera A wrist RGB requested after lift >=30 mm; captured asynchronously during continued motion',
         }
@@ -541,6 +543,9 @@ class RemoteFoldClient(ClaudeAutoClient):
             context, AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
             "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. "
             "Use supplied Camera A grasp/lift stills to assess whether fabric was acquired and lifted. "
+            "Compare the same-attempt before-lift and after-lift pair: look for fabric deformation, tension, "
+            "and motion relative to the static table/background, accounting for camera motion. "
+            "The before-lift frame may be during closure. Similar images alone prove neither success nor failure. "
             "Current lift photos are requested after a completed lift of at least 30 mm, captured asynchronously while motion continues; "
             "do not assume they precede transport or show a stationary arm. Historical after-close stills may also be supplied. "
             "Camera A is wrist-mounted and moves with the gripper: image displacement alone is not proof of cloth motion. "

@@ -258,7 +258,7 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
                                       grounding, session.robot_config, (30, 40))
     client = RemoteFoldClient(backend=backend, binary="missing")
     snapshots = []
-    for name in ('camera_A_grasp_after_close.png', 'camera_A_grasp_after_lift.png'):
+    for name in ('camera_A_grasp_before_lift.png', 'camera_A_grasp_after_close.png', 'camera_A_grasp_after_lift.png'):
         path = session.run_dir / name
         Image.new('RGB', (10, 10), 'blue').save(path)
         snapshots.append(path)
@@ -271,6 +271,8 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
         assert call['image_edit_limit'] == 2
     assert all(path in backend.calls[1]['image_paths'] for path in snapshots)
     assert 'BEFORE lift' in backend.calls[1]['prompt']
+    assert 'same-attempt before-lift and after-lift pair' in backend.calls[1]['prompt']
+    assert 'may be during jaw closure' in backend.calls[1]['prompt']
     assert 'captured asynchronously during continued motion' in backend.calls[1]['prompt']
     assert 'lift >=30 mm' in backend.calls[1]['prompt']
     assert 'Closure confirmation is not proof' in backend.calls[1]['prompt']
