@@ -1,4 +1,5 @@
 {
+  "manual_base_y_offset_mm": -20.0,
   "cameras": [
     {
       "label": "A",

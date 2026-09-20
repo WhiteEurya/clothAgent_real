@@ -220,6 +220,8 @@ class PerceptionConfig:
     table_roi_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     table_plane_mode: str = "reference_fit"
     table_reference_clearance_px: int = 12
+    # Empirical base-coordinate correction, not a pixel/image displacement.
+    manual_base_y_offset_mm: float = 0.0
 
     @classmethod
     def load(cls, project_root: Path, path: Path) -> "PerceptionConfig":
@@ -272,6 +274,7 @@ class PerceptionConfig:
             )
         config = cls(
             cameras=tuple(cameras),
+            manual_base_y_offset_mm=float(raw.get("manual_base_y_offset_mm", 0.0)),
             table_appearance_mode=raw.get("table_appearance_mode", "bright_table"),
             table_roi_xyxy=tuple(raw.get("table_roi_xyxy", [0, 0, 1, 1])),
             table_plane_mode=raw.get("table_plane_mode", "reference_fit"),
@@ -303,6 +306,8 @@ class PerceptionConfig:
         return config
 
     def validate(self) -> None:
+        if not math.isfinite(self.manual_base_y_offset_mm):
+            raise PerceptionError("manual_base_y_offset_mm must be finite")
         if type(self.table_reference_clearance_px) is not int or self.table_reference_clearance_px < 1:
             raise PerceptionError("table_reference_clearance_px must be a positive integer")
         if self.table_plane_mode not in {"reference_fit", "camera_parallel"}:
@@ -368,6 +373,21 @@ class RGBDFrame:
     depth_m: np.ndarray
     intrinsics: np.ndarray
     X_base_camera: np.ndarray
+    manual_base_y_offset_mm: float = 0.0
+
+
+def with_manual_base_y_offset(frame: RGBDFrame, offset_mm: float) -> RGBDFrame:
+    """Return an effective transform; retain raw calibration and avoid double shifts.
+
+    The frame records the offset already represented in X_base_camera. Applying
+    the same setting again is idempotent; zero restores an adjusted frame.
+    """
+    from dataclasses import replace
+    if not math.isfinite(offset_mm) or not math.isfinite(frame.manual_base_y_offset_mm):
+        raise PerceptionError("manual base Y offset must be finite")
+    transform = frame.X_base_camera.copy()
+    transform[1, 3] += (offset_mm - frame.manual_base_y_offset_mm) / 1000.0
+    return replace(frame, X_base_camera=transform, manual_base_y_offset_mm=offset_mm)
 
 
 @dataclass(frozen=True)
@@ -3799,6 +3819,7 @@ class ClothCenterPerception:
         output_dir.mkdir(parents=True, exist_ok=False)
         temporal_median_applied = frames is None and self.capture is capture_two_view_rgbd
         frames = self.capture(self.config) if frames is None else frames
+        frames = [with_manual_base_y_offset(frame, self.config.manual_base_y_offset_mm) for frame in frames]
         expected_labels = set(self.config.active_camera_labels)
         frame_labels = {frame.label for frame in frames}
         if len(frames) != len(expected_labels) or frame_labels != expected_labels:
@@ -3826,6 +3847,7 @@ class ClothCenterPerception:
                     "depth_m": f"camera_{index}_{frame.label}_depth_m.npy",
                     "intrinsics": frame.intrinsics.tolist(),
                     "X_base_camera": frame.X_base_camera.tolist(),
+                    "manual_base_y_offset_mm": frame.manual_base_y_offset_mm,
                     "valid_depth_fraction": float(valid.mean()),
                     "temporal_median_frames": int(self.config.temporal_median_frames)
                     if temporal_median_applied
@@ -4272,6 +4294,7 @@ class ClothCenterPerception:
 
         output_dir.mkdir(parents=True, exist_ok=False)
         frames = self.capture(self.config) if frames is None else frames
+        frames = [with_manual_base_y_offset(frame, self.config.manual_base_y_offset_mm) for frame in frames]
         expected_labels = set(self.config.active_camera_labels)
         frame_labels = {frame.label for frame in frames}
         if len(frames) not in {1, 2} or frame_labels != expected_labels:
@@ -4340,6 +4363,7 @@ class ClothCenterPerception:
                 "depth_m": primary_depth,
                 "intrinsics": primary.intrinsics.tolist(),
                 "X_base_camera": primary.X_base_camera.tolist(),
+                "manual_base_y_offset_mm": primary.manual_base_y_offset_mm,
                 "center_base_mm": primary_point.tolist(),
             }
         ]
@@ -4419,6 +4443,7 @@ class ClothCenterPerception:
                         "depth_m": None,
                         "intrinsics": auxiliary.intrinsics.tolist(),
                         "X_base_camera": auxiliary.X_base_camera.tolist(),
+                        "manual_base_y_offset_mm": auxiliary.manual_base_y_offset_mm,
                         "center_base_mm": None,
                         "availability": "occluded_or_outside_view",
                         "error": str(exc),
@@ -4484,6 +4509,7 @@ class ClothCenterPerception:
                         "depth_m": auxiliary_estimate.depth_m,
                         "intrinsics": auxiliary.intrinsics.tolist(),
                         "X_base_camera": auxiliary.X_base_camera.tolist(),
+                        "manual_base_y_offset_mm": auxiliary.manual_base_y_offset_mm,
                         "center_base_mm": auxiliary_estimate.point_base_mm.tolist(),
                         "candidate_count": auxiliary_estimate.candidate_count,
                         "clustered_count": auxiliary_estimate.clustered_count,
