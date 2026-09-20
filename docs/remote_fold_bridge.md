@@ -4,7 +4,7 @@
 
 公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.11+（3.10 需安装 `tomli`）、Pillow 和已登录的 `codex`。非交互 SSH 环境的 PATH 必须能找到这些命令。Codex 需支持 `exec --json --ephemeral --ignore-user-config --ignore-rules --output-schema`；本地核对版本为 0.154.0。远端调用是独立会话。Alienware 需安装项目依赖（新增 `jsonschema>=4.18`）。
 
-适配器只保留远端 `$CODEX_HOME/config.toml` 的当前 provider 接口配置及登录存储选项；不继承其他 MCP、hooks、模型或工具配置，不修改全局配置。既有 GPT provider 必须支持所选模型、Responses、视觉 MCP 和结构化输出。`summary.json` 的 `plan_authority` 记录 Codex、模型和推理强度。历史 `claude_*` 文件名、计时字段和内部客户端名称保留兼容，不表示仍调用 Claude。
+适配器显式选用远端 **`rbs` profile** 的 provider 接口配置及登录存储选项，兼容 `$CODEX_HOME/config.toml` 的 `[profiles.rbs]` 和新版 `$CODEX_HOME/rbs.config.toml`；同时存在时独立文件优先。profile 覆盖基础配置后，仅将所选 provider 与认证存储选项传给隔离的 Codex 调用，不继承其他 MCP、hooks、模型或工具配置，不修改全局配置。找不到 `rbs` 直接报错，不回退到默认 OpenAI provider。认证仍使用远端既有登录和环境变量；不会在本机复制密钥。既有 GPT provider 必须支持所选模型、Responses、视觉 MCP 和结构化输出。`summary.json` 的 `plan_authority` 和请求审计记录 Codex、profile、模型和推理强度。历史 `claude_*` 文件名、计时字段和内部客户端名称保留兼容，不表示仍调用 Claude。
 
 Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不会读取保存的 PNG 来伪造 CLI 图片交付。若远端 CLI 版本省略图片字节，像素交付校验仍失败。最终输出必须具有成功的 `turn.completed`，且通过原始 JSON schema 校验；可选字段在 provider schema 中表示为 null，返回时恢复省略语义。Codex 没有相同的 `--max-turns` 参数，因此原预算用于限制 MCP 调用次数，并继续执行原编辑预算和总超时；不是对内部推理轮数的精确计数。
 

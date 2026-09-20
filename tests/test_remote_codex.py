@@ -41,6 +41,27 @@ def test_terminal_contract_and_missing_pixels():
         state.final(0)
 
 
+@pytest.mark.parametrize("event", [
+    {"type": "error", "message": "model_not_found: requested model is unavailable"},
+    {"type": "turn.failed", "error": {"message": "invalid_json_schema: unsupported keyword", "code": "invalid_request_error"}},
+    {"type": "turn.failed", "error": {"message": "401 Unauthorized"}},
+])
+def test_terminal_error_preserves_upstream_reason(event):
+    state = CodexEvents(2)
+    state.consume(event)
+    with pytest.raises(ValueError) as caught:
+        state.final(1)
+    assert "cli_exit_code=1" in str(caught.value)
+    assert "turn_completed=False" in str(caught.value)
+    assert json.dumps(event, ensure_ascii=False) in str(caught.value)
+    assert state.errors == [event]
+
+
+def test_empty_stream_reports_exit_status():
+    with pytest.raises(ValueError, match="cli_exit_code=2.*last_event=None"):
+        CodexEvents(1).final(2)
+
+
 @pytest.mark.parametrize("text", ["refused", "```json\n{}\n```", "[]"])
 def test_non_json_final_is_rejected(text):
     state = CodexEvents(1)
@@ -108,6 +129,48 @@ def test_command_isolates_tools_and_keeps_provider(tmp_path, monkeypatch):
     assert "claude" not in command
 
 
+@pytest.mark.parametrize("layout", ["legacy", "file", "both"])
+def test_explicit_rbs_profile_overrides_default_routing(tmp_path, monkeypatch, layout):
+    base = ('model_provider="openai"\nprofile="other"\n'
+            '[model_providers.openai]\nname="default"\nenv_key="OPENAI_API_KEY"\n'
+            '[model_providers.relay]\nname="relay"\nbase_url="https://relay.invalid/v1"\n'
+            'env_key="RBS_API_KEY"\nwire_api="responses"\n'
+            '[profiles.other]\nmodel_provider="openai"\n')
+    if layout in {"legacy", "both"}:
+        base += ('[profiles.rbs]\nmodel_provider="relay"\nmodel="old-model"\n'
+                 'model_reasoning_effort="high"\n')
+    (tmp_path / "config.toml").write_text(base)
+    if layout in {"file", "both"}:
+        (tmp_path / "rbs.config.toml").write_text(
+            'model_provider="relay"\nmodel="ignored-profile-model"\n'
+            '[model_providers.relay]\nbase_url="https://profile.invalid/v1"\n'
+            '[mcp_servers.unrelated]\ncommand="do-not-inherit"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    provider = provider_config("rbs")
+    assert provider["model_provider"] == "relay"
+    assert provider["model_providers"]["relay"]["env_key"] == "RBS_API_KEY"
+    assert "openai" not in provider["model_providers"]
+    assert "model" not in provider and "mcp_servers" not in provider
+    if layout != "legacy":
+        assert provider["model_providers"]["relay"]["base_url"] == "https://profile.invalid/v1"
+
+
+@pytest.mark.parametrize("base_exists", [True, False])
+def test_missing_rbs_never_falls_back_to_openai(tmp_path, monkeypatch, base_exists):
+    if base_exists:
+        (tmp_path / "config.toml").write_text('model_provider="openai"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    with pytest.raises(ValueError, match="rbs.*refusing default-provider fallback"):
+        provider_config("rbs")
+
+
+def test_standalone_profile_without_base_config(tmp_path, monkeypatch):
+    (tmp_path / "rbs.config.toml").write_text('model_provider="relay"\n'
+        '[model_providers.relay]\nname="relay"\nenv_key="RBS_API_KEY"\n')
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert provider_config("rbs")["model_provider"] == "relay"
+
+
 FAKE_CODEX = '''#!/usr/bin/env python3
 import json, sys
 from pathlib import Path
@@ -118,7 +181,12 @@ def emit(x):
 assert sys.argv[1:3] == ['exec', '--json']
 assert sys.argv[sys.argv.index('--model')+1] == 'gpt-6-astra'
 assert 'model_reasoning_effort="medium"' in sys.argv
+assert 'model_provider="test-rbs"' in sys.argv
 prompt = sys.stdin.read()
+if 'UPSTREAM_FAILURE' in prompt:
+    emit({'type':'error', 'message':'model_not_found: requested model is unavailable'})
+    emit({'type':'turn.failed', 'error':{'message':'model_not_found: requested model is unavailable'}})
+    sys.exit(1)
 tools = ImageTools(Path.cwd(), 1)
 for i, (tool, arguments) in enumerate([
     ('view_image', {'image_id':'image_0'}),
@@ -146,7 +214,12 @@ def fake_remote(tmp_path, monkeypatch):
     launcher.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + str(os.path.dirname(sys.executable)) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("CLOTH_REMOTE_IMAGE_PYTHON", sys.executable)
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty_auth"))
+    auth_root = tmp_path / "test_auth"
+    auth_root.mkdir()
+    (auth_root / "config.toml").write_text('model_provider="openai"\n'
+        '[profiles.rbs]\nmodel_provider="test-rbs"\n'
+        '[model_providers.test-rbs]\nname="offline fake"\nbase_url="https://unused.invalid/v1"\n')
+    monkeypatch.setenv("CODEX_HOME", str(auth_root))
     image = tmp_path / "rgb.png"
     Image.new("RGB", (48, 32), "red").save(image)
     backend = RemoteCodexBackend(ssh_binary=str(launcher), timeout_s=15)
@@ -162,6 +235,8 @@ def test_real_shell_runner_image_audit_and_cleanup(fake_remote, tmp_path, metada
         image_edit_limit=2, orientation_correction=True, debug_dir=tmp_path / "debug")
     assert parse_claude_json(result.stdout) == {"ok": True}
     assert json.loads(result.stdout)["provider"] == "codex"
+    assert json.loads(result.stdout)["profile"] == "rbs"
+    assert json.loads((tmp_path / "debug" / "request.json").read_text())["profile"] == "rbs"
     assert len(result.image_sources) == 2
     for source in result.image_sources:
         assert (source["image_delivery_status"] == "VERIFIED") is not metadata_only
@@ -182,3 +257,12 @@ def test_original_schema_rejection_after_successful_cli(fake_remote, tmp_path):
         backend.invoke(prompt="Inspect", image_paths=[image],
             schema={"type": "object", "properties": {"ok": {"const": False}}, "required": ["ok"]},
             system_prompt="RGB", debug_dir=tmp_path / "debug")
+
+
+def test_stdout_api_error_survives_runner_and_ssh_envelope(fake_remote, tmp_path):
+    backend, image = fake_remote
+    with pytest.raises(PlannerBackendError, match="model_not_found") as caught:
+        backend.invoke(prompt="UPSTREAM_FAILURE", image_paths=[image], schema={},
+                       system_prompt="RGB", debug_dir=tmp_path / "debug")
+    assert "cli_exit_code=1" in str(caught.value)
+    assert '"type": "turn.failed"' in (tmp_path / "debug" / "stdout.log").read_text()

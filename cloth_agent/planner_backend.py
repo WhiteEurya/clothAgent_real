@@ -262,6 +262,7 @@ class RemoteClaudeBackend:
                  "agent": self.agent_name,
                  "model": getattr(self, "model", None),
                  "reasoning_effort": getattr(self, "reasoning_effort", None),
+                 "profile": getattr(self, "profile", None),
                  "image_edit_limit": image_edit_limit,
                  "max_turns": self._call_max_turns,
                  "overall_timeout_s": overall_timeout_s,
@@ -591,6 +592,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     agent_name = "Codex"
     model = "gpt-6-astra"
     reasoning_effort = "medium"
+    profile = "rbs"
 
     def _invoke(self, *, schema, **kwargs):
         if not self.image_tools:
@@ -618,6 +620,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
             raise PlannerBackendError("remote Codex requires audited image tools")
         source = Path(__file__).with_name("codex_remote_runner.py").read_bytes()
         request = {"schema": schema, "system_prompt": system_prompt,
+                   "profile": self.profile,
                    "model": self.model, "reasoning_effort": self.reasoning_effort,
                    "max_tool_calls": self._call_max_turns,
                    "orientation_correction": self._orientation_correction}

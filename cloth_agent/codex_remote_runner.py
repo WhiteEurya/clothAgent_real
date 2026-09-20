@@ -72,11 +72,19 @@ def toml_value(value):
     raise ValueError("unsupported Codex provider configuration value")
 
 
-def provider_config():
-    """Preserve existing GPT routing/auth, never unrelated MCP, hooks or tools."""
+def provider_config(profile=None):
+    """Resolve a named profile's routing/auth without inheriting its tools.
+
+    Codex supports legacy [profiles.name] and newer name.config.toml files.
+    The standalone profile file takes precedence over a legacy named table.
+    Authentication still uses the real CODEX_HOME; no credentials are copied.
+    """
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     path = root / "config.toml"
-    if not path.exists():
+    if profile is not None and (not isinstance(profile, str) or not profile or
+            any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in profile)):
+        raise ValueError("invalid Codex profile name")
+    if not path.exists() and profile is None:
         return {}
     try:
         import tomllib
@@ -85,16 +93,32 @@ def provider_config():
             import tomli as tomllib
         except ImportError as exc:
             raise RuntimeError("Codex provider config requires Python 3.11+ or tomli; set CLOTH_REMOTE_IMAGE_PYTHON") from exc
-    with path.open("rb") as stream:
-        config = tomllib.load(stream)
+    config = {}
+    if path.exists():
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
     # A selected profile can own provider routing. Do not inherit its model,
     # effort, sandbox, tools, or instructions.
-    profile = config.get("profile")
+    profile = profile if profile is not None else config.get("profile")
     if profile:
         profiles = config.get("profiles", {})
-        if profile not in profiles:
-            raise ValueError("Codex default profile is not in config.toml; configure provider at top level")
-        config = {**config, **profiles[profile]}
+        profile_path = root / f"{profile}.config.toml"
+        if profile_path.is_file():
+            with profile_path.open("rb") as stream:
+                overlay = tomllib.load(stream)
+        elif profile in profiles:
+            overlay = profiles[profile]
+        else:
+            raise ValueError(f"Codex profile {profile!r} not found in {path} or {profile_path}; refusing default-provider fallback")
+
+        def merge(base, overrides):
+            result = dict(base)
+            for key, value in overrides.items():
+                result[key] = (merge(result[key], value)
+                               if isinstance(result.get(key), dict) and isinstance(value, dict) else value)
+            return result
+
+        config = merge(config, overlay)
     result = {}
     for key in ("model_provider", "cli_auth_credentials_store"):
         if key in config:
@@ -148,11 +172,22 @@ class CodexEvents:
         self.completed = False
         self.failed = False
         self.usage = None
+        self.errors = []
+        self.last_event_type = None
 
     def consume(self, event):
         kind = event.get("type")
+        self.last_event_type = kind
         if kind in {"turn.failed", "error"}:
             self.failed = True
+            # Codex reports API/auth/model/schema failures on stdout as JSONL,
+            # often with empty stderr. Keep their reason in the terminal error
+            # envelope; the host otherwise only displays our generic failure.
+            detail = {key: event[key] for key in
+                      ("type", "message", "error", "code", "status", "status_code")
+                      if key in event}
+            self.errors.append(detail)
+            self.errors = self.errors[-8:]
         if kind == "turn.completed":
             if self.completed:
                 raise ValueError("multiple Codex terminal turns")
@@ -203,7 +238,13 @@ class CodexEvents:
 
     def final(self, returncode):
         if returncode or self.failed or not self.completed or not self.messages:
-            raise ValueError("Codex did not return a successful terminal turn and final message")
+            upstream = json.dumps(self.errors, ensure_ascii=False)
+            raise ValueError(
+                "Codex did not return a successful terminal turn and final message; "
+                f"cli_exit_code={returncode}, turn_completed={self.completed}, "
+                f"final_messages={len(self.messages)}, last_event={self.last_event_type}; "
+                f"upstream_errors={upstream[:8000]}"
+            )
         if self.calls != self.completed_calls:
             raise ValueError("Codex ended with unfinished MCP calls")
         value = json.loads(self.messages[-1])
@@ -228,7 +269,7 @@ def main(argv=None):
     process = None
     try:
         (job / "response_schema.json").write_text(json.dumps(output_schema(request["schema"])))
-        command = codex_command(job, request, provider_config())
+        command = codex_command(job, request, provider_config(request["profile"]))
         # Inherit the prompt pipe, avoiding a large write-before-read deadlock.
         process = subprocess.Popen(command, stdin=sys.stdin, stdout=subprocess.PIPE,
                                    stderr=sys.stderr, text=True, cwd=job)
@@ -252,11 +293,15 @@ def main(argv=None):
             from image_tools import orientation_guard
             orientation_guard(job, {"hook_event_name": "Stop",
                                     "last_assistant_message": json.dumps(final["structured_output"])})
-        emit({**final, "model": request["model"], "reasoning_effort": request["reasoning_effort"]})
+        emit({**final, "model": request["model"], "reasoning_effort": request["reasoning_effort"],
+              "profile": request["profile"]})
         return 0
     except Exception as exc:
         emit({"type": "result", "subtype": "error_codex", "is_error": True,
-              "provider": "codex", "result": f"{type(exc).__name__}: {exc}"})
+              "provider": "codex", "model": request["model"],
+              "profile": request["profile"],
+              "reasoning_effort": request["reasoning_effort"],
+              "result": f"{type(exc).__name__}: {exc}", "errors": state.errors})
         return 1
     finally:
         if process is not None:

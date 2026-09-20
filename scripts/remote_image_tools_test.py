@@ -155,6 +155,10 @@ def main(argv=None):
         if output.is_dir() and 'backend' in locals():
             (output / "image_tool_events.json").write_text(json.dumps(backend.last_image_tool_events, indent=2), encoding="utf-8")
         print(f"IMAGE TOOLS TEST FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        debug = output / "claude_image_tools" / "smoke"
+        if debug.is_dir():
+            print(f"Full CLI stdout: {debug.resolve() / 'stdout.log'}", file=sys.stderr)
+            print(f"Full CLI stderr: {debug.resolve() / 'stderr.log'}", file=sys.stderr)
         return 1
     finally:
         if helper_directory is not None:

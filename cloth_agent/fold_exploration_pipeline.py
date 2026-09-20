@@ -5509,6 +5509,7 @@ class FoldExplorationPipeline:
                 "strategy": "Codex" if self.planner_backend == "remote" else "Claude",
                 "model": RemoteCodexBackend.model if self.planner_backend == "remote" else None,
                 "reasoning_effort": RemoteCodexBackend.reasoning_effort if self.planner_backend == "remote" else None,
+                "profile": RemoteCodexBackend.profile if self.planner_backend == "remote" else None,
                 "backend": self.planner_backend,
                 "remote_host": self.remote_planner_host if self.planner_backend == "remote" else None,
                 "host_role": "schema, coordinate, safety, preflight, IK, execution",
