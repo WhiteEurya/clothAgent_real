@@ -6,9 +6,11 @@
 
 适配器使用原生 **`codex exec -p rbs`**，由远端 Codex 按自身版本规则加载 profile、provider 和认证。已移除 Python 手动读取、筛选与合并 profile 的逻辑，不再传 `--ignore-user-config`，无需 `tomli`。调用保持远端用户的环境和登录状态，不修改全局配置、不复制密钥。模型和推理强度仍通过显式参数设置为 `gpt-6-astra`、`medium`，同时传入本次图像工具和执行约束。原生 profile 可能影响其他 Codex 设置；不再声称忽略全部用户配置。既有 GPT provider 必须支持所选模型、Responses、视觉 MCP 和结构化输出。`summary.json` 的 `plan_authority` 和请求审计记录 Codex、profile、模型和推理强度。历史 `claude_*` 文件名、计时字段和内部客户端名称保留兼容，不表示仍调用 Claude。
 
+Codex 远端任务通过 `ssh <host> 'exec bash -lc ...'` 加载远端登录配置中的 PATH 和认证环境变量，随后 `exec bash -c` 运行任务。替换登录 shell 可避免清理 trap 的 `exit` 触发 `.bash_logout`，把成功状态改成退出码 1；真实 SSH 中已复现这种退出码问题。普通 `ssh host command` 并不保证加载登录配置：本机真实 SSH 回环已复现同一 Codex/profile 在普通 SSH 下缺失 `OPENAI_API_KEY`，而登录 shell 下该变量存在。这里只使用远端自己的登录配置，不传输本机密钥；若实际服务器仅在交互终端中配置变量，仍需使其登录 shell 能获得认证环境。整个任务保留 stdin 提示词、超时、哈希检查和清理 trap。
+
 Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不会读取保存的 PNG 来伪造 CLI 图片交付。若远端 CLI 版本省略图片字节，像素交付校验仍失败。最终输出必须具有成功的 `turn.completed`，且通过原始 JSON schema 校验；可选字段在 provider schema 中表示为 null，返回时恢复省略语义。Codex 没有相同的 `--max-turns` 参数，因此原预算用于限制 MCP 调用次数，并继续执行原编辑预算和总超时；不是对内部推理轮数的精确计数。
 
-2026-09-20 已使用生产脚本的 `--local-codex` 模式完成真实模型测试（`rbs`、`gpt-6-astra`、medium），约 56.9 秒返回有效 JSON。原图、旋转图、裁剪图和缩放图全部为 `VERIFIED`，坐标映射核对通过。此模式仅将 SSH/HTTPS 传输换成本机 shell 和文件读取，Codex 命令构造、MCP、schema、图片审计均与远端共用。当前开发环境无法解析 `company-planner`，该结果不代表已验证 SSH/HTTPS。先运行下面的无机器人在线图片测试，再启动折叠。
+2026-09-20 已使用生产脚本的 `--local-codex` 模式完成真实模型测试（`rbs`、`gpt-6-astra`、medium），约 56.9 秒返回有效 JSON。随后通过临时回环 SSH 服务及临时密钥，使用生产 backend 完成真实 HTTPS 上传、SSH 下载、哈希、Codex、MCP、schema 和清理全链路测试，输出 `REMOTE CODEX IMAGE TOOLS PASSED`、退出码 0。原图、旋转图、裁剪图和缩放图全部为 `VERIFIED`，坐标映射核对通过。临时服务仅监听 127.0.0.1，结束后关闭并清理密钥。此测试验证 SSH 环境差异和完整传输流程，但不是对实际 `company-planner` 服务器的访问验证。先在实际机器运行下面的无机器人在线图片测试，再启动折叠。
 
 ## Codex 自选图像工具
 

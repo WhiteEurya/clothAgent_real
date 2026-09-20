@@ -174,6 +174,11 @@ def fake_remote(tmp_path, monkeypatch):
     launcher = tmp_path / "ssh"
     launcher.write_text('#!/bin/sh\nfor cloth_arg do :; done\nexec /bin/sh -c "$cloth_arg"\n')
     launcher.chmod(0o700)
+    # Keep unit tests independent of the developer's real login configuration.
+    # Production still requests -lc; the real SSH smoke covers initialization.
+    shell = tmp_path / "bash"
+    shell.write_text('#!/bin/sh\nexec /bin/bash --noprofile "$@"\n')
+    shell.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + str(os.path.dirname(sys.executable)) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("CLOTH_REMOTE_IMAGE_PYTHON", sys.executable)
     auth_root = tmp_path / "test_auth"
@@ -195,6 +200,7 @@ def test_real_shell_runner_image_audit_and_cleanup(fake_remote, tmp_path, metada
         image_paths=[image], schema={"type": "object"}, system_prompt="RGB only",
         image_edit_limit=2, orientation_correction=True, debug_dir=tmp_path / "debug")
     assert parse_claude_json(result.stdout) == {"ok": True}
+    assert result.command[-1].startswith("exec bash -lc ")
     assert json.loads(result.stdout)["provider"] == "codex"
     assert json.loads(result.stdout)["profile"] == "rbs"
     assert json.loads((tmp_path / "debug" / "request.json").read_text())["profile"] == "rbs"

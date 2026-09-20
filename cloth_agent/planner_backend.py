@@ -127,6 +127,7 @@ class RemoteClaudeBackend:
     """
 
     agent_name = "Claude"
+    remote_login_shell = False
 
     def __init__(
         self,
@@ -515,6 +516,14 @@ class RemoteClaudeBackend:
         )
         ssh = [self.ssh_binary, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", self.ssh_host]
+        # SSH command sessions normally skip login initialization. Codex's
+        # profile may refer to API credentials exported by the login files.
+        # Load those on the remote host; never forward local credential values.
+        if self.remote_login_shell:
+            # Replace the login shell after initialization: running the job's
+            # EXIT trap there can invoke .bash_logout (e.g. clear_console),
+            # changing a successful CLI's status in a non-TTY SSH session.
+            remote = "exec bash -lc " + shlex.quote("exec bash -c " + shlex.quote(remote))
         command = [*ssh, remote]
         if self._debug_session:
             self._debug_session.request.update(remote_prompt=remote_prompt, command=command)
@@ -590,6 +599,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     """
 
     agent_name = "Codex"
+    remote_login_shell = True
     model = "gpt-6-astra"
     reasoning_effort = "medium"
     profile = "rbs"
