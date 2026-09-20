@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze an observation RGB image, then overlay read-only live TCP feedback."""
+"""Freeze observation RGB and overlay TCP feedback; optionally scan at fixed X=420."""
 from __future__ import annotations
 
 import argparse
@@ -166,7 +166,7 @@ def render_overlay(rgb, sample, now, pixel_offset=(0.0, 0.0)):
     return image, status
 
 
-def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0)):
+def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_begin=None):
     import tkinter as tk
     from PIL import ImageTk
 
@@ -184,6 +184,12 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0)):
              'Green: original TCP. Orange: display offset. Arrows: 1 px; Shift+arrows: 10 px; R: reset.\n'
              'Fixed photo / fixed camera transform. S: save screenshot. Esc: close (no robot command).').pack()
     current = None
+    if scan_begin is not None:
+        tk.Label(root, text='SCAN: manually reach X=420 and configured start Y/Z, switch to position mode.\n'
+                 'B: start one Y sweep. Esc/close: request stop. Initial photo move is separate from sweep.',
+                 fg='red').pack()
+        root.bind('<b>', lambda event: scan_begin.set())
+        root.bind('<B>', lambda event: scan_begin.set())
 
     def record_offset():
         write_json(directory / 'display_offset.json', {
@@ -218,6 +224,12 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0)):
         image_label.configure(image=photo)
         image_label.image = photo
         text = status
+        if current is not None and 'scan_status' in current:
+            text += f' | Scan: {current["scan_status"]}'
+            if 'x_error_mm' in current:
+                text += f' | dX={current["x_error_mm"]:+.3f} mm'
+            if 'measured_y_speed_mm_s' in current:
+                text += f' | Vy={current["measured_y_speed_mm_s"]:+.2f} mm/s'
         if current is not None and status not in {'READ_ERROR', 'STALE'} and current['status'] == 'OK':
             x, y, z = current['tcp_pose_mm_deg'][:3]
             text += f' | TCP base XYZ: {x:.2f}, {y:.2f}, {z:.2f} mm'
@@ -278,12 +290,26 @@ def main(argv=None):
     parser.add_argument('--capture-current', action='store_true', help='Capture at current stationary pose; no initial motion')
     parser.add_argument('--real', action='store_true')
     parser.add_argument('--confirm-real', action='store_true')
+    parser.add_argument('--scan-y', nargs=2, type=float, metavar=('START', 'END'), help='One fixed-X=420 Y sweep in mm')
+    parser.add_argument('--scan-z', type=float, help='Explicit fixed scan height in base mm')
+    parser.add_argument('--scan-speed', type=float, help='Explicit commanded scan speed in mm/s')
+    parser.add_argument('--scan-x-tolerance', type=float, default=.5, help='Abort on measured X error exceeding this mm, maximum 0.5')
     args = parser.parse_args(argv)
     if not np.isfinite(args.pixel_offset).all():
         parser.error('--pixel-offset must contain finite numbers')
     if not args.capture_current and not (args.real and args.confirm_real):
         parser.error('Moving to observation requires --real --confirm-real; or use --capture-current')
+    scan_settings = None
+    if args.scan_y is not None:
+        if not (args.real and args.confirm_real) or args.scan_z is None or args.scan_speed is None:
+            parser.error('--scan-y requires --real --confirm-real --scan-z and --scan-speed')
+        from cloth_agent.fixed_x_scan import ScanSettings
+        scan_settings = ScanSettings(*args.scan_y, args.scan_z, args.scan_speed, args.scan_x_tolerance)
+    elif args.scan_z is not None or args.scan_speed is not None:
+        parser.error('--scan-z/--scan-speed require --scan-y')
     config = RobotConfig.load(PROJECT_ROOT, args.robot_config)
+    if scan_settings is not None:
+        scan_settings.validate(config)
     perception = PerceptionConfig.load(PROJECT_ROOT, args.perception_config)
     label = args.camera.upper()
     if label not in {camera.label for camera in perception.cameras}:
@@ -299,6 +325,9 @@ def main(argv=None):
     stop = threading.Event()
     report = {'status': 'STARTING', 'monitor_policy': 'read_only', 'capture_current': args.capture_current,
               'initial_display_pixel_offset_xy': args.pixel_offset, 'offset_policy': 'display_only_original_RGB_pixels'}
+    if scan_settings is not None:
+        from dataclasses import asdict
+        report.update(monitor_policy='operator_triggered_fixed_x_scan', scan_settings=asdict(scan_settings))
     directory = None
     try:
         parent = args.output_dir or auxiliary_dir(PROJECT_ROOT, 'live_tcp_overlay')
@@ -330,12 +359,23 @@ def main(argv=None):
                       frozen_camera_transform=frame.X_base_camera.tolist())
         write_json(directory / 'session.json', report)
         latest = queue.Queue(maxsize=1)
-        worker = threading.Thread(target=telemetry_loop,
-                                  args=(arm, config, projection, latest, stop, directory / 'tcp_samples.jsonl', .1),
-                                  daemon=True)
+        scan_begin = None
+        if scan_settings is None:
+            worker = threading.Thread(target=telemetry_loop,
+                                      args=(arm, config, projection, latest, stop, directory / 'tcp_samples.jsonl', .1),
+                                      daemon=True)
+        else:
+            from cloth_agent.fixed_x_scan import scan_monitor
+            scan_begin = threading.Event()
+            worker = threading.Thread(target=scan_monitor,
+                                      args=(arm, config, projection, latest, stop, scan_begin, scan_settings,
+                                            directory, poll_sample, publish_latest, read_pose), daemon=True)
         worker.start()
         print(f'Reference captured. You may now move manually. Records: {directory}', flush=True)
-        report['final_display_pixel_offset_xy'] = run_viewer(root, frame, latest, directory, args.pixel_offset)
+        if scan_begin is None:
+            report['final_display_pixel_offset_xy'] = run_viewer(root, frame, latest, directory, args.pixel_offset)
+        else:
+            report['final_display_pixel_offset_xy'] = run_viewer(root, frame, latest, directory, args.pixel_offset, scan_begin)
         report['status'] = 'CLOSED'
         return 0
     except BaseException as exc:
@@ -343,6 +383,14 @@ def main(argv=None):
         raise
     finally:
         stop.set()
+        if scan_settings is not None and worker is not None:
+            # Give the scan worker a chance to issue its stop before disconnect.
+            worker.join(timeout=2)
+            if worker.is_alive() and arm is not None:
+                try:
+                    report['scan_exit_stop_code'] = arm.set_state(4)
+                except Exception as exc:
+                    report['scan_exit_stop_error'] = str(exc)
         if arm is not None:
             arm.disconnect()  # No Home, stop, mode change, or gripper command on exit.
         if worker is not None:
