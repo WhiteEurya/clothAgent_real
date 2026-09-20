@@ -91,7 +91,7 @@ from .grasp_checkpoint import (
     GraspCheckpointRejected, validate_acquisition_probe_lift,
 )
 from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
-from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
+from .planner_backend import PlannerBackendError, RemoteClaudeBackend, RemoteCodexBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
@@ -2951,7 +2951,7 @@ class FoldExplorationPipeline:
         self.skill_store = SkillStore(self.project_root / "data" / "skills")
         approved_skills = self.skill_store.approved()
         client_type = RemoteFoldClient if planner_backend == "remote" else ClaudeAutoClient
-        backend_options = ({"backend": RemoteClaudeBackend(ssh_host=remote_planner_host,
+        backend_options = ({"backend": RemoteCodexBackend(ssh_host=remote_planner_host,
                             timeout_s=self.claude_timeout_s)} if planner_backend == "remote" else {})
         self.client = client_type(
             binary=claude_binary,
@@ -2968,7 +2968,7 @@ class FoldExplorationPipeline:
             claude_binary,
             supervisor_timeout_s,
             persistent_session=self.persistent_claude,
-            backend=(RemoteClaudeBackend(ssh_host=remote_planner_host, timeout_s=supervisor_timeout_s)
+            backend=(RemoteCodexBackend(ssh_host=remote_planner_host, timeout_s=supervisor_timeout_s)
                      if planner_backend == "remote" else None),
         )
         self.experiences = FoldExperienceStore(session.run_dir)
@@ -5506,7 +5506,9 @@ class FoldExplorationPipeline:
                 "evaluation_fallback": self.planner_backend == "local",
             },
             "plan_authority": {
-                "strategy": "Claude",
+                "strategy": "Codex" if self.planner_backend == "remote" else "Claude",
+                "model": RemoteCodexBackend.model if self.planner_backend == "remote" else None,
+                "reasoning_effort": RemoteCodexBackend.reasoning_effort if self.planner_backend == "remote" else None,
                 "backend": self.planner_backend,
                 "remote_host": self.remote_planner_host if self.planner_backend == "remote" else None,
                 "host_role": "schema, coordinate, safety, preflight, IK, execution",

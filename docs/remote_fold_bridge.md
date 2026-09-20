@@ -1,27 +1,34 @@
-# Fold 远程 Claude 桥接
+# Fold 远程 Codex 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 Claude。Alienware 不需要本机 Claude。显式指定 `--planner-backend local` 可以使用旧调用链。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 **Codex CLI**，固定模型 `gpt-6-astra`、推理强度 `medium`（MID）。Alienware 不需要本机 Codex。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
 
-公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
+公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.11+（3.10 需安装 `tomli`）、Pillow 和已登录的 `codex`。非交互 SSH 环境的 PATH 必须能找到这些命令。Codex 需支持 `exec --json --ephemeral --ignore-user-config --ignore-rules --output-schema`；本地核对版本为 0.154.0。远端调用是独立会话。Alienware 需安装项目依赖（新增 `jsonschema>=4.18`）。
 
-## Claude 自选图像工具
+适配器只保留远端 `$CODEX_HOME/config.toml` 的当前 provider 接口配置及登录存储选项；不继承其他 MCP、hooks、模型或工具配置，不修改全局配置。既有 GPT provider 必须支持所选模型、Responses、视觉 MCP 和结构化输出。`summary.json` 的 `plan_authority` 记录 Codex、模型和推理强度。历史 `claude_*` 文件名、计时字段和内部客户端名称保留兼容，不表示仍调用 Claude。
 
-远程 backend 默认启用 `cloth_image` MCP 工具，内置工具仍只开放 `Read`。工具清单不是仅供阅读的 Markdown：桥接通过 `--mcp-config` 注册真实可调用工具，并用 `--allowedTools` 逐项授权。`--strict-mcp-config` 将本次 MCP 集合限定为图像工具。
+Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不会读取保存的 PNG 来伪造 CLI 图片交付。若远端 CLI 版本省略图片字节，像素交付校验仍失败。最终输出必须具有成功的 `turn.completed`，且通过原始 JSON schema 校验；可选字段在 provider schema 中表示为 null，返回时恢复省略语义。Codex 没有相同的 `--max-turns` 参数，因此原预算用于限制 MCP 调用次数，并继续执行原编辑预算和总超时；不是对内部推理轮数的精确计数。
+
+本次验证包含模拟 Codex CLI 的真实 shell/下载/图片工具/审计/清理测试；当前开发环境无法解析 `company-planner`，尚未完成公司端真实模型验证。先运行下面的无机器人在线图片测试，再启动折叠。
+
+## Codex 自选图像工具
+
+远程 backend 默认仅注册 `cloth_image` MCP，通过 Codex `-c mcp_servers=...` 传入。启用只读 sandbox、禁止审批，关闭 shell、网页搜索、其他 agent、应用和内置 view_image，图片统一走审计 MCP。
 
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：
 
 - `image_tools.py`：独立工具服务，只依赖 Python + Pillow。
 - `tool_list.json`：工具说明、参数和本次原始图像 ID。
-- `image_tools.mcp.json`：本次 Claude CLI 使用的注册配置。
-- `image_tools.settings.json`：仅对本次 CLI 生效的 Read/MCP 生命周期与图片内容检查 hook。
-- `view_<id>.png`：Claude 自主调用工具后生成的观察图。
+- `image_tools.mcp.json`：工具注册清单，由适配器转换为 Codex 配置。
+- `image_tools.settings.json`：共享准备流程生成的历史 Claude hook 配置，Codex 不加载。
+- `codex_runner.py`、`codex_request.json`、`response_schema.json`：本次 Codex 适配器及请求约束。
+- `view_<id>.png`：模型调用工具后生成的观察图。
 - `image_tool_calls.jsonl`：参数、结果、耗时及错误记录。
 
 可调用工具是 `list_images`、`image_info`、`view_image`、`rotate_image`、`crop_image`、`resize_image`、`map_point`。`view_image` 直接返回原图或已保存视图；旋转、裁剪、缩放也直接返回 MCP image block 和元数据，不再要求额外 `Read` 才能看见结果。旋转支持任意角度，正值顺时针；缩放保持宽高比例（整数尺寸有舍入）。路径或成功状态不能代替图片内容。工具不生成新的衣服内容、不镜像、不改变原图，不接触相机、深度和机器人。
 
 原始 ID `image_0`、`image_1` 等对应同次请求的图像清单。每张处理图记录到原始 RGB 的像素中心仿射变换，可以连续裁剪、旋转、放大；`map_point` 返回原始图像编号及像素，并拒绝旋转空白区域。正式运动提案的运输点必须返回 `image_id` 和该来源图上的 `pixel_xy`，由本机映射、取整并查深度；不要把原图坐标与处理图 ID 混用。静态 reference、标注图、旧请求或未知 view ID、未通过哈希核对的处理图都不能作为运输坐标来源。Rxxx 身份不随看图旋转改变。每次最多生成 24 张图、调用 64 次图像工具，每张最多 16MP/单边 8192px。
 
-折叠链路现在由 Claude 最终判断衣服方向、袖子和折叠目标。Molmo 仍提供当前 RGB 上的轴线/袖子点提示，但不以低置信度、反侧点或固定袖子比例带阻断 Claude。前置语义失败会记录为提示不可用，并提供当前 RGB；Claude 可以纠正或忽略 Molmo。抓点必须仍在当前衣物 mask 上，深度、工作区、夹爪高度、轨迹和 IK 检查保留。提供工具不代表 Claude 每次都会使用，也不保证语义判断正确。
+远端折叠链路现在由 Codex 最终判断衣服方向、袖子和折叠目标。Molmo 仍提供当前 RGB 上的轴线/袖子点提示，但不以低置信度、反侧点或固定袖子比例带阻断模型。前置语义失败会记录为提示不可用，并提供当前 RGB；Codex 可以纠正或忽略 Molmo。抓点必须仍在当前衣物 mask 上，深度、工作区、夹爪高度、轨迹和 IK 检查保留。提供工具不代表模型每次都会使用，也不保证语义判断正确。
 
 公司端默认使用 `python3`。在公司端一次性安装依赖：
 
@@ -29,19 +36,19 @@
 python3 -m pip install 'Pillow>=9.1'
 ```
 
-若公司端已有 Conda 环境，把 `CLOTH_REMOTE_IMAGE_PYTHON` 设置为该环境 Python 的绝对路径，并确保非交互 SSH 能读到该环境变量。无需安装整套 clothAgent、Molmo 或机器人 SDK。工具脚本由 Alienware 自动同步；不会修改公司端全局 Claude 配置。缺少 Python/Pillow 时在调用 Claude 前报错，不默默关闭工具继续规划。
+若公司端已有 Conda 环境，把 `CLOTH_REMOTE_IMAGE_PYTHON` 设置为该环境 Python 的绝对路径，并确保非交互 SSH 能读到该环境变量。无需安装整套 clothAgent、Molmo 或机器人 SDK。工具脚本由 Alienware 自动同步；不会修改公司端全局 Codex 配置。缺少 Python/Pillow 时在调用 Codex 前报错，不默默关闭工具继续规划。
 
 Alienware 使用已有 RGB 验证（无机器人连接）：
 
 ```bash
-# 仅验证本地图像变换和坐标映射，不联网、不调用 Claude
+# 仅验证本地图像变换和坐标映射，不联网、不调用模型
 python scripts/remote_image_tools_test.py test.png --offline
 
-# 验证 HTTPS → 公司 Claude → 实际 MCP 调用 → 原图坐标返回
+# 验证 HTTPS → 公司 Codex → 实际 MCP 调用 → 原图坐标返回
 python scripts/remote_image_tools_test.py test.png --host company-planner
 
-# 在公司电脑直接验证本机 Claude，省去 HTTPS 和 SSH；省略图片时生成测试色块图
-python scripts/remote_image_tools_test.py --local-claude
+# 在公司电脑直接验证本机 Codex，省去 HTTPS 和 SSH；省略图片时生成测试色块图
+python scripts/remote_image_tools_test.py --local-codex
 ```
 
 在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。CLI 自动将 PNG 转为同尺寸 JPEG 时，使用下述转码校验；CLI 隐式缩放、错误图片或超出容差的内容变化仍会阻止交接。
@@ -110,7 +117,7 @@ python -m cloth_agent.fold_exploration_viser results/image_tools_smoke/<测试�
 
 第二条命令打开已保存的调试界面；测试进行中也能用同一输出目录启动查看。仅 `--offline` 的变换测试不包含 Claude 的 Read 记录。
 
-`--local-claude` 使用同一份生产工具注册、Read hooks、远端工作目录清理和本地调试流，只将图片传输换成本机文件读取。它调用真正的 Claude，仍需 Claude 登录及模型网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。
+`--local-codex` 使用同一份生产 Codex 适配器、图片审计和临时目录清理，只将图片传输换成本机文件读取。它调用真正的 Codex，仍需 Codex 登录及模型网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。下方 Claude CLI 实验记录是历史证据，不代表已验证新的 Codex 链路。
 
 2026-09-15 的旧版测试曾记录到原图/旋转图/放大图的成功 Read hook，不能据此证明返回含图片。2026-09-17 的新验证使用真实 Claude CLI 2.1.228、合成图片与本地模拟 API：`view_image` 和 `rotate_image` 的图片在 PostToolUse、CLI tool_result、下一次本地 API 请求中均可解码且像素哈希一致，方向交接校验通过，全程没有额外 Read。这验证本机 CLI/MCP/校验接线，不验证远端生产 API、模型视觉准确率或机器人动作。
 
@@ -176,7 +183,7 @@ python scripts/remote_fold_smoke.py \
 
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前有一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，直接检查工具附带的结果图片；本地验证返回像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
-方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑、16 轮模型调用。状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑、8 轮模型调用。旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。模型轮数通过 CLI `--max-turns` 限制，防止编辑额度耗尽后仍无限读图；这不是工具调用次数或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
+方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑；状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑。旋转／裁剪／缩放共用额度，参数错误也计数。Codex 将原 16/8 轮预算应用于 MCP 调用次数，由工具服务和事件适配器共同限制；历史 Claude 后端仍使用 `--max-turns`。两者都保留原有超时。每次工具响应和 Viser 都显示编辑余额；用尽后只可在剩余调用预算内读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开刷新额度。其他阶段遵循各自 schema，不能捏造动作；没有合法结果就不执行动作。
 
 方向准备的 `UNCERTAIN` 必须附带 `failure_reason`：`IMAGE_UNAVAILABLE` 表示没看到图片内容，`TOOL_ERROR` 表示实际工具调用失败，`VISUAL_AMBIGUITY` 表示图片可见但衣领／下摆或方向不明确。READY 必须使用 null。`selection.json` 保存分类和来源，区分模型自述与本地内容校验。缺少图片时停止编辑，不再尝试用更多缩放、裁剪修复传递故障。
 

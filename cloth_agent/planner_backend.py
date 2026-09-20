@@ -1,7 +1,7 @@
-"""Claude planner execution backends.
+"""Planner execution backends.
 
 The remote backend deliberately transports RGB PNGs over HTTPS.  SSH carries
-only the small orchestration command and Claude's structured response.
+only the orchestration code and the agent's structured response.
 """
 
 from __future__ import annotations
@@ -126,6 +126,8 @@ class RemoteClaudeBackend:
     directory is removed in a shell ``trap`` even when curl or Claude fails.
     """
 
+    agent_name = "Claude"
+
     def __init__(
         self,
         ssh_host: str = "company-planner",
@@ -162,7 +164,7 @@ class RemoteClaudeBackend:
             return limit
         remaining = self._overall_deadline - time.monotonic()
         if remaining <= 0:
-            raise PlannerBackendError('remote Claude overall deadline exceeded')
+            raise PlannerBackendError(f'remote {self.agent_name} overall deadline exceeded')
         return min(limit, remaining)
 
     def _upload(self, image: Path) -> str:
@@ -257,6 +259,9 @@ class RemoteClaudeBackend:
             from .claude_image_debug import ImageDebugSession
             self._debug_session = ImageDebugSession(debug_dir, image_paths,
                 {"prompt": prompt, "system_prompt": system_prompt, "schema": schema,
+                 "agent": self.agent_name,
+                 "model": getattr(self, "model", None),
+                 "reasoning_effort": getattr(self, "reasoning_effort", None),
                  "image_edit_limit": image_edit_limit,
                  "max_turns": self._call_max_turns,
                  "overall_timeout_s": overall_timeout_s,
@@ -429,6 +434,14 @@ class RemoteClaudeBackend:
         return subprocess.CompletedProcess(command, process.returncode,
                                            "".join(output["stdout"]), "".join(output["stderr"]))
 
+    def _agent_command(self, job, schema, system_prompt, tool_flags, timeout_s):
+        return (
+            f"timeout {timeout_s}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
+            f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
+            f"--add-dir {shlex.quote(job)} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
+            f"--system-prompt {shlex.quote(system_prompt)}"
+        )
+
     def _invoke(self, *, prompt, image_paths, schema, system_prompt, timeout_s):
         call_timeout = self.timeout_s if timeout_s is None else int(timeout_s)
         if call_timeout <= 0:
@@ -487,10 +500,7 @@ class RemoteClaudeBackend:
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
-            f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
-            f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
-            f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
-            f"--system-prompt {shlex.quote(system_prompt)}"
+            + self._agent_command(job, schema, system_prompt, tool_flags, call_timeout)
         )
         # Tell remote Claude where the downloaded files are without exposing any
         # local paths or depth/XYZ artifacts.
@@ -521,7 +531,7 @@ class RemoteClaudeBackend:
             self._remote_timings(getattr(exc, "stderr", ""))
             detail = (f"timed out after {call_timeout}s" if isinstance(exc, subprocess.TimeoutExpired)
                       else str(exc))
-            raise PlannerBackendError(f"remote Claude SSH invocation failed: {detail}") from exc
+            raise PlannerBackendError(f"remote {self.agent_name} SSH invocation failed: {detail}") from exc
         finally:
             self._finish_phase("ssh_download_and_claude", started)
             if completed is not None:
@@ -556,7 +566,7 @@ class RemoteClaudeBackend:
             except (ValueError, TypeError, PlannerBackendError):
                 pass
             raise PlannerBackendError(
-                f"remote Claude exited with {completed.returncode}: "
+                f"remote {self.agent_name} exited with {completed.returncode}: "
                 f"{detail}"
             )
         parse_started = time.monotonic()
@@ -568,3 +578,54 @@ class RemoteClaudeBackend:
         # continue receiving the same final JSON envelope as before.
         return BackendResult(json.dumps(claude_result_envelope(completed.stdout)),
                              completed.stderr, completed.returncode, tuple(command))
+
+
+class RemoteCodexBackend(RemoteClaudeBackend):
+    """Codex over the existing SSH/HTTPS transport, with audited RGB-only MCP.
+
+    The standalone runner translates real Codex events to the historical result
+    envelope, so coordinate and image-delivery validators remain authoritative.
+    It never falls back to Claude or a different model.
+    """
+
+    agent_name = "Codex"
+    model = "gpt-6-astra"
+    reasoning_effort = "medium"
+
+    def _invoke(self, *, schema, **kwargs):
+        if not self.image_tools:
+            raise PlannerBackendError("remote Codex requires audited image tools")
+        # Check the validator dependency/schema before paying for uploads/model.
+        from jsonschema import Draft202012Validator, ValidationError
+        from .codex_remote_runner import restore_optional_fields
+        Draft202012Validator.check_schema(schema)
+        result = super()._invoke(schema=schema, **kwargs)
+        envelope = claude_result_envelope(result.stdout)
+        value = restore_optional_fields(parse_claude_json(result.stdout), schema)
+        try:
+            Draft202012Validator(schema).validate(value)
+        except ValidationError as exc:
+            raise PlannerBackendError(f"Codex response violates original schema at {list(exc.path)}: {exc.message}") from exc
+        envelope["structured_output"] = value
+        return replace(result, stdout=json.dumps(envelope))
+
+    def _image_tool_setup(self, job, count):
+        setup, _, prompt = super()._image_tool_setup(job, count)
+        return setup, "", prompt
+
+    def _agent_command(self, job, schema, system_prompt, tool_flags, timeout_s):
+        if not self.image_tools:
+            raise PlannerBackendError("remote Codex requires audited image tools")
+        source = Path(__file__).with_name("codex_remote_runner.py").read_bytes()
+        request = {"schema": schema, "system_prompt": system_prompt,
+                   "model": self.model, "reasoning_effort": self.reasoning_effort,
+                   "max_tool_calls": self._call_max_turns,
+                   "orientation_correction": self._orientation_correction}
+        bootstrap = (
+            "import base64,pathlib; "
+            f"pathlib.Path({job + '/codex_runner.py'!r}).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r})); "
+            f"pathlib.Path({job + '/codex_request.json'!r}).write_bytes(base64.b64decode({base64.b64encode(json.dumps(request).encode()).decode()!r}))"
+        )
+        return (f'"$cloth_image_python" -c {shlex.quote(bootstrap)}; '
+                f'timeout {timeout_s}s "$cloth_image_python" {shlex.quote(job)}/codex_runner.py '
+                f'--job {shlex.quote(job)}')

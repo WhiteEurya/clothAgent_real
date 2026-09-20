@@ -18,7 +18,7 @@ from cloth_agent.fold_exploration_pipeline import (
     _validate_acquisition_strategy_change,
 )
 from cloth_agent.free_exploration import ExplorationPlanningError
-from cloth_agent.planner_backend import BackendResult, PlannerBackendError, RemoteClaudeBackend, parse_claude_json
+from cloth_agent.planner_backend import BackendResult, PlannerBackendError, RemoteClaudeBackend, RemoteCodexBackend, parse_claude_json
 from cloth_agent.remote_fold import RemoteFoldClient, compile_pixel_motion
 from cloth_agent.auto_exploration import validate_visual_plan_payload
 from cloth_agent.garment_grounding_mcp import GarmentGrounding
@@ -361,7 +361,10 @@ def test_fold_constructor_and_cli_default_remote(saved_scene):
     session, _, _ = saved_scene
     pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"))
     assert isinstance(pipeline.client, RemoteFoldClient)
-    assert isinstance(pipeline.supervisor.backend, RemoteClaudeBackend)
+    assert isinstance(pipeline.supervisor.backend, RemoteCodexBackend)
+    assert isinstance(pipeline.client.backend, RemoteCodexBackend)
+    assert pipeline.client.backend.model == "gpt-6-astra"
+    assert pipeline.client.backend.reasoning_effort == "medium"
     assert build_parser().parse_args([]).planner_backend == "remote"
     local = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"), planner_backend="local")
     assert not isinstance(local.client, RemoteFoldClient)

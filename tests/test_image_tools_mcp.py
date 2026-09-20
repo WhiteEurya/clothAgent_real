@@ -325,7 +325,7 @@ def test_standalone_offline_smoke_produces_views_and_replay(scene):
     output = tools.job / "smoke"
     assert smoke([str(tools.job / "image_0.png"), "--offline", "--output-dir", str(output)]) == 0
     result = json.loads((output / "result.json").read_text())
-    assert result["claude_tested"] is False
+    assert result["codex_tested"] is False
     events = [json.loads(line) for line in (output / "local_tools/image_tool_calls.jsonl").read_text().splitlines()]
     views = replay(tools.job / "image_0.png", events, output / "replay")
     assert len(views) == 3
@@ -343,4 +343,4 @@ def test_smoke_generates_direction_chart_without_camera(tmp_path):
         assert image.getpixel((10, 10)) == (255, 0, 0)
         assert image.getpixel((10, 250)) == (0, 0, 255)
     result = json.loads((output / "result.json").read_text())
-    assert result["claude_tested"] is False
+    assert result["codex_tested"] is False

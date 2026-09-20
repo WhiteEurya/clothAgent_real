@@ -236,8 +236,8 @@ def audit(job, event):
         os.close(fd)
 
 
-def read_hook(job):
-    payload = json.load(sys.stdin)
+def read_hook(job, payload=None):
+    payload = json.load(sys.stdin) if payload is None else payload
     tool = payload.get("tool_name", "")
     if tool != "Read" and not tool.startswith("mcp__cloth_image__"):
         return
@@ -348,8 +348,12 @@ def _size(width, height):
 
 
 class ImageTools:
-    def __init__(self, job: Path, image_count: int, edit_limit: int | None = None):
+    def __init__(self, job: Path, image_count: int, edit_limit: int | None = None,
+                 call_limit: int = MAX_CALLS):
         self.job = job.resolve(strict=True)
+        if type(call_limit) is not int or not 1 <= call_limit <= MAX_CALLS:
+            raise ValueError('call_limit must be an integer in [1, 64]')
+        self.call_limit = call_limit
         if edit_limit is not None and (type(edit_limit) is not int or not 0 <= edit_limit <= MAX_VIEWS):
             raise ValueError('edit_limit must be an integer in [0, 24]')
         self.edit_limit = edit_limit
@@ -457,7 +461,7 @@ class ImageTools:
             cached = self.edit_cache.get(self._edit_key(name, args)) if name in EDIT_TOOLS else None
             if name in EDIT_TOOLS and cached is None:
                 self.edit_budget(consume=True)
-            if self.calls > MAX_CALLS:
+            if self.calls > self.call_limit:
                 raise ValueError("image tool call budget exhausted")
             spec = next((t for t in TOOLS if t["name"] == name), None)
             if spec is None or not isinstance(args, dict) or set(args) != set(spec["inputSchema"]["required"]):
@@ -640,6 +644,7 @@ def main(argv=None):
     parser.add_argument("--job", type=Path, required=True)
     parser.add_argument("--image-count", type=int, required=True)
     parser.add_argument('--edit-limit', type=int, default=None)
+    parser.add_argument('--call-limit', type=int, default=MAX_CALLS)
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--read-hook", action="store_true")
     parser.add_argument("--audit-forward", action="store_true")
@@ -655,7 +660,7 @@ def main(argv=None):
     if args.orientation_hook:
         print(json.dumps(orientation_guard(args.job.resolve(strict=True), json.load(sys.stdin))), flush=True)
         return 0
-    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit)
+    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit, call_limit=args.call_limit)
     if args.prepare:
         config = {"mcpServers": {SERVER_NAME: {"type": "stdio", "command": sys.executable,
             "args": [str(Path(__file__).resolve()), "--job", str(tools.job),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Claude's RGB tool calls without a camera, Molmo, or robot connection."""
+"""Verify Codex RGB tool calls without a camera, Molmo, or robot connection."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image, ImageDraw
 from cloth_agent.image_tools_mcp import ImageTools
-from cloth_agent.planner_backend import RemoteClaudeBackend, parse_claude_json
+from cloth_agent.planner_backend import RemoteCodexBackend, parse_claude_json
 
 
 SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
@@ -25,7 +25,7 @@ SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
     "required": ["image_read", "observation", "original_image_index", "mapped_pixel_xy"]}
 
 
-class CompanyLocalBackend(RemoteClaudeBackend):
+class CompanyLocalBackend(RemoteCodexBackend):
     """Exercise the production company shell locally; only transport is bypassed."""
 
     def _upload(self, image):
@@ -75,8 +75,8 @@ def main(argv=None):
     parser.add_argument("--host", default="company-planner")
     parser.add_argument("--timeout-s", type=int, default=300)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--offline", action="store_true", help="test tools locally, without Claude or network")
-    mode.add_argument("--local-claude", action="store_true", help="real Claude on this computer; no HTTPS relay or SSH")
+    mode.add_argument("--offline", action="store_true", help="test tools locally, without a model or network")
+    mode.add_argument("--local-codex", action="store_true", help="real Codex on this computer; no HTTPS relay or SSH")
     parser.add_argument("--output-dir", type=Path, help="new output directory")
     args = parser.parse_args(argv)
     output = args.output_dir or Path("results/image_tools_smoke") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -103,7 +103,7 @@ def main(argv=None):
             zoom = tools.call("resize_image", {"image_id": crop["image_id"], "scale": 2})
             mapped = tools.call("map_point", {"image_id": zoom["image_id"], "pixel_xy": [1, 1]})
             events = [json.loads(line) for line in (job / "image_tool_calls.jsonl").read_text().splitlines()]
-            payload = {"mode": "offline", "mapped_point": mapped, "claude_tested": False}
+            payload = {"mode": "offline", "mapped_point": mapped, "codex_tested": False}
         else:
             prompt = (
                 "This is a tool integration smoke test, not a robot plan. Use view_image on image_0 first. "
@@ -114,14 +114,14 @@ def main(argv=None):
                 "the images, observation describing what you see, and original_image_index and "
                 "mapped_pixel_xy copied from the map_point result. If tools fail, do not claim success."
             )
-            if args.local_claude:
+            if args.local_codex:
                 helper_directory = tempfile.TemporaryDirectory(prefix="cloth_company_smoke_")
                 launcher = Path(helper_directory.name) / "local_company_shell"
                 launcher.write_text('#!/bin/sh\nfor cloth_arg do :; done\nexec /bin/sh -c "$cloth_arg"\n', encoding="utf-8")
                 launcher.chmod(0o700)
                 backend = CompanyLocalBackend(ssh_host="local-company", ssh_binary=str(launcher), timeout_s=args.timeout_s)
             else:
-                backend = RemoteClaudeBackend(ssh_host=args.host, timeout_s=args.timeout_s)
+                backend = RemoteCodexBackend(ssh_host=args.host, timeout_s=args.timeout_s)
             result = backend.invoke(prompt=prompt, image_paths=[image], schema=SCHEMA,
                 debug_dir=output / "claude_image_tools" / "smoke",
                 system_prompt="Inspect RGB with view_image and images returned by editing tools. Return the required JSON.")
@@ -131,7 +131,7 @@ def main(argv=None):
             success = [e for e in events if e.get("status") == "ok"]
             required = {"rotate_image", "crop_image", "resize_image", "map_point"}
             if not required <= {e.get("tool") for e in success}:
-                raise ValueError("Claude did not actually call all required image tools; inspect the audit")
+                raise ValueError("Codex did not actually call all required image tools; inspect the audit")
             inspected_views = [e["result"]["image_id"] for e in success
                                if e.get("tool") in {"rotate_image", "resize_image"}]
             delivered = {view['image_id'] for view in result.image_sources
@@ -139,16 +139,16 @@ def main(argv=None):
             if not {'image_0', *inspected_views} <= delivered:
                 raise ValueError("CLI output did not contain verified original/rotated/enlarged images; inspect image_delivery.jsonl")
             if payload.get("image_read") is not True or not isinstance(payload.get("observation"), str) or not payload["observation"].strip():
-                raise ValueError("Claude did not confirm visual inspection")
+                raise ValueError("Codex did not confirm visual inspection")
             mappings = [e["result"] for e in success if e["tool"] == "map_point"]
             if not any(payload.get("original_image_index") == m["original_image_index"] and
                        payload.get("mapped_pixel_xy") == m["pixel_xy"] for m in mappings):
                 raise ValueError("returned pixel does not match an actual map_point result")
             payload["locally_replayed_views"] = replay(image, events, output / "replayed_views")
             payload["timings"] = result.timings
-            payload["transport"] = "local_company_shell_no_relay_or_ssh" if args.local_claude else "https_and_ssh"
+            payload["transport"] = "local_company_shell_no_relay_or_ssh" if args.local_codex else "https_and_ssh"
         (output / "result.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        label = "OFFLINE IMAGE TOOLS" if args.offline else "LOCAL CLAUDE IMAGE TOOLS" if args.local_claude else "REMOTE CLAUDE IMAGE TOOLS"
+        label = "OFFLINE IMAGE TOOLS" if args.offline else "LOCAL CODEX IMAGE TOOLS" if args.local_codex else "REMOTE CODEX IMAGE TOOLS"
         print(f"{label} PASSED: {output.resolve()}")
         return 0
     except Exception as exc:
