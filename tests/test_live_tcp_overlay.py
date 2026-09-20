@@ -1,4 +1,5 @@
 import json
+import copy
 import queue
 import sys
 import time
@@ -65,6 +66,52 @@ def test_capture_must_be_stationary():
         script.check_capture_stationary(before, [402, 100, 500, 0, 0, 179.9])
     with pytest.raises(RuntimeError):
         script.check_capture_stationary(before, [400, 100, 500, 0, 2, 179.9])
+
+
+def test_display_bias_keeps_original_projection_and_robot_pose():
+    _, _, camera = projection()
+    sample = {'status': 'OK', 'sample_monotonic': 100,
+              'tcp_pose_mm_deg': [450, 200, 200, 0, 0, 0],
+              'projection': camera.project([450, 200, 200])}
+    before = copy.deepcopy(sample)
+    result = script.biased_projection(sample, 100.1, (160, 120), (20, -10))
+    assert result['raw_pixel_xy'] == pytest.approx([100, 70])
+    assert result['biased_pixel_xy'] == pytest.approx([120, 60])
+    assert result['status'] == 'VISIBLE'
+    assert result['display_only'] is True
+    image = Image.new('RGB', (160, 120), 'black')
+    rendered, _ = script.render_overlay(image, sample, 100.1, (20, -10))
+    colors = np.asarray(rendered)
+    assert np.any(np.all(colors == [0, 255, 128], axis=2))
+    assert np.any(np.all(colors == [255, 187, 64], axis=2))
+    assert sample == before
+
+
+@pytest.mark.parametrize('state', ['STALE', 'READ_ERROR', 'BEHIND_CAMERA'])
+def test_bias_never_restores_stale_or_invalid_feedback(state):
+    sample = {'status': 'OK', 'sample_monotonic': 100,
+              'projection': {'status': 'VISIBLE', 'raw_pixel_xy': [100, 70]}}
+    now = 102 if state == 'STALE' else 100.1
+    if state == 'READ_ERROR':
+        sample['status'] = 'READ_ERROR'
+    elif state == 'BEHIND_CAMERA':
+        sample['projection'] = {'status': state, 'raw_pixel_xy': None}
+    result = script.biased_projection(sample, now, (160, 120), (20, -10))
+    assert result['biased_pixel_xy'] is None
+    image, _ = script.render_overlay(Image.new('RGB', (160, 120)), sample, now, (20, -10))
+    assert not np.asarray(image).any()
+
+
+def test_bias_image_bounds_and_finite_validation():
+    sample = {'status': 'OK', 'sample_monotonic': 100,
+              'projection': {'status': 'OUTSIDE_IMAGE', 'raw_pixel_xy': [-5, 60]}}
+    assert script.biased_projection(sample, 100.1, (160, 120), (10, 0))['status'] == 'VISIBLE'
+    assert script.biased_projection(sample, 100.1, (160, 120), (0, 0))['status'] == 'OUTSIDE_IMAGE'
+    with pytest.raises(ValueError):
+        script.biased_projection(sample, 100.1, (160, 120), (float('nan'), 0))
+    with pytest.raises(SystemExit) as exc:
+        script.main(['--capture-current', '--pixel-offset', 'inf', '0'])
+    assert exc.value.code == 2
 
 
 class ReadOnlyArm:
@@ -135,10 +182,12 @@ def test_complete_workflow_with_read_only_monitor(monkeypatch, tmp_path, capture
     capture = Mock(return_value=[frame])
     monkeypatch.setattr(script, 'capture_two_view_rgbd', capture)
 
-    def viewer(root, frame, latest, directory):
+    def viewer(root, frame, latest, directory, pixel_offset):
+        assert pixel_offset == [0.0, 0.0]
         sample = latest.get(timeout=2)
         assert sample['status'] == 'OK'
         assert script.overlay_status(sample, time.monotonic())[0] == 'VISIBLE'
+        return pixel_offset
 
     monkeypatch.setattr(script, 'run_viewer', viewer)
     args = ['--output-dir', str(tmp_path)]

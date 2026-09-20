@@ -128,7 +128,25 @@ def overlay_status(sample, now, stale_s=1.0):
     return projection['status'], projection['raw_pixel_xy'] if projection['status'] == 'VISIBLE' else None
 
 
-def render_overlay(rgb, sample, now):
+def biased_projection(sample, now, image_size, pixel_offset=(0.0, 0.0)):
+    """Display-only offset in ORIGINAL RGB pixels; never modifies robot data."""
+    offset = np.asarray(pixel_offset, dtype=float)
+    if offset.shape != (2,) or not np.isfinite(offset).all():
+        raise ValueError('Pixel offset must contain two finite numbers')
+    status, _ = overlay_status(sample, now)
+    result = {'pixel_offset_xy': offset.tolist(), 'status': status, 'raw_pixel_xy': None,
+              'biased_pixel_xy': None, 'display_only': True}
+    if status not in {'VISIBLE', 'OUTSIDE_IMAGE'}:
+        return result
+    original = np.asarray(sample['projection']['raw_pixel_xy'], dtype=float)
+    corrected = original + offset
+    width, height = image_size
+    result.update(raw_pixel_xy=original.tolist(), biased_pixel_xy=corrected.tolist(),
+                  status='VISIBLE' if 0 <= corrected[0] < width and 0 <= corrected[1] < height else 'OUTSIDE_IMAGE')
+    return result
+
+
+def render_overlay(rgb, sample, now, pixel_offset=(0.0, 0.0)):
     image = rgb.copy()
     draw = ImageDraw.Draw(image)
     status, pixel = overlay_status(sample, now)
@@ -138,25 +156,55 @@ def render_overlay(rgb, sample, now):
         draw.line((u-15, v, u+15, v), fill='#00ff80', width=2)
         draw.line((u, v-15, u, v+15), fill='#00ff80', width=2)
         draw.text((u+12, v+10), 'TCP', fill='#00ff80', stroke_width=1, stroke_fill='black')
+    biased = biased_projection(sample, now, rgb.size, pixel_offset)
+    if biased['status'] == 'VISIBLE' and any(pixel_offset):
+        u, v = biased['biased_pixel_xy']
+        if pixel is not None:
+            draw.line((*pixel, u, v), fill='#ffbb40', width=1)
+        draw.rectangle((u-7, v-7, u+7, v+7), outline='#ffbb40', width=3)
+        draw.text((u+12, v-20), 'OFFSET', fill='#ffbb40', stroke_width=1, stroke_fill='black')
     return image, status
 
 
-def run_viewer(root, frame, latest, directory):
+def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0)):
     import tkinter as tk
     from PIL import ImageTk
 
     root.title('Frozen observation photo | live TCP projection (read-only)')
     rgb = Image.fromarray(frame.rgb)
+    offset = [float(value) for value in pixel_offset]
     scale = min(1.0, (root.winfo_screenwidth()-80)/rgb.width,
-                (root.winfo_screenheight()-220)/rgb.height)
+                (root.winfo_screenheight()-270)/rgb.height)
     size = (max(1, int(rgb.width*scale)), max(1, int(rgb.height*scale)))
     image_label = tk.Label(root)
     image_label.pack()
     info = tk.StringVar(value='Waiting for robot feedback')
     tk.Label(root, textvariable=info, justify='left', font=('TkDefaultFont', 12)).pack(pady=8)
     tk.Label(root, text='Move using pendant/vendor controls. Marker = configured TCP, not jaw tips.\n'
+             'Green: original TCP. Orange: display offset. Arrows: 1 px; Shift+arrows: 10 px; R: reset.\n'
              'Fixed photo / fixed camera transform. S: save screenshot. Esc: close (no robot command).').pack()
     current = None
+
+    def record_offset():
+        write_json(directory / 'display_offset.json', {
+            'pixel_offset_xy': offset, 'units': 'original_RGB_pixels', 'display_only': True,
+            'convention': 'biased_uv = original_uv + offset; +u right, +v down',
+            'updated_at': datetime.now(timezone.utc).isoformat()})
+
+    def nudge(event):
+        step = 10 if event.state & 0x0001 else 1
+        dx, dy = {'Left': (-step, 0), 'Right': (step, 0),
+                  'Up': (0, -step), 'Down': (0, step)}[event.keysym]
+        offset[0] += dx
+        offset[1] += dy
+        record_offset()
+        return 'break'
+
+    def reset(event=None):
+        offset[:] = [0.0, 0.0]
+        record_offset()
+
+    record_offset()
 
     def refresh():
         nonlocal current
@@ -164,7 +212,8 @@ def run_viewer(root, frame, latest, directory):
             current = latest.get_nowait()
         except queue.Empty:
             pass
-        image, status = render_overlay(rgb, current, time.monotonic())
+        now = time.monotonic()
+        image, status = render_overlay(rgb, current, now, offset)
         photo = ImageTk.PhotoImage(image.resize(size))
         image_label.configure(image=photo)
         image_label.image = photo
@@ -179,23 +228,42 @@ def run_viewer(root, frame, latest, directory):
             text += f' | {current["error"]}'
         elif status == 'STALE':
             text += ' | feedback older than 1 second; marker hidden'
+        biased = biased_projection(current, now, rgb.size, offset)
+        text += f'\nDisplay offset (raw pixels): du={offset[0]:+g}, dv={offset[1]:+g} | {biased["status"]}'
+        if biased['biased_pixel_xy'] is not None:
+            u, v = biased['biased_pixel_xy']
+            text += f' | offset pixel: {u:.1f}, {v:.1f}'
         info.set(text)
         root.after(50, refresh)
 
     def snapshot(event=None):
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-        image, status = render_overlay(rgb, current, time.monotonic())
+        now = time.monotonic()
+        image, status = render_overlay(rgb, current, now, offset)
+        # Include the offset legend in saved images as well as the JSON record.
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, min(image.width, 610), 36), fill='black')
+        draw.text((6, 4), f'Display only: du={offset[0]:+g}, dv={offset[1]:+g} raw px | {status}', fill='white')
+        draw.text((6, 20), 'Green=original TCP; orange=offset. Robot/calibration unchanged.', fill='white')
         image.save(directory / f'overlay_{timestamp}.png')
-        write_json(directory / f'overlay_{timestamp}.json', {'display_status': status, 'sample': current})
+        write_json(directory / f'overlay_{timestamp}.json', {
+            'display_status': status, 'sample': current,
+            'display_bias': biased_projection(current, now, rgb.size, offset)})
         print(f'Saved overlay_{timestamp}.png ({status})', flush=True)
 
     root.bind('<s>', snapshot)
     root.bind('<S>', snapshot)
+    for key in ('Left', 'Right', 'Up', 'Down'):
+        root.bind(f'<{key}>', nudge)
+        root.bind(f'<Shift-{key}>', nudge)
+    root.bind('<r>', reset)
+    root.bind('<R>', reset)
     root.bind('<Escape>', lambda event: root.quit())
     root.protocol('WM_DELETE_WINDOW', root.quit)
     root.deiconify()
     refresh()
     root.mainloop()
+    return offset
 
 
 def main(argv=None):
@@ -205,10 +273,14 @@ def main(argv=None):
                         default=PROJECT_ROOT / 'config/perception.free_exploration.json')
     parser.add_argument('--camera', default='A')
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--pixel-offset', nargs=2, type=float, default=[0.0, 0.0], metavar=('DU', 'DV'),
+                        help='Display-only original RGB pixel offset: +DU right, +DV down; adjustable with arrow keys')
     parser.add_argument('--capture-current', action='store_true', help='Capture at current stationary pose; no initial motion')
     parser.add_argument('--real', action='store_true')
     parser.add_argument('--confirm-real', action='store_true')
     args = parser.parse_args(argv)
+    if not np.isfinite(args.pixel_offset).all():
+        parser.error('--pixel-offset must contain finite numbers')
     if not args.capture_current and not (args.real and args.confirm_real):
         parser.error('Moving to observation requires --real --confirm-real; or use --capture-current')
     config = RobotConfig.load(PROJECT_ROOT, args.robot_config)
@@ -225,7 +297,8 @@ def main(argv=None):
     arm = None
     worker = None
     stop = threading.Event()
-    report = {'status': 'STARTING', 'monitor_policy': 'read_only', 'capture_current': args.capture_current}
+    report = {'status': 'STARTING', 'monitor_policy': 'read_only', 'capture_current': args.capture_current,
+              'initial_display_pixel_offset_xy': args.pixel_offset, 'offset_policy': 'display_only_original_RGB_pixels'}
     directory = None
     try:
         parent = args.output_dir or auxiliary_dir(PROJECT_ROOT, 'live_tcp_overlay')
@@ -262,7 +335,7 @@ def main(argv=None):
                                   daemon=True)
         worker.start()
         print(f'Reference captured. You may now move manually. Records: {directory}', flush=True)
-        run_viewer(root, frame, latest, directory)
+        report['final_display_pixel_offset_xy'] = run_viewer(root, frame, latest, directory, args.pixel_offset)
         report['status'] = 'CLOSED'
         return 0
     except BaseException as exc:
