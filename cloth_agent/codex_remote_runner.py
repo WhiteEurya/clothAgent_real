@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -73,6 +74,7 @@ def toml_value(value):
 
 def codex_command(job, request):
     mcp = json.loads((job / "image_tools.mcp.json").read_text())["mcpServers"]["cloth_image"]
+    from image_tools import TOOLS
     config = {
         "model_reasoning_effort": request["reasoning_effort"],
         "developer_instructions": request["system_prompt"] +
@@ -91,6 +93,10 @@ def codex_command(job, request):
             "command": mcp["command"], "args": mcp["args"] +
                 ["--call-limit", str(min(64, request["max_tool_calls"]))],
             "required": True, "startup_timeout_sec": 30,
+            # These job-local RGB tools are the explicitly authorized workflow.
+            # `never` forbids prompts; it does not itself approve MCP calls.
+            "enabled_tools": [tool["name"] for tool in TOOLS],
+            "tools": {tool["name"]: {"approval_mode": "approve"} for tool in TOOLS},
         }},
     }
     command = ["codex", "exec", "--json", "--ephemeral", "-p", request["profile"],
@@ -211,6 +217,8 @@ def main(argv=None):
     try:
         (job / "response_schema.json").write_text(json.dumps(output_schema(request["schema"])))
         command = codex_command(job, request)
+        emit({"type": "system", "subtype": "codex_launch",
+              "executable": shutil.which(command[0]), "command": command})
         # Inherit the prompt pipe, avoiding a large write-before-read deadlock.
         process = subprocess.Popen(command, stdin=sys.stdin, stdout=subprocess.PIPE,
                                    stderr=sys.stderr, text=True, cwd=job)

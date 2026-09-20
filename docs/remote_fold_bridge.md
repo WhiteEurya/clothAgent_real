@@ -8,11 +8,13 @@
 
 Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不会读取保存的 PNG 来伪造 CLI 图片交付。若远端 CLI 版本省略图片字节，像素交付校验仍失败。最终输出必须具有成功的 `turn.completed`，且通过原始 JSON schema 校验；可选字段在 provider schema 中表示为 null，返回时恢复省略语义。Codex 没有相同的 `--max-turns` 参数，因此原预算用于限制 MCP 调用次数，并继续执行原编辑预算和总超时；不是对内部推理轮数的精确计数。
 
-本次验证包含模拟 Codex CLI 的真实 shell/下载/图片工具/审计/清理测试；当前开发环境无法解析 `company-planner`，尚未完成公司端真实模型验证。先运行下面的无机器人在线图片测试，再启动折叠。
+2026-09-20 已使用生产脚本的 `--local-codex` 模式完成真实模型测试（`rbs`、`gpt-6-astra`、medium），约 56.9 秒返回有效 JSON。原图、旋转图、裁剪图和缩放图全部为 `VERIFIED`，坐标映射核对通过。此模式仅将 SSH/HTTPS 传输换成本机 shell 和文件读取，Codex 命令构造、MCP、schema、图片审计均与远端共用。当前开发环境无法解析 `company-planner`，该结果不代表已验证 SSH/HTTPS。先运行下面的无机器人在线图片测试，再启动折叠。
 
 ## Codex 自选图像工具
 
 远程 backend 通过 Codex `-c mcp_servers=...` 传入 `cloth_image` MCP。启用只读 sandbox、禁止审批，关闭 shell、网页搜索、其他 agent、应用和内置 view_image，图片统一走审计 MCP。原生配置的合并行为由远端 Codex 决定；适配器若观察到其他 MCP 调用或命令执行事件会拒绝本次结果。
+
+`approval_policy=never` 表示不弹出审批，并不自动授权 MCP。真实测试曾因此返回 `MCP tool call requires approval, but approval policy is never`。现仅对本次 `cloth_image` 的七个已知图像工具设置 `approval_mode=approve` 和工具清单，不授予机器人或 shell 权限。`stdout.log` 中的 `codex_launch` 记录实际 PATH 解析出的 Codex 可执行文件和完整参数；不读取或记录认证密钥，可据此核对 SSH 环境与手动调用的差异。
 
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：
 

@@ -122,6 +122,13 @@ def test_command_uses_native_profile_and_preserves_execution_constraints(tmp_pat
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert command[command.index("--model") + 1] == "gpt-6-astra"
     assert "claude" not in command
+    config = dict(arg.split("=", 1) for index, arg in enumerate(command)
+                  if index and command[index - 1] == "-c")
+    import tomllib
+    server = tomllib.loads("value=" + config["mcp_servers"])["value"]["cloth_image"]
+    assert set(server["enabled_tools"]) == {tool["name"] for tool in image_tools_mcp.TOOLS}
+    assert all(value == {"approval_mode": "approve"} for value in server["tools"].values())
+    assert config["approval_policy"] == '"never"'
 
 
 FAKE_CODEX = '''#!/usr/bin/env python3
@@ -191,6 +198,12 @@ def test_real_shell_runner_image_audit_and_cleanup(fake_remote, tmp_path, metada
     assert json.loads(result.stdout)["provider"] == "codex"
     assert json.loads(result.stdout)["profile"] == "rbs"
     assert json.loads((tmp_path / "debug" / "request.json").read_text())["profile"] == "rbs"
+    launches = [event for line in (tmp_path / "debug" / "stdout.log").read_text().splitlines()
+                if (event := json.loads(line)).get("subtype") == "codex_launch"]
+    assert len(launches) == 1
+    assert launches[0]["executable"] == str(tmp_path / "codex")
+    argv = launches[0]["command"]
+    assert argv[argv.index("-p") + 1] == "rbs"
     assert len(result.image_sources) == 2
     for source in result.image_sources:
         assert (source["image_delivery_status"] == "VERIFIED") is not metadata_only
