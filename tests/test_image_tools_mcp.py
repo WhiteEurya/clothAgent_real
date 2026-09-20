@@ -34,6 +34,30 @@ def test_rotation_pixels_and_inverse_match_pillow(scene, degrees):
             assert image.getpixel(tuple(point)) == original.getpixel(source)
 
 
+def test_large_result_transcodes_without_coordinate_change(tmp_path):
+    import base64
+    import numpy as np
+    from cloth_agent.image_tools_mcp import image_content_summary, verify_image_delivery
+    noise = np.random.default_rng(42).integers(0, 256, (720, 1280), dtype=np.uint8)
+    image = Image.fromarray(noise).convert('RGB')
+    path = tmp_path / 'image_0.png'
+    image.save(path)
+    tools = ImageTools(tmp_path, 1, result_byte_limit=900000)
+    original = tools.views['image_0'].copy()
+    assert len(json.dumps(ImageTools(tmp_path, 1).image_result(original))) > 1048576
+    result = tools.image_result(original)
+    assert len(json.dumps(result).encode()) <= 900000
+    block = result['content'][-1]
+    assert block['mimeType'] == 'image/jpeg'
+    summary = image_content_summary(result)
+    assert summary['images'][0]['size'] == [1280, 720]
+    assert verify_image_delivery(summary, original, path, base64.b64decode(block['data']))['status'] == 'VERIFIED_TRANSCODE'
+    assert tools.views['image_0'] == original
+    assert json.loads(result['content'][0]['text'])['rgb_sha256'] == original['rgb_sha256']
+    with pytest.raises(ValueError, match='IMAGE_PAYLOAD_TOO_LARGE'):
+        ImageTools(tmp_path, 1, result_byte_limit=1024).image_result(original)
+
+
 def test_crop_rotate_zoom_chain_maps_back_to_original(scene):
     tools, _ = scene
     crop = tools.call("crop_image", {"image_id": "image_0", "box": [2, 1, 10, 7]})

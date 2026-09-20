@@ -91,7 +91,8 @@ def codex_command(job, request):
         "project_doc_max_bytes": 0,
         "mcp_servers": {"cloth_image": {
             "command": mcp["command"], "args": mcp["args"] +
-                ["--call-limit", str(min(64, request["max_tool_calls"]))],
+                ["--call-limit", str(min(64, request["max_tool_calls"])),
+                 "--result-byte-limit", "900000"],
             "required": True, "startup_timeout_sec": 30,
             # These job-local RGB tools are the explicitly authorized workflow.
             # `never` forbids prompts; it does not itself approve MCP calls.

@@ -127,6 +127,7 @@ def test_command_uses_native_profile_and_preserves_execution_constraints(tmp_pat
     import tomllib
     server = tomllib.loads("value=" + config["mcp_servers"])["value"]["cloth_image"]
     assert set(server["enabled_tools"]) == {tool["name"] for tool in image_tools_mcp.TOOLS}
+    assert server['args'][server['args'].index('--result-byte-limit') + 1] == '900000'
     assert all(value == {"approval_mode": "approve"} for value in server["tools"].values())
     assert config["approval_policy"] == '"never"'
 

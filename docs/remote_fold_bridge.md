@@ -18,6 +18,8 @@ Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不
 
 `approval_policy=never` 表示不弹出审批，并不自动授权 MCP。真实测试曾因此返回 `MCP tool call requires approval, but approval policy is never`。现仅对本次 `cloth_image` 的七个已知图像工具设置 `approval_mode=approve` 和工具清单，不授予机器人或 shell 权限。`stdout.log` 中的 `codex_launch` 记录实际 PATH 解析出的 Codex 可执行文件和完整参数；不读取或记录认证密钥，可据此核对 SSH 环境与手动调用的差异。
 
+大 PNG 的工具结果可能超过 Codex JSONL 约 1 MiB 的输出限制：本机真实测试复现了结果变成单个约 1048600 字符的 text 块，base64 中插入 `…chars truncated…`，导致原图 `NO_IMAGE`、派生图交付状态 `UNKNOWN`。小色块图不会覆盖此情况。Codex 图像服务现在将完整序列化响应限制为 900000 字节；小图保留原始 PNG，超限时尝试同尺寸 JPEG，并先通过既有 `VERIFIED_TRANSCODE` 校验（含原图差异上限）再返回。原始 PNG、image_id 和坐标变换不变，主机仍校验实际 CLI 返回字节；不解析残缺 base64、不用磁盘原图冒充交付。无法在大小限制内通过校验时返回 `IMAGE_PAYLOAD_TOO_LARGE`，不静默缩图或放宽误差阈值。历史 Claude 后端不启用此传输限制。
+
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：
 
 - `image_tools.py`：独立工具服务，只依赖 Python + Pillow。

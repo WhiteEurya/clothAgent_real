@@ -349,8 +349,11 @@ def _size(width, height):
 
 class ImageTools:
     def __init__(self, job: Path, image_count: int, edit_limit: int | None = None,
-                 call_limit: int = MAX_CALLS):
+                 call_limit: int = MAX_CALLS, result_byte_limit: int | None = None):
         self.job = job.resolve(strict=True)
+        if result_byte_limit is not None and (type(result_byte_limit) is not int or result_byte_limit < 1024):
+            raise ValueError('result_byte_limit must be at least 1024')
+        self.result_byte_limit = result_byte_limit
         if type(call_limit) is not int or not 1 <= call_limit <= MAX_CALLS:
             raise ValueError('call_limit must be an integer in [1, 64]')
         self.call_limit = call_limit
@@ -586,10 +589,42 @@ class ImageTools:
         summary = image_content_summary(block)
         if not image_matches(summary, value):
             raise ValueError('image payload is empty, invalid, or changed since it was saved')
-        metadata = dict(value, image_content=summary)
+        def response_for(content, stats):
+            return {'content': [{'type': 'text', 'text': json.dumps(dict(value, image_content=stats))}, content]}
+
+        response = response_for(block, summary)
+        if self.result_byte_limit is not None and len(json.dumps(response).encode()) > self.result_byte_limit:
+            # Codex JSONL serializes oversized MCP results as a truncated text
+            # block (~1 MiB). Keep pixels complete, at the SAME dimensions, and
+            # accept only existing bounded JPEG validation, never a resize.
+            accepted = False
+            with Image.open(path) as source:
+                source = source.convert('RGB')
+                for quality in (95, 90, 85, 80, 75):
+                    for sampling in (0, 2):
+                        encoded = io.BytesIO()
+                        source.save(encoded, format='JPEG', quality=quality, subsampling=sampling, optimize=True)
+                        raw = encoded.getvalue()
+                        candidate = {'type': 'image', 'mimeType': 'image/jpeg',
+                                     'data': base64.b64encode(raw).decode('ascii')}
+                        candidate_summary = image_content_summary(candidate)
+                        candidate_response = response_for(candidate, candidate_summary)
+                        if len(json.dumps(candidate_response).encode()) > self.result_byte_limit:
+                            continue
+                        check = verify_image_delivery(candidate_summary, value, path, raw)
+                        if check['status'] not in VERIFIED_DELIVERIES:
+                            continue
+                        block, summary, response = candidate, candidate_summary, candidate_response
+                        accepted = True
+                        break
+                    if accepted:
+                        break
+            if not accepted:
+                raise ValueError('IMAGE_PAYLOAD_TOO_LARGE: no same-size image fits the CLI result limit '
+                                 'while preserving pixel validation; no truncated payload returned')
         audit(self.job, {'kind': 'image_delivery', 'tool': 'image_payload', 'status': 'prepared',
                         'image_id': value['image_id'], 'path': str(path), 'image_content': summary})
-        return {'content': [{'type': 'text', 'text': json.dumps(metadata)}, block]}
+        return response
 
 
 def serve_stdio(tools):
@@ -645,6 +680,7 @@ def main(argv=None):
     parser.add_argument("--image-count", type=int, required=True)
     parser.add_argument('--edit-limit', type=int, default=None)
     parser.add_argument('--call-limit', type=int, default=MAX_CALLS)
+    parser.add_argument('--result-byte-limit', type=int, default=None)
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--read-hook", action="store_true")
     parser.add_argument("--audit-forward", action="store_true")
@@ -660,7 +696,8 @@ def main(argv=None):
     if args.orientation_hook:
         print(json.dumps(orientation_guard(args.job.resolve(strict=True), json.load(sys.stdin))), flush=True)
         return 0
-    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit, call_limit=args.call_limit)
+    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit, call_limit=args.call_limit,
+                       result_byte_limit=args.result_byte_limit)
     if args.prepare:
         config = {"mcpServers": {SERVER_NAME: {"type": "stdio", "command": sys.executable,
             "args": [str(Path(__file__).resolve()), "--job", str(tools.job),
