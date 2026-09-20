@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from cloth_agent import image_tools_mcp
-from cloth_agent.codex_remote_runner import CodexEvents, codex_command, provider_config, output_schema, restore_optional_fields
+from cloth_agent.codex_remote_runner import CodexEvents, codex_command, output_schema, restore_optional_fields
 from cloth_agent.planner_backend import RemoteCodexBackend, PlannerBackendError, parse_claude_json
 
 
@@ -107,68 +107,21 @@ def test_image_server_enforces_call_limit_across_restart(tmp_path):
     assert len(restarted.views) == 1
 
 
-def test_command_isolates_tools_and_keeps_provider(tmp_path, monkeypatch):
-    (tmp_path / "config.toml").write_text('model="old"\nmodel_provider="company"\n'
-        '[model_providers.company]\nname="company"\nbase_url="https://example.invalid/v1"\n'
-        'env_key="COMPANY_API_KEY"\nwire_api="responses"\n'
-        '[mcp_servers.unrelated]\ncommand="unwanted"\n')
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    provider = provider_config()
-    assert "model" not in provider and "mcp_servers" not in provider
-    assert provider["model_provider"] == "company"
+def test_command_uses_native_profile_and_preserves_execution_constraints(tmp_path):
     (tmp_path / "image_tools.mcp.json").write_text(json.dumps({"mcpServers": {
         "cloth_image": {"command": "python3", "args": ["image_tools.py"]}}}))
     command = codex_command(tmp_path, {"model": "gpt-6-astra", "reasoning_effort": "medium",
-        "system_prompt": "RGB only", "max_tool_calls": 6}, provider)
+        "profile": "rbs", "system_prompt": "RGB only", "max_tool_calls": 6})
     assert command[:3] == ["codex", "exec", "--json"]
-    assert "--ignore-user-config" in command
+    assert "--ignore-user-config" not in command
+    assert command[command.index("-p") + 1] == "rbs"
+    assert not any(value.startswith(("model_provider=", "model_providers=", "cli_auth_credentials_store="))
+                   for value in command)
     assert 'model_reasoning_effort="medium"' in command
     assert 'features.shell_tool=false' in command
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert command[command.index("--model") + 1] == "gpt-6-astra"
     assert "claude" not in command
-
-
-@pytest.mark.parametrize("layout", ["legacy", "file", "both"])
-def test_explicit_rbs_profile_overrides_default_routing(tmp_path, monkeypatch, layout):
-    base = ('model_provider="openai"\nprofile="other"\n'
-            '[model_providers.openai]\nname="default"\nenv_key="OPENAI_API_KEY"\n'
-            '[model_providers.relay]\nname="relay"\nbase_url="https://relay.invalid/v1"\n'
-            'env_key="RBS_API_KEY"\nwire_api="responses"\n'
-            '[profiles.other]\nmodel_provider="openai"\n')
-    if layout in {"legacy", "both"}:
-        base += ('[profiles.rbs]\nmodel_provider="relay"\nmodel="old-model"\n'
-                 'model_reasoning_effort="high"\n')
-    (tmp_path / "config.toml").write_text(base)
-    if layout in {"file", "both"}:
-        (tmp_path / "rbs.config.toml").write_text(
-            'model_provider="relay"\nmodel="ignored-profile-model"\n'
-            '[model_providers.relay]\nbase_url="https://profile.invalid/v1"\n'
-            '[mcp_servers.unrelated]\ncommand="do-not-inherit"\n')
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    provider = provider_config("rbs")
-    assert provider["model_provider"] == "relay"
-    assert provider["model_providers"]["relay"]["env_key"] == "RBS_API_KEY"
-    assert "openai" not in provider["model_providers"]
-    assert "model" not in provider and "mcp_servers" not in provider
-    if layout != "legacy":
-        assert provider["model_providers"]["relay"]["base_url"] == "https://profile.invalid/v1"
-
-
-@pytest.mark.parametrize("base_exists", [True, False])
-def test_missing_rbs_never_falls_back_to_openai(tmp_path, monkeypatch, base_exists):
-    if base_exists:
-        (tmp_path / "config.toml").write_text('model_provider="openai"\n')
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    with pytest.raises(ValueError, match="rbs.*refusing default-provider fallback"):
-        provider_config("rbs")
-
-
-def test_standalone_profile_without_base_config(tmp_path, monkeypatch):
-    (tmp_path / "rbs.config.toml").write_text('model_provider="relay"\n'
-        '[model_providers.relay]\nname="relay"\nenv_key="RBS_API_KEY"\n')
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    assert provider_config("rbs")["model_provider"] == "relay"
 
 
 FAKE_CODEX = '''#!/usr/bin/env python3
@@ -181,7 +134,9 @@ def emit(x):
 assert sys.argv[1:3] == ['exec', '--json']
 assert sys.argv[sys.argv.index('--model')+1] == 'gpt-6-astra'
 assert 'model_reasoning_effort="medium"' in sys.argv
-assert 'model_provider="test-rbs"' in sys.argv
+assert sys.argv[sys.argv.index('-p')+1] == 'rbs'
+assert '--ignore-user-config' not in sys.argv
+assert not any(arg.startswith('model_provider=') for arg in sys.argv)
 prompt = sys.stdin.read()
 if 'UPSTREAM_FAILURE' in prompt:
     emit({'type':'error', 'message':'model_not_found: requested model is unavailable'})
@@ -216,9 +171,8 @@ def fake_remote(tmp_path, monkeypatch):
     monkeypatch.setenv("CLOTH_REMOTE_IMAGE_PYTHON", sys.executable)
     auth_root = tmp_path / "test_auth"
     auth_root.mkdir()
-    (auth_root / "config.toml").write_text('model_provider="openai"\n'
-        '[profiles.rbs]\nmodel_provider="test-rbs"\n'
-        '[model_providers.test-rbs]\nname="offline fake"\nbase_url="https://unused.invalid/v1"\n')
+    # Deliberately not TOML: the runner must leave config parsing to Codex.
+    (auth_root / "config.toml").write_text('only the fake CLI may interpret this configuration')
     monkeypatch.setenv("CODEX_HOME", str(auth_root))
     image = tmp_path / "rgb.png"
     Image.new("RGB", (48, 32), "red").save(image)

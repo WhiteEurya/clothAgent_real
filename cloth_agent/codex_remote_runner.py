@@ -1,13 +1,12 @@
 """Standalone SSH job adapter: Codex JSONL -> audited planner events.
 
-Only the standard library is required (Python <3.11 also needs tomli when a
-user config exists). No camera, depth, kinematics or robot code is deployed.
+Only the standard library is required. Codex loads its own named profile.
+No camera, depth, kinematics or robot code is deployed.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -72,67 +71,9 @@ def toml_value(value):
     raise ValueError("unsupported Codex provider configuration value")
 
 
-def provider_config(profile=None):
-    """Resolve a named profile's routing/auth without inheriting its tools.
-
-    Codex supports legacy [profiles.name] and newer name.config.toml files.
-    The standalone profile file takes precedence over a legacy named table.
-    Authentication still uses the real CODEX_HOME; no credentials are copied.
-    """
-    root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-    path = root / "config.toml"
-    if profile is not None and (not isinstance(profile, str) or not profile or
-            any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in profile)):
-        raise ValueError("invalid Codex profile name")
-    if not path.exists() and profile is None:
-        return {}
-    try:
-        import tomllib
-    except ImportError:
-        try:
-            import tomli as tomllib
-        except ImportError as exc:
-            raise RuntimeError("Codex provider config requires Python 3.11+ or tomli; set CLOTH_REMOTE_IMAGE_PYTHON") from exc
-    config = {}
-    if path.exists():
-        with path.open("rb") as stream:
-            config = tomllib.load(stream)
-    # A selected profile can own provider routing. Do not inherit its model,
-    # effort, sandbox, tools, or instructions.
-    profile = profile if profile is not None else config.get("profile")
-    if profile:
-        profiles = config.get("profiles", {})
-        profile_path = root / f"{profile}.config.toml"
-        if profile_path.is_file():
-            with profile_path.open("rb") as stream:
-                overlay = tomllib.load(stream)
-        elif profile in profiles:
-            overlay = profiles[profile]
-        else:
-            raise ValueError(f"Codex profile {profile!r} not found in {path} or {profile_path}; refusing default-provider fallback")
-
-        def merge(base, overrides):
-            result = dict(base)
-            for key, value in overrides.items():
-                result[key] = (merge(result[key], value)
-                               if isinstance(result.get(key), dict) and isinstance(value, dict) else value)
-            return result
-
-        config = merge(config, overlay)
-    result = {}
-    for key in ("model_provider", "cli_auth_credentials_store"):
-        if key in config:
-            result[key] = config[key]
-    provider = config.get("model_provider", "openai")
-    if provider in config.get("model_providers", {}):
-        result["model_providers"] = {provider: config["model_providers"][provider]}
-    return result
-
-
-def codex_command(job, request, provider=None):
+def codex_command(job, request):
     mcp = json.loads((job / "image_tools.mcp.json").read_text())["mcpServers"]["cloth_image"]
     config = {
-        **(provider or {}),
         "model_reasoning_effort": request["reasoning_effort"],
         "developer_instructions": request["system_prompt"] +
             "\nUse only cloth_image MCP tools. Inspect image_0 and other relevant supplied images "
@@ -152,7 +93,7 @@ def codex_command(job, request, provider=None):
             "required": True, "startup_timeout_sec": 30,
         }},
     }
-    command = ["codex", "exec", "--json", "--ephemeral", "--ignore-user-config",
+    command = ["codex", "exec", "--json", "--ephemeral", "-p", request["profile"],
                "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only",
                "--model", request["model"], "--cd", str(job),
                "--output-schema", str(job / "response_schema.json")]
@@ -269,7 +210,7 @@ def main(argv=None):
     process = None
     try:
         (job / "response_schema.json").write_text(json.dumps(output_schema(request["schema"])))
-        command = codex_command(job, request, provider_config(request["profile"]))
+        command = codex_command(job, request)
         # Inherit the prompt pipe, avoiding a large write-before-read deadlock.
         process = subprocess.Popen(command, stdin=sys.stdin, stdout=subprocess.PIPE,
                                    stderr=sys.stderr, text=True, cwd=job)
