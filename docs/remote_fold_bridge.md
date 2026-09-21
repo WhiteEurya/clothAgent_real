@@ -24,6 +24,46 @@ Codex 远端任务通过 `ssh <host> 'exec bash -lc ...'` 加载远端登录配�
 
 `stdout.log` 的 `responses_launch` 记录 endpoint、模型、profile 和输出预算；`responses_request` / `responses_completed` 记录请求次数、历史长度、实际 usage 和网关回显的预算（可能为 null）。不记录认证头。兼容事件中仍使用 `mcp__cloth_image__*` 工具名称，以保持历史图片审计和坐标检查。
 
+### 区分 524、客户端超时和 token 截断
+
+Responses 默认发送 `stream=true` 并消费 SSE。工具调用仍在同一个完整历史会话内；必须收到 `response.completed`，不执行参数片段。`response.failed`、`response.incomplete`、错误事件、提前 EOF 或只有 `[DONE]` 都会失败，不能把已经收到的部分 JSON 当作计划。网关如果忽略流式要求、返回 JSON，会记录 `stream_fallback=true` 并继续严格检查最终状态。流式不能保证消除网关自身的上游超时。
+
+实际 SSH 回环测试发现 RBS SSE 的一个兼容差异：`output_item.done` 含完整工具调用，但 `response.completed.output` 为空。runner 在成功终态之后，允许使用索引连续、身份一致、没有未完成项的 `output_item.done` 重建输出，记录 `terminal_output_empty=true`、`output_source=output_item.done`。不拼接参数 delta，不在失败/断流时使用这些项。诊断的 `done_output_summary` / `output_summary` 只含输出类型、ID、工具名和参数/文本长度，便于辨别终态内容丢失。
+
+每次调用的 `claude_image_tools/<阶段>_<ID>/` 新增：
+
+- `responses_diagnostics.jsonl`：所有 API 请求的阶段记录，以 `client_request_id` 关联。
+- `responses_last_request.json`：最新收到的 API 阶段快照，便于直接查看。若 SSH/外层总时限中断，可能停留在 `started` 或 `body_progress`；这不是成功结果，需同时查看 `exception.log`。
+
+快照记录发送字节数、是否请求流式、HTTP 状态、响应头到达耗时、第一次读到 body 的耗时、首个 SSE 事件耗时、最近事件、事件数、已读字节数和最终分类。时间相对该次 HTTP 请求开始；`headers_received_s` 包含 DNS、连接、TLS、上传和服务端等待，**不能单凭这个耗时把它们分开**。`first_body_read_s` 是客户端读函数返回数据的时刻，不是精确网络首字节时间。keepalive 只证明收到数据，不证明模型在推理。
+
+记录允许清单内的 `x-request-id`、`cf-ray`、`server` 等响应头，以及脱敏、限长的错误详情；不记录认证头、Cookie、请求正文、图片或文本增量。`X-Client-Request-Id` 每次生成并提交；第三方网关是否保留或向上游转发这个标识仍取决于网关实现。
+
+| category / 字段 | 已证实的失败边界 |
+| --- | --- |
+| `HTTP_STATUS`，`http_status=524` | HTTP 端点返回 524；不是本地 socket 计时器报错。具体内部上游原因需结合网关日志 |
+| `DNS_ERROR` / `TLS_ERROR` / `NETWORK_ERROR` | API 请求遭遇相应网络异常；不会伪造 HTTP 状态 |
+| `CLIENT_TIMEOUT` | 客户端网络操作超时；`phase` 区分尚未收到响应头、读取 SSE、读取 JSON |
+| `REQUEST_DEADLINE` | 客户端单次请求时间预算已用完 |
+| `STREAM_API_ERROR` | HTTP 已建立，但 SSE 内收到 error；查看 `upstream_error` |
+| `STREAM_EOF` / `INVALID_STREAM` | 缺少终态或事件格式不合法，不能接受部分结果 |
+| `OUTPUT_TOKEN_LIMIT` | API 明确返回 incomplete，原因是 max_output_tokens |
+| `RESPONSE_NOT_COMPLETED` | API 返回 failed/in_progress 等非完成状态；查看 `response_status`、`upstream_error` |
+| `FINAL_JSON_INVALID` / `TOOL_ARGUMENTS_INVALID` | HTTP 和 API 终态已完成，但返回的最终 JSON / 工具参数无效 |
+
+本地 socket 等待和单请求读取预算最多 300 秒，也受剩余会话预算约束；整个 SSH 调用仍受原有外层总时限约束。增加本地等待不会增加网关超时。没有自动重试，也不会重置工具预算。
+
+用合成图片做对照（不连接机器人；两次是独立模型运行，不构成严格性能基准）：
+
+```bash
+python scripts/remote_image_tools_test.py --host company-planner
+python scripts/remote_image_tools_test.py --host company-planner --no-api-stream
+```
+
+在各次输出的 `claude_image_tools/smoke/` 中查看 `responses_last_request.json` 和 `responses_diagnostics.jsonl`。如果流式请求仍在首个事件前返回 524，可用 `x-request-id` / `cf-ray` / `client_request_id` 向网关维护方关联日志；客户端无法凭 524 判断是排队、模型处理还是网关转发的哪一层耗尽时限。
+
+实现依据：[Responses 流式事件](https://developers.openai.com/api/docs/guides/streaming-responses)、[请求标识与调试](https://developers.openai.com/api/reference/overview#debugging-requests)。
+
 历史 Codex JSONL 曾把大图工具结果截为约 1 MiB 的文本，导致 `NO_IMAGE / UNKNOWN`。Responses 已绕过这个 CLI 序列化环节，但仍保留 900000 字节的图片工具结果上限，以控制每轮传输量；超限时仅允许通过既有校验的同尺寸 JPEG。原始 PNG、image_id 和坐标变换不变。主机验证实际提交 API 的图片字节；不靠模型自报成功。无法在大小限制内通过校验时返回 `IMAGE_PAYLOAD_TOO_LARGE`，不静默缩图或放宽误差阈值。
 
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：

@@ -188,3 +188,24 @@ def test_metadata_only_cannot_satisfy_visual_evidence(job):
     responses = iter([completed(1, [call(tool='image_info')]), completed(2, [FINAL])])
     with pytest.raises(ValueError, match='no RGB tool evidence'):
         runner.run(directory, request, '', lambda *args: next(responses))
+
+
+def test_transport_error_preserves_diagnostic_and_never_delivers_pending_image(job, capsys):
+    directory, request = job
+    attempts = []
+    diagnostic = {'category': 'HTTP_STATUS', 'http_status': 524,
+                  'phase': 'reading_http_error', 'elapsed_s': 120,
+                  'client_request_id': 'test-client-id', 'detail': 'HTTP 524'}
+
+    def api(*args):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return completed(1, [call()])
+        raise runner.ResponsesRequestError(diagnostic)
+
+    with pytest.raises(runner.ResponsesRequestError) as caught:
+        runner.run(directory, request, '', api)
+    assert caught.value.diagnostic == diagnostic
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not any(event.get('type') in {'user', 'result'} for event in events)
+    assert len(attempts) == 2

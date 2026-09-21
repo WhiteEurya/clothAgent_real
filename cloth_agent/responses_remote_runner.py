@@ -6,15 +6,20 @@ function results. No server-side response storage or CLI token defaults needed.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import http.client
 import json
 import os
 from pathlib import Path
 import re
+import socket
+import ssl
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 def emit(event):
@@ -67,22 +72,285 @@ def load_provider(profile):
     return base + '/responses', headers, key
 
 
+class EndpointRedirectError(RuntimeError):
+    pass
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise RuntimeError('Responses endpoint redirected; credential forwarding refused')
+        raise EndpointRedirectError('Responses endpoint redirected; credential forwarding refused')
+
+
+class ResponsesRequestError(RuntimeError):
+    def __init__(self, diagnostic):
+        self.diagnostic = diagnostic
+        super().__init__(
+            f"Responses API {diagnostic['category']} at {diagnostic['phase']} "
+            f"after {diagnostic['elapsed_s']:.3f}s "
+            f"(client_request_id={diagnostic['client_request_id']}): {diagnostic.get('detail', '')}")
+
+
+class ResponsesResult(dict):
+    """Keep local transport metadata out of the API response/conversation."""
+    def __init__(self, value, diagnostic):
+        super().__init__(value)
+        self.diagnostic = dict(diagnostic)
+
+
+def validation_error(response, category, detail):
+    diagnostic = dict(getattr(response, 'diagnostic', {}))
+    diagnostic.update(event='failed', category=category, phase='validating_response', detail=detail,
+                      response_id=response.get('id'), client_request_id=diagnostic.get('client_request_id'),
+                      elapsed_s=diagnostic.get('elapsed_s', 0))
+    emit({'type': 'system', 'subtype': 'responses_diagnostic', **diagnostic})
+    raise ResponsesRequestError(diagnostic)
+
+
+class RequestTrace:
+    """Only transport metadata and redacted errors; never prompts/images/deltas."""
+    def __init__(self, headers, payload, byte_count, timeout):
+        self.started = time.monotonic()
+        self.deadline = self.started + timeout
+        self.last_notice = self.started
+        self.secrets = [value.removeprefix('Bearer ') for name, value in headers.items()
+                        if name.lower() not in {'content-type', 'accept', 'x-client-request-id'}
+                        and isinstance(value, str) and value]
+        self.data = dict(client_request_id=headers['X-Client-Request-Id'],
+                         stream_requested=payload.get('stream', False), request_bytes=byte_count,
+                         request_timeout_s=timeout, http_status=None, response_headers={},
+                         headers_received_s=None, first_body_read_s=None, first_event_s=None,
+                         last_event=None, event_count=0, received_bytes=0,
+                         last_body_read_s=None, phase='awaiting_headers')
+
+    def clean(self, value):
+        if isinstance(value, dict):
+            return {k: self.clean(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.clean(v) for v in value]
+        if isinstance(value, str):
+            for secret in self.secrets:
+                value = value.replace(secret, '[REDACTED]')
+            return redact(value, '')
+        return value
+
+    def notice(self, event, **fields):
+        self.data.update(self.clean(fields))
+        self.data.update(elapsed_s=round(time.monotonic() - self.started, 3), event=event,
+                         timestamp=datetime.now(timezone.utc).isoformat())
+        emit({'type': 'system', 'subtype': 'responses_diagnostic', **self.data})
+        self.last_notice = time.monotonic()
+
+    def fail(self, category, detail, **fields):
+        self.notice('failed', category=category, detail=self.clean(str(detail))[:4000], **fields)
+        raise ResponsesRequestError(dict(self.data))
+
+    def headers(self, response):
+        allowed = ('x-request-id', 'request-id', 'cf-ray', 'server', 'content-type',
+                   'retry-after', 'openai-processing-ms', 'x-envoy-upstream-service-time')
+        self.notice('headers_received', http_status=response.code,
+                    headers_received_s=round(time.monotonic() - self.started, 3),
+                    response_headers={k: response.headers[k][:512] for k in allowed
+                                      if response.headers.get(k)})
+
+    def read(self, response, *, line=False, size=65536):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            self.fail('REQUEST_DEADLINE', 'Client request time budget exhausted')
+        # urllib's socket timeout alone is an inactivity timeout. Bound each
+        # read by the remaining request budget too (CPython HTTPResponse).
+        sock = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        block = response.readline(size) if line else response.read1(size)
+        if time.monotonic() > self.deadline:
+            self.fail('REQUEST_DEADLINE', 'Client request time budget exhausted')
+        if block:
+            elapsed = round(time.monotonic() - self.started, 3)
+            self.data['received_bytes'] += len(block)
+            self.data['last_body_read_s'] = elapsed
+            if self.data['first_body_read_s'] is None:
+                self.notice('first_body_read', first_body_read_s=elapsed)
+        return block
+
+
+def response_error(value):
+    error = value.get('error') or {}
+    return {k: error[k] for k in ('type', 'code', 'message') if k in error} if isinstance(error, dict) else {}
+
+
+def output_summary(items):
+    if not isinstance(items, list):
+        return []
+    return [{'type': item.get('type'), 'id': item.get('id'),
+             'call_id': item.get('call_id'), 'name': item.get('name'),
+             'argument_chars': len(item.get('arguments') or ''),
+             'text_chars': sum(len(block.get('text') or '') for block in (item.get('content') or [])
+                               if isinstance(block, dict))}
+            for item in items if isinstance(item, dict)]
+
+
+def check_response(value, trace):
+    if not isinstance(value, dict):
+        trace.fail('INVALID_RESPONSE', 'Expected a Responses object')
+    status = value.get('status')
+    details = value.get('incomplete_details') or {}
+    reason = details.get('reason') if isinstance(details, dict) else None
+    fields = dict(response_id=value.get('id'), response_status=status,
+                  incomplete_reason=reason, upstream_error=response_error(value),
+                  output_summary=output_summary(value.get('output') or []))
+    if status != 'completed':
+        category = 'OUTPUT_TOKEN_LIMIT' if reason == 'max_output_tokens' else 'RESPONSE_NOT_COMPLETED'
+        trace.fail(category, reason or status or 'Missing response status', **fields)
+    if not isinstance(value.get('output'), list) or not isinstance(value.get('id'), str) or not value['id']:
+        trace.fail('INVALID_RESPONSE', 'Expected output list and nonempty response id', **fields)
+    trace.notice('completed', **fields)
+    return ResponsesResult(value, trace.data)
+
+
+def read_sse(response, trace):
+    data = []
+    event_bytes = 0
+    done_items = {}
+    started_items = {}
+    response_id = None
+    # A terminal event contains the complete response, including reasoning.
+    # Never execute argument deltas or accept partial output at EOF.
+    while True:
+        line = trace.read(response, line=True, size=8 * 1024 * 1024 + 1)
+        if not line:
+            trace.fail('STREAM_EOF', 'Stream ended before a terminal Responses event')
+        event_bytes += len(line)
+        if event_bytes > 8 * 1024 * 1024:
+            trace.fail('INVALID_STREAM', 'SSE event exceeds 8 MiB')
+        text = line.decode('utf-8').rstrip('\r\n')
+        if text.startswith('data:'):
+            data.append(text[5:].removeprefix(' '))
+        elif not text:
+            event_bytes = 0
+            if not data:
+                continue
+            raw = '\n'.join(data)
+            data = []
+            if raw == '[DONE]':
+                trace.fail('STREAM_EOF', '[DONE] arrived without a terminal Responses event')
+            event = json.loads(raw)
+            if not isinstance(event, dict) or not isinstance(event.get('type'), str):
+                trace.fail('INVALID_STREAM', 'SSE data lacks an event type')
+            kind = event['type']
+            trace.data.update(last_event=kind, event_count=trace.data['event_count'] + 1)
+            if trace.data['first_event_s'] is None:
+                trace.notice('first_event', first_event_s=round(time.monotonic() - trace.started, 3))
+            if kind == 'response.created':
+                response_id = (event.get('response') or {}).get('id')
+                trace.data['response_id'] = response_id
+            if kind == 'response.output_item.added':
+                index = event.get('output_index')
+                item = event.get('item')
+                if type(index) is not int or index < 0 or not isinstance(item, dict) or index in started_items:
+                    trace.fail('INVALID_STREAM', 'Invalid/duplicate output_item.added')
+                started_items[index] = item.get('id')
+            if kind == 'response.output_item.done':
+                index = event.get('output_index')
+                item = event.get('item')
+                if type(index) is not int or index < 0 or not isinstance(item, dict) or index in done_items:
+                    trace.fail('INVALID_STREAM', 'Invalid/duplicate output_item.done')
+                if index in started_items and started_items[index] != item.get('id'):
+                    trace.fail('INVALID_STREAM', 'Output item identity changed during stream')
+                done_items[index] = item
+                trace.notice('output_item_done', done_output_summary=output_summary(
+                    [done_items[k] for k in sorted(done_items)]))
+            if kind in {'response.completed', 'response.failed', 'response.incomplete'}:
+                value = event.get('response')
+                if not isinstance(value, dict) or value.get('status') != kind.split('.')[1]:
+                    trace.fail('INVALID_STREAM', 'Terminal event/status mismatch')
+                if response_id is not None and response_id != value.get('id'):
+                    trace.fail('INVALID_STREAM', 'Response identity changed during stream')
+                # RBS was observed to send complete output_item.done objects but
+                # an empty output array at response.completed. Recover only
+                # finished items, after the successful terminal event. Deltas
+                # and unfinished items are never executable.
+                if kind == 'response.completed' and value.get('output') == [] and done_items:
+                    if (set(done_items) != set(range(len(done_items))) or
+                            not set(started_items) <= set(done_items) or
+                            len({item.get('id') for item in done_items.values()}) != len(done_items) or
+                            any(not item.get('id') or item.get('status', 'completed') != 'completed'
+                                for item in done_items.values())):
+                        trace.fail('INVALID_STREAM', 'Terminal output missing and streamed items incomplete')
+                    value = {**value, 'output': [done_items[k] for k in sorted(done_items)]}
+                    trace.notice('terminal_output_reconstructed', terminal_output_empty=True,
+                                 output_source='output_item.done')
+                else:
+                    trace.data['output_source'] = 'terminal_response'
+                return check_response(value, trace)
+            if kind == 'error':
+                error = {k: event[k] for k in ('type', 'code', 'message') if k in event}
+                trace.fail('STREAM_API_ERROR', error.get('message', 'API stream error'), upstream_error=error)
+        # Comments/keepalives are network activity, not evidence of model progress.
+        if time.monotonic() - trace.last_notice >= 10:
+            trace.notice('body_progress')
 
 
 def post(url, headers, payload, timeout):
-    request = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
-                                     headers=headers, method='POST')
+    headers = {**headers, 'X-Client-Request-Id': str(uuid.uuid4()),
+               'Accept': 'text/event-stream' if payload.get('stream') else 'application/json'}
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    trace = RequestTrace(headers, payload, len(body), timeout)
+    request = urllib.request.Request(url, data=body, headers=headers, method='POST')
+    trace.notice('started')
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
-            return json.load(response)
+            trace.headers(response)
+            content_type = response.headers.get('content-type', '').split(';')[0].lower().strip()
+            if content_type == 'text/event-stream':
+                trace.notice('body_started', phase='reading_sse', response_format='sse')
+                return read_sse(response, trace)
+            # Some gateways ignore stream=true. Record this explicitly and
+            # still demand a completed, valid JSON response.
+            trace.notice('body_started', phase='reading_json', response_format='json',
+                         stream_fallback=bool(payload.get('stream')))
+            chunks = []
+            while True:
+                block = trace.read(response)
+                if not block:
+                    break
+                chunks.append(block)
+                if trace.data['received_bytes'] > 8 * 1024 * 1024:
+                    trace.fail('INVALID_RESPONSE', 'JSON response exceeds 8 MiB')
+            return check_response(json.loads(b''.join(chunks)), trace)
+    except ResponsesRequestError:
+        raise
+    except EndpointRedirectError as exc:
+        trace.fail('HTTP_REDIRECT', str(exc))
     except urllib.error.HTTPError as exc:
-        # Error bodies can echo authorization. Never emit them unredacted.
-        key = headers.get('Authorization', '').removeprefix('Bearer ')
-        detail = redact(exc.read(4000).decode('utf-8', 'replace'), key)
-        raise RuntimeError(f'Responses API HTTP {exc.code}: {detail}') from None
+        trace.headers(exc)
+        trace.notice('http_error', phase='reading_http_error')
+        try:
+            detail = trace.read(exc, size=4000).decode('utf-8', 'replace')
+            try:
+                value = json.loads(detail)
+                error = response_error(value) if isinstance(value, dict) else {}
+            except ValueError:
+                error = {}
+            trace.data['upstream_error'] = trace.clean(error)
+        except ResponsesRequestError:
+            # Preserve the known HTTP status even if reading its body times out.
+            detail = 'HTTP error body exceeded request deadline'
+        except (OSError, ValueError, http.client.HTTPException) as body_error:
+            detail = 'HTTP error body unreadable: ' + type(body_error).__name__
+        finally:
+            exc.close()
+        trace.fail('HTTP_STATUS', f'HTTP {exc.code}: {detail}',
+                   interpretation='Endpoint returned an HTTP error; internal upstream cause is not established')
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        category = ('DNS_ERROR' if isinstance(reason, socket.gaierror) else
+                    'TLS_ERROR' if isinstance(reason, ssl.SSLError) else
+                    'CLIENT_TIMEOUT' if isinstance(reason, TimeoutError) else 'NETWORK_ERROR')
+        trace.fail(category, str(reason), exception_type=type(reason).__name__)
+    except (ValueError, UnicodeError) as exc:
+        # JSON decoder errors may include input text: keep the class only.
+        trace.fail('INVALID_STREAM' if trace.data['phase'] == 'reading_sse' else 'INVALID_RESPONSE',
+                   type(exc).__name__)
 
 
 def text_of(response):
@@ -131,6 +399,7 @@ def run(job, request, prompt, api_post=post):
                     f'At most {limit} tool calls are allowed in this conversation.')
     emit({'type': 'system', 'subtype': 'responses_launch', 'model': request['model'],
           'profile': request['profile'], 'reasoning_effort': request['reasoning_effort'],
+          'api_stream': request.get('api_stream', True),
           'max_output_tokens': token_limit, 'endpoint': url,
           'conversation': 'full_history', 'delivery_boundary': 'API accepted request bytes'})
 
@@ -144,6 +413,7 @@ def run(job, request, prompt, api_post=post):
         if remaining <= 0:
             raise TimeoutError('Responses conversation deadline exceeded')
         payload = {'model': request['model'], 'instructions': instructions,
+                   'stream': request.get('api_stream', True),
                    'reasoning': {'effort': request['reasoning_effort']},
                    'max_output_tokens': token_limit, 'store': False,
                    'include': ['reasoning.encrypted_content'], 'input': history,
@@ -156,6 +426,8 @@ def run(job, request, prompt, api_post=post):
               'max_output_tokens': token_limit, 'conversation_items': len(history)})
         try:
             response = api_post(url, headers, payload, min(300, remaining))
+        except ResponsesRequestError:
+            raise
         except Exception as exc:
             raise RuntimeError(redact(exc, key)) from None
         responses += 1
@@ -198,7 +470,11 @@ def run(job, request, prompt, api_post=post):
         calls = [item for item in output if item.get('type') == 'function_call']
         if not calls:
             text = text_of(response)
-            value = json.loads(text)
+            try:
+                value = json.loads(text)
+            except ValueError:
+                validation_error(response, 'FINAL_JSON_INVALID',
+                                 f'Completed response contains no valid final JSON (text_chars={len(text)})')
             if not isinstance(value, dict):
                 raise ValueError('Responses final is not a JSON object')
             if not delivered_image:
@@ -222,7 +498,11 @@ def run(job, request, prompt, api_post=post):
             if name not in definitions:
                 raise ValueError('unexpected Responses function tool')
             seen_calls.add(call_id)
-            arguments = json.loads(call['arguments'])
+            try:
+                arguments = json.loads(call['arguments'])
+            except (KeyError, TypeError, ValueError):
+                validation_error(response, 'TOOL_ARGUMENTS_INVALID',
+                                 'Completed function call has missing/invalid JSON arguments')
             if not isinstance(arguments, dict):
                 raise ValueError('function arguments must be an object')
             item = {'id': call_id, 'type': 'mcp_tool_call', 'server': 'cloth_image',
@@ -252,7 +532,8 @@ def main(argv=None):
         return 0
     except Exception as exc:
         emit({'type': 'result', 'subtype': 'error_responses', 'is_error': True,
-              'provider': 'responses', 'result': f'{type(exc).__name__}: {redact(exc, os.environ.get("OPENAI_API_KEY"))}'})
+              'provider': 'responses', 'diagnostic': getattr(exc, 'diagnostic', None),
+              'result': f'{type(exc).__name__}: {redact(exc, os.environ.get("OPENAI_API_KEY"))}'})
         return 1
 
 

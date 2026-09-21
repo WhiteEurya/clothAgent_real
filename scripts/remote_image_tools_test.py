@@ -74,6 +74,8 @@ def main(argv=None):
     parser.add_argument("image", type=Path, nargs="?", help="RGB PNG; omitted: generate a synthetic color chart")
     parser.add_argument("--host", default="company-planner")
     parser.add_argument("--timeout-s", type=int, default=300)
+    parser.add_argument("--no-api-stream", action="store_true",
+                        help="diagnostic comparison: request JSON instead of SSE (same agent/tools)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--offline", action="store_true", help="test tools locally, without a model or network")
     mode.add_argument("--local-responses", "--local-codex", dest="local_codex", action="store_true",
@@ -123,6 +125,7 @@ def main(argv=None):
                 backend = CompanyLocalBackend(ssh_host="local-company", ssh_binary=str(launcher), timeout_s=args.timeout_s)
             else:
                 backend = RemoteCodexBackend(ssh_host=args.host, timeout_s=args.timeout_s)
+            backend.api_stream = not args.no_api_stream
             result = backend.invoke(prompt=prompt, image_paths=[image], schema=SCHEMA,
                 debug_dir=output / "claude_image_tools" / "smoke",
                 system_prompt="Inspect RGB with view_image and images returned by editing tools. Return the required JSON.")

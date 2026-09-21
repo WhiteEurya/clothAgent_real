@@ -266,6 +266,7 @@ class RemoteClaudeBackend:
                  "profile": getattr(self, "profile", None),
                  "api": "responses" if getattr(self, "runner_file", None) == "responses_remote_runner.py" else None,
                  "max_output_tokens": getattr(self, "max_output_tokens", None),
+                 "api_stream": getattr(self, "api_stream", None),
                  "image_edit_limit": image_edit_limit,
                  "max_turns": self._call_max_turns,
                  "overall_timeout_s": overall_timeout_s,
@@ -602,6 +603,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     profile = "rbs"
     runner_file = "responses_remote_runner.py"
     max_output_tokens = 32768
+    api_stream = True
 
     @staticmethod
     def _is_output_budget_failure(exc: BaseException) -> bool:
@@ -656,6 +658,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
                    "profile": self.profile,
                    "model": self.model, "reasoning_effort": self.reasoning_effort,
                    "max_output_tokens": self.max_output_tokens,
+                   "api_stream": self.api_stream,
                    "image_count": self._image_count,
                    "image_edit_limit": self._image_edit_limit,
                    "timeout_s": timeout_s,

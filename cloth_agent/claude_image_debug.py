@@ -81,6 +81,9 @@ class ImageDebugSession:
         row = {'sequence': self.claude_event_count, 'received_at': datetime.now(timezone.utc).isoformat(),
                'received_elapsed_s': elapsed, 'since_previous_event_s': gap, 'event': event}
         self.append_stream('claude_events.jsonl', json.dumps(row, ensure_ascii=False) + '\n')
+        if event.get('subtype') == 'responses_diagnostic':
+            self.append_stream('responses_diagnostics.jsonl', json.dumps(event, ensure_ascii=False) + '\n')
+            self.write('responses_last_request.json', event)
         self.state['last_claude_event'] = {k: v for k, v in row.items() if k != 'event'} | {
             'type': event.get('type'), 'subtype': event.get('subtype')}
         self.state['claude_event_count'] = self.claude_event_count

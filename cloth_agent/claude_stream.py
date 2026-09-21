@@ -52,6 +52,11 @@ class ClaudeStreamProgress:
         self.counts[self.latest] += 1
         self.total += 1
         self.last_received = self.clock()
+        if kind == 'system' and subtype == 'responses_diagnostic':
+            self.emit('responses_api', event.get('event', 'unknown'), event.get('elapsed_s'),
+                      **{key: event.get(key) for key in ('phase', 'category', 'http_status',
+                         'client_request_id', 'headers_received_s', 'first_event_s',
+                         'event_count', 'last_event', 'stream_requested', 'stream_fallback')})
         if kind == 'stream_event':
             part = event.get('event') or {}
             if part.get('type') == 'message_start':
