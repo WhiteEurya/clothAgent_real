@@ -601,7 +601,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     agent_name = "Codex"
     remote_login_shell = True
     model = "gpt-6-astra"
-    reasoning_effort = "medium"
+    reasoning_effort = "minimal"
     profile = "rbs"
 
     @staticmethod
@@ -627,7 +627,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
             if not self._is_output_budget_failure(exc):
                 raise
             original_effort = self.reasoning_effort
-            self.reasoning_effort = "low"
+            self.reasoning_effort = "minimal"
             try:
                 result = super()._invoke(schema=schema, **kwargs)
             finally:

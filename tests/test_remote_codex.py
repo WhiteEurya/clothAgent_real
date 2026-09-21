@@ -157,8 +157,8 @@ def test_output_budget_failure_retries_once_at_low_reasoning(monkeypatch):
     monkeypatch.setattr("cloth_agent.planner_backend.RemoteClaudeBackend._invoke", fake_invoke)
     result = backend._invoke(schema={"type": "object"})
     assert result.stdout == successful.stdout
-    assert calls == ["medium", "low"]
-    assert backend.reasoning_effort == "medium"
+    assert calls == ["minimal", "minimal"]
+    assert backend.reasoning_effort == "minimal"
 
 
 FAKE_CODEX = '''#!/usr/bin/env python3
@@ -170,7 +170,7 @@ def emit(x):
     print(json.dumps(x), flush=True)
 assert sys.argv[1:3] == ['exec', '--json']
 assert sys.argv[sys.argv.index('--model')+1] == 'gpt-6-astra'
-assert 'model_reasoning_effort="medium"' in sys.argv
+assert 'model_reasoning_effort="minimal"' in sys.argv
 assert sys.argv[sys.argv.index('-p')+1] == 'rbs'
 assert '--ignore-user-config' not in sys.argv
 assert not any(arg.startswith('model_provider=') for arg in sys.argv)
