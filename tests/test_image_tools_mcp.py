@@ -288,7 +288,7 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
     def substitute(command):
         remote = command[-1]
         if not remote.startswith("rm -rf"):
-            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
                 lambda m: f"cp {shlex.quote(str(tools.job / 'image_0.png'))} {m[1]}", remote)
             remote = remote.replace("claude -p", f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))} -p")
         return ["sh", "-c", remote]

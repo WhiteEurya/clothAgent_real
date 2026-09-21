@@ -59,7 +59,9 @@ class ClaudeStreamProgress:
                       api_phase=event.get('phase'),
                       **{key: event.get(key) for key in ('category', 'http_status',
                          'client_request_id', 'headers_received_s', 'first_event_s',
-                         'event_count', 'last_event', 'stream_requested', 'stream_fallback')})
+                         'event_count', 'last_event', 'stream_requested', 'stream_fallback',
+                         'request_index', 'attempt', 'max_attempts', 'previous_client_request_id',
+                         'retry_decision', 'retry_delay_s')})
         if kind == 'stream_event':
             part = event.get('event') or {}
             if part.get('type') == 'message_start':

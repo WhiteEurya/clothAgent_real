@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import hashlib
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import re
+import random
 import socket
 import ssl
 import sys
@@ -283,7 +287,10 @@ def read_sse(response, trace):
                     trace.data['output_source'] = 'terminal_response'
                 return check_response(value, trace)
             if kind == 'error':
-                error = {k: event[k] for k in ('type', 'code', 'message') if k in event}
+                # RBS also returns {type:error,error:{type,code,message}}.
+                # Keep nested provider details; never classify an unknown
+                # stream error as transient based on HTTP 200 alone.
+                error = response_error(event) or {k: event[k] for k in ('type', 'code', 'message') if k in event}
                 trace.fail('STREAM_API_ERROR', error.get('message', 'API stream error'), upstream_error=error)
         # Comments/keepalives are network activity, not evidence of model progress.
         if time.monotonic() - trace.last_notice >= 10:
@@ -291,7 +298,7 @@ def read_sse(response, trace):
 
 
 def post(url, headers, payload, timeout):
-    headers = {**headers, 'X-Client-Request-Id': str(uuid.uuid4()),
+    headers = {**headers, 'X-Client-Request-Id': headers.get('X-Client-Request-Id') or str(uuid.uuid4()),
                'Accept': 'text/event-stream' if payload.get('stream') else 'application/json'}
     body = json.dumps(payload, ensure_ascii=False).encode()
     trace = RequestTrace(headers, payload, len(body), timeout)
@@ -353,6 +360,99 @@ def post(url, headers, payload, timeout):
                    type(exc).__name__)
 
 
+MAX_REQUEST_RETRIES = 2
+RETRY_HTTP_STATUSES = {500, 502, 503, 504, 520, 522, 524}
+
+
+def retryable_request_error(diagnostic):
+    # Explicit protocol/model/credential failures must not be hidden by retries.
+    error = diagnostic.get('upstream_error') or {}
+    permanent = {'invalid_request_error', 'authentication_error', 'invalid_api_key',
+                 'permission_error', 'insufficient_quota', 'max_output_tokens',
+                 'unsupported_value', 'invalid_value'}
+    if error.get('type') in permanent or error.get('code') in permanent:
+        return False
+    category = diagnostic.get('category')
+    return (category in {'STREAM_EOF', 'CLIENT_TIMEOUT'} or
+            category == 'HTTP_STATUS' and diagnostic.get('http_status') in RETRY_HTTP_STATUSES or
+            category in {'STREAM_API_ERROR', 'RESPONSE_NOT_COMPLETED'} and
+            (error.get('code') or error.get('type')) in {
+                'service_unavailable', 'service_unavailable_error', 'server_is_overloaded', 'overloaded_error'} or
+            category == 'NETWORK_ERROR' and diagnostic.get('exception_type') in {
+                'ConnectionResetError', 'ConnectionAbortedError', 'BrokenPipeError',
+                'RemoteDisconnected', 'IncompleteRead'})
+
+
+def retry_delay(diagnostic, retry_number):
+    delay = 2 ** retry_number + random.uniform(0, .5)
+    header = (diagnostic.get('response_headers') or {}).get('retry-after')
+    if header is not None:
+        try:
+            seconds = float(header)
+        except (ValueError, TypeError):
+            try:
+                date = parsedate_to_datetime(header)
+                seconds = date.timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                return delay
+        if math.isfinite(seconds):
+            delay = max(delay, seconds)
+        else:
+            return math.inf
+    return delay
+
+
+def request_with_retries(url, headers, payload, deadline, request_index, stats, api_post):
+    """Replay one read-only model request, never a tool or an entire job.
+
+    The snapshot excludes unfinished output; tools/history are owned by run().
+    The same deadline covers all attempts and backoff. Provider billing/state
+    is not exactly-once: each replay has a fresh client request ID.
+    """
+    snapshot = json.dumps(payload, ensure_ascii=False)
+    fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
+    previous_id = None
+    for attempt in range(1, MAX_REQUEST_RETRIES + 2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Responses conversation deadline exceeded before API attempt')
+        identity = str(uuid.uuid4())
+        fields = dict(request_index=request_index, attempt=attempt,
+                      max_attempts=MAX_REQUEST_RETRIES + 1, client_request_id=identity,
+                      previous_client_request_id=previous_id, payload_sha256=fingerprint)
+        emit({'type': 'system', 'subtype': 'responses_diagnostic',
+              'event': 'attempt_started', 'phase': 'request_attempt', **fields})
+        stats['http_attempt_count'] += 1
+        if attempt > 1:
+            stats['request_retry_count'] += 1
+        try:
+            response = api_post(url, {**headers, 'X-Client-Request-Id': identity},
+                                json.loads(snapshot), min(300, remaining))
+        except ResponsesRequestError as exc:
+            diagnostic = {**exc.diagnostic, **fields}
+            can_retry = retryable_request_error(diagnostic)
+            delay = retry_delay(diagnostic, attempt) if can_retry and attempt <= MAX_REQUEST_RETRIES else None
+            remaining = deadline - time.monotonic()
+            decision = ('not_retryable' if not can_retry else
+                        'attempts_exhausted' if attempt > MAX_REQUEST_RETRIES else
+                        'retry_after_too_long' if delay > 60 else
+                        'conversation_deadline' if remaining <= delay + 1 else 'retry_scheduled')
+            diagnostic.update(event=decision, retry_decision=decision,
+                              retry_delay_s=delay if delay is not None and math.isfinite(delay) else None,
+                              conversation_remaining_s=round(max(0, remaining), 3))
+            emit({'type': 'system', 'subtype': 'responses_diagnostic', **diagnostic})
+            if decision != 'retry_scheduled':
+                raise ResponsesRequestError(diagnostic) from None
+            previous_id = identity
+            time.sleep(delay)
+            continue
+        if attempt > 1:
+            emit({'type': 'system', 'subtype': 'responses_diagnostic',
+                  **getattr(response, 'diagnostic', {}), **fields,
+                  'event': 'retry_recovered', 'phase': 'request_attempt'})
+        return response
+
+
 def text_of(response):
     return '\n'.join(block['text'] for item in response['output']
                      if item.get('type') == 'message'
@@ -390,6 +490,7 @@ def run(job, request, prompt, api_post=post):
     pending_delivery = []
     usage = {'input_tokens': 0, 'output_tokens': 0, 'reasoning_tokens': 0}
     responses = 0
+    request_stats = {'http_attempt_count': 0, 'request_retry_count': 0}
     seen_responses = set()
     seen_calls = set()
     delivered_image = False
@@ -400,6 +501,7 @@ def run(job, request, prompt, api_post=post):
     emit({'type': 'system', 'subtype': 'responses_launch', 'model': request['model'],
           'profile': request['profile'], 'reasoning_effort': request['reasoning_effort'],
           'api_stream': request.get('api_stream', True),
+          'max_request_retries': MAX_REQUEST_RETRIES,
           'max_output_tokens': token_limit, 'endpoint': url,
           'conversation': 'full_history', 'delivery_boundary': 'API accepted request bytes'})
 
@@ -425,7 +527,8 @@ def run(job, request, prompt, api_post=post):
         emit({'type': 'system', 'subtype': 'responses_request', 'request_index': responses + 1,
               'max_output_tokens': token_limit, 'conversation_items': len(history)})
         try:
-            response = api_post(url, headers, payload, min(300, remaining))
+            response = request_with_retries(url, headers, payload, deadline,
+                                            responses + 1, request_stats, api_post)
         except ResponsesRequestError:
             raise
         except Exception as exc:
@@ -486,7 +589,8 @@ def run(job, request, prompt, api_post=post):
                 orientation_guard(job, {'hook_event_name': 'Stop', 'last_assistant_message': text})
             emit({**final, 'provider': 'responses', 'model': request['model'],
                   'profile': request['profile'], 'reasoning_effort': request['reasoning_effort'],
-                  'max_output_tokens': token_limit, 'response_count': responses})
+                  'max_output_tokens': token_limit, 'response_count': responses, **request_stats,
+                  'usage_scope': 'completed_responses_only; failed attempts may incur unreported usage'})
             return
         history.extend(output)
         if len(calls) + len(seen_calls) > limit:

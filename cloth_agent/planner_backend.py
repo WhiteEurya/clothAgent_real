@@ -601,7 +601,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     agent_name = "GPT-6 Responses"
     remote_login_shell = True
     model = "gpt-6-astra"
-    reasoning_effort = "minimal"
+    reasoning_effort = "medium"
     profile = "rbs"
     runner_file = "responses_remote_runner.py"
     max_output_tokens = 32768

@@ -265,3 +265,44 @@ def test_diagnostics_saved_and_shown_in_live_progress(tmp_path):
     assert notices[0][1]['http_status'] == 524
     assert notices[0][1]['api_phase'] == 'awaiting_headers'
     assert 'phase' not in notices[0][1]
+
+
+def test_retry_discards_finished_tool_item_from_unfinished_response(monkeypatch, capsys):
+    partial = sse({'type': 'response.created', 'response': {'id': 'abandoned'}},
+                  {'type': 'response.output_item.done', 'output_index': 0,
+                   'item': {'id': 'fc_abandoned', 'type': 'function_call',
+                            'name': 'rotate_image', 'call_id': 'abandoned_call',
+                            'arguments': '{"image_id":"image_0","degrees_clockwise":90}'}})
+    bodies = iter([Response(partial), Response(sse({'type': 'response.completed', 'response': FINAL}))])
+    sent = []
+
+    class Opener:
+        def open(self, request, timeout):
+            sent.append(request)
+            return next(bodies)
+
+    monkeypatch.setattr(runner.urllib.request, 'build_opener', lambda *a: Opener())
+    monkeypatch.setattr(runner.time, 'sleep', lambda _: None)
+    stats = {'http_attempt_count': 0, 'request_retry_count': 0}
+    value = runner.request_with_retries('https://example.invalid/responses', {},
+        {'stream': True, 'input': 'inspect'}, runner.time.monotonic() + 30, 2, stats, runner.post)
+    assert value == FINAL
+    assert 'abandoned' not in json.dumps(value)
+    assert len(sent) == 2 and sent[0].data == sent[1].data
+    assert sent[0].get_header('X-client-request-id') != sent[1].get_header('X-client-request-id')
+    assert stats == {'http_attempt_count': 2, 'request_retry_count': 1}
+    events = diagnostics(capsys)
+    assert [e['event'] for e in events if e['event'].startswith('retry_')] == ['retry_scheduled', 'retry_recovered']
+
+
+def test_nested_stream_error_preserves_parameter_failure(monkeypatch):
+    install(monkeypatch, Response(sse({'type': 'error', 'error': {
+        'type': 'invalid_request_error', 'code': 'unsupported_value',
+        'message': 'Unsupported reasoning effort; test-secret'}})))
+    with pytest.raises(runner.ResponsesRequestError) as caught:
+        post()
+    diagnostic = caught.value.diagnostic
+    assert diagnostic['upstream_error']['code'] == 'unsupported_value'
+    assert 'Unsupported reasoning' in diagnostic['detail']
+    assert 'test-secret' not in str(caught.value)
+    assert not runner.retryable_request_error(diagnostic)

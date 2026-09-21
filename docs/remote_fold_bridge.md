@@ -1,6 +1,6 @@
 # Fold 远程 GPT-6 Responses 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH，由公司电脑直接请求 **Responses API**。模型保持 `gpt-6-astra`，推理强度 `minimal`，每次 API 请求显式发送 `max_output_tokens=32768`。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH，由公司电脑直接请求 **Responses API**。模型保持 `gpt-6-astra`，推理强度恢复为 `medium`，每次 API 请求显式发送 `max_output_tokens=32768`。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
 
 公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。生产路径不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
 
@@ -53,7 +53,28 @@ Responses 默认发送 `stream=true` 并消费 SSE。工具调用仍在同一个
 | `RESPONSE_NOT_COMPLETED` | API 返回 failed/in_progress 等非完成状态；查看 `response_status`、`upstream_error` |
 | `FINAL_JSON_INVALID` / `TOOL_ARGUMENTS_INVALID` | HTTP 和 API 终态已完成，但返回的最终 JSON / 工具参数无效 |
 
-本地 socket 等待和单请求读取预算最多 300 秒，也受剩余会话预算约束；整个 SSH 调用仍受原有外层总时限约束。增加本地等待不会增加网关超时。没有自动重试，也不会重置工具预算。
+本地 socket 等待和单请求读取预算最多 300 秒，也受剩余会话预算约束；整个 SSH 调用仍受原有外层总时限约束。增加本地等待不会增加网关超时。
+
+当前请求遇到 `STREAM_EOF`、`CLIENT_TIMEOUT`、明确的连接中断（reset/aborted/broken pipe/remote disconnected/incomplete read），或 HTTP 500/502/503/504/520/522/524 时，最多重试两次，总共三次尝试。认证、参数、额度、DNS/TLS、非法流/JSON、token 截断、未知 SSE error 不自动重试；已明确标为参数/认证错误的 5xx 也不重试。等待约 2 秒、4 秒并加少量抖动；`Retry-After` 更长时遵守服务端等待要求。若等待超过 60 秒或剩余会话时间不够，则直接保留错误，不提前重试。单次请求时限耗尽且分类为 `REQUEST_DEADLINE` 时也不重试。
+
+同样处理已明确标识的流内过载：`service_unavailable`、`service_unavailable_error`、`server_is_overloaded`、`overloaded_error`，无论它来自 SSE `error` 或 `response.failed`。RBS 实测把错误放在 `error.error` 嵌套对象中；现已保留其中的 type/code/message，并在存在认证/参数/额度错误标识时优先拒绝重试。不会只凭错误文本猜测是否可重试。
+
+重试只重发同一个请求快照，不重开 job，不重放 `ImageTools`，不追加失败尝试的任何输出，不重置调用/编辑预算，不改变模型、推理强度或 token 参数。即使断流前收到完整 `output_item.done`，缺少成功终态也丢弃它。每次尝试重新生成 `client_request_id`；`request_index`、`attempt`、`previous_client_request_id`、`payload_sha256` 用于关联同一请求的各次尝试。重发不是服务端的断点续传，也不保证上游只计算/收费一次。
+
+诊断会记录 `retry_scheduled`、`retry_recovered`、`attempts_exhausted`、`not_retryable` 等决策。最终结果的 `http_attempt_count` 包含所有尝试，`request_retry_count` 是实际重发次数，`response_count` 仍只计完成的逻辑请求；usage 仅累计完成响应，失败尝试可能有未上报的计费。`max_stage_retries=0` 仍禁止重启整个规划阶段，但不关闭这个有界的 HTTP 请求恢复。
+
+连续验收命令（默认 10 轮；不连接机器人/相机）：
+
+```bash
+# 公司电脑本机：生产 Responses 与工具循环，跳过 SSH/图片中转
+python scripts/responses_reliability_test.py --local-responses --rounds 10
+# Alienware：包括 HTTPS 中转与 SSH
+python scripts/responses_reliability_test.py --host company-planner --rounds 10
+```
+
+可加一个保存的 PNG 路径；不指定时使用合成色块图。`report.json` 分开统计不需重试的成功、重试后成功、最终失败；每轮保存完整诊断。该测试验证看图、旋转、裁剪、缩放、坐标映射与最终 JSON，**不是整套监督/方向识别/动作规划的语义验收，也不是物理折叠测试**。
+
+2026-09-21 本机连续 10 轮（`medium`、合成色块图、跳过 SSH/中转）仅 1 轮成功，其余 9 轮返回流内错误；当时嵌套错误解析尚未补齐，不能把这 9 轮都归为相同原因。补齐后取得明确的 `service_unavailable`：网关报告尝试了 3 个账户，上游过载。加入明确过载白名单后的真实单轮补测依次出现 EOF、过载、`rate_limit_exceeded`；前两次触发当前请求重试，第三次停止，未输出计划。故障注入和回归验证了恢复边界，但本次**在线稳定性验收未通过**，需要服务端容量/限流恢复后再次验收。没有运行机器人。
 
 用合成图片做对照（不连接机器人；两次是独立模型运行，不构成严格性能基准）：
 
