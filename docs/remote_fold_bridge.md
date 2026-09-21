@@ -1,156 +1,50 @@
-# Fold 远程 Claude / GPT-6 桥接
+# Fold 远程 Claude 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote --planner-agent claude`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 统一使用所选 agent，通过 HTTPS 图片中转 + SSH 在公司电脑执行。Claude 启动命令恢复为 `cc95a8a`（2026-09-18，当时 9 月 19 日尚无新提交）的调用方式：不传 `--model` / `--effort`，由远端 Claude 配置决定模型和推理强度。原有 stdin 提示词、stream-json、MCP、hooks、schema 和回合预算保持一致；图片传输保留后续 HTTP/1.1 修复。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 Claude。Alienware 不需要本机 Claude。显式指定 `--planner-backend local` 可以使用旧调用链。
 
-在原启动命令后加选项即可切换（普通启动和 watchdog 都支持）：
+公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
 
-```bash
-# 默认：公司端 Claude，使用其已有模型配置
-bash scripts/start_fold_exploration.sh --planner-agent claude
+## Claude 自选图像工具
 
-# 手动切回 GPT-6 Responses
-bash scripts/start_fold_exploration.sh --planner-agent gpt6
-```
-
-`gpt6` 使用 `gpt-6-astra`、`medium`、每次请求 `max_output_tokens=32768`。远端失败不会自动换模型。`--planner-backend local` 仍是历史本地 Claude 调用链，使用本地模型配置，不能与 `--planner-agent gpt6` 组合。启动日志记录 `planner_agent`；Claude 的 `plan_authority.model` / `reasoning_effort` 为 null，表示主机未覆盖远端配置，实际模型查看 `stdout.log` 的 `system.init.model` 和结果中的 `modelUsage`。GPT-6 的显式参数继续记录在 `plan_authority` 中。
-
-2026-09-21 曾使用 Claude Code 2.1.278、显式 Opus 5/max 和合成图片完成约 38 秒的图片工具测试；现已按要求回退 CLI 至 2.1.228，并恢复历史调用命令。这些本机测试跳过 SSH 和 HTTPS 中转，未连接机器人。Fable 5.1 在当前公司网关返回 `model_not_found / No available channel`。
-
-历史代码中已经存在退出时 `sed` 回传审计的逻辑。恢复调用参数不等于修复非阻塞管道上的 `sed` 写入失败；仍拒绝非零退出码和不完整的图片证据。
-
-公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。默认 Claude 路径还需要 PATH 中的 `claude` 和可用的 Claude 认证/网关配置；GPT-6 路径在 Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。两条路径均不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
-
-## GPT-6 Responses 路径
-
-远端 runner 读取 `$CODEX_HOME/config.toml`（未设置时使用 `~/.codex`），再读取 `rbs.config.toml`；兼容旧式 `[profiles.rbs]`。只解析选中 provider 的 `base_url`、`wire_api`、`env_key`、HTTP headers；不继承 CLI 的其他设置，也不复制密钥。配置必须明确选择 HTTPS Responses provider，认证变量缺失立即失败，不回退到 OpenAI 默认地址。`summary.json` 和请求审计记录 API 类型、模型、推理强度、输出预算。历史 `RemoteCodexBackend` 类名、`claude_*` 文件名和计时字段保留兼容。
-
-Codex 远端任务通过 `ssh <host> 'exec bash -lc ...'` 加载远端登录配置中的 PATH 和认证环境变量，随后 `exec bash -c` 运行任务。替换登录 shell 可避免清理 trap 的 `exit` 触发 `.bash_logout`，把成功状态改成退出码 1；真实 SSH 中已复现这种退出码问题。普通 `ssh host command` 并不保证加载登录配置：本机真实 SSH 回环已复现同一 Codex/profile 在普通 SSH 下缺失 `OPENAI_API_KEY`，而登录 shell 下该变量存在。这里只使用远端自己的登录配置，不传输本机密钥；若实际服务器仅在交互终端中配置变量，仍需使其登录 shell 能获得认证环境。整个任务保留 stdin 提示词、超时、哈希检查和清理 trap。
-
-一次规划阶段是一个连续的 agent 会话：注册七个 RGB function tools，模型返回 `function_call`，runner 执行 `ImageTools` 并把文本和 `input_image` 作为 `function_call_output` 发回。每轮携带完整历史（含 reasoning/encrypted_content），使用 `store=false`，无需网关实现 `previous_response_id` 存储；不是把看图和规划拆为独立任务。不同规划阶段仍各自建立会话，不跨整个折衣流程保持服务端 session。原工具调用、编辑次数和总超时预算贯穿该会话。Responses 失败不会通过重开 job 自动重置预算。
-
-只有提交工具结果的 API 请求成功完成后，runner 才把实际提交的图片字节转成现有审计事件。`VERIFIED` 表示这些字节经本地哈希/像素验证，并有完成的 API 请求；不代表能证明模型理解。最终必须是 `status=completed`、完整 JSON，且通过本机原始 schema 校验。`incomplete`、refusal、缺图、未知工具、重复 call ID、超出预算等不会产生可执行计划。32768 是请求预算（包含推理 token）；模型/网关仍有硬上限，不能承诺永不发生截断。
-
-2026-09-21 已用真实 SSH 回环 + HTTPS relay + RBS API 验证该 Responses 路径：色块图和 1280×720 大图均完成 5 次工具调用、6 个 API 请求、最终 JSON 和坐标核对。大图原始 PNG 约 2.36 MB，耗时约 122 秒，原图/旋转/缩放为 `VERIFIED_TRANSCODE`，裁剪为 `VERIFIED`。测试未连接机器人，也不等于已访问实际 `company-planner` 别名。
-
-同日使用 RBS 网关做预算对照：要求输出 1–150，`max_output_tokens=16` 时仍返回 `completed`、314 个 output tokens；2048 时返回 `completed`、317 个 output tokens；两次回显预算均为 null。因此 HTTP 200 **不能证明网关执行了预算**。runner 始终发送 32768 并记录每次实际 usage；若 usage 超过请求预算会记录 `responses_budget_warning`。调用层迁移和工具循环已验证，消除上游 `max_output_tokens` 失败仍取决于网关的参数处理，不能以降低推理强度或重试替代此事实。
-
-2026-09-20 已使用生产脚本的 `--local-codex` 模式完成真实模型测试（`rbs`、`gpt-6-astra`、medium），约 56.9 秒返回有效 JSON。随后通过临时回环 SSH 服务及临时密钥，使用生产 backend 完成真实 HTTPS 上传、SSH 下载、哈希、Codex、MCP、schema 和清理全链路测试，输出 `REMOTE CODEX IMAGE TOOLS PASSED`、退出码 0。原图、旋转图、裁剪图和缩放图全部为 `VERIFIED`，坐标映射核对通过。临时服务仅监听 127.0.0.1，结束后关闭并清理密钥。此测试验证 SSH 环境差异和完整传输流程，但不是对实际 `company-planner` 服务器的访问验证。先在实际机器运行下面的无机器人在线图片测试，再启动折叠。
-
-## GPT-6 自选图像工具
-
-远端只注册下述七个 function tools，直接调用现有 `ImageTools` 实现。模型没有 shell、网页、机器人、其他 MCP 或子 agent 工具；function 名称必须在固定清单中。共享 MCP 配置仍会生成，供历史 CLI adapter 兼容，Responses runner 不启动 MCP 服务。
-
-`stdout.log` 的 `responses_launch` 记录 endpoint、模型、profile 和输出预算；`responses_request` / `responses_completed` 记录请求次数、历史长度、实际 usage 和网关回显的预算（可能为 null）。不记录认证头。兼容事件中仍使用 `mcp__cloth_image__*` 工具名称，以保持历史图片审计和坐标检查。
-
-### 区分 524、客户端超时和 token 截断
-
-图片中转的本地上传和远端下载固定使用 `curl --http1.1`，避免已观察到的 `curl (92) HTTP/2 PROTOCOL_ERROR`。HTTPS 证书校验、下载 SHA-256 核对和原有时限保留。若失败出现在 `upload_N`，该次规划还未进入 SSH/Responses；它属于图片中转传输故障，不能用模型 token 参数修复。HTTP/1.1 只绕过 HTTP/2 协议路径，不保证中转服务始终可用。
-
-Responses 默认发送 `stream=true` 并消费 SSE。工具调用仍在同一个完整历史会话内；必须收到 `response.completed`，不执行参数片段。`response.failed`、`response.incomplete`、错误事件、提前 EOF 或只有 `[DONE]` 都会失败，不能把已经收到的部分 JSON 当作计划。网关如果忽略流式要求、返回 JSON，会记录 `stream_fallback=true` 并继续严格检查最终状态。流式不能保证消除网关自身的上游超时。
-
-实际 SSH 回环测试发现 RBS SSE 的一个兼容差异：`output_item.done` 含完整工具调用，但 `response.completed.output` 为空。runner 在成功终态之后，允许使用索引连续、身份一致、没有未完成项的 `output_item.done` 重建输出，记录 `terminal_output_empty=true`、`output_source=output_item.done`。不拼接参数 delta，不在失败/断流时使用这些项。诊断的 `done_output_summary` / `output_summary` 只含输出类型、ID、工具名和参数/文本长度，便于辨别终态内容丢失。
-
-每次调用的 `claude_image_tools/<阶段>_<ID>/` 新增：
-
-- `responses_diagnostics.jsonl`：所有 API 请求的阶段记录，以 `client_request_id` 关联。
-- `responses_last_request.json`：最新收到的 API 阶段快照，便于直接查看。若 SSH/外层总时限中断，可能停留在 `started` 或 `body_progress`；这不是成功结果，需同时查看 `exception.log`。
-
-快照记录发送字节数、是否请求流式、HTTP 状态、响应头到达耗时、第一次读到 body 的耗时、首个 SSE 事件耗时、最近事件、事件数、已读字节数和最终分类。时间相对该次 HTTP 请求开始；`headers_received_s` 包含 DNS、连接、TLS、上传和服务端等待，**不能单凭这个耗时把它们分开**。`first_body_read_s` 是客户端读函数返回数据的时刻，不是精确网络首字节时间。keepalive 只证明收到数据，不证明模型在推理。
-
-记录允许清单内的 `x-request-id`、`cf-ray`、`server` 等响应头，以及脱敏、限长的错误详情；不记录认证头、Cookie、请求正文、图片或文本增量。`X-Client-Request-Id` 每次生成并提交；第三方网关是否保留或向上游转发这个标识仍取决于网关实现。
-
-| category / 字段 | 已证实的失败边界 |
-| --- | --- |
-| `HTTP_STATUS`，`http_status=524` | HTTP 端点返回 524；不是本地 socket 计时器报错。具体内部上游原因需结合网关日志 |
-| `DNS_ERROR` / `TLS_ERROR` / `NETWORK_ERROR` | API 请求遭遇相应网络异常；不会伪造 HTTP 状态 |
-| `CLIENT_TIMEOUT` | 客户端网络操作超时；`phase` 区分尚未收到响应头、读取 SSE、读取 JSON |
-| `REQUEST_DEADLINE` | 客户端单次请求时间预算已用完 |
-| `STREAM_API_ERROR` | HTTP 已建立，但 SSE 内收到 error；查看 `upstream_error` |
-| `STREAM_EOF` / `INVALID_STREAM` | 缺少终态或事件格式不合法，不能接受部分结果 |
-| `OUTPUT_TOKEN_LIMIT` | API 明确返回 incomplete，原因是 max_output_tokens |
-| `RESPONSE_NOT_COMPLETED` | API 返回 failed/in_progress 等非完成状态；查看 `response_status`、`upstream_error` |
-| `FINAL_JSON_INVALID` / `TOOL_ARGUMENTS_INVALID` | HTTP 和 API 终态已完成，但返回的最终 JSON / 工具参数无效 |
-
-本地 socket 等待和单请求读取预算最多 300 秒，也受剩余会话预算约束；整个 SSH 调用仍受原有外层总时限约束。增加本地等待不会增加网关超时。
-
-当前请求遇到 `STREAM_EOF`、`CLIENT_TIMEOUT`、明确的连接中断（reset/aborted/broken pipe/remote disconnected/incomplete read），或 HTTP 500/502/503/504/520/522/524 时，最多重试两次，总共三次尝试。认证、参数、额度、DNS/TLS、非法流/JSON、token 截断、未知 SSE error 不自动重试；已明确标为参数/认证错误的 5xx 也不重试。等待约 2 秒、4 秒并加少量抖动；`Retry-After` 更长时遵守服务端等待要求。若等待超过 60 秒或剩余会话时间不够，则直接保留错误，不提前重试。单次请求时限耗尽且分类为 `REQUEST_DEADLINE` 时也不重试。
-
-同样处理已明确标识的流内过载：`service_unavailable`、`service_unavailable_error`、`server_is_overloaded`、`overloaded_error`，无论它来自 SSE `error` 或 `response.failed`。RBS 实测把错误放在 `error.error` 嵌套对象中；现已保留其中的 type/code/message，并在存在认证/参数/额度错误标识时优先拒绝重试。不会只凭错误文本猜测是否可重试。
-
-重试只重发同一个请求快照，不重开 job，不重放 `ImageTools`，不追加失败尝试的任何输出，不重置调用/编辑预算，不改变模型、推理强度或 token 参数。即使断流前收到完整 `output_item.done`，缺少成功终态也丢弃它。每次尝试重新生成 `client_request_id`；`request_index`、`attempt`、`previous_client_request_id`、`payload_sha256` 用于关联同一请求的各次尝试。重发不是服务端的断点续传，也不保证上游只计算/收费一次。
-
-诊断会记录 `retry_scheduled`、`retry_recovered`、`attempts_exhausted`、`not_retryable` 等决策。最终结果的 `http_attempt_count` 包含所有尝试，`request_retry_count` 是实际重发次数，`response_count` 仍只计完成的逻辑请求；usage 仅累计完成响应，失败尝试可能有未上报的计费。`max_stage_retries=0` 仍禁止重启整个规划阶段，但不关闭这个有界的 HTTP 请求恢复。
-
-连续验收命令（默认 10 轮；不连接机器人/相机）：
-
-```bash
-# 公司电脑本机：生产 Responses 与工具循环，跳过 SSH/图片中转
-python scripts/responses_reliability_test.py --local-responses --rounds 10
-# Alienware：包括 HTTPS 中转与 SSH
-python scripts/responses_reliability_test.py --host company-planner --rounds 10
-```
-
-可加一个保存的 PNG 路径；不指定时使用合成色块图。`report.json` 分开统计不需重试的成功、重试后成功、最终失败；每轮保存完整诊断。该测试验证看图、旋转、裁剪、缩放、坐标映射与最终 JSON，**不是整套监督/方向识别/动作规划的语义验收，也不是物理折叠测试**。
-
-2026-09-21 本机连续 10 轮（`medium`、合成色块图、跳过 SSH/中转）仅 1 轮成功，其余 9 轮返回流内错误；当时嵌套错误解析尚未补齐，不能把这 9 轮都归为相同原因。补齐后取得明确的 `service_unavailable`：网关报告尝试了 3 个账户，上游过载。加入明确过载白名单后的真实单轮补测依次出现 EOF、过载、`rate_limit_exceeded`；前两次触发当前请求重试，第三次停止，未输出计划。故障注入和回归验证了恢复边界，但本次**在线稳定性验收未通过**，需要服务端容量/限流恢复后再次验收。没有运行机器人。
-
-用合成图片做对照（不连接机器人；两次是独立模型运行，不构成严格性能基准）：
-
-```bash
-python scripts/remote_image_tools_test.py --planner-agent gpt6 --host company-planner
-python scripts/remote_image_tools_test.py --planner-agent gpt6 --host company-planner --no-api-stream
-```
-
-在各次输出的 `claude_image_tools/smoke/` 中查看 `responses_last_request.json` 和 `responses_diagnostics.jsonl`。如果流式请求仍在首个事件前返回 524，可用 `x-request-id` / `cf-ray` / `client_request_id` 向网关维护方关联日志；客户端无法凭 524 判断是排队、模型处理还是网关转发的哪一层耗尽时限。
-
-实现依据：[Responses 流式事件](https://developers.openai.com/api/docs/guides/streaming-responses)、[请求标识与调试](https://developers.openai.com/api/reference/overview#debugging-requests)。
-
-历史 Codex JSONL 曾把大图工具结果截为约 1 MiB 的文本，导致 `NO_IMAGE / UNKNOWN`。Responses 已绕过这个 CLI 序列化环节，但仍保留 900000 字节的图片工具结果上限，以控制每轮传输量；超限时仅允许通过既有校验的同尺寸 JPEG。原始 PNG、image_id 和坐标变换不变。主机验证实际提交 API 的图片字节；不靠模型自报成功。无法在大小限制内通过校验时返回 `IMAGE_PAYLOAD_TOO_LARGE`，不静默缩图或放宽误差阈值。
+远程 backend 默认启用 `cloth_image` MCP 工具，内置工具仍只开放 `Read`。工具清单不是仅供阅读的 Markdown：桥接通过 `--mcp-config` 注册真实可调用工具，并用 `--allowedTools` 逐项授权。`--strict-mcp-config` 将本次 MCP 集合限定为图像工具。
 
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：
 
 - `image_tools.py`：独立工具服务，只依赖 Python + Pillow。
 - `tool_list.json`：工具说明、参数和本次原始图像 ID。
-- `image_tools.mcp.json`：工具注册清单，由适配器转换为 Codex 配置。
-- `image_tools.settings.json`：共享准备流程生成的历史 Claude hook 配置，Codex 不加载。
-- `codex_runner.py`、`codex_adapter.py`、`codex_request.json`：Responses runner、共享 schema/事件适配器和请求约束（历史部署文件名保留）。
-- `view_<id>.png`：模型调用工具后生成的观察图。
+- `image_tools.mcp.json`：本次 Claude CLI 使用的注册配置。
+- `image_tools.settings.json`：仅对本次 CLI 生效的 Read/MCP 生命周期与图片内容检查 hook。
+- `view_<id>.png`：Claude 自主调用工具后生成的观察图。
 - `image_tool_calls.jsonl`：参数、结果、耗时及错误记录。
 
 可调用工具是 `list_images`、`image_info`、`view_image`、`rotate_image`、`crop_image`、`resize_image`、`map_point`。`view_image` 直接返回原图或已保存视图；旋转、裁剪、缩放也直接返回 MCP image block 和元数据，不再要求额外 `Read` 才能看见结果。旋转支持任意角度，正值顺时针；缩放保持宽高比例（整数尺寸有舍入）。路径或成功状态不能代替图片内容。工具不生成新的衣服内容、不镜像、不改变原图，不接触相机、深度和机器人。
 
 原始 ID `image_0`、`image_1` 等对应同次请求的图像清单。每张处理图记录到原始 RGB 的像素中心仿射变换，可以连续裁剪、旋转、放大；`map_point` 返回原始图像编号及像素，并拒绝旋转空白区域。正式运动提案的运输点必须返回 `image_id` 和该来源图上的 `pixel_xy`，由本机映射、取整并查深度；不要把原图坐标与处理图 ID 混用。静态 reference、标注图、旧请求或未知 view ID、未通过哈希核对的处理图都不能作为运输坐标来源。Rxxx 身份不随看图旋转改变。每次最多生成 24 张图、调用 64 次图像工具，每张最多 16MP/单边 8192px。
 
-远端折叠链路现在由 Codex 最终判断衣服方向、袖子和折叠目标。Molmo 仍提供当前 RGB 上的轴线/袖子点提示，但不以低置信度、反侧点或固定袖子比例带阻断模型。前置语义失败会记录为提示不可用，并提供当前 RGB；Codex 可以纠正或忽略 Molmo。抓点必须仍在当前衣物 mask 上，深度、工作区、夹爪高度、轨迹和 IK 检查保留。提供工具不代表模型每次都会使用，也不保证语义判断正确。
+折叠链路现在由 Claude 最终判断衣服方向、袖子和折叠目标。Molmo 仍提供当前 RGB 上的轴线/袖子点提示，但不以低置信度、反侧点或固定袖子比例带阻断 Claude。前置语义失败会记录为提示不可用，并提供当前 RGB；Claude 可以纠正或忽略 Molmo。抓点必须仍在当前衣物 mask 上，深度、工作区、夹爪高度、轨迹和 IK 检查保留。提供工具不代表 Claude 每次都会使用，也不保证语义判断正确。
 
 公司端默认使用 `python3`。在公司端一次性安装依赖：
 
 ```bash
-python3 -m pip install 'Pillow>=9.1' 'tomli>=2; python_version<"3.11"'
+python3 -m pip install 'Pillow>=9.1'
 ```
 
-若公司端已有 Conda 环境，把 `CLOTH_REMOTE_IMAGE_PYTHON` 设置为该环境 Python 的绝对路径，并确保非交互 SSH 能读到该环境变量。无需安装整套 clothAgent、Molmo 或机器人 SDK。工具脚本由 Alienware 自动同步；不会修改公司端全局 Codex 配置。缺少 Python/Pillow 时在调用 Codex 前报错，不默默关闭工具继续规划。
+若公司端已有 Conda 环境，把 `CLOTH_REMOTE_IMAGE_PYTHON` 设置为该环境 Python 的绝对路径，并确保非交互 SSH 能读到该环境变量。无需安装整套 clothAgent、Molmo 或机器人 SDK。工具脚本由 Alienware 自动同步；不会修改公司端全局 Claude 配置。缺少 Python/Pillow 时在调用 Claude 前报错，不默默关闭工具继续规划。
 
 Alienware 使用已有 RGB 验证（无机器人连接）：
 
 ```bash
-# 仅验证本地图像变换和坐标映射，不联网、不调用模型
+# 仅验证本地图像变换和坐标映射，不联网、不调用 Claude
 python scripts/remote_image_tools_test.py test.png --offline
 
-# 验证默认 Claude：HTTPS → 公司 Claude → 实际 MCP 调用 → 原图坐标返回
+# 验证 HTTPS → 公司 Claude → 实际 MCP 调用 → 原图坐标返回
 python scripts/remote_image_tools_test.py test.png --host company-planner
 
-# 在公司电脑直接验证默认 Claude，省去 HTTPS 和 SSH
-python scripts/remote_image_tools_test.py --local-company-shell
-
-# 远端 GPT-6 对照
-python scripts/remote_image_tools_test.py test.png --planner-agent gpt6 --host company-planner
-
-# 在公司电脑直接验证 Responses，省去 HTTPS 和 SSH；旧 --local-codex 仍是别名
-python scripts/remote_image_tools_test.py --local-responses
+# 在公司电脑直接验证本机 Claude，省去 HTTPS 和 SSH；省略图片时生成测试色块图
+python scripts/remote_image_tools_test.py --local-claude
 ```
 
-在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及提交 API 的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。工具将 PNG 转为同尺寸 JPEG 时使用下述转码校验；错误图片或超出容差的内容变化仍会阻止交接。
+在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。CLI 自动将 PNG 转为同尺寸 JPEG 时，使用下述转码校验；CLI 隐式缩放、错误图片或超出容差的内容变化仍会阻止交接。
 
 正常 fold 命令不变。规划阶段的 `<stage>_invocation.json` 新增 `image_tool_events` 和 `image_debug_directory`。监督、规划、运动提案和评估的每次调用，都在当前 iteration 下自动建立 `claude_image_tools/<阶段>_<ID>/`。没有 iteration 的独立调用使用对应诊断目录。
 
@@ -216,7 +110,7 @@ python -m cloth_agent.fold_exploration_viser results/image_tools_smoke/<测试�
 
 第二条命令打开已保存的调试界面；测试进行中也能用同一输出目录启动查看。仅 `--offline` 的变换测试不包含 Claude 的 Read 记录。
 
-`--local-company-shell` 使用所选 agent 的生产命令、图片审计和临时目录清理，只将图片传输换成本机文件读取。`--local-responses` / `--local-codex` 保留为指定 GPT-6 Responses 的历史选项。仍需对应模型的认证和网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。
+`--local-claude` 使用同一份生产工具注册、Read hooks、远端工作目录清理和本地调试流，只将图片传输换成本机文件读取。它调用真正的 Claude，仍需 Claude 登录及模型网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。
 
 2026-09-15 的旧版测试曾记录到原图/旋转图/放大图的成功 Read hook，不能据此证明返回含图片。2026-09-17 的新验证使用真实 Claude CLI 2.1.228、合成图片与本地模拟 API：`view_image` 和 `rotate_image` 的图片在 PostToolUse、CLI tool_result、下一次本地 API 请求中均可解码且像素哈希一致，方向交接校验通过，全程没有额外 Read。这验证本机 CLI/MCP/校验接线，不验证远端生产 API、模型视觉准确率或机器人动作。
 
@@ -282,7 +176,7 @@ python scripts/remote_fold_smoke.py \
 
 左右袖现在统一为“衣领朝上、下摆朝下时的图像左／右”。默认 remote 折叠链路在袖子定位前有一次 Claude 图像准备调用：Claude 自己选择旋转、裁剪或缩放，直接检查工具附带的结果图片；本地验证返回像素、来源及方向声明后，把同一张 RGB 交给 Molmo。Molmo 只提供这张图上的区域提示，本地映射回原始 Cam A，再把标注图交给 Claude 最终判断。固定相机显示旋转不再被当成衣服已经摆正。原图已摆正时允许直接选原图，无需强制重复旋转。
 
-方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑；状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑。旋转／裁剪／缩放共用额度，参数错误也计数。Codex 将原 16/8 轮预算应用于 MCP 调用次数，由工具服务和事件适配器共同限制；历史 Claude 后端仍使用 `--max-turns`。两者都保留原有超时。每次工具响应和 Viser 都显示编辑余额；用尽后只可在剩余调用预算内读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开刷新额度。其他阶段遵循各自 schema，不能捏造动作；没有合法结果就不执行动作。
+方向准备、视觉规划、动作提案各自最多尝试 6 次新编辑、16 轮模型调用。状态监督和执行后评价（含抓取探测评价）各自最多 2 次新编辑、8 轮模型调用。旋转／裁剪／缩放共用额度，参数错误也计数。每次工具响应和 Viser 都显示余额；用尽后只可读取、查询和选择已有图，不能继续编辑。方向准备没有合适结果则返回 UNCERTAIN 并停止本轮，不允许 unattended 自动重开 Claude 刷新额度。其他阶段遵循各自 schema，不能捏造动作。模型轮数通过 CLI `--max-turns` 限制，防止编辑额度耗尽后仍无限读图；这不是工具调用次数或固定秒数，原有超时仍生效。没有合法结果就不执行动作。
 
 方向准备的 `UNCERTAIN` 必须附带 `failure_reason`：`IMAGE_UNAVAILABLE` 表示没看到图片内容，`TOOL_ERROR` 表示实际工具调用失败，`VISUAL_AMBIGUITY` 表示图片可见但衣领／下摆或方向不明确。READY 必须使用 null。`selection.json` 保存分类和来源，区分模型自述与本地内容校验。缺少图片时停止编辑，不再尝试用更多缩放、裁剪修复传递故障。
 

@@ -382,7 +382,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 image_edit_limit=2 if evaluation_stage else 6,
                 max_turns=8 if evaluation_stage else None,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
-                system_prompt="You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. You decide semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
+                system_prompt="You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)
         except Exception as exc:
             invocation.update(status="FAILED", error=f"{type(exc).__name__}: {exc}",

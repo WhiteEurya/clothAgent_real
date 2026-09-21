@@ -18,7 +18,7 @@ from cloth_agent.fold_exploration_pipeline import (
     _validate_acquisition_strategy_change,
 )
 from cloth_agent.free_exploration import ExplorationPlanningError
-from cloth_agent.planner_backend import BackendResult, PlannerBackendError, RemoteClaudeBackend, RemoteCodexBackend, parse_claude_json
+from cloth_agent.planner_backend import BackendResult, PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from cloth_agent.remote_fold import RemoteFoldClient, compile_pixel_motion
 from cloth_agent.auto_exploration import validate_visual_plan_payload
 from cloth_agent.garment_grounding_mcp import GarmentGrounding
@@ -347,8 +347,6 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
     with pytest.raises(PlannerBackendError, match="SSH"):
         RemoteClaudeBackend(timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
     assert len(calls) == 3
-    assert "--http1.1" in calls[0][0]
-    assert "curl -fsSL --http1.1 " in calls[1][0][-1]
     assert "sha256sum" in calls[1][0][-1]
     assert "https://tempfile.org/poc-id/download" in calls[1][0][-1]
     assert calls[2][0][-1].startswith("rm -rf -- /tmp/cloth_remote_")
@@ -359,61 +357,15 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
             parse_claude_json(json.dumps(envelope))
 
 
-def test_fold_constructor_and_cli_default_remote_claude(saved_scene):
+def test_fold_constructor_and_cli_default_remote(saved_scene):
     session, _, _ = saved_scene
     pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"))
     assert isinstance(pipeline.client, RemoteFoldClient)
-    assert type(pipeline.supervisor.backend) is RemoteClaudeBackend
-    assert type(pipeline.client.backend) is RemoteClaudeBackend
-    assert pipeline.client.backend.model is None
-    assert pipeline.client.backend.reasoning_effort is None
-    assert pipeline._planner_identity() == {
-        "agent": "claude", "strategy": "Claude", "model": None,
-        "reasoning_effort": None, "api": None, "profile": None, "max_output_tokens": None,
-    }
-    assert build_parser().parse_args([]).planner_agent == "claude"
+    assert isinstance(pipeline.supervisor.backend, RemoteClaudeBackend)
     assert build_parser().parse_args([]).planner_backend == "remote"
     local = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"), planner_backend="local")
     assert not isinstance(local.client, RemoteFoldClient)
     assert local.supervisor.backend is None
-
-
-def test_fold_can_explicitly_select_gpt6(saved_scene):
-    session, _, _ = saved_scene
-    args = build_parser().parse_args(["--planner-agent", "gpt6"])
-    pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"),
-                                       planner_agent=args.planner_agent)
-    assert type(pipeline.supervisor.backend) is RemoteCodexBackend
-    assert type(pipeline.client.backend) is RemoteCodexBackend
-    assert pipeline.client.backend.model == "gpt-6-astra"
-    assert pipeline.client.backend.reasoning_effort == "medium"
-    assert pipeline.client.backend.runner_file == "responses_remote_runner.py"
-    assert pipeline.client.backend.max_output_tokens == 32768
-    assert pipeline.client.backend.profile == "rbs"
-    assert pipeline._planner_identity()["api"] == "responses"
-    assert pipeline._planner_identity()["strategy"] == "GPT-6 Responses"
-
-
-@pytest.mark.parametrize("backend,agent", [("local", "gpt6"), ("remote", "typo")])
-def test_invalid_agent_selection_fails_before_client_setup(saved_scene, backend, agent):
-    session, _, _ = saved_scene
-    with pytest.raises(ValueError):
-        FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"),
-                                planner_backend=backend, planner_agent=agent)
-
-
-def test_remote_claude_command_matches_pre_codex_invocation():
-    backend = RemoteClaudeBackend()
-    backend._call_max_turns = 16
-    # Literal command from cc95a8a's _invoke, before the GPT-6 migration.
-    flags = "--allowedTools Read --tools Read --strict-mcp-config "
-    assert backend._agent_command("/tmp/test", {}, "Inspect RGB", flags, 900) == (
-        "timeout 900s claude -p --output-format stream-json --verbose --include-partial-messages "
-        "--permission-mode dontAsk " + flags +
-        "--no-session-persistence --max-turns 16 "
-        "--add-dir /tmp/test --json-schema '{}' --system-prompt 'Inspect RGB'"
-    )
-    assert backend.remote_login_shell is False
 
 
 def test_failed_remote_supervision_and_evaluation_never_fallback(saved_scene):
@@ -683,7 +635,7 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
         remote = command[-1]
         if not remote.startswith("rm -rf"):
             import re
-            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
+            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
                 lambda m: f"cp {shlex.quote(str(images[0]))} {m[1]}", remote)
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)

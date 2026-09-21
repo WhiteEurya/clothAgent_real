@@ -217,7 +217,7 @@ def test_full_orientation_bridge_direct_image_results_without_extra_reads(tmp_pa
         if 'claude -p' in remote:
             starts.append(command)
             remote = remote.replace('claude -p', f'{shlex.quote(sys.executable)} {shlex.quote(str(stub))} -p')
-            remote = re.sub(r'curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o (\S+)',
+            remote = re.sub(r'curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)',
                             lambda m: f'cp {shlex.quote(str(image))} {m[1]}', remote)
         return ['sh', '-c', remote]
     def run(command, **kwargs):
