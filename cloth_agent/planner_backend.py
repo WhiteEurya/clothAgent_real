@@ -169,8 +169,10 @@ class RemoteClaudeBackend:
         return min(limit, remaining)
 
     def _upload(self, image: Path) -> str:
+        # The image relay/proxy can fail HTTP/2 streams with curl exit 92.
+        # Pin both transfer legs to HTTP/1.1; TLS verification stays enabled.
         command = [
-            self.curl_binary, "-fsS", "-X", "POST", self.upload_url,
+            self.curl_binary, "-fsS", "--http1.1", "-X", "POST", self.upload_url,
             "-F", f"files=@{image}", "-F", "expiryHours=1",
         ]
         try:
@@ -478,7 +480,7 @@ class RemoteClaudeBackend:
             if self.image_tools else ("", "--allowedTools Read --tools Read --strict-mcp-config ", ""))
         downloads = " && ".join(
             f"cloth_stage=download_{i} && cloth_begin=$(date +%s%N) && "
-            f"curl -fsSL --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
+            f"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
             f"-o {quoted_job}/image_{i}.png && cloth_done && "
             f"cloth_stage=hash_{i} && cloth_begin=$(date +%s%N) && "
             f"printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} "

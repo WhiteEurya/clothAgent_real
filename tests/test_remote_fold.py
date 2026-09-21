@@ -347,6 +347,8 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
     with pytest.raises(PlannerBackendError, match="SSH"):
         RemoteClaudeBackend(timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
     assert len(calls) == 3
+    assert "--http1.1" in calls[0][0]
+    assert "curl -fsSL --http1.1 " in calls[1][0][-1]
     assert "sha256sum" in calls[1][0][-1]
     assert "https://tempfile.org/poc-id/download" in calls[1][0][-1]
     assert calls[2][0][-1].startswith("rm -rf -- /tmp/cloth_remote_")
@@ -641,7 +643,7 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
         remote = command[-1]
         if not remote.startswith("rm -rf"):
             import re
-            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
                 lambda m: f"cp {shlex.quote(str(images[0]))} {m[1]}", remote)
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)

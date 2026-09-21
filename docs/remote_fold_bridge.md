@@ -26,6 +26,8 @@ Codex 远端任务通过 `ssh <host> 'exec bash -lc ...'` 加载远端登录配�
 
 ### 区分 524、客户端超时和 token 截断
 
+图片中转的本地上传和远端下载固定使用 `curl --http1.1`，避免已观察到的 `curl (92) HTTP/2 PROTOCOL_ERROR`。HTTPS 证书校验、下载 SHA-256 核对和原有时限保留。若失败出现在 `upload_N`，该次规划还未进入 SSH/Responses；它属于图片中转传输故障，不能用模型 token 参数修复。HTTP/1.1 只绕过 HTTP/2 协议路径，不保证中转服务始终可用。
+
 Responses 默认发送 `stream=true` 并消费 SSE。工具调用仍在同一个完整历史会话内；必须收到 `response.completed`，不执行参数片段。`response.failed`、`response.incomplete`、错误事件、提前 EOF 或只有 `[DONE]` 都会失败，不能把已经收到的部分 JSON 当作计划。网关如果忽略流式要求、返回 JSON，会记录 `stream_fallback=true` 并继续严格检查最终状态。流式不能保证消除网关自身的上游超时。
 
 实际 SSH 回环测试发现 RBS SSE 的一个兼容差异：`output_item.done` 含完整工具调用，但 `response.completed.output` 为空。runner 在成功终态之后，允许使用索引连续、身份一致、没有未完成项的 `output_item.done` 重建输出，记录 `terminal_output_empty=true`、`output_source=output_item.done`。不拼接参数 delta，不在失败/断流时使用这些项。诊断的 `done_output_summary` / `output_summary` 只含输出类型、ID、工具名和参数/文本长度，便于辨别终态内容丢失。
