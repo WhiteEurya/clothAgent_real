@@ -263,3 +263,5 @@ def test_diagnostics_saved_and_shown_in_live_progress(tmp_path):
     assert json.loads((directory / 'responses_diagnostics.jsonl').read_text()) == event
     assert notices[0][0] == ('responses_api', 'failed', 120)
     assert notices[0][1]['http_status'] == 524
+    assert notices[0][1]['api_phase'] == 'awaiting_headers'
+    assert 'phase' not in notices[0][1]

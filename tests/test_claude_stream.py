@@ -7,7 +7,7 @@ from PIL import Image
 
 from cloth_agent.claude_image_debug import ImageDebugSession
 from cloth_agent.claude_stream import ClaudeStreamProgress
-from cloth_agent.planner_backend import RemoteClaudeBackend, parse_claude_json
+from cloth_agent.planner_backend import RemoteClaudeBackend, RemoteCodexBackend, claude_result_envelope, parse_claude_json
 
 
 def collector():
@@ -148,3 +148,42 @@ def test_real_pipe_drain_saves_burst_and_flushes_pending_text(tmp_path, monkeypa
     state = json.loads((debug_dir / 'image_debug.json').read_text())
     assert state['status'] == ('FAILED' if timeout else 'COMPLETED')
     assert state['claude_event_count'] == len(rows)
+
+
+@pytest.mark.parametrize('outcome', ['completed', 'failed'])
+def test_responses_pipe_uses_fold_callback_without_phase_collision(tmp_path, outcome):
+    image = tmp_path / 'image.png'
+    Image.new('RGB', (8, 8)).save(image)
+    backend = RemoteCodexBackend()
+    notices = []
+
+    def debug(stage, message, **fields):
+        notices.append((stage, message, fields))
+
+    # Same named arguments and field forwarding as FoldExplorationPipeline.
+    # A permissive *args collector hides duplicate `phase` keyword failures.
+    backend.progress_callback = lambda phase, event, duration=None, _label='supervisor', **fields: debug(
+        f'remote-{_label}', f'{phase}: {event}', phase=phase, event=event,
+        **({'duration_s': round(duration, 3)} if duration is not None else {}), **fields)
+    directory = tmp_path / 'debug'
+    backend._debug_session = ImageDebugSession(directory, [image], {})
+    diagnostic = {'type': 'system', 'subtype': 'responses_diagnostic',
+                  'client_request_id': 'test-request', 'phase': 'reading_sse',
+                  'event': outcome, 'elapsed_s': 1.25,
+                  'http_status': 200 if outcome == 'completed' else 524}
+    events = [diagnostic, {'type': 'result', 'is_error': outcome == 'failed',
+                          'subtype': 'success' if outcome == 'completed' else 'error_responses',
+                          'result': 'HTTP 524' if outcome == 'failed' else '{"ok":true}'}]
+    completed = backend._run_streaming([sys.executable, '-c',
+        'import json,sys; [print(json.dumps(e),flush=True) for e in json.loads(sys.argv[1])]',
+        json.dumps(events)], '', 10)
+    assert completed.returncode == 0
+    envelope = claude_result_envelope(completed.stdout)
+    assert envelope['is_error'] == (outcome == 'failed')
+    assert json.loads((directory / 'responses_last_request.json').read_text()) == diagnostic
+    api = next(fields for _, message, fields in notices if message.startswith('responses_api:'))
+    assert api['phase'] == 'responses_api'
+    assert api['api_phase'] == 'reading_sse'
+    assert api['event'] == outcome
+    assert api['duration_s'] == 1.25
+    assert api['http_status'] == diagnostic['http_status']

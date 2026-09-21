@@ -53,8 +53,11 @@ class ClaudeStreamProgress:
         self.total += 1
         self.last_received = self.clock()
         if kind == 'system' and subtype == 'responses_diagnostic':
+            # `phase` is the first positional parameter of the fold pipeline's
+            # progress callback. Keep the HTTP phase in a separate namespace.
             self.emit('responses_api', event.get('event', 'unknown'), event.get('elapsed_s'),
-                      **{key: event.get(key) for key in ('phase', 'category', 'http_status',
+                      api_phase=event.get('phase'),
+                      **{key: event.get(key) for key in ('category', 'http_status',
                          'client_request_id', 'headers_received_s', 'first_event_s',
                          'event_count', 'last_event', 'stream_requested', 'stream_fallback')})
         if kind == 'stream_event':
