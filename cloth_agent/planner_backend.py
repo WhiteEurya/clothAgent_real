@@ -604,6 +604,11 @@ class RemoteCodexBackend(RemoteClaudeBackend):
     reasoning_effort = "medium"
     profile = "rbs"
 
+    @staticmethod
+    def _is_output_budget_failure(exc: BaseException) -> bool:
+        """Return true only for the provider's final-output budget failure."""
+        return "max_output_tokens" in str(exc).lower()
+
     def _invoke(self, *, schema, **kwargs):
         if not self.image_tools:
             raise PlannerBackendError("remote Codex requires audited image tools")
@@ -611,7 +616,22 @@ class RemoteCodexBackend(RemoteClaudeBackend):
         from jsonschema import Draft202012Validator, ValidationError
         from .codex_remote_runner import restore_optional_fields
         Draft202012Validator.check_schema(schema)
-        result = super()._invoke(schema=schema, **kwargs)
+        try:
+            result = super()._invoke(schema=schema, **kwargs)
+        except PlannerBackendError as exc:
+            # The provider can exhaust its output budget while producing the
+            # final structured response (especially after several image-tool
+            # calls).  Retry only this deterministic, read-only failure with a
+            # lower reasoning budget; never retry authentication, transport,
+            # image-delivery, or schema errors as if they were token failures.
+            if not self._is_output_budget_failure(exc):
+                raise
+            original_effort = self.reasoning_effort
+            self.reasoning_effort = "low"
+            try:
+                result = super()._invoke(schema=schema, **kwargs)
+            finally:
+                self.reasoning_effort = original_effort
         envelope = claude_result_envelope(result.stdout)
         value = restore_optional_fields(parse_claude_json(result.stdout), schema)
         try:

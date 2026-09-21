@@ -8,7 +8,7 @@ from PIL import Image
 
 from cloth_agent import image_tools_mcp
 from cloth_agent.codex_remote_runner import CodexEvents, codex_command, output_schema, restore_optional_fields
-from cloth_agent.planner_backend import RemoteCodexBackend, PlannerBackendError, parse_claude_json
+from cloth_agent.planner_backend import BackendResult, RemoteCodexBackend, PlannerBackendError, parse_claude_json
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +54,15 @@ def test_terminal_error_preserves_upstream_reason(event):
     assert "cli_exit_code=1" in str(caught.value)
     assert "turn_completed=False" in str(caught.value)
     assert json.dumps(event, ensure_ascii=False) in str(caught.value)
+    assert state.errors == [event]
+
+
+def test_incomplete_turn_preserves_output_budget_reason():
+    event = {"type": "turn.incomplete", "reason": "max_output_tokens"}
+    state = CodexEvents(1)
+    state.consume(event)
+    with pytest.raises(ValueError, match="max_output_tokens"):
+        state.final(0)
     assert state.errors == [event]
 
 
@@ -130,6 +139,26 @@ def test_command_uses_native_profile_and_preserves_execution_constraints(tmp_pat
     assert server['args'][server['args'].index('--result-byte-limit') + 1] == '900000'
     assert all(value == {"approval_mode": "approve"} for value in server["tools"].values())
     assert config["approval_policy"] == '"never"'
+
+
+def test_output_budget_failure_retries_once_at_low_reasoning(monkeypatch):
+    backend = RemoteCodexBackend()
+    calls = []
+    successful = BackendResult(
+        stdout=json.dumps({"subtype": "success", "structured_output": {"ok": True}}),
+        stderr="", returncode=0, command=())
+
+    def fake_invoke(self, *, schema, **kwargs):
+        calls.append(self.reasoning_effort)
+        if len(calls) == 1:
+            raise PlannerBackendError("Incomplete response returned, reason: max_output_tokens")
+        return successful
+
+    monkeypatch.setattr("cloth_agent.planner_backend.RemoteClaudeBackend._invoke", fake_invoke)
+    result = backend._invoke(schema={"type": "object"})
+    assert result.stdout == successful.stdout
+    assert calls == ["medium", "low"]
+    assert backend.reasoning_effort == "medium"
 
 
 FAKE_CODEX = '''#!/usr/bin/env python3

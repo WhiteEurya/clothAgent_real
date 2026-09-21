@@ -126,13 +126,13 @@ class CodexEvents:
     def consume(self, event):
         kind = event.get("type")
         self.last_event_type = kind
-        if kind in {"turn.failed", "error"}:
+        if kind in {"turn.failed", "turn.incomplete", "error"}:
             self.failed = True
             # Codex reports API/auth/model/schema failures on stdout as JSONL,
             # often with empty stderr. Keep their reason in the terminal error
             # envelope; the host otherwise only displays our generic failure.
             detail = {key: event[key] for key in
-                      ("type", "message", "error", "code", "status", "status_code")
+                      ("type", "reason", "message", "error", "code", "status", "status_code")
                       if key in event}
             self.errors.append(detail)
             self.errors = self.errors[-8:]
