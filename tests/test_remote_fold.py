@@ -364,7 +364,9 @@ def test_fold_constructor_and_cli_default_remote(saved_scene):
     assert isinstance(pipeline.supervisor.backend, RemoteCodexBackend)
     assert isinstance(pipeline.client.backend, RemoteCodexBackend)
     assert pipeline.client.backend.model == "gpt-6-astra"
-    assert pipeline.client.backend.reasoning_effort == "medium"
+    assert pipeline.client.backend.reasoning_effort == "minimal"
+    assert pipeline.client.backend.runner_file == "responses_remote_runner.py"
+    assert pipeline.client.backend.max_output_tokens == 32768
     assert pipeline.client.backend.profile == "rbs"
     assert build_parser().parse_args([]).planner_backend == "remote"
     local = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"), planner_backend="local")

@@ -1,24 +1,30 @@
-# Fold 远程 Codex 桥接
+# Fold 远程 GPT-6 Responses 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 **Codex CLI**，固定模型 `gpt-6-astra`、推理强度 `medium`（MID）。Alienware 不需要本机 Codex。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH，由公司电脑直接请求 **Responses API**。模型保持 `gpt-6-astra`，推理强度 `minimal`，每次 API 请求显式发送 `max_output_tokens=32768`。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
 
-公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow 和已登录的 `codex`。非交互 SSH 环境的 PATH 必须能找到这些命令。Codex 需支持 `exec -p rbs --json --ephemeral --ignore-rules --output-schema`；本地核对版本为 0.154.0。远端调用是独立会话。Alienware 需安装项目依赖（新增 `jsonschema>=4.18`）。
+公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。生产路径不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
 
-适配器使用原生 **`codex exec -p rbs`**，由远端 Codex 按自身版本规则加载 profile、provider 和认证。已移除 Python 手动读取、筛选与合并 profile 的逻辑，不再传 `--ignore-user-config`，无需 `tomli`。调用保持远端用户的环境和登录状态，不修改全局配置、不复制密钥。模型和推理强度仍通过显式参数设置为 `gpt-6-astra`、`medium`，同时传入本次图像工具和执行约束。原生 profile 可能影响其他 Codex 设置；不再声称忽略全部用户配置。既有 GPT provider 必须支持所选模型、Responses、视觉 MCP 和结构化输出。`summary.json` 的 `plan_authority` 和请求审计记录 Codex、profile、模型和推理强度。历史 `claude_*` 文件名、计时字段和内部客户端名称保留兼容，不表示仍调用 Claude。
+远端 runner 读取 `$CODEX_HOME/config.toml`（未设置时使用 `~/.codex`），再读取 `rbs.config.toml`；兼容旧式 `[profiles.rbs]`。只解析选中 provider 的 `base_url`、`wire_api`、`env_key`、HTTP headers；不继承 CLI 的其他设置，也不复制密钥。配置必须明确选择 HTTPS Responses provider，认证变量缺失立即失败，不回退到 OpenAI 默认地址。`summary.json` 和请求审计记录 API 类型、模型、推理强度、输出预算。历史 `RemoteCodexBackend` 类名、`claude_*` 文件名和计时字段保留兼容。
 
 Codex 远端任务通过 `ssh <host> 'exec bash -lc ...'` 加载远端登录配置中的 PATH 和认证环境变量，随后 `exec bash -c` 运行任务。替换登录 shell 可避免清理 trap 的 `exit` 触发 `.bash_logout`，把成功状态改成退出码 1；真实 SSH 中已复现这种退出码问题。普通 `ssh host command` 并不保证加载登录配置：本机真实 SSH 回环已复现同一 Codex/profile 在普通 SSH 下缺失 `OPENAI_API_KEY`，而登录 shell 下该变量存在。这里只使用远端自己的登录配置，不传输本机密钥；若实际服务器仅在交互终端中配置变量，仍需使其登录 shell 能获得认证环境。整个任务保留 stdin 提示词、超时、哈希检查和清理 trap。
 
-Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不会读取保存的 PNG 来伪造 CLI 图片交付。若远端 CLI 版本省略图片字节，像素交付校验仍失败。最终输出必须具有成功的 `turn.completed`，且通过原始 JSON schema 校验；可选字段在 provider schema 中表示为 null，返回时恢复省略语义。Codex 没有相同的 `--max-turns` 参数，因此原预算用于限制 MCP 调用次数，并继续执行原编辑预算和总超时；不是对内部推理轮数的精确计数。
+一次规划阶段是一个连续的 agent 会话：注册七个 RGB function tools，模型返回 `function_call`，runner 执行 `ImageTools` 并把文本和 `input_image` 作为 `function_call_output` 发回。每轮携带完整历史（含 reasoning/encrypted_content），使用 `store=false`，无需网关实现 `previous_response_id` 存储；不是把看图和规划拆为独立任务。不同规划阶段仍各自建立会话，不跨整个折衣流程保持服务端 session。原工具调用、编辑次数和总超时预算贯穿该会话。Responses 失败不会通过重开 job 自动重置预算。
+
+只有提交工具结果的 API 请求成功完成后，runner 才把实际提交的图片字节转成现有审计事件。`VERIFIED` 表示这些字节经本地哈希/像素验证，并有完成的 API 请求；不代表能证明模型理解。最终必须是 `status=completed`、完整 JSON，且通过本机原始 schema 校验。`incomplete`、refusal、缺图、未知工具、重复 call ID、超出预算等不会产生可执行计划。32768 是请求预算（包含推理 token）；模型/网关仍有硬上限，不能承诺永不发生截断。
+
+2026-09-21 已用真实 SSH 回环 + HTTPS relay + RBS API 验证该 Responses 路径：色块图和 1280×720 大图均完成 5 次工具调用、6 个 API 请求、最终 JSON 和坐标核对。大图原始 PNG 约 2.36 MB，耗时约 122 秒，原图/旋转/缩放为 `VERIFIED_TRANSCODE`，裁剪为 `VERIFIED`。测试未连接机器人，也不等于已访问实际 `company-planner` 别名。
+
+同日使用 RBS 网关做预算对照：要求输出 1–150，`max_output_tokens=16` 时仍返回 `completed`、314 个 output tokens；2048 时返回 `completed`、317 个 output tokens；两次回显预算均为 null。因此 HTTP 200 **不能证明网关执行了预算**。runner 始终发送 32768 并记录每次实际 usage；若 usage 超过请求预算会记录 `responses_budget_warning`。调用层迁移和工具循环已验证，消除上游 `max_output_tokens` 失败仍取决于网关的参数处理，不能以降低推理强度或重试替代此事实。
 
 2026-09-20 已使用生产脚本的 `--local-codex` 模式完成真实模型测试（`rbs`、`gpt-6-astra`、medium），约 56.9 秒返回有效 JSON。随后通过临时回环 SSH 服务及临时密钥，使用生产 backend 完成真实 HTTPS 上传、SSH 下载、哈希、Codex、MCP、schema 和清理全链路测试，输出 `REMOTE CODEX IMAGE TOOLS PASSED`、退出码 0。原图、旋转图、裁剪图和缩放图全部为 `VERIFIED`，坐标映射核对通过。临时服务仅监听 127.0.0.1，结束后关闭并清理密钥。此测试验证 SSH 环境差异和完整传输流程，但不是对实际 `company-planner` 服务器的访问验证。先在实际机器运行下面的无机器人在线图片测试，再启动折叠。
 
-## Codex 自选图像工具
+## GPT-6 自选图像工具
 
-远程 backend 通过 Codex `-c mcp_servers=...` 传入 `cloth_image` MCP。启用只读 sandbox、禁止审批，关闭 shell、网页搜索、其他 agent、应用和内置 view_image，图片统一走审计 MCP。原生配置的合并行为由远端 Codex 决定；适配器若观察到其他 MCP 调用或命令执行事件会拒绝本次结果。
+远端只注册下述七个 function tools，直接调用现有 `ImageTools` 实现。模型没有 shell、网页、机器人、其他 MCP 或子 agent 工具；function 名称必须在固定清单中。共享 MCP 配置仍会生成，供历史 CLI adapter 兼容，Responses runner 不启动 MCP 服务。
 
-`approval_policy=never` 表示不弹出审批，并不自动授权 MCP。真实测试曾因此返回 `MCP tool call requires approval, but approval policy is never`。现仅对本次 `cloth_image` 的七个已知图像工具设置 `approval_mode=approve` 和工具清单，不授予机器人或 shell 权限。`stdout.log` 中的 `codex_launch` 记录实际 PATH 解析出的 Codex 可执行文件和完整参数；不读取或记录认证密钥，可据此核对 SSH 环境与手动调用的差异。
+`stdout.log` 的 `responses_launch` 记录 endpoint、模型、profile 和输出预算；`responses_request` / `responses_completed` 记录请求次数、历史长度、实际 usage 和网关回显的预算（可能为 null）。不记录认证头。兼容事件中仍使用 `mcp__cloth_image__*` 工具名称，以保持历史图片审计和坐标检查。
 
-大 PNG 的工具结果可能超过 Codex JSONL 约 1 MiB 的输出限制：本机真实测试复现了结果变成单个约 1048600 字符的 text 块，base64 中插入 `…chars truncated…`，导致原图 `NO_IMAGE`、派生图交付状态 `UNKNOWN`。小色块图不会覆盖此情况。Codex 图像服务现在将完整序列化响应限制为 900000 字节；小图保留原始 PNG，超限时尝试同尺寸 JPEG，并先通过既有 `VERIFIED_TRANSCODE` 校验（含原图差异上限）再返回。原始 PNG、image_id 和坐标变换不变，主机仍校验实际 CLI 返回字节；不解析残缺 base64、不用磁盘原图冒充交付。无法在大小限制内通过校验时返回 `IMAGE_PAYLOAD_TOO_LARGE`，不静默缩图或放宽误差阈值。历史 Claude 后端不启用此传输限制。
+历史 Codex JSONL 曾把大图工具结果截为约 1 MiB 的文本，导致 `NO_IMAGE / UNKNOWN`。Responses 已绕过这个 CLI 序列化环节，但仍保留 900000 字节的图片工具结果上限，以控制每轮传输量；超限时仅允许通过既有校验的同尺寸 JPEG。原始 PNG、image_id 和坐标变换不变。主机验证实际提交 API 的图片字节；不靠模型自报成功。无法在大小限制内通过校验时返回 `IMAGE_PAYLOAD_TOO_LARGE`，不静默缩图或放宽误差阈值。
 
 每次请求自动在公司端 `/tmp/cloth_remote_<uuid>/` 写入：
 
@@ -26,7 +32,7 @@ Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不
 - `tool_list.json`：工具说明、参数和本次原始图像 ID。
 - `image_tools.mcp.json`：工具注册清单，由适配器转换为 Codex 配置。
 - `image_tools.settings.json`：共享准备流程生成的历史 Claude hook 配置，Codex 不加载。
-- `codex_runner.py`、`codex_request.json`、`response_schema.json`：本次 Codex 适配器及请求约束。
+- `codex_runner.py`、`codex_adapter.py`、`codex_request.json`：Responses runner、共享 schema/事件适配器和请求约束（历史部署文件名保留）。
 - `view_<id>.png`：模型调用工具后生成的观察图。
 - `image_tool_calls.jsonl`：参数、结果、耗时及错误记录。
 
@@ -39,7 +45,7 @@ Codex JSONL 中真实的 MCP 返回内容会转成现有图片审计事件；不
 公司端默认使用 `python3`。在公司端一次性安装依赖：
 
 ```bash
-python3 -m pip install 'Pillow>=9.1'
+python3 -m pip install 'Pillow>=9.1' 'tomli>=2; python_version<"3.11"'
 ```
 
 若公司端已有 Conda 环境，把 `CLOTH_REMOTE_IMAGE_PYTHON` 设置为该环境 Python 的绝对路径，并确保非交互 SSH 能读到该环境变量。无需安装整套 clothAgent、Molmo 或机器人 SDK。工具脚本由 Alienware 自动同步；不会修改公司端全局 Codex 配置。缺少 Python/Pillow 时在调用 Codex 前报错，不默默关闭工具继续规划。
@@ -53,11 +59,11 @@ python scripts/remote_image_tools_test.py test.png --offline
 # 验证 HTTPS → 公司 Codex → 实际 MCP 调用 → 原图坐标返回
 python scripts/remote_image_tools_test.py test.png --host company-planner
 
-# 在公司电脑直接验证本机 Codex，省去 HTTPS 和 SSH；省略图片时生成测试色块图
-python scripts/remote_image_tools_test.py --local-codex
+# 在公司电脑直接验证 Responses，省去 HTTPS 和 SSH；旧 --local-codex 仍是别名
+python scripts/remote_image_tools_test.py --local-responses
 ```
 
-在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。CLI 自动将 PNG 转为同尺寸 JPEG 时，使用下述转码校验；CLI 隐式缩放、错误图片或超出容差的内容变化仍会阻止交接。
+在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及提交 API 的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。工具将 PNG 转为同尺寸 JPEG 时使用下述转码校验；错误图片或超出容差的内容变化仍会阻止交接。
 
 正常 fold 命令不变。规划阶段的 `<stage>_invocation.json` 新增 `image_tool_events` 和 `image_debug_directory`。监督、规划、运动提案和评估的每次调用，都在当前 iteration 下自动建立 `claude_image_tools/<阶段>_<ID>/`。没有 iteration 的独立调用使用对应诊断目录。
 

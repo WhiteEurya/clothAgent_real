@@ -143,6 +143,7 @@ def test_command_uses_native_profile_and_preserves_execution_constraints(tmp_pat
 
 def test_output_budget_failure_retries_once_at_low_reasoning(monkeypatch):
     backend = RemoteCodexBackend()
+    backend.runner_file = 'codex_remote_runner.py'  # Legacy CLI compatibility.
     calls = []
     successful = BackendResult(
         stdout=json.dumps({"subtype": "success", "structured_output": {"ok": True}}),
@@ -219,6 +220,7 @@ def fake_remote(tmp_path, monkeypatch):
     image = tmp_path / "rgb.png"
     Image.new("RGB", (48, 32), "red").save(image)
     backend = RemoteCodexBackend(ssh_binary=str(launcher), timeout_s=15)
+    backend.runner_file = 'codex_remote_runner.py'  # Exercise the retained CLI adapter.
     monkeypatch.setattr(backend, "_upload", lambda path: path.as_uri())
     return backend, image
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Codex RGB tool calls without a camera, Molmo, or robot connection."""
+"""Verify GPT-6 Responses RGB tools without a camera, Molmo, or robot connection."""
 from __future__ import annotations
 
 import argparse
@@ -76,7 +76,8 @@ def main(argv=None):
     parser.add_argument("--timeout-s", type=int, default=300)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--offline", action="store_true", help="test tools locally, without a model or network")
-    mode.add_argument("--local-codex", action="store_true", help="real Codex on this computer; no HTTPS relay or SSH")
+    mode.add_argument("--local-responses", "--local-codex", dest="local_codex", action="store_true",
+                      help="real Responses API from this computer; no HTTPS relay or SSH (old alias retained)")
     parser.add_argument("--output-dir", type=Path, help="new output directory")
     args = parser.parse_args(argv)
     output = args.output_dir or Path("results/image_tools_smoke") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -137,7 +138,7 @@ def main(argv=None):
             delivered = {view['image_id'] for view in result.image_sources
                          if view.get('image_delivery_status') in {'VERIFIED', 'VERIFIED_TRANSCODE'}}
             if not {'image_0', *inspected_views} <= delivered:
-                raise ValueError("CLI output did not contain verified original/rotated/enlarged images; inspect image_delivery.jsonl")
+                raise ValueError("API submission audit lacks verified original/rotated/enlarged images; inspect image_delivery.jsonl")
             if payload.get("image_read") is not True or not isinstance(payload.get("observation"), str) or not payload["observation"].strip():
                 raise ValueError("Codex did not confirm visual inspection")
             mappings = [e["result"] for e in success if e["tool"] == "map_point"]
@@ -148,7 +149,7 @@ def main(argv=None):
             payload["timings"] = result.timings
             payload["transport"] = "local_company_shell_no_relay_or_ssh" if args.local_codex else "https_and_ssh"
         (output / "result.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        label = "OFFLINE IMAGE TOOLS" if args.offline else "LOCAL CODEX IMAGE TOOLS" if args.local_codex else "REMOTE CODEX IMAGE TOOLS"
+        label = "OFFLINE IMAGE TOOLS" if args.offline else "LOCAL RESPONSES IMAGE TOOLS" if args.local_codex else "REMOTE RESPONSES IMAGE TOOLS"
         print(f"{label} PASSED: {output.resolve()}")
         return 0
     except Exception as exc:

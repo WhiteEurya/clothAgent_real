@@ -264,6 +264,8 @@ class RemoteClaudeBackend:
                  "model": getattr(self, "model", None),
                  "reasoning_effort": getattr(self, "reasoning_effort", None),
                  "profile": getattr(self, "profile", None),
+                 "api": "responses" if getattr(self, "runner_file", None) == "responses_remote_runner.py" else None,
+                 "max_output_tokens": getattr(self, "max_output_tokens", None),
                  "image_edit_limit": image_edit_limit,
                  "max_turns": self._call_max_turns,
                  "overall_timeout_s": overall_timeout_s,
@@ -591,18 +593,15 @@ class RemoteClaudeBackend:
 
 
 class RemoteCodexBackend(RemoteClaudeBackend):
-    """Codex over the existing SSH/HTTPS transport, with audited RGB-only MCP.
+    """GPT-6 Responses agent over SSH/HTTPS (historical class name retained)."""
 
-    The standalone runner translates real Codex events to the historical result
-    envelope, so coordinate and image-delivery validators remain authoritative.
-    It never falls back to Claude or a different model.
-    """
-
-    agent_name = "Codex"
+    agent_name = "GPT-6 Responses"
     remote_login_shell = True
     model = "gpt-6-astra"
     reasoning_effort = "minimal"
     profile = "rbs"
+    runner_file = "responses_remote_runner.py"
+    max_output_tokens = 32768
 
     @staticmethod
     def _is_output_budget_failure(exc: BaseException) -> bool:
@@ -611,7 +610,7 @@ class RemoteCodexBackend(RemoteClaudeBackend):
 
     def _invoke(self, *, schema, **kwargs):
         if not self.image_tools:
-            raise PlannerBackendError("remote Codex requires audited image tools")
+            raise PlannerBackendError("remote GPT-6 requires audited image tools")
         # Check the validator dependency/schema before paying for uploads/model.
         from jsonschema import Draft202012Validator, ValidationError
         from .codex_remote_runner import restore_optional_fields
@@ -624,7 +623,9 @@ class RemoteCodexBackend(RemoteClaudeBackend):
             # calls).  Retry only this deterministic, read-only failure with a
             # lower reasoning budget; never retry authentication, transport,
             # image-delivery, or schema errors as if they were token failures.
-            if not self._is_output_budget_failure(exc):
+            # Responses uses an explicit budget and one bounded conversation.
+            # Do not reset its tool/edit budgets by restarting the whole job.
+            if self.runner_file != "codex_remote_runner.py" or not self._is_output_budget_failure(exc):
                 raise
             original_effort = self.reasoning_effort
             self.reasoning_effort = "minimal"
@@ -637,26 +638,33 @@ class RemoteCodexBackend(RemoteClaudeBackend):
         try:
             Draft202012Validator(schema).validate(value)
         except ValidationError as exc:
-            raise PlannerBackendError(f"Codex response violates original schema at {list(exc.path)}: {exc.message}") from exc
+            raise PlannerBackendError(f"GPT-6 response violates original schema at {list(exc.path)}: {exc.message}") from exc
         envelope["structured_output"] = value
         return replace(result, stdout=json.dumps(envelope))
 
     def _image_tool_setup(self, job, count):
+        self._image_count = count
         setup, _, prompt = super()._image_tool_setup(job, count)
         return setup, "", prompt
 
     def _agent_command(self, job, schema, system_prompt, tool_flags, timeout_s):
         if not self.image_tools:
-            raise PlannerBackendError("remote Codex requires audited image tools")
-        source = Path(__file__).with_name("codex_remote_runner.py").read_bytes()
+            raise PlannerBackendError("remote GPT-6 requires audited image tools")
+        source = Path(__file__).with_name(self.runner_file).read_bytes()
+        adapter = Path(__file__).with_name("codex_remote_runner.py").read_bytes()
         request = {"schema": schema, "system_prompt": system_prompt,
                    "profile": self.profile,
                    "model": self.model, "reasoning_effort": self.reasoning_effort,
+                   "max_output_tokens": self.max_output_tokens,
+                   "image_count": self._image_count,
+                   "image_edit_limit": self._image_edit_limit,
+                   "timeout_s": timeout_s,
                    "max_tool_calls": self._call_max_turns,
                    "orientation_correction": self._orientation_correction}
         bootstrap = (
             "import base64,pathlib; "
             f"pathlib.Path({job + '/codex_runner.py'!r}).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r})); "
+            f"pathlib.Path({job + '/codex_adapter.py'!r}).write_bytes(base64.b64decode({base64.b64encode(adapter).decode()!r})); "
             f"pathlib.Path({job + '/codex_request.json'!r}).write_bytes(base64.b64decode({base64.b64encode(json.dumps(request).encode()).decode()!r}))"
         )
         return (f'"$cloth_image_python" -c {shlex.quote(bootstrap)}; '

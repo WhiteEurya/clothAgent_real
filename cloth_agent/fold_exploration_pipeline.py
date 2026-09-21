@@ -5506,7 +5506,9 @@ class FoldExplorationPipeline:
                 "evaluation_fallback": self.planner_backend == "local",
             },
             "plan_authority": {
-                "strategy": "Codex" if self.planner_backend == "remote" else "Claude",
+                "strategy": "GPT-6 Responses" if self.planner_backend == "remote" else "Claude",
+                "api": "responses" if self.planner_backend == "remote" else None,
+                "max_output_tokens": RemoteCodexBackend.max_output_tokens if self.planner_backend == "remote" else None,
                 "model": RemoteCodexBackend.model if self.planner_backend == "remote" else None,
                 "reasoning_effort": RemoteCodexBackend.reasoning_effort if self.planner_backend == "remote" else None,
                 "profile": RemoteCodexBackend.profile if self.planner_backend == "remote" else None,
