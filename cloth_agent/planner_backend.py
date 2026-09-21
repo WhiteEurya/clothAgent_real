@@ -127,8 +127,9 @@ class RemoteClaudeBackend:
     """
 
     agent_name = "Claude"
-    model = "claude-opus-5"
-    reasoning_effort = "max"
+    # Match cc95a8a (2026-09-18): Claude selects these from its remote settings.
+    model = None
+    reasoning_effort = None
     remote_login_shell = False
 
     def __init__(
@@ -446,7 +447,6 @@ class RemoteClaudeBackend:
     def _agent_command(self, job, schema, system_prompt, tool_flags, timeout_s):
         return (
             f"timeout {timeout_s}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
-            f"--model {shlex.quote(self.model)} --effort {shlex.quote(self.reasoning_effort)} "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {shlex.quote(job)} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"

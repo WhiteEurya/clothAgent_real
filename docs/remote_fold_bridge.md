@@ -1,20 +1,22 @@
 # Fold 远程 Claude / GPT-6 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote --planner-agent claude`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 统一使用所选 agent，通过 HTTPS 图片中转 + SSH 在公司电脑执行。默认 Claude CLI 显式指定 `--model claude-opus-5 --effort max`，避免被用户配置中的其他默认模型覆盖。图片工具、预算、审计、坐标验证和主机执行校验保持有效。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote --planner-agent claude`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 统一使用所选 agent，通过 HTTPS 图片中转 + SSH 在公司电脑执行。Claude 启动命令恢复为 `cc95a8a`（2026-09-18，当时 9 月 19 日尚无新提交）的调用方式：不传 `--model` / `--effort`，由远端 Claude 配置决定模型和推理强度。原有 stdin 提示词、stream-json、MCP、hooks、schema 和回合预算保持一致；图片传输保留后续 HTTP/1.1 修复。
 
 在原启动命令后加选项即可切换（普通启动和 watchdog 都支持）：
 
 ```bash
-# 默认：公司端 Claude Opus 5
+# 默认：公司端 Claude，使用其已有模型配置
 bash scripts/start_fold_exploration.sh --planner-agent claude
 
 # 手动切回 GPT-6 Responses
 bash scripts/start_fold_exploration.sh --planner-agent gpt6
 ```
 
-`gpt6` 使用 `gpt-6-astra`、`medium`、每次请求 `max_output_tokens=32768`。远端失败不会自动换模型。`--planner-backend local` 仍是历史本地 Claude 调用链，使用本地模型配置，不能与 `--planner-agent gpt6` 组合。启动日志记录 `planner_agent`，`summary.json` 的 `plan_authority` 和各调用审计记录实际后端、模型、推理强度及 API 配置。
+`gpt6` 使用 `gpt-6-astra`、`medium`、每次请求 `max_output_tokens=32768`。远端失败不会自动换模型。`--planner-backend local` 仍是历史本地 Claude 调用链，使用本地模型配置，不能与 `--planner-agent gpt6` 组合。启动日志记录 `planner_agent`；Claude 的 `plan_authority.model` / `reasoning_effort` 为 null，表示主机未覆盖远端配置，实际模型查看 `stdout.log` 的 `system.init.model` 和结果中的 `modelUsage`。GPT-6 的显式参数继续记录在 `plan_authority` 中。
 
-2026-09-21 公司本机 Claude Code 已更新到 2.1.278。使用上述默认 Claude 命令和合成图片，真实会话约 38 秒完成看图、旋转、裁剪、缩放、坐标映射、最终 JSON 和原图/派生图交付校验。该测试跳过 SSH 和 HTTPS 中转，未连接机器人。Fable 5.1 在当前公司网关返回 `model_not_found / No available channel`，因此没有设为默认。
+2026-09-21 曾使用 Claude Code 2.1.278、显式 Opus 5/max 和合成图片完成约 38 秒的图片工具测试；现已按要求回退 CLI 至 2.1.228，并恢复历史调用命令。这些本机测试跳过 SSH 和 HTTPS 中转，未连接机器人。Fable 5.1 在当前公司网关返回 `model_not_found / No available channel`。
+
+历史代码中已经存在退出时 `sed` 回传审计的逻辑。恢复调用参数不等于修复非阻塞管道上的 `sed` 写入失败；仍拒绝非零退出码和不完整的图片证据。
 
 公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。默认 Claude 路径还需要 PATH 中的 `claude` 和可用的 Claude 认证/网关配置；GPT-6 路径在 Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。两条路径均不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
 

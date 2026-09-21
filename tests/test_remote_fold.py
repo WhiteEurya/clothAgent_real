@@ -365,11 +365,11 @@ def test_fold_constructor_and_cli_default_remote_claude(saved_scene):
     assert isinstance(pipeline.client, RemoteFoldClient)
     assert type(pipeline.supervisor.backend) is RemoteClaudeBackend
     assert type(pipeline.client.backend) is RemoteClaudeBackend
-    assert pipeline.client.backend.model == "claude-opus-5"
-    assert pipeline.client.backend.reasoning_effort == "max"
+    assert pipeline.client.backend.model is None
+    assert pipeline.client.backend.reasoning_effort is None
     assert pipeline._planner_identity() == {
-        "agent": "claude", "strategy": "Claude", "model": "claude-opus-5",
-        "reasoning_effort": "max", "api": None, "profile": None, "max_output_tokens": None,
+        "agent": "claude", "strategy": "Claude", "model": None,
+        "reasoning_effort": None, "api": None, "profile": None, "max_output_tokens": None,
     }
     assert build_parser().parse_args([]).planner_agent == "claude"
     assert build_parser().parse_args([]).planner_backend == "remote"
@@ -402,12 +402,18 @@ def test_invalid_agent_selection_fails_before_client_setup(saved_scene, backend,
                                 planner_backend=backend, planner_agent=agent)
 
 
-def test_remote_claude_command_pins_verified_model():
+def test_remote_claude_command_matches_pre_codex_invocation():
     backend = RemoteClaudeBackend()
     backend._call_max_turns = 16
-    command = shlex.split(backend._agent_command("/tmp/test", {}, "Inspect RGB", "", 900))
-    assert command[command.index("--model") + 1] == "claude-opus-5"
-    assert command[command.index("--effort") + 1] == "max"
+    # Literal command from cc95a8a's _invoke, before the GPT-6 migration.
+    flags = "--allowedTools Read --tools Read --strict-mcp-config "
+    assert backend._agent_command("/tmp/test", {}, "Inspect RGB", flags, 900) == (
+        "timeout 900s claude -p --output-format stream-json --verbose --include-partial-messages "
+        "--permission-mode dontAsk " + flags +
+        "--no-session-persistence --max-turns 16 "
+        "--add-dir /tmp/test --json-schema '{}' --system-prompt 'Inspect RGB'"
+    )
+    assert backend.remote_login_shell is False
 
 
 def test_failed_remote_supervision_and_evaluation_never_fallback(saved_scene):

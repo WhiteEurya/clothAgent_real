@@ -6822,7 +6822,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner-backend", choices=("remote", "local"), default="remote",
                         help="fold model calls use the HTTPS/SSH bridge by default")
     parser.add_argument("--planner-agent", choices=("claude", "gpt6"), default="claude",
-                        help="remote model: Claude Opus 5 (default) or GPT-6 Responses; local supports Claude only")
+                        help="remote agent: Claude using its remote settings (default) or GPT-6 Responses; local supports Claude only")
     parser.add_argument("--remote-planner-host", default="company-planner", help="SSH config host for company Claude")
     parser.add_argument("--claude-timeout-s", type=int, default=1800)
     parser.add_argument(
