@@ -127,6 +127,8 @@ class RemoteClaudeBackend:
     """
 
     agent_name = "Claude"
+    model = "claude-opus-5"
+    reasoning_effort = "max"
     remote_login_shell = False
 
     def __init__(
@@ -444,6 +446,7 @@ class RemoteClaudeBackend:
     def _agent_command(self, job, schema, system_prompt, tool_flags, timeout_s):
         return (
             f"timeout {timeout_s}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
+            f"--model {shlex.quote(self.model)} --effort {shlex.quote(self.reasoning_effort)} "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {shlex.quote(job)} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"
@@ -593,6 +596,15 @@ class RemoteClaudeBackend:
         # continue receiving the same final JSON envelope as before.
         return BackendResult(json.dumps(claude_result_envelope(completed.stdout)),
                              completed.stderr, completed.returncode, tuple(command))
+
+
+def remote_backend_type(agent: str = "claude") -> type[RemoteClaudeBackend]:
+    """Select explicitly; service failures never trigger a model switch."""
+    if agent == "claude":
+        return RemoteClaudeBackend
+    if agent == "gpt6":
+        return RemoteCodexBackend
+    raise ValueError("planner_agent must be claude or gpt6")
 
 
 class RemoteCodexBackend(RemoteClaudeBackend):

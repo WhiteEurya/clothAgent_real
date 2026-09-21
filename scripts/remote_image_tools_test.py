@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify GPT-6 Responses RGB tools without a camera, Molmo, or robot connection."""
+"""Verify Claude/GPT-6 RGB tools without a camera, Molmo, or robot connection."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image, ImageDraw
 from cloth_agent.image_tools_mcp import ImageTools
-from cloth_agent.planner_backend import RemoteCodexBackend, parse_claude_json
+from cloth_agent.planner_backend import RemoteClaudeBackend, RemoteCodexBackend, remote_backend_type, parse_claude_json
 
 
 SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
@@ -27,6 +27,13 @@ SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
 
 class CompanyLocalBackend(RemoteCodexBackend):
     """Exercise the production company shell locally; only transport is bypassed."""
+
+    def _upload(self, image):
+        return image.resolve().as_uri()
+
+
+class CompanyLocalClaudeBackend(RemoteClaudeBackend):
+    """Use the production Claude command with local-only image transport."""
 
     def _upload(self, image):
         return image.resolve().as_uri()
@@ -73,6 +80,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path, nargs="?", help="RGB PNG; omitted: generate a synthetic color chart")
     parser.add_argument("--host", default="company-planner")
+    parser.add_argument("--planner-agent", choices=("claude", "gpt6"), default="claude")
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument("--no-api-stream", action="store_true",
                         help="diagnostic comparison: request JSON instead of SSE (same agent/tools)")
@@ -81,7 +89,14 @@ def main(argv=None):
     mode.add_argument("--local-responses", "--local-codex", dest="local_codex", action="store_true",
                       help="real Responses API from this computer; no HTTPS relay or SSH (old alias retained)")
     parser.add_argument("--output-dir", type=Path, help="new output directory")
+    mode.add_argument("--local-company-shell", action="store_true",
+                      help="test the selected agent on this company machine without SSH/relay")
     args = parser.parse_args(argv)
+    # Preserve the historical diagnostic flag's GPT-6 meaning.
+    if args.local_codex:
+        args.planner_agent = "gpt6"
+    if args.no_api_stream and args.planner_agent != "gpt6":
+        parser.error("--no-api-stream requires --planner-agent gpt6")
     output = args.output_dir or Path("results/image_tools_smoke") / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     helper_directory = None
     try:
@@ -117,15 +132,17 @@ def main(argv=None):
                 "the images, observation describing what you see, and original_image_index and "
                 "mapped_pixel_xy copied from the map_point result. If tools fail, do not claim success."
             )
-            if args.local_codex:
+            if args.local_codex or args.local_company_shell:
                 helper_directory = tempfile.TemporaryDirectory(prefix="cloth_company_smoke_")
                 launcher = Path(helper_directory.name) / "local_company_shell"
                 launcher.write_text('#!/bin/sh\nfor cloth_arg do :; done\nexec /bin/sh -c "$cloth_arg"\n', encoding="utf-8")
                 launcher.chmod(0o700)
-                backend = CompanyLocalBackend(ssh_host="local-company", ssh_binary=str(launcher), timeout_s=args.timeout_s)
+                local_type = CompanyLocalClaudeBackend if args.planner_agent == "claude" else CompanyLocalBackend
+                backend = local_type(ssh_host="local-company", ssh_binary=str(launcher), timeout_s=args.timeout_s)
             else:
-                backend = RemoteCodexBackend(ssh_host=args.host, timeout_s=args.timeout_s)
-            backend.api_stream = not args.no_api_stream
+                backend = remote_backend_type(args.planner_agent)(ssh_host=args.host, timeout_s=args.timeout_s)
+            if args.planner_agent == "gpt6":
+                backend.api_stream = not args.no_api_stream
             result = backend.invoke(prompt=prompt, image_paths=[image], schema=SCHEMA,
                 debug_dir=output / "claude_image_tools" / "smoke",
                 system_prompt="Inspect RGB with view_image and images returned by editing tools. Return the required JSON.")
@@ -135,24 +152,26 @@ def main(argv=None):
             success = [e for e in events if e.get("status") == "ok"]
             required = {"rotate_image", "crop_image", "resize_image", "map_point"}
             if not required <= {e.get("tool") for e in success}:
-                raise ValueError("Codex did not actually call all required image tools; inspect the audit")
+                raise ValueError("Agent did not actually call all required image tools; inspect the audit")
             inspected_views = [e["result"]["image_id"] for e in success
                                if e.get("tool") in {"rotate_image", "resize_image"}]
             delivered = {view['image_id'] for view in result.image_sources
                          if view.get('image_delivery_status') in {'VERIFIED', 'VERIFIED_TRANSCODE'}}
             if not {'image_0', *inspected_views} <= delivered:
-                raise ValueError("API submission audit lacks verified original/rotated/enlarged images; inspect image_delivery.jsonl")
+                raise ValueError("Image audit lacks verified original/rotated/enlarged images; inspect the debug directory")
             if payload.get("image_read") is not True or not isinstance(payload.get("observation"), str) or not payload["observation"].strip():
-                raise ValueError("Codex did not confirm visual inspection")
+                raise ValueError("Agent did not confirm visual inspection")
             mappings = [e["result"] for e in success if e["tool"] == "map_point"]
             if not any(payload.get("original_image_index") == m["original_image_index"] and
                        payload.get("mapped_pixel_xy") == m["pixel_xy"] for m in mappings):
                 raise ValueError("returned pixel does not match an actual map_point result")
             payload["locally_replayed_views"] = replay(image, events, output / "replayed_views")
             payload["timings"] = result.timings
-            payload["transport"] = "local_company_shell_no_relay_or_ssh" if args.local_codex else "https_and_ssh"
+            payload["agent"] = args.planner_agent
+            payload["model"] = backend.model
+            payload["transport"] = "local_company_shell_no_relay_or_ssh" if args.local_codex or args.local_company_shell else "https_and_ssh"
         (output / "result.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        label = "OFFLINE IMAGE TOOLS" if args.offline else "LOCAL RESPONSES IMAGE TOOLS" if args.local_codex else "REMOTE RESPONSES IMAGE TOOLS"
+        label = "OFFLINE IMAGE TOOLS" if args.offline else f"{args.planner_agent.upper()} IMAGE TOOLS"
         print(f"{label} PASSED: {output.resolve()}")
         return 0
     except Exception as exc:

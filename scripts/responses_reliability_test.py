@@ -83,6 +83,7 @@ def main(argv=None):
         for index in range(1, args.rounds + 1):
             directory = output / f'round_{index:03d}'
             command = [sys.executable, str(Path(__file__).with_name('remote_image_tools_test.py')),
+                       '--planner-agent', 'gpt6',
                        '--timeout-s', str(args.timeout_s), '--output-dir', str(directory)]
             command += ['--local-responses'] if args.local_responses else ['--host', args.host]
             if image:

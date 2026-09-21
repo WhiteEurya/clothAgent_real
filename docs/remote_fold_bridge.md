@@ -1,8 +1,24 @@
-# Fold 远程 GPT-6 Responses 桥接
+# Fold 远程 Claude / GPT-6 桥接
 
-`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH，由公司电脑直接请求 **Responses API**。模型保持 `gpt-6-astra`，推理强度恢复为 `medium`，每次 API 请求显式发送 `max_output_tokens=32768`。显式指定 `--planner-backend local` 仍使用历史 Claude 调用链；远端失败不会自动切回 Claude。
+`scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote --planner-agent claude`，SSH 主机默认是 `company-planner`。方向判断、规划、运动提案、执行后评估和 fold supervisor 统一使用所选 agent，通过 HTTPS 图片中转 + SSH 在公司电脑执行。默认 Claude CLI 显式指定 `--model claude-opus-5 --effort max`，避免被用户配置中的其他默认模型覆盖。图片工具、预算、审计、坐标验证和主机执行校验保持有效。
 
-公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。生产路径不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
+在原启动命令后加选项即可切换（普通启动和 watchdog 都支持）：
+
+```bash
+# 默认：公司端 Claude Opus 5
+bash scripts/start_fold_exploration.sh --planner-agent claude
+
+# 手动切回 GPT-6 Responses
+bash scripts/start_fold_exploration.sh --planner-agent gpt6
+```
+
+`gpt6` 使用 `gpt-6-astra`、`medium`、每次请求 `max_output_tokens=32768`。远端失败不会自动换模型。`--planner-backend local` 仍是历史本地 Claude 调用链，使用本地模型配置，不能与 `--planner-agent gpt6` 组合。启动日志记录 `planner_agent`，`summary.json` 的 `plan_authority` 和各调用审计记录实际后端、模型、推理强度及 API 配置。
+
+2026-09-21 公司本机 Claude Code 已更新到 2.1.278。使用上述默认 Claude 命令和合成图片，真实会话约 38 秒完成看图、旋转、裁剪、缩放、坐标映射、最终 JSON 和原图/派生图交付校验。该测试跳过 SSH 和 HTTPS 中转，未连接机器人。Fable 5.1 在当前公司网关返回 `model_not_found / No available channel`，因此没有设为默认。
+
+公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow。默认 Claude 路径还需要 PATH 中的 `claude` 和可用的 Claude 认证/网关配置；GPT-6 路径在 Python 3.10 还需要 `tomli>=2`，3.11+ 使用标准库 `tomllib`。两条路径均不启动 Codex CLI。Alienware 需安装项目依赖（包括 `jsonschema>=4.18`）。
+
+## GPT-6 Responses 路径
 
 远端 runner 读取 `$CODEX_HOME/config.toml`（未设置时使用 `~/.codex`），再读取 `rbs.config.toml`；兼容旧式 `[profiles.rbs]`。只解析选中 provider 的 `base_url`、`wire_api`、`env_key`、HTTP headers；不继承 CLI 的其他设置，也不复制密钥。配置必须明确选择 HTTPS Responses provider，认证变量缺失立即失败，不回退到 OpenAI 默认地址。`summary.json` 和请求审计记录 API 类型、模型、推理强度、输出预算。历史 `RemoteCodexBackend` 类名、`claude_*` 文件名和计时字段保留兼容。
 
@@ -79,8 +95,8 @@ python scripts/responses_reliability_test.py --host company-planner --rounds 10
 用合成图片做对照（不连接机器人；两次是独立模型运行，不构成严格性能基准）：
 
 ```bash
-python scripts/remote_image_tools_test.py --host company-planner
-python scripts/remote_image_tools_test.py --host company-planner --no-api-stream
+python scripts/remote_image_tools_test.py --planner-agent gpt6 --host company-planner
+python scripts/remote_image_tools_test.py --planner-agent gpt6 --host company-planner --no-api-stream
 ```
 
 在各次输出的 `claude_image_tools/smoke/` 中查看 `responses_last_request.json` 和 `responses_diagnostics.jsonl`。如果流式请求仍在首个事件前返回 524，可用 `x-request-id` / `cf-ray` / `client_request_id` 向网关维护方关联日志；客户端无法凭 524 判断是排队、模型处理还是网关转发的哪一层耗尽时限。
@@ -119,8 +135,14 @@ Alienware 使用已有 RGB 验证（无机器人连接）：
 # 仅验证本地图像变换和坐标映射，不联网、不调用模型
 python scripts/remote_image_tools_test.py test.png --offline
 
-# 验证 HTTPS → 公司 Codex → 实际 MCP 调用 → 原图坐标返回
+# 验证默认 Claude：HTTPS → 公司 Claude → 实际 MCP 调用 → 原图坐标返回
 python scripts/remote_image_tools_test.py test.png --host company-planner
+
+# 在公司电脑直接验证默认 Claude，省去 HTTPS 和 SSH
+python scripts/remote_image_tools_test.py --local-company-shell
+
+# 远端 GPT-6 对照
+python scripts/remote_image_tools_test.py test.png --planner-agent gpt6 --host company-planner
 
 # 在公司电脑直接验证 Responses，省去 HTTPS 和 SSH；旧 --local-codex 仍是别名
 python scripts/remote_image_tools_test.py --local-responses
@@ -192,7 +214,7 @@ python -m cloth_agent.fold_exploration_viser results/image_tools_smoke/<测试�
 
 第二条命令打开已保存的调试界面；测试进行中也能用同一输出目录启动查看。仅 `--offline` 的变换测试不包含 Claude 的 Read 记录。
 
-`--local-codex` 使用同一份生产 Codex 适配器、图片审计和临时目录清理，只将图片传输换成本机文件读取。它调用真正的 Codex，仍需 Codex 登录及模型网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。下方 Claude CLI 实验记录是历史证据，不代表已验证新的 Codex 链路。
+`--local-company-shell` 使用所选 agent 的生产命令、图片审计和临时目录清理，只将图片传输换成本机文件读取。`--local-responses` / `--local-codex` 保留为指定 GPT-6 Responses 的历史选项。仍需对应模型的认证和网络访问，结果中明确标记未测试 HTTPS/SSH。不指定图片时生成带方向文字的四色测试图，不上传工作场景照片。
 
 2026-09-15 的旧版测试曾记录到原图/旋转图/放大图的成功 Read hook，不能据此证明返回含图片。2026-09-17 的新验证使用真实 Claude CLI 2.1.228、合成图片与本地模拟 API：`view_image` 和 `rotate_image` 的图片在 PostToolUse、CLI tool_result、下一次本地 API 请求中均可解码且像素哈希一致，方向交接校验通过，全程没有额外 Read。这验证本机 CLI/MCP/校验接线，不验证远端生产 API、模型视觉准确率或机器人动作。
 

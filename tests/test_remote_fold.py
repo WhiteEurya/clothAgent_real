@@ -359,21 +359,55 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
             parse_claude_json(json.dumps(envelope))
 
 
-def test_fold_constructor_and_cli_default_remote(saved_scene):
+def test_fold_constructor_and_cli_default_remote_claude(saved_scene):
     session, _, _ = saved_scene
     pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"))
     assert isinstance(pipeline.client, RemoteFoldClient)
-    assert isinstance(pipeline.supervisor.backend, RemoteCodexBackend)
-    assert isinstance(pipeline.client.backend, RemoteCodexBackend)
+    assert type(pipeline.supervisor.backend) is RemoteClaudeBackend
+    assert type(pipeline.client.backend) is RemoteClaudeBackend
+    assert pipeline.client.backend.model == "claude-opus-5"
+    assert pipeline.client.backend.reasoning_effort == "max"
+    assert pipeline._planner_identity() == {
+        "agent": "claude", "strategy": "Claude", "model": "claude-opus-5",
+        "reasoning_effort": "max", "api": None, "profile": None, "max_output_tokens": None,
+    }
+    assert build_parser().parse_args([]).planner_agent == "claude"
+    assert build_parser().parse_args([]).planner_backend == "remote"
+    local = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"), planner_backend="local")
+    assert not isinstance(local.client, RemoteFoldClient)
+    assert local.supervisor.backend is None
+
+
+def test_fold_can_explicitly_select_gpt6(saved_scene):
+    session, _, _ = saved_scene
+    args = build_parser().parse_args(["--planner-agent", "gpt6"])
+    pipeline = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"),
+                                       planner_agent=args.planner_agent)
+    assert type(pipeline.supervisor.backend) is RemoteCodexBackend
+    assert type(pipeline.client.backend) is RemoteCodexBackend
     assert pipeline.client.backend.model == "gpt-6-astra"
     assert pipeline.client.backend.reasoning_effort == "medium"
     assert pipeline.client.backend.runner_file == "responses_remote_runner.py"
     assert pipeline.client.backend.max_output_tokens == 32768
     assert pipeline.client.backend.profile == "rbs"
-    assert build_parser().parse_args([]).planner_backend == "remote"
-    local = FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"), planner_backend="local")
-    assert not isinstance(local.client, RemoteFoldClient)
-    assert local.supervisor.backend is None
+    assert pipeline._planner_identity()["api"] == "responses"
+    assert pipeline._planner_identity()["strategy"] == "GPT-6 Responses"
+
+
+@pytest.mark.parametrize("backend,agent", [("local", "gpt6"), ("remote", "typo")])
+def test_invalid_agent_selection_fails_before_client_setup(saved_scene, backend, agent):
+    session, _, _ = saved_scene
+    with pytest.raises(ValueError):
+        FoldExplorationPipeline(session, perception_config=Path("config/perception.free_exploration.json"),
+                                planner_backend=backend, planner_agent=agent)
+
+
+def test_remote_claude_command_pins_verified_model():
+    backend = RemoteClaudeBackend()
+    backend._call_max_turns = 16
+    command = shlex.split(backend._agent_command("/tmp/test", {}, "Inspect RGB", "", 900))
+    assert command[command.index("--model") + 1] == "claude-opus-5"
+    assert command[command.index("--effort") + 1] == "max"
 
 
 def test_failed_remote_supervision_and_evaluation_never_fallback(saved_scene):

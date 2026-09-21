@@ -91,7 +91,7 @@ from .grasp_checkpoint import (
     GraspCheckpointRejected, validate_acquisition_probe_lift,
 )
 from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
-from .planner_backend import PlannerBackendError, RemoteClaudeBackend, RemoteCodexBackend, parse_claude_json
+from .planner_backend import PlannerBackendError, RemoteClaudeBackend, remote_backend_type, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
@@ -2828,6 +2828,7 @@ class FoldExplorationPipeline:
         perception_config: Path,
         claude_binary: str = "claude",
         planner_backend: str = "remote",
+        planner_agent: str = "claude",
         remote_planner_host: str = "company-planner",
         claude_timeout_s: int = 1800,
         grounding_timeout_s: int | None = None,
@@ -2872,6 +2873,10 @@ class FoldExplorationPipeline:
         if planner_backend not in {"local", "remote"}:
             raise ValueError("planner_backend must be local or remote")
         self.planner_backend = planner_backend
+        backend_type = remote_backend_type(planner_agent)
+        if planner_backend == "local" and planner_agent != "claude":
+            raise ValueError("gpt6 requires --planner-backend remote")
+        self.planner_agent = planner_agent
         self.remote_planner_host = remote_planner_host
         self.claude_timeout_s = int(claude_timeout_s)
         # Final grounding is a separate Claude turn, but it must not have a
@@ -2951,7 +2956,7 @@ class FoldExplorationPipeline:
         self.skill_store = SkillStore(self.project_root / "data" / "skills")
         approved_skills = self.skill_store.approved()
         client_type = RemoteFoldClient if planner_backend == "remote" else ClaudeAutoClient
-        backend_options = ({"backend": RemoteCodexBackend(ssh_host=remote_planner_host,
+        backend_options = ({"backend": backend_type(ssh_host=remote_planner_host,
                             timeout_s=self.claude_timeout_s)} if planner_backend == "remote" else {})
         self.client = client_type(
             binary=claude_binary,
@@ -2968,13 +2973,25 @@ class FoldExplorationPipeline:
             claude_binary,
             supervisor_timeout_s,
             persistent_session=self.persistent_claude,
-            backend=(RemoteCodexBackend(ssh_host=remote_planner_host, timeout_s=supervisor_timeout_s)
+            backend=(backend_type(ssh_host=remote_planner_host, timeout_s=supervisor_timeout_s)
                      if planner_backend == "remote" else None),
         )
         self.experiences = FoldExperienceStore(session.run_dir)
         self.skill_ledger = RunSkillLedger(session.workspace)
         self._debug_logger: FoldDebugLogger | None = None
         self._viser_process: subprocess.Popen[Any] | None = None
+
+    def _planner_identity(self) -> dict[str, Any]:
+        backend = getattr(self.client, "backend", None) if self.planner_backend == "remote" else None
+        return {
+            "agent": self.planner_agent,
+            "strategy": getattr(backend, "agent_name", "Claude"),
+            "api": "responses" if getattr(backend, "runner_file", None) == "responses_remote_runner.py" else None,
+            "model": getattr(backend, "model", None),
+            "reasoning_effort": getattr(backend, "reasoning_effort", None),
+            "profile": getattr(backend, "profile", None),
+            "max_output_tokens": getattr(backend, "max_output_tokens", None),
+        }
 
     def _refresh_client_skills(self) -> None:
         """Synchronize the Claude prompt and validator allow-list.
@@ -5454,6 +5471,7 @@ class FoldExplorationPipeline:
             claude_timeout_s=self.claude_timeout_s,
             supervisor_timeout_s=self.supervisor.timeout_s,
             planner_backend=self.planner_backend,
+            planner_agent=self.planner_agent,
             remote_planner_host=self.remote_planner_host if self.planner_backend == "remote" else None,
             persistent_claude_session=self.persistent_claude.session_id if self.planner_backend == "local" else None,
         )
@@ -5506,12 +5524,7 @@ class FoldExplorationPipeline:
                 "evaluation_fallback": self.planner_backend == "local",
             },
             "plan_authority": {
-                "strategy": "GPT-6 Responses" if self.planner_backend == "remote" else "Claude",
-                "api": "responses" if self.planner_backend == "remote" else None,
-                "max_output_tokens": RemoteCodexBackend.max_output_tokens if self.planner_backend == "remote" else None,
-                "model": RemoteCodexBackend.model if self.planner_backend == "remote" else None,
-                "reasoning_effort": RemoteCodexBackend.reasoning_effort if self.planner_backend == "remote" else None,
-                "profile": RemoteCodexBackend.profile if self.planner_backend == "remote" else None,
+                **self._planner_identity(),
                 "backend": self.planner_backend,
                 "remote_host": self.remote_planner_host if self.planner_backend == "remote" else None,
                 "host_role": "schema, coordinate, safety, preflight, IK, execution",
@@ -6808,6 +6821,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claude-binary", default="claude")
     parser.add_argument("--planner-backend", choices=("remote", "local"), default="remote",
                         help="fold model calls use the HTTPS/SSH bridge by default")
+    parser.add_argument("--planner-agent", choices=("claude", "gpt6"), default="claude",
+                        help="remote model: Claude Opus 5 (default) or GPT-6 Responses; local supports Claude only")
     parser.add_argument("--remote-planner-host", default="company-planner", help="SSH config host for company Claude")
     parser.add_argument("--claude-timeout-s", type=int, default=1800)
     parser.add_argument(
@@ -6903,6 +6918,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.planner_backend == "local" and args.planner_agent != "claude":
+        raise ValueError("gpt6 requires --planner-backend remote")
     root = Path(args.project_root).resolve()
     perception = args.perception_config if args.perception_config.is_absolute() else root / args.perception_config
     robot_path = args.robot_config if args.robot_config.is_absolute() else root / args.robot_config
@@ -6935,6 +6952,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         perception_config=perception.resolve(),
         claude_binary=args.claude_binary,
         planner_backend=args.planner_backend,
+        planner_agent=args.planner_agent,
         remote_planner_host=args.remote_planner_host,
         claude_timeout_s=args.claude_timeout_s,
         grounding_timeout_s=args.grounding_timeout_s,

@@ -38,6 +38,26 @@ def call(identity='call_1', tool='view_image', **arguments):
 FINAL = {'type': 'message', 'content': [{'type': 'output_text', 'text': '{"ok":true}'}]}
 
 
+@pytest.mark.parametrize('local', [False, True])
+def test_responses_reliability_still_targets_gpt6_when_smoke_defaults_to_claude(tmp_path, monkeypatch, local):
+    from scripts import responses_reliability_test as reliability
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(reliability.subprocess, 'run', run)
+    args = ['--rounds', '1', '--output-dir', str(tmp_path / 'report')]
+    if local:
+        args.append('--local-responses')
+    assert reliability.main(args) == 1
+    assert len(calls) == 1
+    assert calls[0][calls[0].index('--planner-agent') + 1] == 'gpt6'
+
+
 def test_multi_tool_conversation_preserves_reasoning_images_and_budget(job, capsys):
     directory, request = job
     seen = []
