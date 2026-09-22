@@ -23,6 +23,8 @@ def pipeline_for(tmp_path, *, real=True, confirmed=True, mode="single_camera_rgb
     pipeline.record_video = False
     pipeline.observer_camera_serial = None
     pipeline.session = SimpleNamespace(run_dir=tmp_path, run_experiment=Mock(return_value={"status": "SUCCESS"}))
+    pipeline.session.runner = SimpleNamespace(preflight=lambda _: SimpleNamespace(actions=[
+        {'name': 'move'}, {'name': 'open_gripper'}, {'name': 'move'}, {'name': 'close_gripper'}]))
     pipeline._debug = Mock()
     pipeline._debug_exception = Mock()
     return pipeline
@@ -86,7 +88,7 @@ def test_cam_a_photo_wait_does_not_block_transport_without_observer(tmp_path, mo
     transported = threading.Event()
     def capture(config, recorder, path, after_ns):
         assert recorder is None
-        assert transported.wait(2), 'photo must not block transport'
+        assert not transported.is_set(), 'photo must precede transport'
         order.append(path.stem)
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new('RGB', (4, 4)).save(path)
@@ -106,8 +108,8 @@ def test_cam_a_photo_wait_does_not_block_transport_without_observer(tmp_path, mo
     pipeline.session.run_experiment = run
     _, recording = pipeline._execute(tmp_path / 'plan.py', SimpleNamespace(active_camera_labels=('A',)),
                                      tmp_path, label='fold', hold_action_index=4)
-    assert order == ['closure_feedback_confirmed', 'lift_motion', 'transport_motion', 'camera_A_grasp_after_lift']
-    assert len(_grasp_check_images(recording)) == 1
+    assert order == ['camera_A_grasp_before_lift', 'closure_feedback_confirmed', 'lift_motion', 'camera_A_grasp_after_lift', 'transport_motion']
+    assert len(_grasp_check_images(recording)) == 2
     manifest = json.loads((tmp_path / 'hold_check' / 'grasp_snapshots.json').read_text())
     assert 'after_close' not in manifest
     assert manifest['after_lift']['action_index'] == 4
@@ -137,7 +139,7 @@ def test_acquisition_probe_only_captures_moves_at_least_30mm_above_contact(tmp_p
                                      tmp_path, label='probe', hold_action_index=4, acquisition_probe=True)
     assert len(recording['lift_snapshots']) == 1
     assert [item['action']['args']['z'] for item in recording['lift_snapshots']] == [50]
-    assert captured == ['camera_A_lift_checkpoint_01.png']
+    assert captured == ['camera_A_grasp_before_lift.png', 'camera_A_lift_checkpoint_01.png']
     assert (tmp_path / 'lift_checkpoints/snapshots.json').is_file()
 
 
@@ -179,7 +181,7 @@ def test_pre_lift_frame_is_frozen_before_motion_and_saved_off_callback(tmp_path,
     save = Image.Image.save
     def slow_save(image, path, *args, **kwargs):
         if str(path).endswith('before_lift.png'):
-            assert transported.wait(2), 'PNG encoding must not block robot motion'
+            assert not transported.is_set(), 'PNG save must finish before motion'
         return save(image, path, *args, **kwargs)
     monkeypatch.setattr(Image.Image, 'save', slow_save)
     def lift(config, rec, path, after_ns):

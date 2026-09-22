@@ -187,7 +187,7 @@ def prepare_trajectory_memory(history, step: str | None, run_dir: Path, output: 
             snapshot = _mapping(snapshots.get(role))
             candidates = [snapshot.get("image")] if snapshot.get("status") == "CAPTURED" else []
             entry = add_image(role, candidates, {f"camera_a_grasp_{role}.png"})
-            entry["capture_note"] = note
+            entry["capture_note"] = snapshot.get("note", note) if snapshot.get("asynchronous") is False else note
             if type(snapshot.get("action_index")) is int:
                 entry["source_action_index"] = snapshot["action_index"]
         add_image("after", physical.get("after_images") or [],

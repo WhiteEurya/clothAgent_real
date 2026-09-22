@@ -37,7 +37,7 @@ def motion_payload():
     def move(height):
         return {"name": "move", "args": {"target": "grasp", "pixel_xy": None,
             "height_above_grasp_mm": height, "yaw_deg": 0}}
-    return {"requires_lift_checkpoint": True, "actions": [
+    return {"contact_descent_mm": 3.0, "requires_lift_checkpoint": True, "actions": [
         move(60), {"name": "open_gripper", "args": {}}, move(0),
         {"name": "close_gripper", "args": {}}, move(30), move(0),
         {"name": "open_gripper", "args": {}}, move(60), {"name": "home", "args": {}}]}
@@ -419,10 +419,10 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
         assert call['max_turns'] == 8
         assert call['image_edit_limit'] == 2
     assert all(path in backend.calls[1]['image_paths'] for path in snapshots)
-    assert 'BEFORE lift' in backend.calls[1]['prompt']
+    assert 'at contact' in backend.calls[1]['prompt']
     assert 'same-attempt before-lift and after-lift pair' in backend.calls[1]['prompt']
-    assert 'may be during jaw closure' in backend.calls[1]['prompt']
-    assert 'captured asynchronously during continued motion' in backend.calls[1]['prompt']
+    assert 'historical captures may be during closure' in backend.calls[1]['prompt']
+    assert 'new captures are stationary before lateral motion' in backend.calls[1]['prompt']
     assert 'lift >=30 mm' in backend.calls[1]['prompt']
     assert 'Closure confirmation is not proof' in backend.calls[1]['prompt']
     for call in backend.calls:
@@ -709,6 +709,7 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
         if command[0] == "curl":
             return SimpleNamespace(returncode=0, stderr="", stdout='{"id":"relay"}')
         remote = command[-1]
+        remote = remote.replace("$HOME/.cache/cloth-agent-images", str(session.run_dir / "image_cache"))
         if remote.startswith("rm -rf"):
             return real_run(["sh", "-c", remote], **kwargs)
         remote = remote.replace("curl -fsSL", "sh " + shlex.quote(str(curl_stub)) + " -fsSL")
@@ -748,15 +749,20 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
         if command[0] == "curl":
             return SimpleNamespace(returncode=0, stdout='{"id":"relay"}', stderr="")
         remote = command[-1]
+        remote = remote.replace("$HOME/.cache/cloth-agent-images", str(session.run_dir / "image_cache"))
         if not remote.startswith("rm -rf"):
             import re
-            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o ([^; ]+)",
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 10 --max-time 30 --speed-limit 1024 --speed-time 15 \S+ -o ([^; ]+)",
                 lambda m: f"sh {shlex.quote(str(downloader))} {m[1]}", remote)
             remote = remote.replace("sleep 2;", "sleep 0;")
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)
     monkeypatch.setattr(subprocess, "run", run)
-    result = RemoteClaudeBackend().invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+    backend = RemoteClaudeBackend()
+    result = backend.invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+    cached = backend.invoke(prompt="Read again", image_paths=images[:1], schema={}, system_prompt="Read")
+    assert parse_claude_json(cached.stdout) == {"ok": True}
+    assert len(backend._upload_cache) == 1
     assert parse_claude_json(result.stdout) == {"ok": True}
     assert int(counter.read_text()) == transient_failures + 1
     if nonblocking_audit:
@@ -795,3 +801,12 @@ def test_upload_retry_exhaustion(monkeypatch):
     with pytest.raises(PlannerBackendError, match='56'):
         RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
     assert len(calls) == 3
+
+
+def test_upload_batch_deadline_prevents_network_request(monkeypatch):
+    import time
+    backend = RemoteClaudeBackend()
+    backend._transfer_deadline = time.monotonic() - 1
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('network after deadline'))
+    with pytest.raises(PlannerBackendError, match='batch deadline'):
+        backend._upload(Path('/tmp/unused.png'))

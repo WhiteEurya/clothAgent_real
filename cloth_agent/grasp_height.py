@@ -71,11 +71,13 @@ def resolve_grasp_height(
     measurement: Mapping[str, Any],
     table_plane_abc: Sequence[float] | None,
     robot_config: RobotConfig,
+    proposed_descent_mm: float | None = None,
 ) -> GraspHeightResolution:
     """Resolve one engaged grasp Z from one calibrated local-surface measurement.
 
     The measured surface is the observation. The commanded grasp TCP height is a
-    runtime decision and is never delegated to a model. The target presses below
+    model decision when proposed_descent_mm is supplied, validated without clamping.
+    Without a proposal, legacy callers use the configured default. The target lies below
     the measured median surface by the configured amount, unless the robot lower
     bound or support/table safety floor makes that impossible. A configured
     sponge allowance is considered when the local support-ring diagnostic
@@ -312,6 +314,12 @@ def resolve_grasp_height(
         effective_maximum_compression_mm,
     )
 
+    if proposed_descent_mm is not None:
+        desired_compression_mm = _finite_number(proposed_descent_mm, "proposed_descent_mm")
+        if not minimum_compression_mm <= desired_compression_mm <= effective_maximum_compression_mm:
+            raise GraspHeightError("Claude descent is outside configured geometric limits")
+        if surface_z_mm - desired_compression_mm < lower_z_mm:
+            raise GraspHeightError("Claude contact Z is below the allowed floor; no automatic clamp")
     target_z_mm = max(surface_z_mm - desired_compression_mm, lower_z_mm)
     achieved_compression_mm = surface_z_mm - target_z_mm
     if achieved_compression_mm + 1e-9 < minimum_compression_mm:

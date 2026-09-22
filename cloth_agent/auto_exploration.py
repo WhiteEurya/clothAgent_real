@@ -1317,7 +1317,7 @@ def _write_final_grounding_context(
                 "Use that returned measurement to ground the grasp and compose the final numeric RobotAPI proposal.",
                 "Do not call any other MCP tool.",
                 "The supplied support-layer context is physical setup information, not a visual hypothesis. If it is active or explicitly confirmed, a deeper compressive bite up to the configured press/max-compression values is allowed; do not reject it using a hard-table assumption.",
-                "The host will replace the move immediately before close_gripper with the shared grasp-height resolution from the selected local surface. Treat the host-resolved Z as authoritative and do not compensate by inventing a second Z elsewhere in the trajectory.",
+                "Choose the contact move Z yourself using the estimated local surface, history and configured geometric limits. The host validates your chosen descent and does not replace it with a fixed press amount. Estimated descent and configured support are not proof of physical contact or compression.",
                 "Y workspace is yaw-dependent: action yaw is relative to Home; yaw=0 keeps "
                 "the configured Y bounds unchanged, while the outward allowance is "
                 "0.5 * gripper_width_mm * abs(sin(radians(yaw))) (at +/-90 degrees this "

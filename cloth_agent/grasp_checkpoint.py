@@ -74,7 +74,7 @@ def compile_grasp_capture(proposal, minimum_lift_mm=MINIMUM_EVIDENCE_LIFT_MM):
     return replace(proposal, actions=tuple(actions)), {
         'capture_action_index': close + 1, 'minimum_lift_mm': minimum_lift_mm,
         'lift_mm': lift['z'] - grasp['z'], 'lift_extended': lift['z'] != old_z,
-        'evaluation_stage': 'final', 'blocking': False,
+        'evaluation_stage': 'final', 'blocking': True,
     }
 
 

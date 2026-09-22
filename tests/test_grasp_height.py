@@ -269,3 +269,17 @@ def test_robot_config_loads_the_shared_grasp_height_policy() -> None:
     assert config.support_layer_max_compression_mm == pytest.approx(8.0)
     assert config.support_layer_hard_clearance_mm == pytest.approx(1.0)
     assert config.gripper_width_mm == pytest.approx(86.0)
+
+
+@pytest.mark.parametrize('descent', [1., 2.5])
+def test_model_descent_overrides_configured_default(descent):
+    value = resolve_grasp_height(measurement=_measurement(), table_plane_abc=None,
+        robot_config=_config(), proposed_descent_mm=descent)
+    assert value.target_xyz_mm[2] == 30 - descent
+
+
+@pytest.mark.parametrize('descent', [0., 100., float('nan'), True])
+def test_model_descent_rejected_without_clamping(descent):
+    with pytest.raises(GraspHeightError):
+        resolve_grasp_height(measurement=_measurement(), table_plane_abc=None,
+            robot_config=_config(), proposed_descent_mm=descent)
