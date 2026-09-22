@@ -244,8 +244,8 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
     history[0]["next_experiment"] = {"primary_hypothesis": "Compare one jaw direction change",
         "single_change": {"variable": "JAW_ALIGNMENT"}}
     history[0]["failure_diagnosis"] = {"physical_failure_mode": "UNKNOWN"}
-    from cloth_agent.grasp_depth_experience import initial_grasp_experience
-    history[0]["grasp_experience"] = initial_grasp_experience(history[0])
+    from cloth_agent.grasp_execution_experience import initial_execution_experience
+    history[0]["grasp_execution_experience"] = initial_execution_experience(history[0])
     client = RemoteFoldClient(backend=FakeBackend(visual_payload(), motion_payload()), binary="not-installed")
     pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
     pipeline.client, pipeline.session = client, session
@@ -274,14 +274,14 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
         assert context["experience_context"]["next_experiment"] == history[0]["next_experiment"]
         assert context["experience_context"]["failure_diagnosis"]["physical_failure_mode"] == "UNKNOWN"
         assert context["experience_context"]["conditional_experience"] == [rule]
-        assert context["experience_context"]["grasp_experience"] == history[0]["grasp_experience"]
+        assert context["experience_context"]["grasp_execution_experience"] == history[0]["grasp_execution_experience"]
     client.backend.responses.append(motion_payload())
     client.repair_last_grounding_plan(session, "Fold; current_step is hem_up",
         feedback="Adjust the trajectory before execution")
     repaired_context = json.loads(client.backend.calls[-1]["prompt"].split("\n", 1)[1])
     assert repaired_context["trajectory_memory"]["previous_physical_attempt"]["iteration"] == 1
     assert repaired_context["experience_context"]["conditional_experience"] == [rule]
-    assert repaired_context["experience_context"]["grasp_experience"] == history[0]["grasp_experience"]
+    assert repaired_context["experience_context"]["grasp_execution_experience"] == history[0]["grasp_execution_experience"]
     # The pipeline clears memory when moving to a step without relevant history.
     client.backend = FakeBackend(visual_payload(), motion_payload())
     pipeline._plan_fold_with_retries(images, "Fold; current_step is right_side", history, iteration=13)

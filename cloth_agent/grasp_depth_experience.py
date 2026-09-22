@@ -1,4 +1,7 @@
-"""Evidence-gated acquisition depth learning, separate from point/motion rules.
+"""Legacy depth-only schema/helpers, retained for historical record tooling.
+
+The live fold pipeline now uses grasp_execution_experience. It does not call
+this module or promote old depth-only evidence into XYZ correction evidence.
 
 Geometry is computed by the host from runtime records, never supplied by the
 model. Stored trials are observations, not executable robot targets or a global

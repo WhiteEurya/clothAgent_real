@@ -33,10 +33,28 @@ COMPARISON_INSTRUCTION = (
     'Lift photos and video are supplementary; inability to interpret them must not '
     'override a clear UNCHANGED comparison at the perception position. '
     'Do not learn a universal physical rule that unchanged images prove empty jaws. '
-    'UNCHANGED alone provides no grasp-depth diagnosis and must not imply TOO_SHALLOW '
-    'or a deeper-Z retry. The separate host grasp_experience starts UNKNOWN/NONE and '
-    'can update only from independent depth-specific interaction evidence.'
+    'UNCHANGED alone does not localize an execution error to X, Y or Z. '
+    'The host records grasp_execution_experience=UNRESOLVED with update_allowed=false. '
+    'Independent contact evidence and command-integrity checks are required in the '
+    'separate execution-experience stage before learning any XYZ correction.'
 )
+
+COMPARISON_EXECUTION_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {
+        'status': {'enum': ['UNRESOLVED']},
+        'update_allowed': {'type': 'boolean', 'enum': [False]},
+        'evidence': {'type': 'array', 'minItems': 1, 'maxItems': 12,
+                     'items': {'type': 'string', 'minLength': 1}},
+    },
+    'required': ['status', 'update_allowed', 'evidence'],
+}
+
+
+def validate_comparison_execution(value):
+    from .fold_experience_learning import validate_schema
+    validate_schema(value, COMPARISON_EXECUTION_SCHEMA, 'comparison.grasp_execution_experience')
+    return copy.deepcopy(value)
 
 
 def comparison_schema(base):
@@ -74,13 +92,19 @@ def apply_comparison_policy(payload):
     result['earliest_failure_stage'] = 'ACQUISITION'
     result['task_progress']['status'] = 'NEUTRAL'
     result['task_progress']['confidence'] = comparison['confidence']
-    result['next_experiment']['reason'] = reason
+    result['grasp_execution_experience'] = {
+        'status': 'UNRESOLVED', 'update_allowed': False,
+        'evidence': ['The final garment state was unchanged, but this does not localize '
+                     'the execution error to X, Y, or Z.'],
+    }
+    result['next_experiment']['reason'] = (
+        'The acquisition attempt failed, but current evidence does not identify '
+        'whether the selected grasp was missed in XY, Z, or for another reason.'
+    )
     result['next_experiment']['change'] = [
-        'Reassess contact location, jaw alignment and entry from current RGB; '
-        'test a revised grasp without advancing the fold step.'
+        'Collect discriminating contact-alignment evidence before choosing a single adjustment.'
     ]
     # Do not persist contradictory model-generated success/empty-jaw lessons.
-    # Depth diagnosis is generated separately after this policy with runtime
-    # surface/command geometry; FAILURE here cannot supply its causal evidence.
+    # XYZ diagnosis is generated separately; this policy supplies no axis cause.
     result.pop('skill_update', None)
     return result

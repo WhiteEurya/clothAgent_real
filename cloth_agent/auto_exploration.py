@@ -78,6 +78,7 @@ from .robot_api import RobotExecutionError, validate_controller_trajectory
 from .rollout_recorder import DualRealSenseRolloutRecorder, build_rollout_phase_timeline
 from .perception_comparison import (
     COMPARISON_SCHEMA, COMPARISON_INSTRUCTION, comparison_schema, validate_comparison,
+    validate_comparison_execution,
 )
 from .report_figure import compose_camera_perception_report
 from .session import AgentSession
@@ -102,7 +103,7 @@ AUTO_EVALUATION_FIELDS = frozenset(
         "next_experiment",
     }
 )
-AUTO_EVALUATION_OPTIONAL_FIELDS = frozenset({"skill_update", "perception_comparison"})
+AUTO_EVALUATION_OPTIONAL_FIELDS = frozenset({"skill_update", "perception_comparison", "grasp_execution_experience"})
 AUTO_EVALUATION_STAGE_FIELDS = frozenset({"status", "confidence", "evidence"})
 AUTO_EVALUATION_PROGRESS_FIELDS = frozenset({"status", "confidence", "metrics"})
 AUTO_EVALUATION_METRIC_FIELDS = frozenset(
@@ -984,6 +985,7 @@ class ExplorationEvaluation:
     next_experiment: NextExperiment
     skill_update: SkillProposal | None = None
     perception_comparison: dict[str, Any] | None = None
+    grasp_execution_experience: dict[str, Any] | None = None
 
     @property
     def useful(self) -> bool:
@@ -1031,6 +1033,8 @@ class ExplorationEvaluation:
             payload["skill_update"] = self.skill_update.as_dict()
         if self.perception_comparison is not None:
             payload['perception_comparison'] = dict(self.perception_comparison)
+        if self.grasp_execution_experience is not None:
+            payload['grasp_execution_experience'] = validate_comparison_execution(self.grasp_execution_experience)
         return payload
 
 
@@ -1595,6 +1599,8 @@ def validate_evaluation_payload(payload: Any) -> ExplorationEvaluation:
         skill_update=skill_update,
         perception_comparison=(validate_comparison(value['perception_comparison'])
                                if 'perception_comparison' in value else None),
+        grasp_execution_experience=(validate_comparison_execution(value['grasp_execution_experience'])
+                                    if 'grasp_execution_experience' in value else None),
     )
 
 

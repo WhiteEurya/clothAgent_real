@@ -31,30 +31,43 @@
 
 下一轮规划接收同一步骤最多 8 条近期规则，以及最近物理尝试产生的 diagnosis / next_experiment，要求先检查适用条件和反例限制。新 fold 经验不再追加 `fold-empty-grasp-detection` 等固定模板，也不自动写入旧 `data/skills`；已有批准技能仍可使用。
 
-接触 Z 当前仍由主机计算。模型可以怀疑 Z 并建议验证，但实验会标为 `BLOCKED_BY_CAPABILITY`，不能伪装成已执行或有效的对照。其他执行限制同样通过 capabilities 告知模型。
+执行 XYZ 修正仍受主机权限控制。只有独立接触证据能定位的偏差才允许建议验证，修正实验标为 `BLOCKED_BY_CAPABILITY`，不能伪装成已执行或有效的对照。其他执行限制同样通过 capabilities 告知模型。
 
 每轮 `experience_update/` 保存请求、原始返回、校验后的分析和持久化回执。分析失败会保留原始执行/评价并记录错误，不伪造经验；未执行、未完成或缺少有效终态评价的记录跳过该调用。额外调用使用现有超时设置，远程最多 8 个模型轮次、2 次图片编辑。原运行参数可继续使用。
 
 `experience_summary.json` 的 `experience_count` 仍表示原始 attempt 记录数；新增 `experience_generation_counts`、`conditional_rule_update_count`、`no_new_knowledge_count`，单独显示分析状态、规则更新次数和没有新知识的次数，不能把 trial 数当成学会的技能数。
 
-### 独立的抓取深度经验
+### Grasp Execution Experience：选点之后的 XYZ 落点修正
 
-抓点选择与 transport/release 的条件规则保持原逻辑。现有经验分析调用额外返回严格的 `grasp_depth_diagnosis`（解释、置信度、结构化观察及证据 ID），主机生成独立的 `grasp_experience`，不增加模型调用。模型不能填写或覆盖几何数值，不能把 Z 校准写成候选点排序规则。
+第 1 类抓点选择、第 3 类 transport/release 经验保持原逻辑。第 2 类由纯 Z 经验扩展为 `p_command = p_surface + delta_xyz_execution`。现有经验分析调用返回严格的 `grasp_execution_diagnosis`（置信度、观察类型与证据 ID），独立的 `apply_grasp_execution_experience()` 做证据门控，不增加模型调用。模型不能填写几何测量或数值修正。
 
-深度定义为 `descent_below_surface_mm = runtime_authoritative_surface_z_mm - actual_commanded_grasp_z_mm`。表面 Z 来自本轮最终 `planning_diagnostics.grasp_height_resolution.resolution.surface_z_mm`，命令 Z 来自首次且唯一闭爪之前最后一个成功的 `actual_robot_actions.move.args.z`。当前 `RobotAPI` 与 `XArmBackend` 将这个 Z 原样送入 SDK `set_position`；计划、预执行和 `actual_ee_pose` 实测反馈都不能代替它。主机核对解析记录与接触命令的 XY，缺失、多个抓取或不匹配时不生成下降量。可选桌面高度/表面置信度缺失时保留 null，不以 `valid=True` 冒充高置信度。例如表面 30、计划 27、实际命令 27.5，记录下降 2.5 mm。
+主机保存三个独立的数据层：
 
-| depth_interpretation | 必须独立观察到的证据 | update_direction |
+- `trial.selected_point`：选定点的原始感知像素、相机和 `resolution.surface_xyz_mm`。
+- `trial.execution`：最终 `runtime_authoritative_grasp_xyz_mm`、真实 `actual_robot_actions.move.args` 的 commanded XYZ，以及 command−surface 和 command−authoritative 两个差值。
+- `observed_result`：接触 XY 对齐、深度解释、物理 acquisition 与任务 policy acquisition。`actual_ee_pose` 只是 TCP 反馈，不是 cloth 接触点；当前没有可靠的接触定位生产器，`observed_contact` 为 null。
+
+命令必须来自唯一闭爪前最后一次已成功执行的 move；当前 RobotAPI/XArmBackend 将 XYZ 原样传给 SDK。计划、预执行和末端实测位置不能替代 command。缺失、非有限或多次抓取的记录不进入修正学习。旧记录只有在保存了最终 resolved XY/Z 时才能恢复运行时目标，不从模型 plan 推算。
+
+**系统一致性检查先于学习**：实际 command 与运行时 authoritative target 任一轴相差超过 0.0001 mm，标为 `command_integrity.status=SYSTEM_CODE_FAILURE`，保留真实差值以定位代码问题，但 `status=UNRESOLVED`、`update_allowed=false`。例如表面 Z=30、计划 Z=27、运行时目标 Z=27.5、command Z=27.5，可以记录实际下降 2.5 mm；若运行时目标仍为 27 而 command 为 27.5，则是系统不一致，禁止把这 0.5 mm 学成补偿。该阈值仅用于比较两份软件命令记录，不是物理位置精度声明。
+
+| status | 独立接触证据 | experience_update |
 | --- | --- | --- |
-| EFFECTIVE | 抬升/过程证据中的稳定 cloth acquisition | KEEP，支持当前相对下降量 |
-| TOO_SHALLOW | 闭爪接触时夹爪仍明显高于 cloth | DEEPER，足够下降量可能大于当前值 |
-| TOO_DEEP | 接触阶段明确桌面接触、阻挡或过度压缩 | SHALLOWER，合适下降量可能小于当前值 |
-| UNKNOWN | 仅末态比较、抓点耦合、输送失败，或其他不确定证据 | NONE，不更新深度 |
+| ALIGNED_SUCCESS | XY 明确落在选定点，且稳定 acquisition | REINFORCE 当前相对 XYZ 修正 |
+| XY_MISALIGNED | 明确接触落点偏离选定点 | DIRECTIONAL，仅 XY |
+| Z_MISALIGNED | XY 明确对齐，且明确过浅/过深 | DIRECTIONAL，仅 Z，DEEPER/SHALLOWER |
+| XYZ_MISALIGNED | XY 偏差和 Z 不合适均有独立证据 | 分轴记录，下一实验先定位 XY，保持 Z 不变 |
+| UNRESOLVED | 仅末态变化、耦合、滑脱、证据冲突/不足或命令不一致 | NONE，不更新 |
 
-有效更新需要本轮可用的对应阶段 interaction RGB、匹配的数值几何、相符且不冲突的观察类型，以及至少 0.7 的模型置信度。这个阈值只是保守门槛，不代表校准过的物理正确率；图像存在不确定性时应报告 UNKNOWN。命令完成、夹爪状态、旧图片和模型原始评价都不是深度的独立证据。末态 `UNCHANGED` 仍强制任务层 FAILURE/ACQUISITION，但不会自动变成 TOO_SHALLOW。只有独立深度证据通过上述门控，才可能在任务失败的同时保留明确的物理深度解释。
+有效更新要求本轮对应阶段 interaction RGB、有限且一致的运行时几何、不冲突的观察，以及至少 0.7 的模型置信度。XY 判断必须在交互证据中辨认同一选定特征和夹爪接触位置，不能直接比较运动相机不同帧的像素坐标。成功 acquisition 要有抬升/过程证据；深度证据要有接触阶段的明确过浅、桌面接触/阻挡或过度压缩。置信度阈值只是保守门槛，不是对模型正确性的保证。
 
-本轮 `record.json` 和 `experience_update/analysis.json` 保存结构化 `grasp_experience`。分析失败/跳过时，record 保留带可用几何的 UNKNOWN/NONE。有效数值 trial 独立写入 `data/fold_experience/grasp_depth_trials.json`，保留几何来源、证据 ID、源 record、步骤与适用限制，按 trial 去重；UNKNOWN 不创建或修改该长期文件。每轮另有 `grasp_depth_store_receipt.json`。这些数据支持以后按相似布料/支撑条件维护上下界，本次不实现自动区间拟合，也不学习全局绝对 Z。
+`UNCHANGED` 仍标 FAILURE/ACQUISITION，并在 evaluation 中生成简短 `grasp_execution_experience={status: UNRESOLVED, update_allowed: false, evidence: [...]}`。它只要求先取得定位证据，不再硬编码同时重选 contact、改变 jaw alignment 和 entry。独立分析的完整结果写在 record 根部同名字段；两者分别代表任务 policy 与有证据门控的执行解释。
 
-下一轮收到最近尝试的深度结果与相对下降建议。UNKNOWN 不允许自动加深；EFFECTIVE 优先保持相对下降量，而非原世界坐标 Z；明确过浅/过深才能分别提出 DEEPER/SHALLOWER。Z 仍由现有主机高度策略决定，改变下降量的实验继续标为 `BLOCKED_BY_CAPABILITY`。本次不会自动修改控制参数、运行机器人或改变现有安全限制。
+成功样本保存 `correction_xyz_mm = commanded_xyz_mm - surface_xyz_mm`，例如 `{x: 2, y: -1.5, z: -3}`。失败样本即使能定位 XY/Z，缺少可靠毫米测量时也只保存方向性约束，新的数值修正分量为 null；不能将“视觉上偏左”换成未经标定的机器人基坐标补偿。`command_minus_surface_xyz_mm` 只是本次尝试的偏移，不会因失败就变成推荐补偿。
+
+本轮 `record.json`、`experience_update/analysis.json` 保存全部试验数据与诊断。可学习样本独立写入 `data/fold_experience/grasp_execution_trials.json`，按 trial 去重，保留步骤、证据 ID、源记录和适用限制；UNRESOLVED/系统错误不修改该长期文件。每轮保存 `grasp_execution_store_receipt.json`；存储失败不丢弃其他两类经验。旧 `grasp_depth_trials.json` 保留历史，生产管线不再写入，也不自动提升为 XYZ 成功样本。
+
+下一轮接收最近物理尝试的 `grasp_execution_experience`。`EXECUTION_XY` 表示同一选定点的落点校正，`CONTACT_XY` 仍表示抓点重选，二者不能互相冒充。执行校正与 Z 实验仍受主机权限限制，标为 `BLOCKED_BY_CAPABILITY`；UNRESOLVED 不会自动生成更深 Z。本次不实现全局 correction 拟合或自动修改机器人控制参数。
 
 ## Claude 自选图像工具
 

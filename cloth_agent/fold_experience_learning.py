@@ -14,9 +14,9 @@ import re
 from pathlib import Path
 
 from .trajectory_memory import prepare_trajectory_memory
-from .grasp_depth_experience import (
-    GRASP_DEPTH_DIAGNOSIS_SCHEMA, GRASP_DEPTH_INSTRUCTION,
-    gate_depth_experiment, make_grasp_experience, runtime_geometry,
+from .grasp_execution_experience import (
+    GRASP_EXECUTION_DIAGNOSIS_SCHEMA, GRASP_EXECUTION_INSTRUCTION,
+    gate_execution_experiment, apply_grasp_execution_experience, runtime_execution_trial,
 )
 
 
@@ -30,7 +30,7 @@ TEXTS = {"type": "array", "maxItems": 8, "uniqueItems": True, "items": TEXT}
 CONFIDENCE = {"type": "number", "minimum": 0, "maximum": 1}
 NULLABLE_ID = {"type": ["string", "null"], "minLength": 1, "maxLength": 80}
 VARIABLES = ["CONTACT_XY", "JAW_ALIGNMENT", "ENTRY_PATH", "INITIAL_LIFT_PATH",
-             "LIFT_HEIGHT", "TRANSPORT", "RELEASE", "CONTACT_Z", "OBSERVATION", "NONE"]
+             "LIFT_HEIGHT", "TRANSPORT", "RELEASE", "CONTACT_Z", "EXECUTION_XY", "OBSERVATION", "NONE"]
 VARIABLE = {"enum": VARIABLES}
 FAILURE_MODES = ["UNKNOWN", "EMPTY_GRASP", "SLIP", "RETURN_AFTER_RELEASE",
                  "INSUFFICIENT_TRANSPORT", "OTHER", "NONE"]
@@ -72,7 +72,7 @@ EXPERIENCE_SCHEMA = _object({
 })
 
 EXPERIENCE_UPDATE_SCHEMA = _object({
-    "grasp_depth_diagnosis": GRASP_DEPTH_DIAGNOSIS_SCHEMA,
+    "grasp_execution_diagnosis": GRASP_EXECUTION_DIAGNOSIS_SCHEMA,
     "failure_diagnosis": DIAGNOSIS_SCHEMA,
     "next_experiment": NEXT_EXPERIMENT_SCHEMA,
     "experience_update": {"anyOf": [{"type": "null"}, EXPERIENCE_SCHEMA]},
@@ -105,7 +105,7 @@ EXPERIENCE_INSTRUCTION = (
     "Preserve rule identity on UPDATE. Counts and accumulated confidence are computed by the host, "
     "never invent historical trials. Rules are soft conditional advice, subordinate to current "
     "visual evidence, exceptions, workspace, IK and execution validation. "
-    + GRASP_DEPTH_INSTRUCTION
+    + GRASP_EXECUTION_INSTRUCTION
 )
 
 EXPERIENCE_PLANNING_INSTRUCTION = (
@@ -117,8 +117,10 @@ EXPERIENCE_PLANNING_INSTRUCTION = (
     "The structured next_experiment supersedes generic evaluator keep/change suggestions. "
     "BLOCKED_BY_CAPABILITY experiments are not executable; do not silently substitute a different "
     "variable and claim to have tested the hypothesis. Select all targets from current evidence. "
-    "grasp_experience is separate relative-depth evidence, never a point-ranking rule. "
-    "UNKNOWN/NONE does not authorize deeper Z. Never replay historical absolute grasp Z."
+    "grasp_execution_experience concerns landing at the selected point, never point ranking. "
+    "UNRESOLVED authorizes no XYZ update. SYSTEM_CODE_FAILURE requires code investigation. "
+    "Never replay historical absolute grasp XYZ or substitute CONTACT_XY point reselection "
+    "for a blocked EXECUTION_XY correction."
 )
 
 
@@ -167,10 +169,11 @@ def trial_id(record):
 
 
 def capabilities(learning=None):
-    allowed = [v for v in VARIABLES if v not in {"CONTACT_Z", "NONE"}]
+    allowed = [v for v in VARIABLES if v not in {"CONTACT_Z", "EXECUTION_XY", "NONE"}]
     if (learning or {}).get("require_non_height_change"):
         allowed = ["CONTACT_XY", "JAW_ALIGNMENT", "ENTRY_PATH", "INITIAL_LIFT_PATH", "OBSERVATION"]
     return {"executable_single_changes": allowed, "contact_z": "HOST_RESOLVED_NOT_MODEL_ADJUSTABLE",
+            "execution_xy": "HOST_RESOLVED_NOT_MODEL_ADJUSTABLE",
             "all_motion_requires_current_grounding_and_host_validation": True}
 
 
@@ -288,7 +291,7 @@ def build_experience_request(record, history, rules, run_dir, output):
     if not images:
         raise ValueError("experience requires available same-trial RGB evidence")
     context = {"trial_id": trial_id(record), "step": step, "outcome": outcome,
-        "grasp_depth_geometry": runtime_geometry(record),
+        "grasp_execution_trial": runtime_execution_trial(record),
         "current_attempt": attempt, "prior_attempt": prior,
         "prior_trial_id": trial_id(previous_record) if previous_record else None,
         "prior_next_experiment": (previous_record or {}).get("next_experiment"),
@@ -302,7 +305,7 @@ def build_experience_request(record, history, rules, run_dir, output):
 def validate_experience_update(payload, context):
     validate_schema(payload, EXPERIENCE_UPDATE_SCHEMA)
     result = copy.deepcopy(payload)
-    result["grasp_experience"] = make_grasp_experience(result["grasp_depth_diagnosis"], context)
+    result["grasp_execution_experience"] = apply_grasp_execution_experience(result["grasp_execution_diagnosis"], context)
     catalog = {e["id"]: e for e in context["evidence_catalog"]}
     diagnosis = result["failure_diagnosis"]
     for cause in diagnosis["candidate_causes"]:
@@ -332,7 +335,7 @@ def validate_experience_update(payload, context):
     if experiment["status"] == "PROPOSED" and variable not in context["capabilities"]["executable_single_changes"]:
         experiment["status"] = "BLOCKED_BY_CAPABILITY"
         notes.append(f"{variable} is not supported by the current execution contract.")
-    gate_depth_experiment(experiment, result["grasp_experience"])
+    gate_execution_experiment(experiment, result["grasp_execution_experience"])
     update = result["experience_update"]
     if update is None:
         if not result["no_update_reason"].strip():
