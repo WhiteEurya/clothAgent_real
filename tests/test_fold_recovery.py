@@ -37,7 +37,7 @@ def learning_pipeline(tmp_path):
     return pipe
 
 
-def test_empty_and_unknown_saved_once_and_only_empty_learns_detector(tmp_path):
+def test_empty_and_unknown_saved_once_without_generating_template_skills(tmp_path):
     pipe = learning_pipeline(tmp_path)
     for i, kind in enumerate(("EMPTY", "UNKNOWN"), 1):
         result = execution(kind)
@@ -54,9 +54,9 @@ def test_empty_and_unknown_saved_once_and_only_empty_learns_detector(tmp_path):
     assert rows[0]["failure_detection"]["category"] == "EMPTY_GRASP"
     assert rows[1]["evaluation"]["grasp_acquisition"]["status"] == "UNKNOWN"
     assert _fold_acquisition_learning_state(rows, "left_sleeve")["consecutive_acquisition_failures"] == 1
-    assert len(pipe.skill_ledger.candidates_path.read_text().splitlines()) == 1
-    assert "fold-empty-grasp-detection" in pipe._skill_prompt()
-    assert pipe.skill_ledger.finalize(pipe.skill_store)["skill_group_count"] == 1
+    assert not pipe.skill_ledger.candidates_path.exists()
+    assert "fold-empty-grasp-detection" not in pipe._skill_prompt()
+    assert all(row["experience_generation"]["status"] == "SKIPPED" for row in rows)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -255,7 +255,7 @@ def test_full_loop_never_retries_unconfirmed_abort(tmp_path, monkeypatch):
     assert json.loads(summary_path.read_text())["restart_safe"] is False
 
 
-def test_full_success_path_stages_skill_and_persists_evidence(tmp_path, monkeypatch):
+def test_full_success_path_persists_evidence_without_activating_prepolicy_skill(tmp_path, monkeypatch):
     pipe, plans = make_loop(tmp_path, monkeypatch)
     result = execution("GRASP_CONFIRMED")
     result["checkpoint"].update(executed_branch="CONTINUATION", continue_transport=True)
@@ -271,9 +271,10 @@ def test_full_success_path_stages_skill_and_persists_evidence(tmp_path, monkeypa
     pipe._supervisor = lambda *a, **kw: next(states)
     assert pipe.run()["status"] == "COMPLETE"
     rows = pipe.experiences.history(limit=None)
-    assert len(rows) == 1 and rows[0]["skill_review"]["status"] == "RUN_LOCAL_PENDING"
+    assert len(rows) == 1 and "skill_review" not in rows[0]
+    assert "skill_update" not in rows[0]["evaluation"]
     assert rows[0]["failure_detection"]["category"] == "NONE"
-    assert len(pipe.skill_ledger.candidates_path.read_text().splitlines()) == 1
+    assert not pipe.skill_ledger.candidates_path.exists()
 
 
 def test_evaluation_retry_reuses_images_without_reexecuting_robot(tmp_path):
@@ -336,15 +337,15 @@ def test_real_video_archive_and_opt_in_pruning(tmp_path):
     assert float(json.loads(probe.stdout)["format"]["duration"]) > 0
 
 
-def test_corrected_preflight_becomes_provisional_skill(tmp_path):
+def test_corrected_preflight_without_execution_is_not_physical_experience(tmp_path):
     pipe = learning_pipeline(tmp_path)
     record = {"iteration": 1, "status": "FOLD", "planning_attempts": [
         {"attempt": 1, "status": "REJECTED_BEFORE_EXECUTION", "error": "ExperimentValidationError: invalid sequence"},
         {"attempt": 2, "status": "ACCEPTED"}]}
     pipe._save_iteration_learning(tmp_path / "iteration_001", record)
-    candidates = [json.loads(line) for line in pipe.skill_ledger.candidates_path.read_text().splitlines()]
-    assert candidates[0]["source"] == "validated_preexecution_correction"
-    assert candidates[0]["proposal"]["name"] == "preflight-contract-recovery"
+    assert not pipe.skill_ledger.candidates_path.exists()
+    assert record["experience_generation"]["status"] == "SKIPPED"
+    assert record["planning_attempts"][1]["status"] == "ACCEPTED"
 
 
 def test_recovery_exhaustion_is_persisted_for_watchdog(tmp_path, monkeypatch):

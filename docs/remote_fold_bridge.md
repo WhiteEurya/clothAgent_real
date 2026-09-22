@@ -14,6 +14,29 @@
 
 远程视觉规划、运动规划及运动修复共享这份上下文；本地 Claude 模式也接收同一份轨迹记忆。它不经过通用 `semantic_history` 的轨迹字段过滤，视觉评价文本仍使用现有语义过滤。无需新增运行参数。
 
+## 终态判定之后的经验更新
+
+`perception_comparison=UNCHANGED` 的归一化规则保持不变：任务层标记 acquisition failure，不代表视觉证明空夹爪。完成物理执行及终态评价后，新增一次独立的 `experience_update` Claude 调用，读取归一化 outcome、原始视觉评价、本次/上次实际轨迹与可用 RGB。原始评价仅是观察解释，不是已证明的因果关系。
+
+每轮 `record.json` 分开保存：
+
+- `outcome`：不可由经验模型改写的任务结果、`policy_failure_stage`，不确定物理机制保留 UNKNOWN。
+- `failure_diagnosis`：候选物理原因、置信度、支持/反对证据 ID 和未知项。
+- `next_experiment`：主假设、一个改变变量、保持项、预期观察以及成功/失败各自的解释。它是待验证实验，不是知识。
+- `experience_update`：条件、动作属性、假设、支持/反对/不确定证据、前次对照、`do_not_infer`、`counterexample_guard` 和最多轻微的候选排序建议。没有新知识时必须返回 null 并说明原因。
+
+模型引用的证据 ID 必须存在于本次请求。仅凭终态图不能把物理机制确定为空抓，也不能增加因果规则的支持计数。没有交互 RGB 支持的物理诊断保持 UNKNOWN，相关原因置信度上限 0.25。主机还比较两次完成动作日志中的接触位置、高度、方向、进入和提拉路径、运输及动作顺序；多变量变化或缺少命令证据时降低对照权重。这个检查不证明布料状态、速度、夹持力或实际接触相同。
+
+长期规则存于本机 `data/fold_experience/rules.json`（运行数据，不随 Git 推送）。CREATE 对相同规范化条件/动作/假设去重，UPDATE 更新已有规则，SPECIALIZE 保留父条件并建立更窄的子规则。一个 trial 只计一次；支持、反对、不确定计数由主机维护，与任务成功/失败计数分开。规则保留源 record 和证据 ID。置信度采用保守的证据评分 `support_weight / (2 + support_weight + contradiction_weight)`，非可比观察的权重乘 0.25；这不是校准过的因果概率。排序建议始终是条件化的软提示，低支持评分时不生效，也不会改变几何或执行安全门。
+
+下一轮规划接收同一步骤最多 8 条近期规则，以及最近物理尝试产生的 diagnosis / next_experiment，要求先检查适用条件和反例限制。新 fold 经验不再追加 `fold-empty-grasp-detection` 等固定模板，也不自动写入旧 `data/skills`；已有批准技能仍可使用。
+
+接触 Z 当前仍由主机计算。模型可以怀疑 Z 并建议验证，但实验会标为 `BLOCKED_BY_CAPABILITY`，不能伪装成已执行或有效的对照。其他执行限制同样通过 capabilities 告知模型。
+
+每轮 `experience_update/` 保存请求、原始返回、校验后的分析和持久化回执。分析失败会保留原始执行/评价并记录错误，不伪造经验；未执行、未完成或缺少有效终态评价的记录跳过该调用。额外调用使用现有超时设置，远程最多 8 个模型轮次、2 次图片编辑。原运行参数可继续使用。
+
+`experience_summary.json` 的 `experience_count` 仍表示原始 attempt 记录数；新增 `experience_generation_counts`、`conditional_rule_update_count`、`no_new_knowledge_count`，单独显示分析状态、规则更新次数和没有新知识的次数，不能把 trial 数当成学会的技能数。
+
 ## Claude 自选图像工具
 
 远程 backend 默认启用 `cloth_image` MCP 工具，内置工具仍只开放 `Read`。工具清单不是仅供阅读的 Markdown：桥接通过 `--mcp-config` 注册真实可调用工具，并用 `--allowedTools` 逐项授权。`--strict-mcp-config` 将本次 MCP 集合限定为图像工具。

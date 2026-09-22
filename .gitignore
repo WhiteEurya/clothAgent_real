@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 runs/
+data/fold_experience/
 config/*.local.json
 
 # Local experiment outputs and runtime logs.

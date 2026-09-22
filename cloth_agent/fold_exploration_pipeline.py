@@ -90,10 +90,14 @@ from .grasp_checkpoint import (
     ACQUISITION_PROBE_LIFT_CONTRACT, compile_grasp_capture,
     GraspCheckpointRejected, validate_acquisition_probe_lift,
 )
-from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
+from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, inherit_fold_lessons, released_and_homed
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
 from .trajectory_memory import prepare_trajectory_memory
+from .fold_experience_learning import (
+    ConditionalExperienceStore, EXPERIENCE_PLANNING_INSTRUCTION, build_experience_request,
+    capabilities, validate_experience_update,
+)
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
 from .claude_image_debug import debug_directory
@@ -485,6 +489,10 @@ def _compact_history(history: Sequence[Mapping[str, Any]], limit: int = 8) -> li
                     else None
                 ),
             }
+        if row.get("next_experiment") and isinstance(item.get("evaluation"), dict):
+            # The post-policy experiment is supplied separately. Do not compete
+            # with it using the evaluator's older generic keep/change proposal.
+            item["evaluation"].pop("next_experiment", None)
         compact.append(item)
     return compact
 
@@ -2086,6 +2094,17 @@ class FoldExperienceStore:
             "schema_version": 1,
             "updated_at": _now(),
             "experience_count": len(rows),
+            "experience_generation_counts": {
+                state: sum((row.get("experience_generation") or {}).get("status") == state for row in rows
+                           if not row.get("inherited_lesson"))
+                for state in ("COMPLETED", "SKIPPED", "FAILED")
+            },
+            "conditional_rule_update_count": sum(
+                ((row.get("experience_generation") or {}).get("store_receipt") or {}).get("status") == "UPDATED"
+                for row in rows if not row.get("inherited_lesson")),
+            "no_new_knowledge_count": sum(
+                ((row.get("experience_generation") or {}).get("store_receipt") or {}).get("status") == "NO_NEW_KNOWLEDGE"
+                for row in rows if not row.get("inherited_lesson")),
             "completed_steps_in_order": completed,
             "next_step": next((step for step in FOLD_STEP_IDS if step not in completed), "COMPLETE"),
             "status_counts": {
@@ -2973,6 +2992,7 @@ class FoldExplorationPipeline:
                      if planner_backend == "remote" else None),
         )
         self.experiences = FoldExperienceStore(session.run_dir)
+        self.conditional_experiences = ConditionalExperienceStore(self.project_root / "data" / "fold_experience")
         self.skill_ledger = RunSkillLedger(session.workspace)
         self._debug_logger: FoldDebugLogger | None = None
         self._viser_process: subprocess.Popen[Any] | None = None
@@ -2993,9 +3013,61 @@ class FoldExplorationPipeline:
         )
 
     def _skill_prompt(self) -> str:
-        ledger = getattr(self, "skill_ledger", None)
-        appendix = ledger.prompt_appendix() if ledger is not None else ""
-        return self.skill_store.prompt() + (("\n\n" + appendix) if appendix else "")
+        # Existing approved procedural skills remain available. New fold trials
+        # update conditional experience, not provisional skill templates.
+        return self.skill_store.prompt()
+
+    def _update_fold_experience(self, iteration_dir: Path, record: dict[str, Any]) -> None:
+        evaluation = record.get("evaluation") or {}
+        record["outcome"] = {
+            "policy_failure_stage": evaluation.get("earliest_failure_stage", "UNKNOWN"),
+            "grasp_acquisition": evaluation.get("grasp_acquisition"),
+            "task_progress": evaluation.get("task_progress"),
+            "perception_comparison": evaluation.get("perception_comparison"),
+            "physical_failure_mode": "UNKNOWN",
+        }
+        # Raw model output is preserved in evaluation_raw for audit. A pre-policy
+        # skill suggestion cannot become a post-policy experience rule.
+        evaluation.pop("skill_update", None)
+        execution = record.get("execution") or {}
+        store = getattr(self, "conditional_experiences", None)
+        updater = getattr(getattr(self, "client", None), "update_experience", None)
+        if (record.get("status") in {"INTERRUPTED", "FAILED"} or
+                execution.get("physical_execution") is not True or not execution.get("actual_robot_actions")
+                or execution.get("execution_completed") is not True or
+                not evaluation.get("perception_comparison") or store is None or not callable(updater)):
+            record["experience_generation"] = {"status": "SKIPPED",
+                "reason": "Requires completed physical execution, normalized final comparison and an experience updater."}
+            return
+        directory = iteration_dir / "experience_update"
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            history = self.experiences.history(limit=None)
+            context, images = build_experience_request(record, history,
+                store.rules(record.get("planned_step")), self.session.run_dir, directory)
+            context["capabilities"] = capabilities(_fold_acquisition_learning_state(
+                [*history, record], record.get("planned_step")))
+            record["outcome"] = context["outcome"]
+            _write_json(directory / "request.json", {"context": context, "image_paths": [str(p) for p in images]})
+            self._debug("experience", "analyzing normalized outcome and controlled next experiment",
+                iteration=record["iteration"], images=len(images))
+            payload = updater(context=context, image_paths=images, run_dir=self.session.run_dir,
+                              output_dir=directory)
+            _write_json(directory / "response.json", payload)
+            analysis = validate_experience_update(payload, context)
+            _write_json(directory / "analysis.json", analysis)
+            receipt = store.apply(analysis, context, source_record=record["record_id"])
+            record.update(outcome=context["outcome"], failure_diagnosis=analysis["failure_diagnosis"],
+                next_experiment=analysis["next_experiment"], experience_update=analysis["experience_update"],
+                experience_generation={"status": "COMPLETED", "no_update_reason": analysis["no_update_reason"],
+                    "host_validation_notes": analysis["host_validation_notes"], "store_receipt": receipt})
+            _write_json(directory / "store_receipt.json", receipt)
+        except Exception as exc:
+            # A failed reflection must not erase the physical record, reset
+            # outcome labels, fabricate a lesson, or trigger another movement.
+            record["experience_generation"] = {"status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
+            _write_json(directory / "error.json", record["experience_generation"])
+            self._debug_exception("experience", exc, iteration=record["iteration"], nonfatal=True)
 
     def _save_iteration_learning(self, iteration_dir: Path, record: dict[str, Any]) -> None:
         record.setdefault("record_id", str(iteration_dir.resolve()))
@@ -3017,32 +3089,7 @@ class FoldExplorationPipeline:
                 "schema_version": 1, "iteration": record["iteration"], "step": record.get("planned_step"),
                 "mode": record.get("mode"), "status": record.get("status"),
                 "evaluation": record.get("evaluation"), "failure_detection": record["failure_detection"]})
-        evaluation = record.get("evaluation") or {}
-        try:
-            proposal = SkillStore.parse_update(evaluation.get("skill_update")) or failure_skill(record)
-            review = self.skill_ledger.stage_skill_update(proposal, iteration=record["iteration"], source="fold_evaluation")
-            if review is not None:
-                record["skill_review"] = review.as_dict()
-                _write_json(iteration_dir / "skill_review.json", record["skill_review"])
-            attempts = record.get("planning_attempts") or []
-            accepted = next((item for item in reversed(attempts) if item.get("status") == "ACCEPTED"), None)
-            if accepted:
-                from .molmo_keypoint_cli import _recovery_skill_proposal
-                corrected_types = set()
-                for rejected in attempts:
-                    if rejected.get("status") != "REJECTED_BEFORE_EXECUTION":
-                        continue
-                    error_type = str(rejected.get("error", "")).split(":", 1)[0]
-                    if error_type in corrected_types:
-                        continue
-                    corrected_types.add(error_type)
-                    candidate = _recovery_skill_proposal({**rejected, "error_type": error_type},
-                                                        corrected_attempt=accepted["attempt"])
-                    self.skill_ledger.stage_skill_update(candidate, iteration=record["iteration"],
-                                                        source="validated_preexecution_correction")
-        except Exception as exc:
-            self._debug_exception("skills", exc, iteration=record["iteration"], nonfatal=True)
-            _write_json(iteration_dir / "skill_append_error.json", {"error": f"{type(exc).__name__}: {exc}"})
+        self._update_fold_experience(iteration_dir, record)
         try:
             record["evidence"] = build_evidence_record(record, iteration=record["iteration"], run_dir=self.session.run_dir)
             record["evidence_artifacts"] = persist_evidence_record(self.session.run_dir, record["evidence"], iteration_dir=iteration_dir)
@@ -4912,6 +4959,17 @@ class FoldExplorationPipeline:
             trajectory_memory, history_images = prepare_trajectory_memory(
                 history, memory_step, self.session.run_dir, memory_dir)
         self.client.trajectory_memory = trajectory_memory
+        conditional_store = getattr(self, "conditional_experiences", None)
+        recent_analysis = next((row for row in reversed(history) if not row.get("inherited_lesson")
+            and row.get("planned_step") == memory_step
+            and (row.get("execution") or {}).get("actual_robot_actions")), None)
+        self.client.experience_context = {
+            "instruction": EXPERIENCE_PLANNING_INSTRUCTION,
+            "conditional_experience": conditional_store.rules(memory_step) if conditional_store else [],
+            "failure_diagnosis": (recent_analysis or {}).get("failure_diagnosis"),
+            "next_experiment": (recent_analysis or {}).get("next_experiment"),
+            "capabilities": capabilities(getattr(self.client, "acquisition_learning", None)),
+        }
         if trajectory_memory is not None:
             planning_images.extend(history_images)
             self._debug("planning", "attached previous attempt trajectory and evidence",
@@ -6790,11 +6848,12 @@ class FoldExplorationPipeline:
             # viewer occupying port 8765 indefinitely.
             self._stop_viser_for_restart()
             try:
-                synthesis = self.skill_ledger.finalize(self.skill_store)
-                _write_json(output / "skill_synthesis.json", synthesis)
+                _write_json(output / "experience_rules.json", {
+                    "schema_version": 1, "rules_by_step": {
+                        step: self.conditional_experiences.rules(step) for step in FOLD_STEP_IDS}})
             except Exception as exc:
-                _write_json(output / "skill_synthesis_error.json", {"error": f"{type(exc).__name__}: {exc}"})
-                self._debug_exception("skills", exc)
+                _write_json(output / "experience_rules_error.json", {"error": f"{type(exc).__name__}: {exc}"})
+                self._debug_exception("experience", exc)
             summary["persistent_claude_session"] = self.persistent_claude.as_dict()
             _write_json(output / "summary.json", summary)
             self._debug("run", "pipeline finished", status=summary.get("status"), iterations=iteration)

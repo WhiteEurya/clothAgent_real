@@ -2108,6 +2108,35 @@ class ClaudeAutoClient:
             binary = resolved
         return str(binary)
 
+    def update_experience(self, *, context, image_paths, run_dir, output_dir):
+        """Independent, read-only post-policy analysis for the local backend."""
+        from .fold_experience_learning import EXPERIENCE_INSTRUCTION, EXPERIENCE_UPDATE_SCHEMA
+        from .planner_backend import parse_claude_json
+        images = self._safe_images(image_paths, run_dir.resolve())
+        prompt = EXPERIENCE_INSTRUCTION + "\n" + json.dumps(context, ensure_ascii=False)
+        prompt += "\nLocal image mapping:\n" + "\n".join(
+            f"image_{i}: {path}" for i, path in enumerate(images))
+        command = [self._binary(), "--print", "--output-format", "json",
+            "--json-schema", json.dumps(EXPERIENCE_UPDATE_SCHEMA, separators=(",", ":")),
+            "--permission-mode", "plan", "--allowedTools", "Read", "--tools", "Read",
+            "--add-dir", str(run_dir.resolve()), "--safe-mode", "--no-session-persistence",
+            "--max-turns", "8", "--system-prompt",
+            "Read only the supplied RGB evidence. Return the requested analysis JSON. No robot access or file changes."]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log = {"prompt": prompt, "command": command, "stage": "experience_update"}
+        try:
+            completed = subprocess.run(command, input=prompt, cwd=run_dir, text=True,
+                capture_output=True, timeout=self.timeout_s, check=False, shell=False)
+            log.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
+            if completed.returncode:
+                raise AutoExplorationError(f"Claude experience analysis exited with {completed.returncode}")
+            return parse_claude_json(completed.stdout)
+        except Exception as exc:
+            log["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            (output_dir / "invocation.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+
     @staticmethod
     def _safe_images(image_paths: Sequence[Path], root: Path) -> list[Path]:
         safe: list[Path] = []
@@ -2154,6 +2183,8 @@ class ClaudeAutoClient:
         )
         if getattr(self, "trajectory_memory", None) is not None:
             base_prompt += "\n" + json.dumps({"trajectory_memory": self.trajectory_memory}, ensure_ascii=False)
+        if getattr(self, "experience_context", None) is not None:
+            base_prompt += "\n" + json.dumps({"experience_context": self.experience_context}, ensure_ascii=False)
         prompt = (
             f"{base_prompt}\n\n"
             "STAGE 1 — VISUAL PLANNING ONLY. Preserve the original image-reasoning "
@@ -2639,6 +2670,7 @@ class ClaudeAutoClient:
             "objective": objective,
             "visual_plan": visual.as_dict(),
             "trajectory_memory": getattr(self, "trajectory_memory", None),
+            "experience_context": getattr(self, "experience_context", None),
             "previous_physical_outcomes": list(history or [])[-8:],
             "planning_mode": planning_mode,
             "planning_mode_instruction": planning_mode_instruction,
@@ -3666,8 +3698,12 @@ class ClaudeAutoClient:
             f"Previous action program: {json.dumps(proposal.actions, ensure_ascii=False)}\n\n"
             + "\n".join(image_lines)
         )
+        schema = comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison else AUTO_EVALUATION_JSON_SCHEMA
         if perception_comparison:
-            prompt += '\n\n' + COMPARISON_INSTRUCTION
+            schema['properties'].pop('skill_update', None)
+            prompt += '\n\n' + COMPARISON_INSTRUCTION + (
+                '\nFor this fold evaluation, do not produce skill_update; a separate post-policy '
+                'experience_update stage replaces the optional skill suggestion described above.')
         binary = self.planner.binary
         if Path(binary).name == binary:
             import shutil
@@ -3682,8 +3718,7 @@ class ClaudeAutoClient:
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison
-                       else AUTO_EVALUATION_JSON_SCHEMA, separators=(",", ":")),
+            json.dumps(schema, separators=(",", ":")),
             "--permission-mode",
             "plan",
             "--allowedTools",

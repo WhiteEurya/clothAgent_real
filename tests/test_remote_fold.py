@@ -68,6 +68,23 @@ def test_remote_evaluator_receives_skill_body(saved_scene):
     client.evaluate(images, images, proposal=SimpleNamespace(reveal_strategy="fold", expected_observation="folded sleeve"),
                     run_dir=session.run_dir, skill_guidance="Provisional detector: occlusion is UNKNOWN, never EMPTY.")
     assert "Provisional detector: occlusion is UNKNOWN, never EMPTY." in backend.calls[0]["prompt"]
+    assert "skill_update" not in backend.calls[0]["schema"]["properties"]
+
+
+def test_remote_experience_stage_is_separate_and_receives_normalized_outcome(saved_scene):
+    from cloth_agent.fold_experience_learning import EXPERIENCE_UPDATE_SCHEMA
+    session, images, _ = saved_scene
+    backend = FakeBackend({"analysis": "returned for host validation"})
+    client = RemoteFoldClient(backend=backend)
+    context = {"outcome": {"policy_failure_stage": "ACQUISITION", "physical_failure_mode": "UNKNOWN"}}
+    result = client.update_experience(context=context, image_paths=images[:2], run_dir=session.run_dir,
+        output_dir=session.run_dir / "analysis")
+    assert result == {"analysis": "returned for host validation"}
+    call = backend.calls[0]
+    assert call["schema"] == EXPERIENCE_UPDATE_SCHEMA
+    assert call["max_turns"] == 8 and call["image_edit_limit"] == 2
+    assert "policy_failure_stage" in call["prompt"]
+    assert "unchanged end state alone" in call["prompt"]
 
 
 @pytest.mark.parametrize('comparison,expected', [
@@ -224,9 +241,17 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
         "evaluation": {"grasp_acquisition": {"status": "FAILURE"}}}]
     history.extend({"iteration": i, "planned_step": "hem_up", "mode": "PLANNING_FAILURE",
         "planning_failure": {"fold_command_sent": False}} for i in range(2, 12))
+    history[0]["next_experiment"] = {"primary_hypothesis": "Compare one jaw direction change",
+        "single_change": {"variable": "JAW_ALIGNMENT"}}
+    history[0]["failure_diagnosis"] = {"physical_failure_mode": "UNKNOWN"}
     client = RemoteFoldClient(backend=FakeBackend(visual_payload(), motion_payload()), binary="not-installed")
     pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
     pipeline.client, pipeline.session = client, session
+    rule = {"rule_id": "E_existing", "context": ["weak boundary evidence"], "confidence": .28,
+        "evidence_count": {"support": 1, "contradict": 0},
+        "counterexample_guard": {"must_not_generalize_to": ["visible sleeve tip"]},
+        "policy_effect": {"candidate_ranking": "SLIGHT_PENALTY"}}
+    pipeline.conditional_experiences = SimpleNamespace(rules=lambda step: [rule] if step == "hem_up" else [])
     pipeline.max_stage_retries = 0
     pipeline._debug = pipeline._debug_exception = lambda *a, **kw: None
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("robot or local CLI invoked"))
@@ -244,11 +269,15 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
         assert call["image_paths"][image_index].name == "history_before_rgb.png"
         assert "HISTORICAL ONLY" in context["images"][image_index]["role"]
         assert str(session.run_dir) not in call["prompt"]
+        assert context["experience_context"]["next_experiment"] == history[0]["next_experiment"]
+        assert context["experience_context"]["failure_diagnosis"]["physical_failure_mode"] == "UNKNOWN"
+        assert context["experience_context"]["conditional_experience"] == [rule]
     client.backend.responses.append(motion_payload())
     client.repair_last_grounding_plan(session, "Fold; current_step is hem_up",
         feedback="Adjust the trajectory before execution")
     repaired_context = json.loads(client.backend.calls[-1]["prompt"].split("\n", 1)[1])
     assert repaired_context["trajectory_memory"]["previous_physical_attempt"]["iteration"] == 1
+    assert repaired_context["experience_context"]["conditional_experience"] == [rule]
     # The pipeline clears memory when moving to a step without relevant history.
     client.backend = FakeBackend(visual_payload(), motion_payload())
     pipeline._plan_fold_with_retries(images, "Fold; current_step is right_side", history, iteration=13)

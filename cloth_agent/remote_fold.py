@@ -352,6 +352,8 @@ class RemoteFoldClient(ClaudeAutoClient):
                 grasp = previous["grasp_in_before_image"]
                 grasp["image_id"] = historical_ids.get(grasp.get("name"))
             self._remote_context["trajectory_memory"] = memory
+        if getattr(self, "experience_context", None) is not None:
+            self._remote_context["experience_context"] = copy.deepcopy(self.experience_context)
         if (views / 'garment_frame.json').exists():
             try:
                 self._remote_context['molmo_frame_hint'] = load_frame(views, expected)
@@ -374,7 +376,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
     def _ask(self, stage, context, schema, images, root, instructions):
-        evaluation_stage = stage in {'evaluation', 'acquisition_evaluation'}
+        evaluation_stage = stage in {'evaluation', 'acquisition_evaluation', 'experience_update'}
         instructions = instructions.replace('with [u,v] in the CURRENT upright RGB for transport destinations.',
             'with image_id naming the exact source RGB/view and pixel_xy in that view; the host maps transport destinations.')
         instructions = instructions.replace(
@@ -518,6 +520,12 @@ class RemoteFoldClient(ClaudeAutoClient):
             perception_comparison=kwargs.get('perception_comparison', False),
             rollout_evidence_images=kwargs.get('rollout_evidence_images', ()))
 
+    def update_experience(self, *, context, image_paths, run_dir, output_dir):
+        from .fold_experience_learning import EXPERIENCE_INSTRUCTION, EXPERIENCE_UPDATE_SCHEMA
+        payload, _, _, _ = self._ask("experience_update", context, EXPERIENCE_UPDATE_SCHEMA,
+            image_paths, run_dir, EXPERIENCE_INSTRUCTION)
+        return payload
+
     def evaluate_acquisition_probe(self, before_images, after_images, *, proposal, run_dir,
             rollout_recording_dir=None, rollout_evidence_images=(), observer_images=(), skill_guidance=None, **kwargs):
         return self._evaluate_remote(before_images, after_images, proposal=proposal,
@@ -570,9 +578,10 @@ class RemoteFoldClient(ClaudeAutoClient):
                 'after_image_index': primary_index(after, len(before)),
                 'role': 'Primary same-perception-position pair; lift stills and video are supplementary.',
             }
+        schema = comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison else copy.deepcopy(AUTO_EVALUATION_JSON_SCHEMA)
+        schema["properties"].pop("skill_update", None)
         payload, result, prompt, _ = self._ask("acquisition_evaluation" if acquisition else "evaluation",
-            context, comparison_schema(AUTO_EVALUATION_JSON_SCHEMA) if perception_comparison
-            else AUTO_EVALUATION_JSON_SCHEMA, images, run_dir,
+            context, schema, images, run_dir,
             "Evaluate actual visible before/after and chronological rollout evidence, never infer success from the proposed strategy. "
             "Use supplied Camera A grasp/lift stills to assess whether fabric was acquired and lifted. "
             "Compare the same-attempt before-lift and after-lift pair: look for fabric deformation, tension, "
@@ -588,7 +597,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             "For acquisition-only probes, transport status must be UNKNOWN, laydown NOT_REACHED, task_progress NEUTRAL; "
             "do not claim that returning to the initial scene proves successful acquisition. "
             "Provide the full requested evaluation schema, with causal next_experiment suggestions. "
-            "Optionally propose skill_update only for an evidence-supported reusable folding lesson or failure detector. "
+            "Do not produce skill_update. Conditional experience is analyzed separately after host outcome normalization. "
             "Keep workspace and execution safety constraints; UNKNOWN evidence is not empty grasp. "
             "Do not import opening-only success criteria into folding or claim an untested correction succeeded.")
         evaluation = validate_evaluation_payload(payload)
