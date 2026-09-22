@@ -32,7 +32,10 @@ COMPARISON_INSTRUCTION = (
     'CHANGED alone does not establish a successful grasp or completed fold. '
     'Lift photos and video are supplementary; inability to interpret them must not '
     'override a clear UNCHANGED comparison at the perception position. '
-    'Do not learn a universal physical rule that unchanged images prove empty jaws.'
+    'Do not learn a universal physical rule that unchanged images prove empty jaws. '
+    'UNCHANGED alone provides no grasp-depth diagnosis and must not imply TOO_SHALLOW '
+    'or a deeper-Z retry. The separate host grasp_experience starts UNKNOWN/NONE and '
+    'can update only from independent depth-specific interaction evidence.'
 )
 
 
@@ -77,5 +80,7 @@ def apply_comparison_policy(payload):
         'test a revised grasp without advancing the fold step.'
     ]
     # Do not persist contradictory model-generated success/empty-jaw lessons.
+    # Depth diagnosis is generated separately after this policy with runtime
+    # surface/command geometry; FAILURE here cannot supply its causal evidence.
     result.pop('skill_update', None)
     return result

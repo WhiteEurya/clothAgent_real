@@ -13,10 +13,12 @@ from cloth_agent.fold_experience_learning import (
 from cloth_agent.fold_exploration_pipeline import FoldExplorationPipeline, FoldExperienceStore, _compact_history
 from cloth_agent.perception_comparison import apply_comparison_policy
 from cloth_agent.skill_lifecycle import RunSkillLedger, SkillStore
+from cloth_agent.grasp_depth_experience import unknown_diagnosis
 
 
 def analysis_payload(*, update=True):
     return {
+        "grasp_depth_diagnosis": unknown_diagnosis(),
         "failure_diagnosis": {"observed_outcome": "Garment returned to its initial configuration.",
             "physical_failure_mode": "UNKNOWN", "candidate_causes": [{
                 "cause": "An ambiguous edge may not have coupled to the jaws.", "confidence": .3,
@@ -92,12 +94,13 @@ def test_rejects_invalid_or_untraceable_learning(mutate):
         validate_experience_update(payload, request_context())
 
 
-def test_height_can_be_diagnosed_but_unsupported_experiment_is_explicitly_blocked():
+def test_unknown_depth_does_not_authorize_height_experiment():
     payload = analysis_payload(update=False)
     payload["next_experiment"]["single_change"] = {"variable": "CONTACT_Z", "description": "Lower contact with XY held fixed."}
     result = validate_experience_update(payload, request_context())
-    assert result["next_experiment"]["status"] == "BLOCKED_BY_CAPABILITY"
-    assert result["next_experiment"]["single_change"]["variable"] == "CONTACT_Z"
+    assert result["next_experiment"]["status"] == "NO_EXPERIMENT"
+    assert result["next_experiment"]["single_change"]["variable"] == "NONE"
+    assert result["grasp_experience"]["experience_update"]["update_direction"] == "NONE"
     assert result["experience_update"] is None
 
 
@@ -242,6 +245,9 @@ def test_pipeline_generates_after_policy_and_never_fabricates_fallback_lessons(t
     saved = pipe.experiences.history(limit=None)[0]
     assert saved["evaluation"]["grasp_acquisition"]["status"] == "FAILURE"
     assert saved["evaluation_raw"]["evaluation"]["grasp_acquisition"]["status"] == "SUCCESS"
+    assert saved["grasp_experience"]["outcome"]["depth_interpretation"] == "UNKNOWN"
+    assert saved["grasp_experience"]["experience_update"]["update_direction"] == "NONE"
+    assert not (pipe.conditional_experiences.root / "grasp_depth_trials.json").exists()
     assert not pipe.skill_ledger.candidates_path.exists()
     if failed:
         assert saved["experience_generation"]["status"] == "FAILED"
@@ -256,6 +262,50 @@ def test_pipeline_generates_after_policy_and_never_fabricates_fallback_lessons(t
     summary = json.loads(pipe.experiences.summary_path.read_text())
     assert summary["experience_count"] == 1
     assert summary["conditional_rule_update_count"] == (0 if failed else 1)
+
+
+@pytest.mark.parametrize("depth_store_failed", [False, True])
+def test_pipeline_saves_depth_trial_separately_without_changing_point_or_motion_rules(tmp_path, monkeypatch, depth_store_failed):
+    pipe = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipe.session = SimpleNamespace(run_dir=tmp_path)
+    pipe.experiences = FoldExperienceStore(tmp_path)
+    pipe.conditional_experiences = ConditionalExperienceStore(tmp_path / "rules")
+    pipe._debug = pipe._debug_exception = lambda *a, **kw: None
+    payload = analysis_payload(update=False)
+    payload["grasp_depth_diagnosis"] = {"depth_interpretation": "EFFECTIVE", "confidence": .9,
+        "evidence": [{"observation": "STABLE_CLOTH_ACQUISITION", "evidence_ids": ["current_after_lift_rgb"],
+                      "description": "Cloth visibly retained through the lift, independently of release outcome."}]}
+    def update(**kwargs):
+        assert kwargs["context"]["grasp_depth_geometry"]["descent_below_surface_mm"] == 2.5
+        return payload
+    pipe.client = SimpleNamespace(update_experience=update)
+    if depth_store_failed:
+        def fail(*args, **kwargs):
+            raise OSError("depth store unavailable")
+        monkeypatch.setattr("cloth_agent.fold_exploration_pipeline.persist_depth_trial", fail)
+    row = physical_record(tmp_path)
+    row["execution"] = deepcopy(row["execution"])
+    row["execution"]["actual_robot_actions"][0]["args"]["z"] = 27.5
+    row["planning_diagnostics"] = {"grasp_height_resolution": {
+        "resolved_grasp_z_mm": 27, "resolved_grasp_xy_mm": [500, 40],
+        "resolution": {"valid": True, "surface_z_mm": 30}}}
+    pipe._update_fold_experience(tmp_path / "iteration_001", row)
+    assert row["experience_generation"]["status"] == "COMPLETED"
+    assert row["grasp_experience"]["outcome"] == {
+        "acquisition_status": "FAILURE", "depth_interpretation": "EFFECTIVE",
+        "evidence": payload["grasp_depth_diagnosis"]["evidence"]}
+    assert row["grasp_experience"]["experience_update"]["update_direction"] == "KEEP"
+    assert row["next_experiment"] == payload["next_experiment"]  # Alignment domain unchanged.
+    assert row["experience_generation"]["store_receipt"]["status"] == "NO_NEW_KNOWLEDGE"
+    assert pipe.conditional_experiences.rules("left_sleeve") == []
+    if depth_store_failed:
+        assert row["grasp_depth_store_receipt"]["status"] == "FAILED"
+        assert not (tmp_path / "rules/grasp_depth_trials.json").exists()
+        return
+    assert row["grasp_depth_store_receipt"]["status"] == "RECORDED"
+    trials = json.loads((tmp_path / "rules/grasp_depth_trials.json").read_text())["trials"]
+    assert len(trials) == 1
+    assert next(iter(trials.values()))["grasp_experience"]["geometry"]["descent_below_surface_mm"] == 2.5
 
 
 def test_local_backend_uses_isolated_read_only_analysis_call(tmp_path, monkeypatch):

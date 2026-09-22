@@ -37,6 +37,25 @@
 
 `experience_summary.json` 的 `experience_count` 仍表示原始 attempt 记录数；新增 `experience_generation_counts`、`conditional_rule_update_count`、`no_new_knowledge_count`，单独显示分析状态、规则更新次数和没有新知识的次数，不能把 trial 数当成学会的技能数。
 
+### 独立的抓取深度经验
+
+抓点选择与 transport/release 的条件规则保持原逻辑。现有经验分析调用额外返回严格的 `grasp_depth_diagnosis`（解释、置信度、结构化观察及证据 ID），主机生成独立的 `grasp_experience`，不增加模型调用。模型不能填写或覆盖几何数值，不能把 Z 校准写成候选点排序规则。
+
+深度定义为 `descent_below_surface_mm = runtime_authoritative_surface_z_mm - actual_commanded_grasp_z_mm`。表面 Z 来自本轮最终 `planning_diagnostics.grasp_height_resolution.resolution.surface_z_mm`，命令 Z 来自首次且唯一闭爪之前最后一个成功的 `actual_robot_actions.move.args.z`。当前 `RobotAPI` 与 `XArmBackend` 将这个 Z 原样送入 SDK `set_position`；计划、预执行和 `actual_ee_pose` 实测反馈都不能代替它。主机核对解析记录与接触命令的 XY，缺失、多个抓取或不匹配时不生成下降量。可选桌面高度/表面置信度缺失时保留 null，不以 `valid=True` 冒充高置信度。例如表面 30、计划 27、实际命令 27.5，记录下降 2.5 mm。
+
+| depth_interpretation | 必须独立观察到的证据 | update_direction |
+| --- | --- | --- |
+| EFFECTIVE | 抬升/过程证据中的稳定 cloth acquisition | KEEP，支持当前相对下降量 |
+| TOO_SHALLOW | 闭爪接触时夹爪仍明显高于 cloth | DEEPER，足够下降量可能大于当前值 |
+| TOO_DEEP | 接触阶段明确桌面接触、阻挡或过度压缩 | SHALLOWER，合适下降量可能小于当前值 |
+| UNKNOWN | 仅末态比较、抓点耦合、输送失败，或其他不确定证据 | NONE，不更新深度 |
+
+有效更新需要本轮可用的对应阶段 interaction RGB、匹配的数值几何、相符且不冲突的观察类型，以及至少 0.7 的模型置信度。这个阈值只是保守门槛，不代表校准过的物理正确率；图像存在不确定性时应报告 UNKNOWN。命令完成、夹爪状态、旧图片和模型原始评价都不是深度的独立证据。末态 `UNCHANGED` 仍强制任务层 FAILURE/ACQUISITION，但不会自动变成 TOO_SHALLOW。只有独立深度证据通过上述门控，才可能在任务失败的同时保留明确的物理深度解释。
+
+本轮 `record.json` 和 `experience_update/analysis.json` 保存结构化 `grasp_experience`。分析失败/跳过时，record 保留带可用几何的 UNKNOWN/NONE。有效数值 trial 独立写入 `data/fold_experience/grasp_depth_trials.json`，保留几何来源、证据 ID、源 record、步骤与适用限制，按 trial 去重；UNKNOWN 不创建或修改该长期文件。每轮另有 `grasp_depth_store_receipt.json`。这些数据支持以后按相似布料/支撑条件维护上下界，本次不实现自动区间拟合，也不学习全局绝对 Z。
+
+下一轮收到最近尝试的深度结果与相对下降建议。UNKNOWN 不允许自动加深；EFFECTIVE 优先保持相对下降量，而非原世界坐标 Z；明确过浅/过深才能分别提出 DEEPER/SHALLOWER。Z 仍由现有主机高度策略决定，改变下降量的实验继续标为 `BLOCKED_BY_CAPABILITY`。本次不会自动修改控制参数、运行机器人或改变现有安全限制。
+
 ## Claude 自选图像工具
 
 远程 backend 默认启用 `cloth_image` MCP 工具，内置工具仍只开放 `Read`。工具清单不是仅供阅读的 Markdown：桥接通过 `--mcp-config` 注册真实可调用工具，并用 `--allowedTools` 逐项授权。`--strict-mcp-config` 将本次 MCP 集合限定为图像工具。

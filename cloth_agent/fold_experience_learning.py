@@ -14,6 +14,10 @@ import re
 from pathlib import Path
 
 from .trajectory_memory import prepare_trajectory_memory
+from .grasp_depth_experience import (
+    GRASP_DEPTH_DIAGNOSIS_SCHEMA, GRASP_DEPTH_INSTRUCTION,
+    gate_depth_experiment, make_grasp_experience, runtime_geometry,
+)
 
 
 def _object(properties):
@@ -68,6 +72,7 @@ EXPERIENCE_SCHEMA = _object({
 })
 
 EXPERIENCE_UPDATE_SCHEMA = _object({
+    "grasp_depth_diagnosis": GRASP_DEPTH_DIAGNOSIS_SCHEMA,
     "failure_diagnosis": DIAGNOSIS_SCHEMA,
     "next_experiment": NEXT_EXPERIMENT_SCHEMA,
     "experience_update": {"anyOf": [{"type": "null"}, EXPERIENCE_SCHEMA]},
@@ -99,7 +104,8 @@ EXPERIENCE_INSTRUCTION = (
     "evidence. SPECIALIZE creates a narrower child rule and must explain extra conditions. "
     "Preserve rule identity on UPDATE. Counts and accumulated confidence are computed by the host, "
     "never invent historical trials. Rules are soft conditional advice, subordinate to current "
-    "visual evidence, exceptions, workspace, IK and execution validation."
+    "visual evidence, exceptions, workspace, IK and execution validation. "
+    + GRASP_DEPTH_INSTRUCTION
 )
 
 EXPERIENCE_PLANNING_INSTRUCTION = (
@@ -110,7 +116,9 @@ EXPERIENCE_PLANNING_INSTRUCTION = (
     "explain any necessary deviations in motion_intent. Reassess if cloth state has changed. "
     "The structured next_experiment supersedes generic evaluator keep/change suggestions. "
     "BLOCKED_BY_CAPABILITY experiments are not executable; do not silently substitute a different "
-    "variable and claim to have tested the hypothesis. Select all targets from current evidence."
+    "variable and claim to have tested the hypothesis. Select all targets from current evidence. "
+    "grasp_experience is separate relative-depth evidence, never a point-ranking rule. "
+    "UNKNOWN/NONE does not authorize deeper Z. Never replay historical absolute grasp Z."
 )
 
 
@@ -280,6 +288,7 @@ def build_experience_request(record, history, rules, run_dir, output):
     if not images:
         raise ValueError("experience requires available same-trial RGB evidence")
     context = {"trial_id": trial_id(record), "step": step, "outcome": outcome,
+        "grasp_depth_geometry": runtime_geometry(record),
         "current_attempt": attempt, "prior_attempt": prior,
         "prior_trial_id": trial_id(previous_record) if previous_record else None,
         "prior_next_experiment": (previous_record or {}).get("next_experiment"),
@@ -293,6 +302,7 @@ def build_experience_request(record, history, rules, run_dir, output):
 def validate_experience_update(payload, context):
     validate_schema(payload, EXPERIENCE_UPDATE_SCHEMA)
     result = copy.deepcopy(payload)
+    result["grasp_experience"] = make_grasp_experience(result["grasp_depth_diagnosis"], context)
     catalog = {e["id"]: e for e in context["evidence_catalog"]}
     diagnosis = result["failure_diagnosis"]
     for cause in diagnosis["candidate_causes"]:
@@ -322,6 +332,7 @@ def validate_experience_update(payload, context):
     if experiment["status"] == "PROPOSED" and variable not in context["capabilities"]["executable_single_changes"]:
         experiment["status"] = "BLOCKED_BY_CAPABILITY"
         notes.append(f"{variable} is not supported by the current execution contract.")
+    gate_depth_experiment(experiment, result["grasp_experience"])
     update = result["experience_update"]
     if update is None:
         if not result["no_update_reason"].strip():

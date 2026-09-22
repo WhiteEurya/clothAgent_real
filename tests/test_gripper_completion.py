@@ -81,6 +81,16 @@ def test_old_stop_at_open_position_does_not_allow_lift(config, backend):
     assert all(row['completion_reason'] is None for row in completion['samples'][:-1])
 
 
+def test_move_log_z_is_exact_sdk_command_not_measured_feedback(config, backend):
+    b = backend([sample(850)])
+    robot = RobotAPI(config, b)
+    robot.move(300, 0, 27.5, 0)
+    action = robot.action_dicts()[0]
+    assert action['success'] is True
+    assert action['args']['z'] == b.arm.moves[0]['kwargs']['z'] == 27.5
+    assert action['actual_ee_pose'][2] == 100  # Distinct fake measured pose.
+
+
 def test_observed_early_grasp_at_834_never_releases_lift(config, backend):
     b = backend([sample(840), sample(840, 2), sample(834, 2),
                  sample(500, 1), sample(35, 2), sample(35, 2), sample(3, 1), sample(3)])

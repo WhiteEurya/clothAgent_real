@@ -86,6 +86,7 @@ from .free_exploration import (
 )
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
+from .grasp_depth_experience import initial_grasp_experience, persist_depth_trial
 from .grasp_checkpoint import (
     ACQUISITION_PROBE_LIFT_CONTRACT, compile_grasp_capture,
     GraspCheckpointRejected, validate_acquisition_probe_lift,
@@ -3019,6 +3020,9 @@ class FoldExplorationPipeline:
 
     def _update_fold_experience(self, iteration_dir: Path, record: dict[str, Any]) -> None:
         evaluation = record.get("evaluation") or {}
+        # Even skipped/failed reflection leaves an auditable UNKNOWN/NONE depth
+        # result. End-state policy never manufactures a physical depth cause.
+        record["grasp_experience"] = initial_grasp_experience(record)
         record["outcome"] = {
             "policy_failure_stage": evaluation.get("earliest_failure_stage", "UNKNOWN"),
             "grasp_acquisition": evaluation.get("grasp_acquisition"),
@@ -3056,12 +3060,24 @@ class FoldExplorationPipeline:
             _write_json(directory / "response.json", payload)
             analysis = validate_experience_update(payload, context)
             _write_json(directory / "analysis.json", analysis)
+            record["grasp_experience"] = analysis["grasp_experience"]
             receipt = store.apply(analysis, context, source_record=record["record_id"])
             record.update(outcome=context["outcome"], failure_diagnosis=analysis["failure_diagnosis"],
                 next_experiment=analysis["next_experiment"], experience_update=analysis["experience_update"],
                 experience_generation={"status": "COMPLETED", "no_update_reason": analysis["no_update_reason"],
                     "host_validation_notes": analysis["host_validation_notes"], "store_receipt": receipt})
             _write_json(directory / "store_receipt.json", receipt)
+            try:
+                depth_receipt = persist_depth_trial(store.root, analysis["grasp_experience"],
+                    {**context, "grasp_depth_diagnosis": analysis["grasp_depth_diagnosis"]},
+                    source_record=record["record_id"])
+            except Exception as exc:
+                # Depth-ledger errors must not discard existing point/motion
+                # learning or erase the per-trial, validated depth observation.
+                depth_receipt = {"status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
+                self._debug_exception("grasp-depth-experience", exc, nonfatal=True)
+            record["grasp_depth_store_receipt"] = depth_receipt
+            _write_json(directory / "grasp_depth_store_receipt.json", depth_receipt)
         except Exception as exc:
             # A failed reflection must not erase the physical record, reset
             # outcome labels, fabricate a lesson, or trigger another movement.
@@ -4857,6 +4873,7 @@ class FoldExplorationPipeline:
             "selected_reference_id": reference.get("reference_id"),
             "requested_grasp_z_mm": requested_z,
             "resolved_grasp_z_mm": target_z,
+            "resolved_grasp_xy_mm": [float(grasp_move["x"]), float(grasp_move["y"])],
             "z_rewritten": bool(abs(requested_z - target_z) > 1e-6),
             "measurement": measurement,
             "resolution": resolution.as_dict(),
@@ -4967,6 +4984,7 @@ class FoldExplorationPipeline:
             "instruction": EXPERIENCE_PLANNING_INSTRUCTION,
             "conditional_experience": conditional_store.rules(memory_step) if conditional_store else [],
             "failure_diagnosis": (recent_analysis or {}).get("failure_diagnosis"),
+            "grasp_experience": (recent_analysis or {}).get("grasp_experience"),
             "next_experiment": (recent_analysis or {}).get("next_experiment"),
             "capabilities": capabilities(getattr(self.client, "acquisition_learning", None)),
         }
