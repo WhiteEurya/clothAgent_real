@@ -131,6 +131,8 @@ python scripts/remote_image_tools_test.py --local-claude
 
 正常折叠启动时继续使用 `--viser`，浏览器打开 `http://127.0.0.1:8765`。新增的 **Claude image operations** 文件夹按 iteration 和每次 Claude 调用分开显示：
 
+当前 fold Viser 同时显示只读的 xArm6 URDF 模型和最新一次 validated RGB-D 融合点云。模型使用仓库中的 `assets/robots/xarm6/xarm6_wo_ee.urdf` 及保存的 home 关节姿态，不连接 xArm；点云从本轮 `results/perception/*/result.json` 指向的 `fused_points_base_mm.npy` / `fused_colors_rgb.npy` 读取，转换为米后放在 robot-base 坐标系。点云最多显示 160,000 个经过桌面高度过滤的点，新的 perception result 出现后自动替换旧云。页面仍是只读，轨迹线和图像调试保持原有行为。
+
 界面最多展示最近两个 iteration。第三个出现时移除第一个的图片、面板、工具详情和轨迹，并清理对应缓存；历史文件不会删除，仍可单独打开历史 iteration 目录查看。
 
 - 本次原始输入，以及每次旋转、裁剪、缩放后的图片，按事件顺序显示，不在通用图片组里重复展示。

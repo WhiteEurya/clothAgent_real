@@ -14,6 +14,8 @@ from cloth_agent.fold_exploration_viser import (
     _run_root,
     _debug_markdown, _workspace_markdown, _iter_images,
     _FoldViserState,
+    _fused_point_cloud,
+    _latest_perception_result,
 )
 
 
@@ -173,3 +175,24 @@ def test_claude_input_groups_follow_actual_stage_manifests(tmp_path: Path) -> No
     assert groups["planning_stage1"] == [planning_rgb, planning_overlay]
     assert groups["supervisor_before"] == [supervisor_a, supervisor_b]
     assert groups["evaluation"] == [evaluation_image]
+
+
+def test_fold_viewer_loads_latest_validated_fused_cloud_in_metres(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    source = run_root / "results" / "fold_exploration" / "stamp"
+    source.mkdir(parents=True)
+    (source / "summary.json").write_text(json.dumps({"run_dir": str(run_root)}))
+    perception = run_root / "results" / "perception" / "capture"
+    perception.mkdir(parents=True)
+    np.save(perception / "points.npy", np.array([[1000, 0, 20], [2000, 0, -5]], dtype=np.float32))
+    np.save(perception / "colors.npy", np.array([[10, 20, 30], [40, 50, 60]], dtype=np.uint8))
+    np.save(perception / "height.npy", np.array([20, -5], dtype=np.float32))
+    (perception / "result.json").write_text(json.dumps({
+        "depth_fusion": {"table_clip": {"tolerance_mm": 1}, "artifacts": {
+            "fused_points_base_mm": "points.npy", "fused_colors_rgb": "colors.npy",
+            "fused_height_above_table_mm": "height.npy"}},
+    }))
+    assert _latest_perception_result(source) == perception / "result.json"
+    points, colors = _fused_point_cloud(perception / "result.json")
+    np.testing.assert_allclose(points, [[1.0, 0.0, 0.02]])
+    np.testing.assert_array_equal(colors, [[10, 20, 30]])

@@ -349,6 +349,50 @@ def _trajectory_points(iteration_dir: Path) -> np.ndarray:
     return np.asarray(points, dtype=np.float32)
 
 
+def _latest_perception_result(source: Path) -> Path | None:
+    """Find the newest validated RGB-D result belonging to this run."""
+    run_root = _run_root(source)
+    candidates = list((run_root / "results" / "perception").glob("*/result.json"))
+    if not candidates:
+        candidates = list(source.parent.parent.glob("../perception/*/result.json"))
+    existing = [path for path in candidates if path.is_file()]
+    return max(existing, key=lambda path: path.stat().st_mtime_ns) if existing else None
+
+
+def _fused_point_cloud(result_path: Path, *, max_points: int = 160_000) -> tuple[np.ndarray, np.ndarray]:
+    """Load the validated base-frame fused cloud for Viser (metres + RGB)."""
+    result = _load_json(result_path)
+    artifacts = (result.get("depth_fusion") or {}).get("artifacts") or {}
+    points_path = result_path.parent / str(artifacts.get("fused_points_base_mm", ""))
+    colors_path = result_path.parent / str(artifacts.get("fused_colors_rgb", ""))
+    if not points_path.is_file() or not colors_path.is_file():
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+    try:
+        points_mm = np.asarray(np.load(points_path), dtype=np.float64)
+        colors = np.asarray(np.load(colors_path), dtype=np.uint8)
+    except (OSError, ValueError):
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+    if points_mm.ndim != 2 or points_mm.shape[1] != 3 or colors.shape != (len(points_mm), 3):
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+    keep = np.all(np.isfinite(points_mm), axis=1)
+    height_name = artifacts.get("fused_height_above_table_mm")
+    if height_name:
+        height_path = result_path.parent / str(height_name)
+        if height_path.is_file():
+            try:
+                height = np.asarray(np.load(height_path), dtype=np.float64)
+                tolerance = float(((result.get("depth_fusion") or {}).get("table_clip") or {}).get("tolerance_mm", 2.0))
+                if height.shape == (len(points_mm),):
+                    keep &= np.isfinite(height) & (height >= -tolerance)
+            except (OSError, ValueError, TypeError):
+                pass
+    points_mm, colors = points_mm[keep], colors[keep]
+    if len(points_mm) > max_points:
+        stride = int(np.ceil(len(points_mm) / max_points))
+        points_mm, colors = points_mm[::stride], colors[::stride]
+    return (points_mm / 1000.0).astype(np.float32), colors.astype(np.uint8)
+
+
 def _markdown_for_iteration(iteration_dir: Path) -> str:
     record = _load_json(iteration_dir / "record.json")
     before = _load_json(iteration_dir / "supervisor_before.json")
@@ -495,6 +539,8 @@ class _FoldViserState:
         self.iteration_panels: dict[Path, Any] = {}
         self.path_handles: dict[Path, Any] = {}
         self.path_mtimes: dict[Path, int] = {}
+        self.point_cloud_handle: Any | None = None
+        self.point_cloud_source: tuple[Path, int] | None = None
         self.image_folders: dict[tuple[Path, str], Any] = {}
         self.tool_panels = {}
         self.tool_image_handles = {}
@@ -508,6 +554,9 @@ class _FoldViserState:
         )
         self.timing_panel = server.gui.add_markdown("Waiting for timing events.")
         self.error_panel = server.gui.add_html(_error_html(source))
+        self.point_cloud_panel = server.gui.add_markdown(
+            "### xArm / point cloud\n\nWaiting for a validated perception result."
+        )
         with server.gui.add_folder("Raw debug log", expand_by_default=False):
             self.debug_panel = server.gui.add_markdown("Waiting for debug.log.")
 
@@ -615,6 +664,45 @@ class _FoldViserState:
             points=segments,
             colors=colors,
             line_width=4.0,
+        )
+
+    def _render_point_cloud(self) -> None:
+        """Show the newest validated fused cloud in the robot base frame."""
+        result_path = _latest_perception_result(self.source)
+        if result_path is None:
+            self.point_cloud_panel.content = "### xArm / point cloud\n\nWaiting for a validated perception result."
+            return
+        try:
+            mtime = result_path.stat().st_mtime_ns
+        except OSError:
+            return
+        source_key = (result_path, mtime)
+        if self.point_cloud_source == source_key:
+            return
+        if self.point_cloud_handle is not None:
+            try:
+                self.point_cloud_handle.remove()
+            except Exception:
+                pass
+            self.point_cloud_handle = None
+        if not hasattr(self.server, "scene"):
+            return
+        points, colors = _fused_point_cloud(result_path)
+        if len(points):
+            self.point_cloud_handle = self.server.scene.add_point_cloud(
+                "/perception/fused_point_cloud",
+                points=points,
+                colors=colors,
+                point_size=0.003,
+                point_shape="circle",
+            )
+        self.point_cloud_source = source_key
+        self.point_cloud_panel.content = (
+            "### xArm / point cloud\n\n"
+            f"- source: `{self._relative_to_run(result_path)}`\n"
+            f"- points shown: `{len(points):,}`\n"
+            "- frame: `robot base`\n"
+            "- source: validated fused RGB-D perception artifact"
         )
 
     def _render_image_tools(self, iteration_dir):
@@ -781,6 +869,7 @@ class _FoldViserState:
                 self.iteration_panels[iteration_dir] = panel
             else:
                 panel.content = _markdown_for_iteration(iteration_dir)
+        self._render_point_cloud()
         summary = _load_json(self.source / "summary.json")
         self.timing_panel.content = _debug_markdown(self.source)
         self.error_panel.content = _error_html(self.source)
@@ -814,13 +903,37 @@ def run_viewer(source: Path, *, host: str = "127.0.0.1", port: int = 8765, refre
         raise ValueError("refresh_s must be between 0.1 and 30 seconds")
     try:
         import viser
+        from viser.extras import ViserUrdf
     except ImportError as exc:
-        raise RuntimeError("Viser is required; install it with python -m pip install 'viser>=1.0,<2'") from exc
+        raise RuntimeError("Viser with URDF support is required; install it with python -m pip install 'viser[urdf]>=1.0,<2'") from exc
     source = Path(source).expanduser().resolve()
     source.mkdir(parents=True, exist_ok=True)
     server = viser.ViserServer(host=host, port=int(port), label="Fold exploration (read-only)")
     server.scene.set_up_direction("+z")
     server.scene.add_grid("/workspace/table", width=1.2, height=0.8, cell_size=0.05, section_size=0.25)
+    urdf_path = Path(__file__).resolve().parents[1] / "assets" / "robots" / "xarm6" / "xarm6_wo_ee.urdf"
+    if not urdf_path.is_file():
+        raise RuntimeError(f"xArm6 URDF is missing: {urdf_path}")
+    server.scene.add_frame("/robot_base", axes_length=0.15, axes_radius=0.006)
+    server.scene.add_frame("/xarm", show_axes=False)
+    robot_model = ViserUrdf(server, urdf_path, root_node_name="/xarm",
+                             load_meshes=True, load_collision_meshes=False)
+    # Use the saved read-only home pose when available; never query the robot.
+    home_cfg = np.zeros(6, dtype=np.float64)
+    home_pose_path = Path(__file__).resolve().parents[1] / "data" / "robot" / "xarm_init_pose.json"
+    try:
+        home_payload = json.loads(home_pose_path.read_text(encoding="utf-8"))
+        joints = home_payload.get("joint_angles_deg", [])
+        if isinstance(joints, list) and len(joints) >= 6:
+            home_cfg = np.radians(np.asarray(joints[:6], dtype=np.float64))
+    except (OSError, ValueError, TypeError):
+        pass
+    robot_model.update_cfg(home_cfg)
+    server.gui.add_markdown(
+        "### xArm model\n\n"
+        "Static xArm6 URDF at the saved home joint configuration. "
+        "The model and point cloud are read-only diagnostics."
+    )
     state = _FoldViserState(server, source)
     stop = threading.Event()
 
