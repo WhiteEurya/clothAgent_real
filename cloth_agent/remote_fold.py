@@ -520,6 +520,12 @@ class RemoteFoldClient(ClaudeAutoClient):
             perception_comparison=kwargs.get('perception_comparison', False),
             rollout_evidence_images=kwargs.get('rollout_evidence_images', ()))
 
+    def plan_height_retry(self, *, context, image_paths, run_dir, output_dir):
+        from .grasp_height_retry import HEIGHT_RETRY_INSTRUCTION, HEIGHT_RETRY_SCHEMA
+        payload, _, _, _ = self._ask("height_retry", context, HEIGHT_RETRY_SCHEMA,
+            image_paths, run_dir, HEIGHT_RETRY_INSTRUCTION)
+        return payload
+
     def update_experience(self, *, context, image_paths, run_dir, output_dir):
         from .fold_experience_learning import EXPERIENCE_INSTRUCTION, EXPERIENCE_UPDATE_SCHEMA
         payload, _, _, _ = self._ask("experience_update", context, EXPERIENCE_UPDATE_SCHEMA,

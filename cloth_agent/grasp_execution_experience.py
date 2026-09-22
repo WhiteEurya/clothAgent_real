@@ -35,7 +35,7 @@ EVIDENCE_SCHEMA = {"type": "array", "minItems": 1, "maxItems": 8, "items": _obje
     "observation": {"enum": OBSERVATIONS},
     "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 8,
                      "uniqueItems": True, "items": TEXT},
-    "description": TEXT,
+    "description": {**TEXT, "maxLength": 2000},
 })}
 GRASP_EXECUTION_DIAGNOSIS_SCHEMA = _object({
     "confidence": CONFIDENCE,

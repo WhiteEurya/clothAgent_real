@@ -4822,10 +4822,22 @@ class FoldExplorationPipeline:
         directory = iteration_dir / "height_retry"
         directory.mkdir(parents=True, exist_ok=True)
         audit = deepcopy(previous["planning_diagnostics"]["grasp_height_resolution"])
-        choices = height_options(previous, step_mm=self.grasp_height_retry_step_mm)
-        _write_json(directory / "host_options.json", choices)
-        proposal, metadata = compile_height_retry(previous, choices,
+        from .grasp_height_retry import compile_model_height_retry, select_height_retry_images
+        context = {"executed_actions": previous["execution"]["actual_robot_actions"],
+            "geometry": audit, "evaluation": previous.get("evaluation"),
+            "diagnosis": previous.get("grasp_execution_experience"),
+            "instruction": "Choose contact Z yourself; no fixed retry step."}
+        images, image_catalog = select_height_retry_images(previous)
+        context["image_catalog"] = image_catalog
+        self._debug("height-retry", "selected RGB evidence for Claude",
+            images=len(images), roles=[item["role"] for item in image_catalog])
+        _write_json(directory / "request.json", {"context": context, "image_paths": [str(p) for p in images]})
+        decision = self.client.plan_height_retry(context=context, image_paths=images,
+            run_dir=self.session.run_dir, output_dir=directory)
+        _write_json(directory / "response.json", decision)
+        proposal, choices, metadata = compile_model_height_retry(previous, decision,
             allowed_skill_names=getattr(self.client, "skill_names", None))
+        _write_json(directory / "host_options.json", choices)
         _, contact = _first_grasp_move(proposal)
         resolution_payload = audit["resolution"]
         resolution_payload.update(target_xyz_mm=[contact["x"], contact["y"], contact["z"]],
@@ -5985,7 +5997,7 @@ class FoldExplorationPipeline:
                 # restarting the whole run and losing the current evidence.
                 try:
                     if height_retry_previous is not None:
-                        self._debug("height-retry", "compiling direct Z-only command retry",
+                        self._debug("height-retry", "requesting Claude Z-only trajectory rewrite",
                             iteration=iteration, parent_iteration=height_retry_previous["iteration"])
                         proposal, height_retry_audit, height_retry_choices, height_retry_metadata = self._compile_grasp_height_retry(
                             height_retry_previous, iteration_dir)
@@ -6226,7 +6238,7 @@ class FoldExplorationPipeline:
                             _write_json(iteration_dir / 'grasp_capture_plan.json', grasp_capture_plan)
                         if height_retry_previous is not None:
                             validate_locked_retry(execution_proposal.actions, height_retry_choices, height_retry_metadata)
-                            host_compilation.update(authority="host_command_z_retry+host_limits",
+                            host_compilation.update(authority="Claude_command_z_retry+host_limits",
                                 rewritten=True,
                                 height_retry=height_retry_metadata,
                                 reason="Previous executed commands reused with only contact Z adjusted; selected point, XY, yaw and other targets locked.")

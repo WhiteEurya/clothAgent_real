@@ -342,3 +342,21 @@ def test_local_backend_uses_isolated_read_only_analysis_call(tmp_path, monkeypat
     assert "--no-session-persistence" in command
     assert "policy_failure_stage" in kwargs["input"]
     assert "CONTACT_Z" in kwargs["input"]
+
+
+def test_experience_accepts_detailed_evidence_and_optional_confidence_rationale():
+    payload = analysis_payload()
+    payload['grasp_execution_diagnosis']['evidence'][0]['description'] = 'x' * 877
+    payload['failure_diagnosis']['candidate_causes'][0]['confidence_rationale'] = 'Contact is occluded.'
+    validate_schema(payload, EXPERIENCE_UPDATE_SCHEMA)
+
+
+@pytest.mark.parametrize('extra_field', [False, True])
+def test_experience_contract_still_rejects_unbounded_text_and_unknown_fields(extra_field):
+    payload = analysis_payload()
+    if extra_field:
+        payload['failure_diagnosis']['candidate_causes'][0]['invented_field'] = 'unsupported'
+    else:
+        payload['grasp_execution_diagnosis']['evidence'][0]['description'] = 'x' * 2001
+    with pytest.raises(Exception):
+        validate_schema(payload, EXPERIENCE_UPDATE_SCHEMA)

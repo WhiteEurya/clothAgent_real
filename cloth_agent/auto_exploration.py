@@ -2114,6 +2114,35 @@ class ClaudeAutoClient:
             binary = resolved
         return str(binary)
 
+    def plan_height_retry(self, *, context, image_paths, run_dir, output_dir):
+        """Independent, read-only post-policy analysis for the local backend."""
+        from .grasp_height_retry import HEIGHT_RETRY_INSTRUCTION as EXPERIENCE_INSTRUCTION, HEIGHT_RETRY_SCHEMA as EXPERIENCE_UPDATE_SCHEMA
+        from .planner_backend import parse_claude_json
+        images = self._safe_images(image_paths, run_dir.resolve())
+        prompt = EXPERIENCE_INSTRUCTION + "\n" + json.dumps(context, ensure_ascii=False)
+        prompt += "\nLocal image mapping:\n" + "\n".join(
+            f"image_{i}: {path}" for i, path in enumerate(images))
+        command = [self._binary(), "--print", "--output-format", "json",
+            "--json-schema", json.dumps(EXPERIENCE_UPDATE_SCHEMA, separators=(",", ":")),
+            "--permission-mode", "plan", "--allowedTools", "Read", "--tools", "Read",
+            "--add-dir", str(run_dir.resolve()), "--safe-mode", "--no-session-persistence",
+            "--max-turns", "8", "--system-prompt",
+            "Read only the supplied RGB evidence. Return the requested analysis JSON. No robot access or file changes."]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log = {"prompt": prompt, "command": command, "stage": "height_retry"}
+        try:
+            completed = subprocess.run(command, input=prompt, cwd=run_dir, text=True,
+                capture_output=True, timeout=self.timeout_s, check=False, shell=False)
+            log.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
+            if completed.returncode:
+                raise AutoExplorationError(f"Claude experience analysis exited with {completed.returncode}")
+            return parse_claude_json(completed.stdout)
+        except Exception as exc:
+            log["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            (output_dir / "invocation.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def update_experience(self, *, context, image_paths, run_dir, output_dir):
         """Independent, read-only post-policy analysis for the local backend."""
         from .fold_experience_learning import EXPERIENCE_INSTRUCTION, EXPERIENCE_UPDATE_SCHEMA

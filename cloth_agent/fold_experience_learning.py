@@ -43,6 +43,9 @@ DIAGNOSIS_SCHEMA = _object({
     "uncertainties": TEXTS,
 })
 
+# Optional for compatibility with existing saved analyses; retain model reasoning.
+DIAGNOSIS_SCHEMA["properties"]["candidate_causes"]["items"]["properties"]["confidence_rationale"] = TEXT
+
 NEXT_EXPERIMENT_SCHEMA = _object({
     "status": {"enum": ["PROPOSED", "BLOCKED_BY_CAPABILITY", "NO_EXPERIMENT"]},
     "primary_hypothesis": TEXT,
@@ -80,6 +83,11 @@ EXPERIENCE_UPDATE_SCHEMA = _object({
 })
 
 EXPERIENCE_INSTRUCTION = (
+    "OUTPUT CONTRACT: Include every required root field, including next_experiment. "
+    "Candidate causes allow cause, confidence, evidence_for, evidence_against and optional "
+    "confidence_rationale only. Keep each grasp_execution_diagnosis evidence description "
+    "concise (aim below 600 characters; hard limit 2000); other text fields remain limited "
+    "to 800 characters. Do not add undeclared fields. "
     "Analyze this completed attempt AFTER host outcome normalization. Keep three layers separate: "
     "outcome (supplied, immutable), failure_diagnosis (uncertain physical hypotheses), and "
     "experience_update (conditional knowledge supported by evidence already observed). "

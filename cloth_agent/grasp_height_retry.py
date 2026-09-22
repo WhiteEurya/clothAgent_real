@@ -63,9 +63,9 @@ def _contact_index(actions):
     return indices[-1]
 
 
-def height_options(record, *, step_mm):
+def height_options(record, *, step_mm, model_selected=False):
     """Compute safe relative-descent options; never clamp into a no-op trial."""
-    if type(step_mm) not in (int, float) or not math.isfinite(step_mm) or not 0 < step_mm <= 3:
+    if type(step_mm) not in (int, float) or not math.isfinite(step_mm) or step_mm <= 0 or (not model_selected and step_mm > 3):
         raise ValueError("height retry step must be finite and in (0, 3] mm")
     eligibility = retry_eligibility(record)
     if eligibility["status"] != "SCHEDULED":
@@ -116,11 +116,11 @@ def height_options(record, *, step_mm):
             "locked_actions": actions, "prior_descent_below_surface_mm": prior_descent}
 
 
-def compile_height_retry(record, choices, *, allowed_skill_names=None):
+def compile_height_retry(record, choices, *, allowed_skill_names=None, selected_choice=None):
     """Select a bounded host experiment without invoking a model or re-grounding."""
     from .free_exploration import validate_exploration_payload
     observed = (record.get("grasp_execution_experience") or {}).get("observed_result") or {}
-    choice = "SHALLOWER" if observed.get("depth_interpretation") == "TOO_DEEP" else "DEEPER"
+    choice = selected_choice or ("SHALLOWER" if observed.get("depth_interpretation") == "TOO_DEEP" else "DEEPER")
     if choice not in choices["options"]:
         raise ValueError("Requested height retry unavailable: " +
                          choices["blocked_options"].get(choice, choice))
@@ -147,3 +147,66 @@ def validate_locked_retry(actions, choices, metadata):
     actual = [{"name": a["name"], "args": a["args"]} for a in actions]
     if actual != expected:
         raise ValueError("Z-only retry changed XY/yaw/action sequence or another trajectory target")
+
+
+HEIGHT_RETRY_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "contact_z_mm": {"type": "number"},
+        "reason": {"type": "string", "minLength": 1},
+    }, "required": ["contact_z_mm", "reason"],
+}
+HEIGHT_RETRY_INSTRUCTION = (
+    "Rewrite the previous trajectory's contact Z for one controlled regrasp experiment. "
+    "You decide the direction and amount in millimetres from the supplied executed trajectory, "
+    "geometry, evaluation and RGB evidence. There is NO fixed 1 mm step. Return contact_z_mm "
+    "in the robot base frame and reason. All XY, yaw, selected point and other action targets "
+    "remain locked. Respect the supplied compression limits and lower Z floor, and keep at "
+    "least 30 mm lift to the unchanged first lift target. Do not infer shallow contact merely "
+    "from unchanged images. Your chosen value is validated, never silently clamped or replaced."
+)
+
+
+def compile_model_height_retry(record, decision, *, allowed_skill_names=None):
+    z = decision.get("contact_z_mm")
+    if type(z) not in (int, float) or not math.isfinite(z) or not str(decision.get("reason", "")).strip():
+        raise ValueError("Claude height retry requires finite contact_z_mm and reason")
+    actions = record["execution"]["actual_robot_actions"]
+    old_z = actions[_contact_index(actions)]["args"]["z"]
+    delta = old_z - z
+    # Model-selected magnitude; geometric bounds below remain authoritative.
+    choices = height_options(record, step_mm=abs(delta), model_selected=True)
+    choice = "DEEPER" if delta > 0 else "SHALLOWER"
+    proposal, metadata = compile_height_retry(record, choices,
+        allowed_skill_names=allowed_skill_names, selected_choice=choice)
+    metadata.update(decision_authority="Claude", reason=decision["reason"])
+    return proposal, choices, metadata
+
+
+def select_height_retry_images(record):
+    """At most five RGB views; preserve roles even when content is duplicated."""
+    import hashlib
+    from pathlib import Path
+
+    images, catalog, seen = [], [], {}
+    def add(role, paths, preferred_names):
+        paths = [Path(p) for p in paths]
+        for name in preferred_names:
+            path = next((p for p in paths if p.name == name and p.is_file()), None)
+            if path is None:
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest not in seen:
+                seen[digest] = len(images)
+                images.append(path)
+            index = seen[digest]
+            catalog.append({"role": role, "image_index": index,
+                            "image_id": f"image_{index}", "source_path": str(path)})
+            return
+    for phase in ("before", "after"):
+        add(f"{phase}_perception_rgb", record.get(f"{phase}_images") or [],
+            ["camera_A_rgb_upright.png", "camera_0_A.png"])
+    holds = record.get("observer_images_hold_check") or []
+    for phase in ("before_lift", "after_close", "after_lift"):
+        add(f"grasp_{phase}_rgb", holds, [f"camera_A_grasp_{phase}.png"])
+    return images, catalog

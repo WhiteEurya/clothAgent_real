@@ -154,3 +154,58 @@ def test_invalid_geometry_cannot_generate_a_command(value):
     row["planning_diagnostics"]["grasp_height_resolution"]["resolution"]["lower_z_mm"] = value
     with pytest.raises(ValueError):
         height_options(row, step_mm=1)
+
+
+def test_model_selects_nondefault_depth_and_preserves_other_commands():
+    from cloth_agent.grasp_height_retry import compile_model_height_retry
+    row = record()
+    proposal, choices, metadata = compile_model_height_retry(row,
+        {"contact_z_mm": 18.5, "reason": "Test 1.5 mm deeper"})
+    assert metadata["delta_commanded_z_mm"] == -1.5
+    assert metadata["decision_authority"] == "Claude"
+    validate_locked_retry(proposal.actions, choices, metadata)
+
+
+@pytest.mark.parametrize('z', [17., 20., float('nan'), True])
+def test_model_invalid_depth_is_rejected_without_clamping(z):
+    from cloth_agent.grasp_height_retry import compile_model_height_retry
+    with pytest.raises(ValueError):
+        compile_model_height_retry(record(), {"contact_z_mm": z, "reason": "test"})
+
+
+def test_model_can_choose_shallower_without_host_direction_override():
+    from cloth_agent.grasp_height_retry import compile_model_height_retry
+    _, _, metadata = compile_model_height_retry(record(),
+        {"contact_z_mm": 21.5, "reason": "Test shallower"})
+    assert metadata["choice"] == "SHALLOWER"
+
+
+def test_retry_images_exclude_derived_images_and_deduplicate_content(tmp_path):
+    from cloth_agent.grasp_height_retry import select_height_retry_images
+    def file(group, name, data):
+        p = tmp_path / group / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return str(p)
+    before = file('before', 'camera_A_rgb_upright.png', b'rgb')
+    after = file('after', 'camera_A_rgb_upright.png', b'rgb')
+    derived = file('before', 'camera_A_height_map_heatmap.png', b'heatmap')
+    raw = file('before', 'camera_0_A.png', b'raw')
+    holds = [file('hold', f'camera_A_grasp_{phase}.png', phase.encode())
+             for phase in ('before_lift', 'after_close', 'after_lift')]
+    images, catalog = select_height_retry_images({'before_images': [derived, raw, before],
+        'after_images': [after], 'observer_images_hold_check': holds})
+    assert len(images) == 4
+    assert len(catalog) == 5
+    assert catalog[0]['image_index'] == catalog[1]['image_index'] == 0
+    assert images[0].name == 'camera_A_rgb_upright.png'
+
+
+def test_retry_images_fallback_and_missing_evidence(tmp_path):
+    from cloth_agent.grasp_height_retry import select_height_retry_images
+    raw = tmp_path / 'camera_0_A.png'
+    raw.write_bytes(b'rgb')
+    images, catalog = select_height_retry_images({'before_images': [str(raw)],
+        'after_images': None, 'observer_images_hold_check': []})
+    assert images == [raw]
+    assert [c['role'] for c in catalog] == ['before_perception_rgb']
