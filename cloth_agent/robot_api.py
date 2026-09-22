@@ -617,8 +617,8 @@ class XArmBackend:
                  'timeout_s': None, 'wait_policy': 'feedback_until_complete_or_interrupt',
                  'warning_after_s': config.gripper_completion_timeout_s,
                  'sample_count': 0, 'dropped_sample_count': 0}
-        last_print = -1.
         before = None
+        last_print = -1.
 
         def record_sample(feedback, phase, *, progress=None, reason=None):
             nonlocal last_print
@@ -631,8 +631,7 @@ class XArmBackend:
             if len(trace['samples']) > 200:
                 del trace['samples'][0]
                 trace['dropped_sample_count'] += 1
-            interval = .5 if elapsed < trace['warning_after_s'] else 5.
-            if elapsed - last_print >= interval or reason:
+            if reason or elapsed - last_print >= 5.0:
                 waiting = 'READ_RETRY' if not feedback['usable_for_completion'] else 'WAITING'
                 _gripper_log(f'[gripper] {target}: phase={phase}, elapsed={elapsed:.2f}s, '
                     f'position={feedback["position_pulse"]}, target={target_position}, '
@@ -660,9 +659,18 @@ class XArmBackend:
             result = self._check('set_gripper_position', self.arm.set_gripper_position(
                 target_position, speed=config.gripper_speed, wait=False))
             trace['command_result'] = result
+            closing_started = False
+            stable_positions = []
+            stable_since = None
+            stable_position = None
+            trace["close_stability_duration_s"] = 3.0
+            trace['close_stability_samples'] = 20
+            trace['close_stability_range_pulse'] = 0.0
             while True:
                 feedback = self._checked_gripper_feedback()
                 if not feedback['usable_for_completion']:
+                    stable_positions.clear()
+                    stable_since = None
                     record_sample(feedback, 'after_command')
                     time.sleep(.05)
                     continue
@@ -671,10 +679,30 @@ class XArmBackend:
                 progress = direction * (position - initial)
                 at_target = abs(position - target_position) <= trace['position_tolerance_pulse']
                 reason = None
-                if state in {'stop', 'grasp'} and at_target:
+                if target == 'open' and state in {'stop', 'grasp'} and at_target:
                     reason = 'measured_target_reached'
-                # Real telemetry reports grasp even near the open endpoint
-                # and during travel. It must never bypass measured position.
+                if target == 'close':
+                    # Require an unchanged stopped position for three seconds
+                    # after observed closure. Any movement/read failure resets it.
+                    if progress > 2:
+                        closing_started = True
+                    trace['closing_started'] = closing_started
+                    if closing_started and progress > 2 and state in {'stop', 'grasp'}:
+                        now = time.monotonic()
+                        if stable_since is None or position != stable_position:
+                            stable_since = now
+                            stable_position = position
+                            stable_positions.clear()
+                        stable_positions.append(position)
+                        stable_positions = stable_positions[-20:]
+                        trace['close_stable_elapsed_s'] = now - stable_since
+                        if len(stable_positions) == 20 and now - stable_since >= 3.0:
+                            reason = 'measured_close_stable'
+                    else:
+                        stable_positions.clear()
+                        stable_since = None
+                        trace['close_stable_elapsed_s'] = 0.0
+                    trace['close_recent_positions_pulse'] = list(stable_positions)
                 elapsed = record_sample(feedback, 'after_command', progress=progress, reason=reason)
                 if reason:
                     trace.update(status='COMPLETED', reason=reason, duration_s=elapsed)

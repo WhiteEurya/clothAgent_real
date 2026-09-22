@@ -624,25 +624,74 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
     assert "CLAUDE_WAS_CALLED" not in called[0].stdout
 
 
-def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, monkeypatch):
+@pytest.mark.parametrize("nonblocking_audit", [False, True])
+@pytest.mark.parametrize("transient_failures", [0, 2])
+def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, monkeypatch, transient_failures, nonblocking_audit):
     session, images, _ = saved_scene
     real_run = subprocess.run
+    counter = session.run_dir / "download_attempts"
+    downloader = session.run_dir / "download_stub.sh"
+    downloader.write_text(
+        f'n=0; [ ! -f {shlex.quote(str(counter))} ] || n=$(cat {shlex.quote(str(counter))}); '
+        f'n=$((n+1)); echo "$n" > {shlex.quote(str(counter))}; '
+        f'if [ "$n" -le {transient_failures} ]; then printf partial > "$1"; exit 18; fi; '
+        f'cp {shlex.quote(str(images[0]))} "$1"\n')
     stub = session.run_dir / "claude_stub.sh"
     stub.write_text("printf '%s' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+    if nonblocking_audit:
+        with stub.open("a") as stream:
+            stream.write("python3 -c " + shlex.quote(
+                "import os; from pathlib import Path; "
+                "Path('image_tool_calls.jsonl').write_text(('AUDIT_PAYLOAD_' + 'x'*4096 + '\\n')*512); "
+                "os.set_blocking(2, False)") + "\n")
     def run(command, **kwargs):
         if command[0] == "curl":
             return SimpleNamespace(returncode=0, stdout='{"id":"relay"}', stderr="")
         remote = command[-1]
         if not remote.startswith("rm -rf"):
             import re
-            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
-                lambda m: f"cp {shlex.quote(str(images[0]))} {m[1]}", remote)
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o ([^; ]+)",
+                lambda m: f"sh {shlex.quote(str(downloader))} {m[1]}", remote)
+            remote = remote.replace("sleep 2;", "sleep 0;")
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)
     monkeypatch.setattr(subprocess, "run", run)
     result = RemoteClaudeBackend().invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
     assert parse_claude_json(result.stdout) == {"ok": True}
+    assert int(counter.read_text()) == transient_failures + 1
+    if nonblocking_audit:
+        assert result.stderr.count("__CLOTH_IMAGE_TOOL__ AUDIT_PAYLOAD_") == 512
+        assert '"tool":"audit_finished"' in result.stderr
+        assert "couldn\'t flush" not in result.stderr
     assert {"remote_download_0_s", "remote_hash_0_s", "remote_claude_s"} <= result.timings.keys()
     import re
     job = re.search(r"/tmp/cloth_remote_[a-f0-9]+", result.command[-1]).group()
     assert not Path(job).exists()
+
+@pytest.mark.parametrize('code', [35, 56, 28])
+def test_upload_retries_same_file_after_transport_failure(monkeypatch, code):
+    calls, delays = [], []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=code if len(calls) < 3 else 0,
+                               stdout='' if len(calls) < 3 else '{"id":"retry-file"}',
+                               stderr='connection reset')
+    monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
+    monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', delays.append)
+    result = RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+    assert 'retry-file' in result
+    assert len(calls) == 3 and calls[0] == calls[1] == calls[2]
+    assert '--http1.1' in calls[0]
+    assert delays == [2., 4.]
+
+
+def test_upload_retry_exhaustion(monkeypatch):
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=56, stdout='', stderr='reset')
+    monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
+    monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', lambda _: None)
+    with pytest.raises(PlannerBackendError, match='56'):
+        RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+    assert len(calls) == 3

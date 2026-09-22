@@ -34,7 +34,7 @@
     "speed": 500,
     "open": 850,
     "open_tolerance_pulse": 15.0,
-    "close": 0,
+    "close": 5,
     "settle_s": 0.5,
     "completion_timeout_s": 10.0,
     "width_mm": 86.0

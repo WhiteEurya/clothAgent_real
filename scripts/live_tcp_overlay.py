@@ -166,11 +166,76 @@ def render_overlay(rgb, sample, now, pixel_offset=(0.0, 0.0)):
     return image, status
 
 
+class YProjectionPlot:
+    """Plot displayed telemetry, not an independent visual measurement."""
+
+    def __init__(self, root, directory):
+        import tkinter as tk
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        self.directory = directory
+        self.rows = []
+        self.last_timestamp = None
+        self.window = tk.Toplevel(root)
+        self.window.title('TCP base Y vs projected RGB y')
+        self.window.protocol('WM_DELETE_WINDOW', self.window.withdraw)
+        self.figure = Figure(figsize=(7, 4), tight_layout=True)
+        self.axes = self.figure.add_subplot(111)
+        self.axes.set_xlabel('Actual TCP base Y (mm)')
+        self.axes.set_ylabel('Projected RGB y / v (original pixels)')
+        self.axes.set_title('Fixed reference camera projection (not visual tracking)')
+        self.axes.grid(True, alpha=.3)
+        self.lines = {phase: self.axes.plot([], [], '.', markersize=3, label=phase)[0]
+                      for phase in ('APPROACHING', 'SCANNING', 'MONITORING')}
+        self.axes.legend()
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.window)
+        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+        self.log = (directory / 'y_projection.jsonl').open('w', encoding='utf-8')
+
+    def update(self, sample, now):
+        status, _ = overlay_status(sample, now)
+        if status not in ('VISIBLE', 'OUTSIDE_IMAGE'):
+            return
+        timestamp = sample['sample_monotonic']
+        if timestamp == self.last_timestamp:
+            return
+        uv = sample['projection']['raw_pixel_xy']
+        xyz = sample['tcp_pose_mm_deg'][:3]
+        if uv is None or not np.isfinite([*xyz, *uv]).all():
+            return
+        self.last_timestamp = timestamp
+        phase = sample.get('scan_status', 'MONITORING')
+        if phase not in self.lines:
+            phase = 'MONITORING'
+        row = dict(sample_monotonic=timestamp, phase=phase, base_xyz_mm=list(xyz),
+                   rgb_pixel_xy=list(uv), projection_status=status)
+        self.log.write(json.dumps(row, allow_nan=False)+'\n')
+        self.log.flush()
+        self.rows.append(row)
+        for name, line in self.lines.items():
+            rows = [r for r in self.rows if r['phase'] == name]
+            line.set_data([r['base_xyz_mm'][1] for r in rows],
+                          [r['rgb_pixel_xy'][1] for r in rows])
+        self.axes.relim()
+        self.axes.autoscale_view()
+        self.canvas.draw_idle()
+
+    def save(self):
+        self.figure.savefig(self.directory / 'y_projection.png', dpi=160)
+
+    def close(self):
+        try:
+            self.save()
+        finally:
+            self.log.close()
+
+
 def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_begin=None):
     import tkinter as tk
     from PIL import ImageTk
 
-    root.title('Frozen observation photo | live TCP projection (read-only)')
+    root.title('Frozen observation photo | ' + ('automatic approach + Y scan' if scan_begin is not None else 'live TCP projection (read-only)'))
     rgb = Image.fromarray(frame.rgb)
     offset = [float(value) for value in pixel_offset]
     scale = min(1.0, (root.winfo_screenwidth()-80)/rgb.width,
@@ -182,11 +247,13 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_beg
     tk.Label(root, textvariable=info, justify='left', font=('TkDefaultFont', 12)).pack(pady=8)
     tk.Label(root, text='Move using pendant/vendor controls. Marker = configured TCP, not jaw tips.\n'
              'Green: original TCP. Orange: display offset. Arrows: 1 px; Shift+arrows: 10 px; R: reset.\n'
-             'Fixed photo / fixed camera transform. S: save screenshot. Esc: close (no robot command).').pack()
+             'Fixed photo / fixed camera transform. S: save screenshot. ' +
+             ('Esc: stop motion and close.' if scan_begin is not None else 'Esc: close (no robot command).')).pack()
     current = None
+    y_plot = YProjectionPlot(root, directory)
     if scan_begin is not None:
-        tk.Label(root, text='SCAN: manually reach X=420 and configured start Y/Z, switch to position mode.\n'
-                 'B: start one Y sweep. Esc/close: request stop. Initial photo move is separate from sweep.',
+        tk.Label(root, text='SCAN: select position mode. B automatically approaches X=420 and configured start Y/Z.\n'
+                 'Elevated transit, vertical descent, then one Y sweep. Esc/close: request stop.',
                  fg='red').pack()
         root.bind('<b>', lambda event: scan_begin.set())
         root.bind('<B>', lambda event: scan_begin.set())
@@ -219,6 +286,7 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_beg
         except queue.Empty:
             pass
         now = time.monotonic()
+        y_plot.update(current, now)
         image, status = render_overlay(rgb, current, now, offset)
         photo = ImageTk.PhotoImage(image.resize(size))
         image_label.configure(image=photo)
@@ -249,6 +317,7 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_beg
         root.after(50, refresh)
 
     def snapshot(event=None):
+        y_plot.save()
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         now = time.monotonic()
         image, status = render_overlay(rgb, current, now, offset)
@@ -274,7 +343,10 @@ def run_viewer(root, frame, latest, directory, pixel_offset=(0.0, 0.0), scan_beg
     root.protocol('WM_DELETE_WINDOW', root.quit)
     root.deiconify()
     refresh()
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        y_plot.close()
     return offset
 
 
@@ -371,7 +443,7 @@ def main(argv=None):
                                       args=(arm, config, projection, latest, stop, scan_begin, scan_settings,
                                             directory, poll_sample, publish_latest, read_pose), daemon=True)
         worker.start()
-        print(f'Reference captured. You may now move manually. Records: {directory}', flush=True)
+        print(f'Reference captured. {"Press B to approach the start and scan." if scan_settings else "You may now move manually."} Records: {directory}', flush=True)
         if scan_begin is None:
             report['final_display_pixel_offset_xy'] = run_viewer(root, frame, latest, directory, args.pixel_offset)
         else:

@@ -123,3 +123,50 @@ def test_scan_requires_motion_flags_and_explicit_parameters(args):
     with pytest.raises(SystemExit) as error:
         overlay.main(args)
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize('failure', [None, 'ik', 'cancel', 'feedback'])
+def test_automatic_approach_before_sweep(monkeypatch, tmp_path, config, failure):
+    arm = Arm()
+    arm.pose = [400., -32., 531., -178., 0., 12.]
+    arm.get_is_moving = lambda: False
+    arm.get_state = lambda: (0, 0)
+    stop = threading.Event()
+    planner = Mock(return_value=ControllerTrajectoryValidation({}, 0, (0, 0, 172, 0, 0, 0), 36))
+    if failure == 'ik':
+        planner.side_effect = RuntimeError('IK reject')
+    monkeypatch.setattr(scan, '_controller_trajectory_with_arm', planner)
+
+    def move(**kwargs):
+        arm.commands.append(kwargs)
+        arm.pose = [kwargs[k] for k in ('x', 'y', 'z', 'roll', 'pitch', 'yaw')]
+        if failure == 'cancel':
+            stop.set()
+        return 0
+
+    arm.set_position = move
+
+    def poll(*args):
+        return {'status': 'READ_ERROR' if failure == 'feedback' else 'OK',
+                'read_duration_s': .01, 'sample_monotonic': 1.,
+                'tcp_pose_mm_deg': list(arm.pose)}
+
+    report = scan.run_scan(arm, config, scan.ScanSettings(-140, 220, 50, 10),
+                           None, None, stop, tmp_path, poll, lambda *args: None,
+                           lambda *args: list(arm.pose))
+    if failure == 'ik':
+        assert report['status'] == 'FAILED'
+        assert arm.commands == []
+    elif failure:
+        assert report['status'] == 'FAILED'
+        assert arm.commands[-1] == {'stop_state': 4}
+        assert not any(c.get('y') == 220 for c in arm.commands)
+    else:
+        assert report['status'] == 'COMPLETE'
+        moves = arm.commands
+        assert moves[-3]['x'] == 420 and moves[-3]['y'] == -140
+        assert moves[-3]['z'] >= 531
+        assert moves[-2]['z'] == 50 and moves[-2]['y'] == -140
+        assert moves[-1]['y'] == 220
+        assert all(c['yaw'] == 12 for c in moves)
+        assert (tmp_path/'approach_samples.jsonl').exists()

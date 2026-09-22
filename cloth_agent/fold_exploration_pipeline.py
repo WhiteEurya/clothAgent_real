@@ -6619,7 +6619,7 @@ class FoldExplorationPipeline:
                     "execution_proposal": execution_proposal.as_dict(),
                     "host_compilation": host_compilation,
                     "trajectory": trajectory,
-                    "preflight": asdict(preflight),
+                    "preflight": {**asdict(preflight), "source_path": str(preflight.source_path)},
                     "controller_ik": asdict(controller),
                     "planning_attempts": planning_attempts,
                     "execution": execution,

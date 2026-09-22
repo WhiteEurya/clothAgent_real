@@ -11,7 +11,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import select
 import sys
 import time
 
@@ -162,6 +164,34 @@ def save_report(directory, records, board):
           f"max board drift={report.get('max_pairwise_board_drift_mm', '-')} mm", flush=True)
 
 
+def wait_for_capture(camera, window):
+    """Pump the preview and terminal on one thread, sharing the capture pipeline."""
+    print('Keep board FIXED. Move wrist manually, hold still. '
+          'Enter/Space in preview or Enter in terminal=capture; q/Esc=finish.', flush=True)
+    while True:
+        rgb, _ = camera.read()
+        frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        cv2.putText(frame, 'LIVE | Hold still: Enter/Space capture | Q/Esc finish',
+                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 0), 2)
+        cv2.imshow(window, frame)
+        key = cv2.waitKey(1) & 0xff
+        if key in (27, ord('q'), ord('Q')):
+            return 'q'
+        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            return 'q'
+        if key in (10, 13, 32):
+            return ''
+        # Only poll interactive terminals: redirected stdin at EOF should not
+        # immediately close an otherwise usable GUI preview.
+        if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+            line = sys.stdin.readline()
+            if not line:
+                return 'q'
+            command = line.strip().lower()
+            if command in ('', 'q'):
+                return command
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--board', type=Path, default=PROJECT_ROOT / 'config/apriltag_board_4x4_tag48mm.yaml')
@@ -172,6 +202,8 @@ def main(argv=None):
     parser.add_argument('--session', type=Path, help='Re-analyze saved session; no hardware connections')
     parser.add_argument('--output-dir', type=Path, help='Parent for a new timestamped diagnostic directory')
     parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument('--no-preview', action='store_true',
+                        help='Disable live RGB window (terminal-only/headless capture)')
     args = parser.parse_args(argv)
     if not 1 <= args.repeats <= 20:
         parser.error('--repeats must be 1..20')
@@ -198,6 +230,7 @@ def main(argv=None):
     print(f"Board {board['family']}, scale={scale:.9f}, black edge={board['tag_size_mm']:.3f} mm\nOutput: {directory}", flush=True)
     records = []
     arm = camera = None
+    window = None
     try:
         if args.session:
             captures = sorted(args.session.glob('sample_*/capture.json'))
@@ -211,6 +244,12 @@ def main(argv=None):
                 target.mkdir()
                 records.append(analyze_capture(record, rgb, depth, board, detector, target))
         else:
+            if not args.no_preview:
+                if sys.platform.startswith('linux') and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+                    raise RuntimeError('Live preview needs a graphical desktop. Use --no-preview for terminal-only capture.')
+                window = 'AprilTag camera preview'
+                cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(window, 960, 540)
             config = RobotConfig.load(PROJECT_ROOT, args.robot_config)
             perception = PerceptionConfig.load(PROJECT_ROOT, args.perception_config)
             spec = next((s for s in perception.cameras if s.label == args.camera.upper()), None)
@@ -238,13 +277,23 @@ def main(argv=None):
             group = 0
             while True:
                 try:
-                    command = input('Keep board FIXED. Move wrist manually, hold still. Enter=capture, q=finish: ').strip().lower()
+                    command = (wait_for_capture(camera, window) if window else
+                               input('Keep board FIXED. Move wrist manually, hold still. Enter=capture, q=finish: ').strip().lower())
                 except EOFError:
                     break
                 if command == 'q':
                     break
                 if command:
                     continue
+                if window:
+                    # Make the temporary pause explicit while capture/analysis
+                    # owns this same pipeline; no second camera connection.
+                    rgb, _ = camera.read()
+                    frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    cv2.putText(frame, 'CAPTURING / ANALYZING - hold still', (12, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
+                    cv2.imshow(window, frame)
+                    cv2.waitKey(1)
                 group += 1
                 for _ in range(args.repeats):
                     sample_id = len(records)+1
@@ -260,8 +309,12 @@ def main(argv=None):
         raise
     finally:
         try:
-            if camera is not None:
-                camera.stop()
+            try:
+                if window is not None:
+                    cv2.destroyAllWindows()
+            finally:
+                if camera is not None:
+                    camera.stop()
         finally:
             if arm is not None:
                 arm.disconnect()

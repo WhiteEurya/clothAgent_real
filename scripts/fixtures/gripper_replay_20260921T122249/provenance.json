@@ -1,0 +1,8 @@
+{
+  "source": "/mnt/newssd/sja/clothAgent_real/runs/2026-09-21/fold_20260921T122249152631944Z/results/_fold_experiment_20260921T122249547824Z_001.source.py",
+  "initial_position_pulse": 840,
+  "target_position_pulse": 5,
+  "accepted_position_pulse": 816,
+  "stable_samples": 20,
+  "completion_duration_s": 2.137223109137267
+}

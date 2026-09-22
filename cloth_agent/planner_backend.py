@@ -167,19 +167,36 @@ class RemoteClaudeBackend:
 
     def _upload(self, image: Path) -> str:
         command = [
-            self.curl_binary, "-fsS", "-X", "POST", self.upload_url,
+            self.curl_binary, "-fsS", "--http1.1", "-X", "POST", self.upload_url,
             "-F", f"files=@{image}", "-F", "expiryHours=1",
         ]
-        try:
-            completed = subprocess.run(command, text=True, capture_output=True,
-                                       timeout=self._remaining_timeout(self.timeout_s), check=False, shell=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise PlannerBackendError(f"HTTPS image upload failed: {exc}") from exc
-        if completed.returncode != 0:
-            raise PlannerBackendError(
-                f"HTTPS image upload exited with {completed.returncode}: "
-                f"{completed.stderr.strip() or completed.stdout.strip()}"
-            )
+        for attempt in range(1, 4):
+            try:
+                completed = subprocess.run(command, text=True, capture_output=True,
+                                           timeout=self._remaining_timeout(min(120, self.timeout_s)),
+                                           check=False, shell=False)
+            except subprocess.TimeoutExpired as exc:
+                failure = PlannerBackendError("HTTPS image upload timed out")
+                retryable = True
+            except OSError as exc:
+                raise PlannerBackendError(f"HTTPS image upload failed: {exc}") from exc
+            else:
+                if completed.returncode == 0:
+                    break
+                failure = PlannerBackendError(
+                    f"HTTPS image upload exited with {completed.returncode}: "
+                    f"{completed.stderr.strip() or completed.stdout.strip()}"
+                )
+                retryable = completed.returncode in {5, 6, 7, 18, 28, 35, 52, 55, 56, 92}
+            if not retryable or attempt == 3:
+                raise failure
+            delay = 2.0 * attempt
+            if self._remaining_timeout(delay + .1) <= delay:
+                raise failure
+            self._progress('image_upload', 'retry', image_name=image.name,
+                           attempt=attempt, next_attempt=attempt + 1, max_attempts=3,
+                           retry_delay_s=delay, reason=str(failure))
+            time.sleep(delay)
         try:
             payload: Any = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
@@ -458,10 +475,19 @@ class RemoteClaudeBackend:
         quoted_job = shlex.quote(job)
         setup, tool_flags, tool_prompt = (self._image_tool_setup(job, len(images))
             if self.image_tools else ("", "--allowedTools Read --tools Read --strict-mcp-config ", ""))
+        # Retry each GET at most twice, overwriting partial output on retry.
+        # Use a shell loop for compatibility with older remote curl versions.
+        # Keep hash verification before any model invocation.
         downloads = " && ".join(
             f"cloth_stage=download_{i} && cloth_begin=$(date +%s%N) && "
-            f"curl -fsSL --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
-            f"-o {quoted_job}/image_{i}.png && cloth_done && "
+            f"( cloth_attempt=1; while :; do "
+            f"if curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
+            f"-o {quoted_job}/image_{i}.png; then break; else cloth_rc=$?; fi; "
+            'if [ "$cloth_attempt" -ge 3 ]; then exit "$cloth_rc"; fi; '
+            'case "$cloth_rc" in 5|6|7|18|28|35|52|55|56|92) ;; *) exit "$cloth_rc" ;; esac; '
+            f"printf 'download_{i}: retry after curl exit %s (attempt %s/3)\\n' "
+            '\"$cloth_rc\" \"$cloth_attempt\" >&2; '
+            'sleep 2; cloth_attempt=$((cloth_attempt + 1)); done ) && cloth_done && '
             f"cloth_stage=hash_{i} && cloth_begin=$(date +%s%N) && "
             f"printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} "
             f"{quoted_job}/image_{i}.png | sha256sum -c - >&2 && cloth_done"
@@ -475,9 +501,14 @@ class RemoteClaudeBackend:
             "cloth_end=$(date +%s%N); "
             "printf '__CLOTH_TIMING__ %s %s\\n' \"$cloth_stage\" \"$((cloth_end-cloth_begin))\" >&2; "
             "cloth_begin=0; fi; }; "
-            f"trap 'cloth_rc=$?; cloth_done; "
+            f"trap 'cloth_rc=$?; "
             'if [ -n "$cloth_audit_pid" ]; then kill "$cloth_audit_pid" 2>/dev/null || true; '
             'wait "$cloth_audit_pid" 2>/dev/null || true; fi; '
+            # Child runtimes can leave the inherited SSH pipe nonblocking.
+            # Restore blocking writes after stopping the forwarder, before
+            # flushing the complete audit. Do not mask audit delivery errors.
+            '\"${cloth_image_python:-python3}\" -c \"import os; os.set_blocking(1, True); os.set_blocking(2, True)\"; '
+            'cloth_done; '
             f"if [ -f {quoted_job}/image_tool_calls.jsonl ]; then "
             f"sed \"s/^/__CLOTH_IMAGE_TOOL__ /\" {quoted_job}/image_tool_calls.jsonl >&2; fi; "
             'printf "__CLOTH_IMAGE_TOOL__ {\\\"tool\\\":\\\"audit_finished\\\",\\\"status\\\":\\\"ok\\\"}\\n" >&2; '

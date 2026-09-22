@@ -219,3 +219,33 @@ def test_initial_motion_requires_flags(monkeypatch):
         script.main([])
     assert exc.value.code == 2
     move.assert_not_called()
+
+
+def test_y_plot_records_fresh_unique_projection_and_exports(tmp_path):
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from scripts.live_tcp_overlay import YProjectionPlot
+    plot = YProjectionPlot.__new__(YProjectionPlot)
+    plot.directory = tmp_path
+    plot.rows = []
+    plot.last_timestamp = None
+    plot.figure = Figure()
+    plot.axes = plot.figure.add_subplot(111)
+    plot.canvas = FigureCanvasAgg(plot.figure)
+    plot.lines = {phase: plot.axes.plot([], [], '.')[0]
+                  for phase in ('APPROACHING', 'SCANNING', 'MONITORING')}
+    plot.log = (tmp_path / 'y_projection.jsonl').open('w')
+    sample = {'status': 'OK', 'sample_monotonic': 10., 'scan_status': 'SCANNING',
+              'tcp_pose_mm_deg': [420., -140., 50., 0., 0., 0.],
+              'projection': {'status': 'VISIBLE', 'raw_pixel_xy': [200., 300.]}}
+    plot.update(sample, 10.1)
+    plot.update(sample, 10.2)
+    assert len(plot.rows) == 1
+    sample = dict(sample, sample_monotonic=11.)
+    plot.update(sample, 15.)  # Stale telemetry must not be plotted.
+    assert len(plot.rows) == 1
+    assert list(plot.lines['SCANNING'].get_xdata()) == [-140.]
+    assert list(plot.lines['SCANNING'].get_ydata()) == [300.]
+    plot.close()
+    assert (tmp_path / 'y_projection.png').stat().st_size > 0
+    assert len((tmp_path / 'y_projection.jsonl').read_text().splitlines()) == 1

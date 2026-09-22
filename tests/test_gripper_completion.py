@@ -73,11 +73,11 @@ def test_old_stop_at_open_position_does_not_allow_lift(config, backend):
     robot = RobotAPI(config, b)
     robot.close_gripper()
     robot.move(300, 0, 100, 0)
-    assert b.arm.moves[0]['samples_read'] == 7
+    assert b.arm.moves[0]['samples_read'] >= 66
     assert b.arm.commands == [(0., {'speed': 500., 'wait': False})]
     completion = robot.actions[0].gripper_result['completion']
-    assert completion['reason'] == 'measured_target_reached'
-    assert len(completion['samples']) == 6
+    assert completion['reason'] == 'measured_close_stable'
+    assert len(completion['samples']) >= 65
     assert all(row['completion_reason'] is None for row in completion['samples'][:-1])
 
 
@@ -88,30 +88,37 @@ def test_observed_early_grasp_at_834_never_releases_lift(config, backend):
     robot.close_gripper()
     robot.move(300, 0, 100, 0)
     completion = robot.actions[0].gripper_result['completion']
-    assert completion['reason'] == 'measured_target_reached'
-    assert len(completion['samples']) == 7
+    assert completion['reason'] == 'measured_close_stable'
+    assert len(completion['samples']) >= 66
     assert all(row['completion_reason'] is None for row in completion['samples'][:-1])
-    assert b.arm.moves[0]['samples_read'] == 8
+    assert b.arm.moves[0]['samples_read'] >= 67
     assert robot.actions[0].gripper_result['feedback']['position_pulse'] == 3
 
 
-def test_grasp_contact_above_closed_target_waits_for_operator(config, backend):
-    b = backend([sample(840), sample(500, 1)] + [sample(35, 2)]*260 + [KeyboardInterrupt()])
-    robot = RobotAPI(config, b)
-    with pytest.raises(KeyboardInterrupt):
-        robot.close_gripper()
-    with pytest.raises(RobotExecutionError, match='halted'):
-        robot.move(300, 0, 100, 0)
-    assert not b.arm.moves
+@pytest.mark.parametrize('position,status', [(13, 2), (35, 2), (100, 0)])
+def test_stable_closure_above_target_allows_next_action(config, backend, position, status):
+    b = backend([sample(840), sample(500, 1)] + [sample(position, status)]*20)
+    robot = RobotAPI(replace(config, gripper_close=5), b)
+    robot.close_gripper()
+    robot.move(300, 0, 100, 0)
+    completion = robot.actions[0].gripper_result['completion']
+    assert completion['reason'] == 'measured_close_stable'
+    assert completion['duration_s'] >= .2
+    assert len(b.arm.moves) == 1
     assert len(b.arm.commands) == 1
-    assert all(row['completion_reason'] is None
-               for row in robot.actions[0].gripper_result['completion']['samples'])
+
+
+def test_invalid_feedback_resets_close_stability(config, backend):
+    b = backend([sample(840)] + [sample(13, 2)]*4 +
+                [sample(13, 2, position_result=(9, 13))] + [sample(13, 2)]*20)
+    result, _ = b.close_gripper(config)
+    assert result['completion']['reason'] == 'measured_close_stable'
+    assert result['completion']['duration_s'] >= .4
 
 
 @pytest.mark.parametrize('samples', [
     [sample(850), sample(850)],
     [sample(850), sample(850, 2)],
-    [sample(850), sample(500, 1), sample(100)],
     [sample(500), sample(700, 2)],
     [sample(850), sample(0, 1)],
 ])
@@ -145,7 +152,7 @@ def test_bad_reads_retry_then_complete_without_resending(config, backend, bad):
     robot.close_gripper()
     robot.move(300, 0, 100, 0)
     assert not robot.halted
-    assert b.arm.moves[0]['samples_read'] == 63
+    assert b.arm.moves[0]['samples_read'] >= 122
     assert len(b.arm.commands) == 1
     assert robot.actions[0].gripper_result['completion']['duration_s'] >= 3.
 
@@ -166,10 +173,10 @@ def test_open_needs_target_position_and_terminal_state(config, backend):
     assert result['completion']['reason'] == 'measured_target_reached'
 
 
-def test_already_closed_and_list_sdk_results(config, backend):
-    b = backend([sample(0, position_result=[0, 0], status_result=[0, 0])]*2)
-    result, _ = b.close_gripper(config)
-    assert result['completion']['duration_s'] == 0
+def test_no_closing_trend_does_not_complete_even_at_target(config, backend):
+    b = backend([sample(0)]*10 + [KeyboardInterrupt()])
+    with pytest.raises(KeyboardInterrupt):
+        b.close_gripper(config)
 
 
 def test_open_840_stopped_accepts_850_target(config, backend):
@@ -238,14 +245,14 @@ def test_already_moving_does_not_send_another_command(config, backend):
     b = backend([sample(500, 1)]*60 + [sample(850), sample(0)])
     b.close_gripper(config)
     assert len(b.arm.commands) == 1
-    assert b.arm.index == 62
+    assert b.arm.index >= 121
 
 
 def test_initial_read_failure_waits_before_sending_command(config, backend):
     b = backend([sample(850, status_result=(7, 0))]*60 + [sample(850), sample(0)])
     result, _ = b.close_gripper(config)
-    assert result['completion']['duration_s'] == pytest.approx(3.)
-    assert b.arm.index == 62
+    assert result['completion']['close_stable_elapsed_s'] >= 3.0
+    assert b.arm.index >= 121
     assert len(b.arm.commands) == 1
 
 
@@ -256,10 +263,10 @@ def test_long_motion_waits_until_feedback_confirms_completion(config, backend, t
     trace = result['completion']
     assert trace['duration_s'] >= 13.
     assert trace['status'] == 'COMPLETED'
-    assert trace['reason'] == 'measured_target_reached'
+    assert trace['reason'] == ('measured_close_stable' if target == 'close' else 'measured_target_reached')
     assert len(trace['samples']) == 200
-    assert trace['dropped_sample_count'] == 61
-    assert trace['sample_count'] == 261
+    assert trace['dropped_sample_count'] >= (120 if target == 'close' else 61)
+    assert trace['sample_count'] >= (320 if target == 'close' else 261)
     assert len(b.arm.commands) == 1
 
 
@@ -394,10 +401,10 @@ def test_both_entrypoints_use_strict_close_gate(
     samples = [sample(840), sample(840),  # open already reached
                sample(840), sample(840, 2), sample(834, 2)]
     if reaches_closed_target:
-        samples += [sample(3, 1), sample(3),  # only last one can release lift
+        samples += [sample(3, 1)] + [sample(3)]*65 + [  # stable window before lift
                     sample(3), sample(39, 2), sample(840)]  # release open
     else:
-        samples += [sample(834, 2)]*60 + [KeyboardInterrupt()]
+        samples += [sample(840, 2)]*60 + [KeyboardInterrupt()]
     b = backend(samples)
     b.close = lambda: None
     home_calls = []
@@ -446,12 +453,24 @@ def test_both_entrypoints_use_strict_close_gate(
         # Third Cartesian call is the lift. It must follow the seventh feedback
         # read (position=3, stop), never the fifth (position=834, grasp).
         assert len(b.arm.moves) == 6
-        assert b.arm.moves[2]['samples_read'] == 7
+        assert b.arm.moves[2]['samples_read'] >= 66
         if route == 'fold_pipeline':
-            assert capture_samples == [7]  # photo only after measured closure
+            assert capture_samples == [b.arm.moves[2]['samples_read']]  # photo only after measured closure
         assert home_calls
     else:
         assert len(b.arm.moves) == 2  # approach + descend only
         assert not home_calls
         assert result['gripper_completion_failed'] is True
         assert capture_samples == []
+
+
+@pytest.mark.parametrize('interrupt_sample', [sample(722, 1), sample(722, 2, position_result=(9, 722))])
+def test_twenty_stopped_samples_restart_after_motion_or_bad_read(config, backend, interrupt_sample):
+    b = backend([sample(839), sample(723, 1)] + [sample(722, 2)]*19 +
+                [interrupt_sample] + [sample(722, 2)]*19 + [sample(13, 2)]*20)
+    result, _ = b.close_gripper(config)
+    trace = result['completion']
+    assert trace['close_stability_samples'] == 20
+    assert result['feedback']['position_pulse'] == 13
+    assert b.arm.index >= 101
+    assert trace['close_recent_positions_pulse'] == [13]*20

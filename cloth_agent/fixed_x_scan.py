@@ -1,4 +1,4 @@
-"""One operator-triggered Y sweep at base X=420 mm; no approach or return."""
+"""Operator-triggered elevated approach followed by a Y sweep at X=420 mm."""
 from dataclasses import asdict, dataclass, replace
 import json
 import math
@@ -55,7 +55,8 @@ def prepare(arm, config, settings, read_pose):
     # starting joints, not saved Home. No home command is ever executed here.
     local = replace(config, init_joints_deg=tuple(joints), init_pose_mm_deg=tuple(pose),
                     orientation_roll_deg=pose[3], orientation_pitch_deg=pose[4])
-    action = {'name': 'move', 'args': {'x': 420., 'y': settings.y_end, 'z': settings.z, 'yaw': 0.}}
+    action = {'name': 'move', 'args': {'x': 420., 'y': settings.y_end, 'z': settings.z,
+                                    'yaw': local.relative_yaw_from_absolute_deg(pose[5])}}
     validation = _controller_trajectory_with_arm(arm, local, [action])
     fresh = read_pose(arm, config)
     require_start(fresh, settings)
@@ -67,11 +68,96 @@ def prepare(arm, config, settings, read_pose):
     return pose, validation
 
 
+def approach_start(arm, config, settings, stop, report, directory, poll_sample,
+                   projection, latest, publish, read_pose):
+    settings.validate(config)
+    require_ready(arm)
+    if arm.get_is_moving():
+        raise RuntimeError('Robot must be stationary before automatic approach')
+    pose = list(read_pose(arm, config))
+    try:
+        require_start(pose, settings)
+        return
+    except RuntimeError:
+        pass
+    code, joints = arm.get_servo_angle(is_radian=False)
+    if code != 0 or len(joints) != 7 or not all(math.isfinite(v) for v in joints):
+        raise RuntimeError('Invalid approach joints')
+    local = replace(config, init_joints_deg=tuple(joints), init_pose_mm_deg=tuple(pose),
+                    orientation_roll_deg=pose[3], orientation_pitch_deg=pose[4])
+    # Raise if necessary, translate above the start, then descend vertically.
+    height = max(pose[2], config.init_pose_mm_deg[2], settings.z + 80.)
+    points = [(pose[0], pose[1], height), (420., settings.y_start, height),
+              (420., settings.y_start, settings.z)]
+    yaw = local.relative_yaw_from_absolute_deg(pose[5])
+    actions = [{'name': 'move', 'args': dict(x=x, y=y, z=z, yaw=yaw)}
+               for x, y, z in points + [(420., settings.y_end, settings.z)]]
+    report['approach_ik'] = asdict(_controller_trajectory_with_arm(arm, local, actions))
+    fresh = read_pose(arm, config)
+    if (math.dist(pose[:3], fresh[:3]) > .2
+            or max(abs((a-b+180)%360-180) for a, b in zip(pose[3:], fresh[3:])) > .2
+            or arm.get_is_moving()):
+        raise RuntimeError('Robot moved during approach preflight')
+    require_ready(arm)
+    report.update(status='APPROACHING', approach_waypoints_mm=points,
+                  approach_orientation_deg=pose[3:])
+    (directory / 'scan.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    armed = False
+    previous = pose[:3]
+    try:
+        with (directory / 'approach_samples.jsonl').open('w', encoding='utf-8') as log:
+            for target in points:
+                if math.dist(previous, target) <= .2:
+                    continue
+                if stop.is_set():
+                    raise RuntimeError('Approach cancelled')
+                armed = True
+                started = time.monotonic()
+                duration = math.dist(previous, target)/settings.speed * 2 + 15
+                code = arm.set_position(x=target[0], y=target[1], z=target[2],
+                                        roll=pose[3], pitch=pose[4], yaw=pose[5],
+                                        speed=settings.speed, mvacc=config.acceleration_mm_s2,
+                                        radius=-1, wait=False, is_radian=False)
+                if code != 0:
+                    raise RuntimeError(f'Approach command failed: {code}')
+                while True:
+                    if stop.is_set():
+                        raise RuntimeError('Operator cancelled approach')
+                    sample = poll_sample(arm, config, projection)
+                    sample['scan_status'] = 'APPROACHING'
+                    log.write(json.dumps(sample, allow_nan=False)+'\n')
+                    log.flush()
+                    publish(latest, sample)
+                    if sample['status'] != 'OK' or sample['read_duration_s'] > .5:
+                        raise RuntimeError('Approach feedback failed or took >0.5 s')
+                    require_ready(arm, moving=True)
+                    xyz = sample['tcp_pose_mm_deg'][:3]
+                    # Stay within a narrow tube around the validated segment.
+                    delta = [b-a for a, b in zip(previous, target)]
+                    length2 = sum(v*v for v in delta)
+                    t = max(0., min(1., sum((v-a)*d for v, a, d in zip(xyz, previous, delta))/length2))
+                    if math.dist(xyz, [a+t*d for a, d in zip(previous, delta)]) > 1.:
+                        raise RuntimeError('Approach left validated segment by >1 mm')
+                    if math.dist(xyz, target) <= .2 and not arm.get_is_moving():
+                        break
+                    if time.monotonic()-started > duration:
+                        raise RuntimeError('Approach timed out')
+                    stop.wait(.05)
+                previous = list(target)
+        require_start(read_pose(arm, config), settings)
+        armed = False
+    finally:
+        if armed:
+            report['approach_stop_return_code'] = arm.set_state(4)
+
+
 def run_scan(arm, config, settings, projection, latest, stop, directory, poll_sample, publish, read_pose):
     report = {'status': 'PREFLIGHT', 'fixed_base_x_mm': 420., 'settings': asdict(settings),
               'profile': 'single Cartesian segment; acceleration/deceleration at endpoints', 'samples': 0}
     armed = False
     try:
+        approach_start(arm, config, settings, stop, report, directory, poll_sample,
+                       projection, latest, publish, read_pose)
         pose, validation = prepare(arm, config, settings, read_pose)
         report['controller_ik'] = asdict(validation)
         report['start_pose'] = pose
