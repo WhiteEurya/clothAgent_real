@@ -201,6 +201,115 @@ def make_loop(tmp_path, monkeypatch, *, kind="EMPTY", safe=True):
     return pipe, plans
 
 
+@pytest.mark.parametrize("retry_result", ["EMPTY", "SUCCESS", "NO_OPTIONS", "LIMIT", "NO_RECURSION"])
+def test_failed_grasp_immediately_retries_command_z_and_saves_both_attempts(tmp_path, monkeypatch, retry_result):
+    """Full production loop with fake camera/model/controller and no robot calls."""
+    from copy import deepcopy
+    from dataclasses import replace
+    from types import MethodType
+    from cloth_agent.grasp_execution_experience import unresolved_diagnosis
+    pipe, plans = make_loop(tmp_path, monkeypatch)
+    pipe.max_iterations = 1 if retry_result == "LIMIT" else 3 if retry_result == "NO_RECURSION" else 2
+    pipe.session.robot_config = replace(pipe.session.robot_config, grasp_max_compression_mm=5)
+    if retry_result == "NO_OPTIONS":
+        pipe.session.robot_config = replace(pipe.session.robot_config,
+            grasp_min_compression_mm=3, grasp_max_compression_mm=3)
+    pipe._resolve_fold_grasp_height = MethodType(FoldExplorationPipeline._resolve_fold_grasp_height, pipe)
+    pipe.client.last_reference_validation = {"camera": "A", "pixel_xy": [1, 1], "reference_id": "R001"}
+    grounding_calls, capture_calls, executions, learning_calls, selection_calls = [], [], [], [], []
+    original_selection = pipe._locate_sleeve_with_molmo
+    def select(**kwargs):
+        selection_calls.append(kwargs)
+        return original_selection(**kwargs)
+    pipe._locate_sleeve_with_molmo = select
+    def sample(*args, **kwargs):
+        grounding_calls.append(args)
+        return {"valid": True, "base_xyz_median_mm": [300, 0, 23], "table_z_median_mm": 0}
+    monkeypatch.setattr("cloth_agent.fold_exploration_pipeline.GarmentGrounding",
+        lambda *a: SimpleNamespace(sample_local_surface=sample))
+    original_capture = pipe._capture_with_retries
+    def capture(config, destination, **kwargs):
+        capture_calls.append(str(destination))
+        return original_capture(config, destination, **kwargs)
+    pipe._capture_with_retries = capture
+    pipe.client.plan_grasp_height_retry = lambda **kw: pytest.fail("No model call for a direct command retry")
+    def execute(source, config, iteration_dir, **kwargs):
+        preflight = pipe.session.runner.preflight(source.name)
+        assert preflight.error is None
+        actions = [{"name": a["name"], "args": deepcopy(a["args"]), "success": True} for a in preflight.actions]
+        executions.append(actions)
+        image = iteration_dir / "camera_A_grasp_after_lift.png"
+        Image.new("RGB", (16, 16), "white").save(image)
+        return {"physical_execution": True, "execution_completed": True, "robot_errors": [],
+                "actual_robot_actions": actions}, {"status": "disabled", "grasp_snapshots": {
+                    "after_lift": {"status": "CAPTURED", "image": str(image)}}}
+    pipe._execute = execute
+    def evaluate(*args, **kwargs):
+        result = checkpoint_evaluation(execution()["checkpoint"])
+        result["perception_comparison"] = {"status": "UNCHANGED", "confidence": .9, "evidence": ["Same outline"]}
+        if len(executions) == 2 and retry_result == "SUCCESS":
+            result["grasp_acquisition"]["status"] = "SUCCESS"
+            result["earliest_failure_stage"] = "NONE"
+            result["perception_comparison"]["status"] = "CHANGED"
+        return result, None
+    pipe._evaluate_with_retries = evaluate
+    def update(**kwargs):
+        learning_calls.append(kwargs)
+        return {"grasp_execution_diagnosis": unresolved_diagnosis(),
+            "failure_diagnosis": {"observed_outcome": "Attempt evaluated.", "physical_failure_mode": "UNKNOWN",
+                "candidate_causes": [], "uncertainties": ["Depth cause not isolated."]},
+            "next_experiment": {"status": "NO_EXPERIMENT", "primary_hypothesis": "Unresolved cause.",
+                "single_change": {"variable": "NONE", "description": "No learned correction."}, "held_constant": [],
+                "expected_observation": "Inspect retained cloth.", "interpretation_if_success": "Conditional evidence only.",
+                "interpretation_if_failure": "Do not infer shallow Z.", "comparability_limitations": ["Cloth may change."]},
+            "experience_update": None, "no_update_reason": "No localized cause."}
+    pipe.client.update_experience = update
+    if retry_result == "NO_RECURSION":
+        with pytest.raises(KeyboardInterrupt):  # Original planner is called again, not the height planner.
+            pipe.run()
+    else:
+        summary = pipe.run()
+        assert summary["status"] == "MAX_ITERATIONS_REACHED"
+    rows = pipe.experiences.history(limit=None)
+    if retry_result == "LIMIT":
+        assert len(rows) == len(plans) == len(executions) == len(learning_calls) == 1
+        assert len(capture_calls) == 2  # Retry cannot override the physical-attempt cap.
+        return
+    if retry_result == "NO_RECURSION":
+        assert len(plans) == 2 and len(executions) == 2
+        assert not rows[2].get("height_retry")
+        return
+    assert len(plans) == 1
+    assert len(selection_calls) == 1
+    assert len(grounding_calls) == 1  # Only the original command is grounded.
+    assert len(capture_calls) == (2 if retry_result == "NO_OPTIONS" else 3)
+    assert len(rows) == 2
+    assert rows[0]["height_retry_followup"]["status"] == "SCHEDULED"
+    assert rows[1]["height_retry"]["parent_record_id"] == rows[0]["record_id"]
+    assert rows[1]["height_retry_followup"]["status"] == "NOT_SCHEDULED"
+    if retry_result in {"NO_OPTIONS"}:
+        assert len(executions) == len(learning_calls) == 1
+        assert rows[1]["height_retry"]["status"] == "REJECTED_BEFORE_EXECUTION"
+        assert rows[1]["execution"] is None
+    else:
+        assert len(executions) == len(learning_calls) == 2
+        assert rows[1]["height_retry"]["status"] == "EXECUTED_AND_EVALUATED"
+        assert rows[1]["height_retry"]["acquisition_result"] == ("SUCCESS" if retry_result == "SUCCESS" else "FAILURE")
+        assert learning_calls[1]["context"]["height_retry_experiment"]["parent_record_id"] == rows[0]["record_id"]
+        assert executions[0][2]["args"]["z"] == 20
+        assert executions[1][2]["args"]["z"] == 19
+        expected = deepcopy(executions[0])
+        expected[2]["args"]["z"] = 19
+        assert executions[1] == expected
+        assert rows[1]["before_images"] == rows[0]["after_images"]
+        assert rows[1]["grasp_execution_experience"]["trial"]["command_integrity"]["status"] == "MATCHED"
+        assert rows[1]["grasp_execution_experience"]["status"] == "UNRESOLVED"
+    assert not (pipe.conditional_experiences.root / "grasp_execution_trials.json").exists()
+    persisted = json.loads(pipe.experiences.summary_path.read_text())
+    assert persisted["height_retry_attempt_count"] == 1
+    assert persisted["height_retry_physical_count"] == (0 if retry_result in {"NO_OPTIONS"} else 1)
+
+
 @pytest.mark.parametrize("kind", ["EMPTY", "UNKNOWN"])
 def test_full_loop_final_evaluation_receives_lift_photo_and_next_plan_sees_failure(tmp_path, monkeypatch, kind):
     pipe, plans = make_loop(tmp_path, monkeypatch, kind=kind)

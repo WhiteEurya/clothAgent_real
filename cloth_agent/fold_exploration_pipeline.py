@@ -51,6 +51,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,7 @@ from .free_exploration import (
 from .garment_grounding_mcp import GarmentGrounding, GroundingToolError
 from .grasp_height import GraspHeightError, resolve_grasp_height
 from .grasp_execution_experience import initial_execution_experience, persist_execution_trial
+from .grasp_height_retry import retry_eligibility, height_options, compile_height_retry, validate_locked_retry
 from .grasp_checkpoint import (
     ACQUISITION_PROBE_LIFT_CONTRACT, compile_grasp_capture,
     GraspCheckpointRejected, validate_acquisition_probe_lift,
@@ -2095,6 +2097,11 @@ class FoldExperienceStore:
             "schema_version": 1,
             "updated_at": _now(),
             "experience_count": len(rows),
+            "height_retry_attempt_count": sum(bool(row.get("height_retry")) for row in rows
+                if not row.get("inherited_lesson")),
+            "height_retry_physical_count": sum(bool(row.get("height_retry")) and
+                (row.get("execution") or {}).get("physical_execution") is True for row in rows
+                if not row.get("inherited_lesson")),
             "experience_generation_counts": {
                 state: sum((row.get("experience_generation") or {}).get("status") == state for row in rows
                            if not row.get("inherited_lesson"))
@@ -2864,6 +2871,8 @@ class FoldExplorationPipeline:
         screen_margin_px: int = 8,
         max_replans: int = 1,
         max_stage_retries: int = 0,
+        grasp_height_retry: bool = True,
+        grasp_height_retry_step_mm: float = 1.0,
         retry_backoff_s: float = 5.0,
         unattended: bool = False,
         host_compile_acquisition_probe: bool = False,
@@ -2917,6 +2926,11 @@ class FoldExplorationPipeline:
         self.screen_margin_px = max(0, int(screen_margin_px))
         self.max_replans = max(0, int(max_replans))
         self.max_stage_retries = max(0, int(max_stage_retries))
+        if (type(grasp_height_retry_step_mm) not in (int, float) or
+                not math.isfinite(grasp_height_retry_step_mm) or not 0 < grasp_height_retry_step_mm <= 3):
+            raise ValueError("grasp_height_retry_step_mm must be finite and in (0, 3] mm")
+        self.grasp_height_retry = bool(grasp_height_retry)
+        self.grasp_height_retry_step_mm = float(grasp_height_retry_step_mm)
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
         self.unattended = bool(unattended)
         # Claude remains the strategy authority by default.  The legacy host
@@ -3105,6 +3119,9 @@ class FoldExplorationPipeline:
                 "mode": record.get("mode"), "status": record.get("status"),
                 "evaluation": record.get("evaluation"), "failure_detection": record["failure_detection"]})
         self._update_fold_experience(iteration_dir, record)
+        record["height_retry_followup"] = retry_eligibility(record,
+            enabled=getattr(self, "grasp_height_retry", True))
+        _write_json(iteration_dir / "height_retry_followup.json", record["height_retry_followup"])
         try:
             record["evidence"] = build_evidence_record(record, iteration=record["iteration"], run_dir=self.session.run_dir)
             record["evidence_artifacts"] = persist_evidence_record(self.session.run_dir, record["evidence"], iteration_dir=iteration_dir)
@@ -3580,6 +3597,10 @@ class FoldExplorationPipeline:
             "evaluation_raw": None,
             "completed_at": _now(),
         }
+        active_retry = (getattr(self, "_active_iteration", None) or (None, {}))[1].get("height_retry")
+        if active_retry:
+            record["height_retry"] = {**active_retry, "status": "REJECTED_BEFORE_EXECUTION",
+                "error": str(exc), "physical_command_sent": False}
         self._save_iteration_learning(iteration_dir, record)
         experience_summary = record["experience_summary"]
         evidence_package = _write_fold_evidence_package(
@@ -4796,6 +4817,36 @@ class FoldExplorationPipeline:
         )
         return proposal
 
+    def _compile_grasp_height_retry(self, previous, iteration_dir):
+        """Reuse the previous runtime target and commands, changing contact Z only."""
+        directory = iteration_dir / "height_retry"
+        directory.mkdir(parents=True, exist_ok=True)
+        audit = deepcopy(previous["planning_diagnostics"]["grasp_height_resolution"])
+        choices = height_options(previous, step_mm=self.grasp_height_retry_step_mm)
+        _write_json(directory / "host_options.json", choices)
+        proposal, metadata = compile_height_retry(previous, choices,
+            allowed_skill_names=getattr(self.client, "skill_names", None))
+        _, contact = _first_grasp_move(proposal)
+        resolution_payload = audit["resolution"]
+        resolution_payload.update(target_xyz_mm=[contact["x"], contact["y"], contact["z"]],
+            achieved_compression_mm=metadata["descent_below_surface_mm"],
+            desired_compression_mm=metadata["descent_below_surface_mm"],
+            policy="bounded_post_failure_command_z_adjustment")
+        audit.update(requested_grasp_z_mm=contact["z"], resolved_grasp_z_mm=contact["z"],
+            resolved_grasp_xy_mm=[contact["x"], contact["y"]],
+            runtime_authoritative_grasp_xyz_mm=[contact["x"], contact["y"], contact["z"]],
+            z_rewritten=False, height_retry=metadata)
+        self.client.last_reference_validation = {"camera": audit["camera"],
+            "pixel_xy": deepcopy(audit["pixel_xy"]), "reference_id": audit.get("selected_reference_id"),
+            "measurement": deepcopy(audit.get("measurement")),
+            "source": "previous_runtime_target_height_retry"}
+        self.client.last_visual_plan_result = self.client.last_plan_result = None
+        self.client.last_grounding_verification = {"measurement": deepcopy(audit.get("measurement")),
+            "height_resolution": deepcopy(resolution_payload), "authority": "previous_runtime_target_height_retry"}
+        _write_json(directory / "plan.json", {"height_retry": metadata, "grasp_height_resolution": audit,
+                                              "proposal": proposal.as_dict()})
+        return proposal, audit, choices, metadata
+
     def _resolve_fold_grasp_height(
         self,
         proposal: ExplorationProposal,
@@ -5584,6 +5635,10 @@ class FoldExplorationPipeline:
                 "recording_join_s": 300,
             },
             "retry_policy": {
+                "grasp_height_retry": self.grasp_height_retry,
+                "grasp_height_retry_step_mm": self.grasp_height_retry_step_mm,
+                "max_height_followups_per_primary_attempt": 1,
+                "height_retry_counts_toward_max_iterations": True,
                 "max_stage_retries": self.max_stage_retries,
                 "retry_backoff_s": self.retry_backoff_s,
                 "max_acquisition_probes_per_step": MAX_ACQUISITION_PROBES_PER_STEP,
@@ -5649,6 +5704,7 @@ class FoldExplorationPipeline:
         }
         _write_json(output / "summary.json", summary)
         iteration = 0
+        pending_height_retry = None  # In-memory only: never replay a target across restart.
         self._active_iteration = None
         try:
             while limit is None or iteration < limit:
@@ -5658,14 +5714,21 @@ class FoldExplorationPipeline:
                 self._active_iteration = (iteration_dir, {"iteration": iteration})
                 iteration_started = time.monotonic()
                 self._debug("iteration", f"starting iteration {iteration}", iteration=iteration)
-                before, before_path, before_images = self._capture_with_retries(
-                    config,
-                    iteration_dir / "before_raw",
-                    # A current same-pose baseline is required for the final
-                    # comparison; a saved frame may predate physical changes.
-                    reuse=False,
-                    stage="before perception",
-                )
+                immediate_retry, pending_height_retry = pending_height_retry, None
+                if immediate_retry is not None:
+                    height_retry_previous, before, before_path, before_images = immediate_retry
+                    self._debug("height-retry", "reusing previous after capture and runtime target",
+                        iteration=iteration, parent_iteration=height_retry_previous["iteration"])
+                else:
+                    height_retry_previous = None
+                    before, before_path, before_images = self._capture_with_retries(
+                        config,
+                        iteration_dir / "before_raw",
+                        # A current same-pose baseline is required for the final
+                        # comparison; a saved frame may predate physical changes.
+                        reuse=False,
+                        stage="before perception",
+                    )
                 self._active_iteration[1].update(before_images=[str(path) for path in before_images])
                 single_view_confirmed = self._single_view_execution_confirmation(config, before)
                 self._debug("perception", "validated execution camera mode",
@@ -5688,7 +5751,9 @@ class FoldExplorationPipeline:
                     touching_edges=screen_before.get("touching_edges"),
                 )
                 reuse_step = _acquisition_supervisor_reuse_step(history)
-                if reuse_step is not None:
+                if height_retry_previous is not None:
+                    supervisor_before = deepcopy(height_retry_previous["supervisor_after"])
+                elif reuse_step is not None:
                     supervisor_before = self._local_acquisition_supervisor(
                         screen_before,
                         history,
@@ -5742,6 +5807,15 @@ class FoldExplorationPipeline:
                 mode = "FOLD"
                 proposal: ExplorationProposal | None = None
                 current_step = supervisor_before["current_step"]
+                # Only an immediately preceding attempt can supply a retry target.
+                height_retry_audit = height_retry_choices = height_retry_metadata = None
+                if height_retry_previous is not None:
+                    # Persist rejected adjustments without recursively scheduling a retry.
+                    height_retry_metadata = {"status": "PLANNING",
+                        "parent_record_id": height_retry_previous.get("record_id"),
+                        "parent_iteration": height_retry_previous.get("iteration"),
+                        "single_change": "CONTACT_Z", "causal_claim": "UNTESTED_HYPOTHESIS"}
+                    self._active_iteration[1]["height_retry"] = height_retry_metadata
                 acquisition_learning = _fold_acquisition_learning_state(
                     history,
                     current_step,
@@ -5764,6 +5838,10 @@ class FoldExplorationPipeline:
                     garment_condition,
                     step=current_step,
                 )
+                if height_retry_previous is not None:
+                    action_mode = height_retry_previous["mode"]
+                    mode_policy = {**mode_policy, "height_retry": height_retry_metadata,
+                        "reason": "Immediate one-shot Z-only follow-up; retain original action mode and targets."}
                 mode = action_mode
                 _write_json(
                     iteration_dir / "acquisition_learning_before.json",
@@ -5793,7 +5871,7 @@ class FoldExplorationPipeline:
                     action_mode=action_mode,
                     probe_budget_remaining=mode_policy.get("probe_budget_remaining"),
                 )
-                molmo_hint = self._locate_sleeve_with_molmo(
+                molmo_hint = None if height_retry_previous is not None else self._locate_sleeve_with_molmo(
                     step=current_step,
                     iteration=iteration,
                     iteration_dir=iteration_dir,
@@ -5887,7 +5965,8 @@ class FoldExplorationPipeline:
                         "never a direct grasp point):\n"
                         + json.dumps(molmo_hint, ensure_ascii=False, indent=2)
                     )
-                self._debug("planning", "asking Claude for fold proposal", iteration=iteration, current_step=current_step)
+                if height_retry_previous is None:
+                    self._debug("planning", "asking Claude for fold proposal", iteration=iteration, current_step=current_step)
                 planning_attempts: list[dict[str, Any]] = []
                 source_path = self.session.workspace / f"_fold_experiment_{output.name}_{iteration:03d}.py"
                 preflight = None
@@ -5905,14 +5984,16 @@ class FoldExplorationPipeline:
                 # experience and move to the next iteration instead of
                 # restarting the whole run and losing the current evidence.
                 try:
-                    proposal = self._plan_fold_with_retries(
-                        before_images,
-                        objective,
-                        history,
-                        iteration=iteration,
-                        molmo_hint=molmo_hint,
-                        iteration_dir=iteration_dir,
-                    )
+                    if height_retry_previous is not None:
+                        self._debug("height-retry", "compiling direct Z-only command retry",
+                            iteration=iteration, parent_iteration=height_retry_previous["iteration"])
+                        proposal, height_retry_audit, height_retry_choices, height_retry_metadata = self._compile_grasp_height_retry(
+                            height_retry_previous, iteration_dir)
+                        self._active_iteration[1]["height_retry"] = height_retry_metadata
+                    else:
+                        proposal = self._plan_fold_with_retries(
+                            before_images, objective, history, iteration=iteration,
+                            molmo_hint=molmo_hint, iteration_dir=iteration_dir)
                 except Exception as exc:
                     planning_attempts.append(
                         {
@@ -5997,7 +6078,8 @@ class FoldExplorationPipeline:
                 # physical command is sent until one attempt passes all gates.
                 plan_feedback: str | None = None
                 planning_failure: Exception | None = None
-                for plan_attempt in range(1, self.max_replans + 2):
+                validation_attempts = 1 if height_retry_previous is not None else self.max_replans + 1
+                for plan_attempt in range(1, validation_attempts + 1):
                     attempt_started = time.monotonic()
                     generation_mode = "INITIAL_PLAN"
                     self._debug(
@@ -6045,9 +6127,10 @@ class FoldExplorationPipeline:
                         # will be sent to the robot.  This makes any host-side
                         # transformation explicit and auditable.
                         model_proposal = proposal
-                        execution_proposal, grasp_height_resolution = (
-                            self._resolve_fold_grasp_height(proposal)
-                        )
+                        if height_retry_previous is not None:
+                            execution_proposal, grasp_height_resolution = proposal, height_retry_audit
+                        else:
+                            execution_proposal, grasp_height_resolution = self._resolve_fold_grasp_height(proposal)
                         contract_learning = (
                             acquisition_learning
                             if action_mode == "ACQUISITION_PROBE"
@@ -6141,6 +6224,12 @@ class FoldExplorationPipeline:
                                 execution_action_count=len(execution_proposal.actions),
                                 grasp_capture=grasp_capture_plan)
                             _write_json(iteration_dir / 'grasp_capture_plan.json', grasp_capture_plan)
+                        if height_retry_previous is not None:
+                            validate_locked_retry(execution_proposal.actions, height_retry_choices, height_retry_metadata)
+                            host_compilation.update(authority="host_command_z_retry+host_limits",
+                                rewritten=True,
+                                height_retry=height_retry_metadata,
+                                reason="Previous executed commands reused with only contact Z adjusted; selected point, XY, yaw and other targets locked.")
                         source_path.write_text(
                             exploration_source(execution_proposal),
                             encoding="utf-8",
@@ -6148,6 +6237,8 @@ class FoldExplorationPipeline:
                         candidate_preflight = self.session.runner.preflight(source_path.name)
                         if candidate_preflight.error:
                             raise ExperimentValidationError(candidate_preflight.error)
+                        if height_retry_previous is not None:
+                            validate_locked_retry(candidate_preflight.actions, height_retry_choices, height_retry_metadata)
                         candidate_controller = validate_controller_trajectory(
                             self.session.robot_config, candidate_preflight.actions
                         )
@@ -6268,7 +6359,7 @@ class FoldExplorationPipeline:
                             attempt=plan_attempt,
                             duration_s=round(time.monotonic() - attempt_started, 3),
                         )
-                        if plan_attempt >= self.max_replans + 1:
+                        if plan_attempt >= validation_attempts:
                             # The proposal was rejected before any robot
                             # command was sent.  Unattended mode records this
                             # unchanged-state iteration below and continues;
@@ -6748,6 +6839,11 @@ class FoldExplorationPipeline:
                     "evaluation_raw": evaluation_result.as_dict() if evaluation_result is not None else None,
                     "completed_at": _now(),
                 }
+                if height_retry_metadata is not None:
+                    record["height_retry"] = {**height_retry_metadata, "status": "EXECUTED_AND_EVALUATED",
+                        "acquisition_result": (evaluation_payload.get("grasp_acquisition") or {}).get("status", "UNKNOWN"),
+                        "perception_comparison": evaluation_payload.get("perception_comparison"),
+                        "note": "Experiment outcome, not proof that Z caused the original failure."}
                 _write_json(iteration_dir / "record.json", record)
                 evidence_package = _write_fold_evidence_package(
                     iteration_dir,
@@ -6783,6 +6879,9 @@ class FoldExplorationPipeline:
                     next_step=experience_summary.get("next_step"),
                 )
                 history.append(record)
+                if ((record.get("height_retry_followup") or {}).get("status") == "SCHEDULED"
+                        and record.get("planned_step") == supervisor_after.get("current_step")):
+                    pending_height_retry = (record, after, after_path, after_images)
                 summary["persistent_claude_session"] = (
                     self.persistent_claude.as_dict()
                 )
@@ -6912,6 +7011,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means continuous until supervisor COMPLETE or a hard failure")
     parser.add_argument("--max-replans", type=int, default=1)
     parser.add_argument("--max-stage-retries", type=int, default=0, help="extra retries for capture, supervisor, and evaluation failures (default: none)")
+    parser.add_argument("--no-grasp-height-retry", action="store_true",
+                        help="disable the one-shot direct command-Z retry after failed acquisition")
+    parser.add_argument("--grasp-height-retry-step-mm", type=float, default=1.0,
+                        help="relative descent adjustment per Z-only experiment, in (0, 3] mm; existing height limits still apply")
     parser.add_argument("--retry-backoff-s", type=float, default=5.0)
     parser.add_argument(
         "--host-compile-acquisition-probe",
@@ -7039,6 +7142,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         screen_margin_px=args.screen_margin_px,
         max_replans=args.max_replans,
         max_stage_retries=args.max_stage_retries,
+        grasp_height_retry=not args.no_grasp_height_retry,
+        grasp_height_retry_step_mm=args.grasp_height_retry_step_mm,
         retry_backoff_s=args.retry_backoff_s,
         unattended=args.unattended,
         host_compile_acquisition_probe=args.host_compile_acquisition_probe,

@@ -114,7 +114,9 @@ GRASP_EXECUTION_INSTRUCTION = (
     "Keep execution calibration out of generic experience_update; keep point/motion rules there. "
     "Use EXECUTION_XY for landing correction at a fixed selected point, not CONTACT_XY (point "
     "reselection). Corrections are blocked by current host capabilities. Test one axis group "
-    "at a time; never silently change both XY and Z. No automatic deeper retry on UNRESOLVED."
+    "at a time; never silently change both XY and Z. UNRESOLVED does not justify a learned "
+    "deeper correction. A separately authorized host-bounded Z retry is an experiment, "
+    "not a diagnosis or permanent policy update."
 )
 
 

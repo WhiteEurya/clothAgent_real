@@ -67,7 +67,21 @@
 
 本轮 `record.json`、`experience_update/analysis.json` 保存全部试验数据与诊断。可学习样本独立写入 `data/fold_experience/grasp_execution_trials.json`，按 trial 去重，保留步骤、证据 ID、源记录和适用限制；UNRESOLVED/系统错误不修改该长期文件。每轮保存 `grasp_execution_store_receipt.json`；存储失败不丢弃其他两类经验。旧 `grasp_depth_trials.json` 保留历史，生产管线不再写入，也不自动提升为 XYZ 成功样本。
 
-下一轮接收最近物理尝试的 `grasp_execution_experience`。`EXECUTION_XY` 表示同一选定点的落点校正，`CONTACT_XY` 仍表示抓点重选，二者不能互相冒充。执行校正与 Z 实验仍受主机权限限制，标为 `BLOCKED_BY_CAPABILITY`；UNRESOLVED 不会自动生成更深 Z。本次不实现全局 correction 拟合或自动修改机器人控制参数。
+下一轮接收最近物理尝试的 `grasp_execution_experience`。`EXECUTION_XY` 表示同一选定点的落点校正，`CONTACT_XY` 仍表示抓点重选，二者不能互相冒充。通用 experience 建议不能直接改变执行坐标；高度重试由下面的独立受限流程授权。UNRESOLVED 不会自动成为长期“应更深”的规则，不实现全局 correction 拟合。
+
+### 抓取失败后直接修改 command Z 重试
+
+默认启用一次 Z-only follow-up：正常 FOLD/REPAIR_SLEEVE 完成执行、释放、Home 和 evaluation 后，如果被判 `FAILURE / ACQUISITION`，保存原始尝试的经验，然后优先复用当前目标和上一次**实际执行的 command**，只调整闭爪前 move 的 Z。此步骤不调用模型规划、不重选抓点、不重新测深、不再拍一组 before；上一次刚拍摄的 after 直接作为重试的 before，重试完成后照常采集新的 after 并独立评价。
+
+默认 `new_command_z = previous_actual_command_z - step_mm`。若独立 evidence 明确为 `TOO_DEEP`，则改为加 step，即更浅；不能因为更深被禁止就无依据切换成更浅。XY、yaw、其他轨迹目标和动作顺序逐项保持一致，沿用原始 runtime surface 计算 `descent = surface_z - actual_command_z`。完整轨迹仍经过预执行、工作区、IK、抓后至少 30 mm 抬升等检查。不会为了通过校验而偷偷改变其他动作。
+
+不能绕过配置的压入量上限、机器人/桌面/支撑层下限。**默认普通压入上限为 3 mm；已到上限时不再下压，也不自动扩大范围。** 越界重试记录为非物理拒绝，unattended 模式随后回到常规规划；非 unattended 保留失败即停行为。
+
+`UNCHANGED` 可按既有 policy 触发一次实验，但不证明“高度太浅”。独立观察已证明稳定抓住、XY 明显偏移、场景 CHANGED/UNCOMPARABLE、命令不一致、执行/释放/Home 未确认、软件失败或 UNKNOWN acquisition 均不安排此重试。待重试状态只在当前进程内保留，重启不复用旧目标。
+
+每个原始尝试最多追加一次，第二次失败后回到常规规划，不递归下压。重试是独立 `iteration_*`，保存命令日志、录像、evaluation 与 experience，通过 `height_retry.parent_record_id` 关联第一次。它计入 `--max-iterations`，上限为 1 时不额外执行。
+
+参数：默认 `--grasp-height-retry-step-mm 1.0`，可设为 `(0, 3]` mm；`--no-grasp-height-retry` 关闭。运行数据包括 `height_retry_followup.json`、重试目录的 `height_retry/host_options.json` 和 `plan.json`，以及 record 中 `height_retry`。`experience_summary.json` 分别统计重试尝试数和物理执行数。经验分析读取两次真实轨迹与 `height_retry_experiment`；原因未定位也保留 trial，但不自动写入有效 XYZ 校准样本。
 
 ## Claude 自选图像工具
 

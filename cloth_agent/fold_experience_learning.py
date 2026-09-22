@@ -95,6 +95,10 @@ EXPERIENCE_INSTRUCTION = (
     "host-resolved: you may diagnose it, but mark that experiment BLOCKED_BY_CAPABILITY. Other "
     "host restrictions are in capabilities. Do not recommend a different variable merely to "
     "pretend the original hypothesis was tested. No experiment directly authorizes motion. "
+    "The separate grasp_height_retry workflow may execute a host-bounded Z-only experiment "
+    "after acquisition failure. height_retry_experiment records what was actually tested; "
+    "it is not proof of a depth cause. Use the actual commands and resulting evidence, "
+    "and do not convert every failed retry into a learned deeper correction. "
     "Set experience_update=null and explain no_update_reason when there is no new supported "
     "knowledge. Do not manufacture a lesson on every failure. A tentative single-trial risk "
     "association must be contextual, low-confidence, and have at most a slight ranking effect. "
@@ -292,9 +296,11 @@ def build_experience_request(record, history, rules, run_dir, output):
         raise ValueError("experience requires available same-trial RGB evidence")
     context = {"trial_id": trial_id(record), "step": step, "outcome": outcome,
         "grasp_execution_trial": runtime_execution_trial(record),
+        "height_retry_experiment": copy.deepcopy(record.get("height_retry")),
         "current_attempt": attempt, "prior_attempt": prior,
         "prior_trial_id": trial_id(previous_record) if previous_record else None,
         "prior_next_experiment": (previous_record or {}).get("next_experiment"),
+        "prior_height_retry_experiment": copy.deepcopy((previous_record or {}).get("height_retry")),
         "execution_contrast": contrast,
         "evidence_catalog": evidence, "images": image_catalog,
         "existing_rules": rules, "capabilities": capabilities(record.get("acquisition_learning")),
