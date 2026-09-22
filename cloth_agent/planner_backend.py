@@ -129,7 +129,7 @@ class RemoteClaudeBackend:
     def __init__(
         self,
         ssh_host: str = "company-planner",
-        upload_url: str = "https://tempfile.org/api/upload/local",
+        upload_url: str | None = None,
         download_base_url: str = "https://tempfile.org",
         timeout_s: int = 900,
         ssh_binary: str = "ssh",
@@ -138,7 +138,8 @@ class RemoteClaudeBackend:
         max_turns: int = 16,
     ):
         self.ssh_host = ssh_host
-        self.upload_url = upload_url.rstrip("/")
+        self.upload_url = upload_url.rstrip("/") if upload_url else None
+        self._r2_client = None
         self.download_base_url = download_base_url.rstrip("/")
         self.timeout_s = int(timeout_s)
         self.ssh_binary = ssh_binary
@@ -174,6 +175,34 @@ class RemoteClaudeBackend:
             raise PlannerBackendError("image transfer batch deadline exceeded")
         return min(self._remaining_timeout(30), remaining)
 
+    def _r2_urls(self, image: Path) -> tuple[str, str]:
+        names = ('R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET')
+        missing = [name for name in names if not os.environ.get(name)]
+        if missing:
+            raise PlannerBackendError('R2 configuration missing: ' + ', '.join(missing))
+        if self._r2_client is None:
+            try:
+                import boto3
+                from botocore.config import Config
+            except ImportError as exc:
+                raise PlannerBackendError('R2 requires boto3; install project dependencies') from exc
+            self._r2_client = boto3.client(
+                's3', endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+                region_name='auto', config=Config(signature_version='s3v4'))
+        # One PUT per PNG; the existing curl watchdog bounds the whole transfer.
+        params = {'Bucket': os.environ['R2_BUCKET'],
+                  'Key': f'cloth-agent/{uuid.uuid4().hex}.png'}
+        try:
+            put_url = self._r2_client.generate_presigned_url(
+                'put_object', Params=params, ExpiresIn=3600)
+            get_url = self._r2_client.generate_presigned_url(
+                'get_object', Params=params, ExpiresIn=3600)
+        except Exception as exc:
+            raise PlannerBackendError('R2 URL signing failed') from exc
+        return put_url, get_url
+
     def _upload(self, image: Path) -> str:
         command = [
             self.curl_binary, "-fsS", "--http1.1", "--connect-timeout", "10",
@@ -181,6 +210,12 @@ class RemoteClaudeBackend:
             "-X", "POST", self.upload_url,
             "-F", f"files=@{image}", "-F", "expiryHours=1",
         ]
+        get_url = None
+        if self.upload_url is None:
+            put_url, get_url = self._r2_urls(image)
+            command = [self.curl_binary, '-fsS', '--http1.1', '--connect-timeout', '10',
+                       '--max-time', '30', '--speed-limit', '1024', '--speed-time', '15',
+                       '--upload-file', str(image), put_url]
         for attempt in range(1, 4):
             try:
                 completed = subprocess.run(command, text=True, capture_output=True,
@@ -208,6 +243,8 @@ class RemoteClaudeBackend:
                            attempt=attempt, next_attempt=attempt + 1, max_attempts=3,
                            retry_delay_s=delay, reason=str(failure))
             time.sleep(delay)
+        if get_url is not None:
+            return get_url
         try:
             payload: Any = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
@@ -470,8 +507,7 @@ class RemoteClaudeBackend:
             with path.open("rb") as stream:
                 if stream.read(8) != b"\x89PNG\r\n\x1a\n":
                     raise PlannerBackendError("remote planner image is not a PNG")
-        # Uploading is intentionally sequential: each URL is short-lived and the
-        # relay service has a small request quota.
+        # Upload sequentially under a shared transfer deadline; reuse cached URLs.
         self._transfer_deadline = time.monotonic() + 180.0
         urls = []
         for i, path in enumerate(images):

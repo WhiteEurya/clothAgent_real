@@ -445,7 +445,7 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
         raise subprocess.TimeoutExpired(cmd, 1)
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(PlannerBackendError, match="SSH"):
-        RemoteClaudeBackend(timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
     assert len(calls) == 3
     assert "sha256sum" in calls[1][0][-1]
     assert "https://tempfile.org/poc-id/download" in calls[1][0][-1]
@@ -620,7 +620,7 @@ def test_remote_timing_and_failure_snapshot(saved_scene, monkeypatch, failed):
         return SimpleNamespace(returncode=int(failed), stdout='{"result":"{}"}',
             stderr="__CLOTH_TIMING__ download_0 2500000000\n__CLOTH_TIMING__ hash_0 1000000\n__CLOTH_TIMING__ claude 7000000000\n")
     monkeypatch.setattr(subprocess, "run", run)
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     events = []
     backend.progress_callback = lambda *a, **k: events.append((a, k))
     if failed:
@@ -649,7 +649,7 @@ def test_transport_result_and_cleanup_paths(saved_scene, monkeypatch, failure):
         return SimpleNamespace(returncode=1 if failure == "ssh" else 0, stderr="error" if failure == "ssh" else "",
             stdout='not json' if failure == "json" else json.dumps({"is_error": failure == "claude", "result": '{"ok":true}'}))
     monkeypatch.setattr(subprocess, "run", run)
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     kwargs = dict(prompt="Read RGB", image_paths=[images[0]], schema={}, system_prompt="Read only")
     if failure == "success":
         assert parse_claude_json(backend.invoke(**kwargs).stdout)["ok"] is True
@@ -720,7 +720,7 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
         return result
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(PlannerBackendError, match="exited"):
-        RemoteClaudeBackend().invoke(prompt="RGB only", image_paths=images[:2], schema={}, system_prompt="read")
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", ).invoke(prompt="RGB only", image_paths=images[:2], schema={}, system_prompt="read")
     assert len(called) == 1
     assert "CLAUDE_WAS_CALLED" not in called[0].stdout
 
@@ -758,7 +758,7 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)
     monkeypatch.setattr(subprocess, "run", run)
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     result = backend.invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
     cached = backend.invoke(prompt="Read again", image_paths=images[:1], schema={}, system_prompt="Read")
     assert parse_claude_json(cached.stdout) == {"ok": True}
@@ -784,7 +784,7 @@ def test_upload_retries_same_file_after_transport_failure(monkeypatch, code):
                                stderr='connection reset')
     monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
     monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', delays.append)
-    result = RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+    result = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )._upload(Path('/tmp/image.png'))
     assert 'retry-file' in result
     assert len(calls) == 3 and calls[0] == calls[1] == calls[2]
     assert '--http1.1' in calls[0]
@@ -799,13 +799,13 @@ def test_upload_retry_exhaustion(monkeypatch):
     monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
     monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', lambda _: None)
     with pytest.raises(PlannerBackendError, match='56'):
-        RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )._upload(Path('/tmp/image.png'))
     assert len(calls) == 3
 
 
 def test_upload_batch_deadline_prevents_network_request(monkeypatch):
     import time
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     backend._transfer_deadline = time.monotonic() - 1
     monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('network after deadline'))
     with pytest.raises(PlannerBackendError, match='batch deadline'):
