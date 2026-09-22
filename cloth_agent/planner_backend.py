@@ -176,6 +176,8 @@ class RemoteClaudeBackend:
         return min(self._remaining_timeout(30), remaining)
 
     def _r2_urls(self, image: Path) -> tuple[str, str]:
+        from .r2_config import load_r2_env
+        load_r2_env()
         names = ('R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET')
         missing = [name for name in names if not os.environ.get(name)]
         if missing:

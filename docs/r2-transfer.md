@@ -1,7 +1,8 @@
 # R2 image relay
 
-RemoteClaudeBackend defaults to Cloudflare R2. Set these variables in the environment
-that launches the fold loop (never commit credentials):
+RemoteClaudeBackend defaults to Cloudflare R2. Configuration is loaded from
+`~/.config/clothagent/r2.env` without executing shell commands. Existing environment
+variables take precedence (never commit credentials):
 
 - R2_ACCOUNT_ID
 - R2_ACCESS_KEY_ID
@@ -15,9 +16,13 @@ Boto3 signs PUT and GET URLs locally; curl performs the PUT with the existing
 The remote host downloads with curl and verifies SHA256. Missing configuration
 fails explicitly; there is no automatic fallback to the old relay.
 
-Configure a bucket lifecycle rule to delete objects under `cloth-agent/` after
-one day. Signed URL expiration does not delete stored objects. No lifecycle rule
-is created automatically. Restart the fold process after configuring the environment.
+A user systemd timer `clothagent-r2-cleanup.timer` runs `scripts/cleanup_r2.py`
+every five minutes. It deletes only `cloth-agent/<32 hex digits>.png` objects whose
+LastModified is at least one hour old. Normal retention is 60–65 minutes; network
+failures or the user service manager being offline delay deletion until recovery.
+It runs independently of the fold loop. The token needs list/delete permissions
+in addition to read/write. URL expiry alone does not delete stored objects.
+Restart the fold process to load the new configuration handling.
 
 Each uncached PNG costs one PUT and one GET when downloaded successfully.
 Signing URLs and local/remote cache hits do not make R2 API requests. Retries add
