@@ -2132,6 +2132,8 @@ class ClaudeAutoClient:
         safe_images = self._safe_images(image_paths, root)
         def image_label(path: Path) -> str:
             name = path.name.lower()
+            if name.startswith("history_"):
+                return "HISTORICAL ATTEMPT EVIDENCE ONLY | NOT CURRENT OR EXECUTABLE"
             if name == "camera_a_flat_reference.png":
                 return "REFERENCE | FLAT GARMENT | RAW RGB"
             if name == "camera_a_flat_reference_anchors.png":
@@ -2150,6 +2152,8 @@ class ClaudeAutoClient:
         image_text = "\n".join(
             f"- {image_label(path)}: {path}" for path in safe_images
         )
+        if getattr(self, "trajectory_memory", None) is not None:
+            base_prompt += "\n" + json.dumps({"trajectory_memory": self.trajectory_memory}, ensure_ascii=False)
         prompt = (
             f"{base_prompt}\n\n"
             "STAGE 1 — VISUAL PLANNING ONLY. Preserve the original image-reasoning "
@@ -2634,6 +2638,7 @@ class ClaudeAutoClient:
         context = {
             "objective": objective,
             "visual_plan": visual.as_dict(),
+            "trajectory_memory": getattr(self, "trajectory_memory", None),
             "previous_physical_outcomes": list(history or [])[-8:],
             "planning_mode": planning_mode,
             "planning_mode_instruction": planning_mode_instruction,

@@ -207,6 +207,73 @@ def test_upright_pixel_transform_and_repair_failure(saved_scene):
     assert proposal.actions[5]["args"] == {"x": 550, "y": 80, "z": 57, "yaw": 0}
 
 
+def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved_scene, monkeypatch):
+    session, images, _ = saved_scene
+    from cloth_agent.trajectory_memory import TRAJECTORY_MEMORY_INSTRUCTION
+    before = session.run_dir / "old_iteration/camera_0_A.png"
+    before.parent.mkdir()
+    Image.new("RGB", (40, 30), "pink").save(before)
+    actions = [{"name": "move", "args": {"x": 500, "y": 40, "z": 27, "yaw": 10}},
+               {"name": "close_gripper", "args": {}},
+               {"name": "move", "args": {"x": 500, "y": 40, "z": 57, "yaw": 10}}]
+    history = [{"iteration": 1, "planned_step": "hem_up", "mode": "FOLD",
+        "proposal": {"actions": actions}, "execution_proposal": {"actions": actions},
+        "execution": {"physical_execution": True, "execution_completed": True,
+            "actual_robot_actions": [{**a, "success": True} for a in actions]},
+        "before_images": [str(before)],
+        "evaluation": {"grasp_acquisition": {"status": "FAILURE"}}}]
+    history.extend({"iteration": i, "planned_step": "hem_up", "mode": "PLANNING_FAILURE",
+        "planning_failure": {"fold_command_sent": False}} for i in range(2, 12))
+    client = RemoteFoldClient(backend=FakeBackend(visual_payload(), motion_payload()), binary="not-installed")
+    pipeline = FoldExplorationPipeline.__new__(FoldExplorationPipeline)
+    pipeline.client, pipeline.session = client, session
+    pipeline.max_stage_retries = 0
+    pipeline._debug = pipeline._debug_exception = lambda *a, **kw: None
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("robot or local CLI invoked"))
+    pipeline._plan_fold_with_retries(images, "Fold; current_step is hem_up", history, iteration=12)
+    assert len(client.backend.calls) == 2
+    for call in client.backend.calls:
+        context = json.loads(call["prompt"].split("\n", 1)[1])
+        memory = context["trajectory_memory"]
+        assert memory["instruction"] == TRAJECTORY_MEMORY_INSTRUCTION
+        assert memory["previous_physical_attempt"]["iteration"] == 1
+        assert memory["latest_attempt"]["iteration"] == 11
+        assert memory["previous_physical_attempt"]["execution_log"]["actions"][2]["commanded_offset_from_contact_mm"] == [0, 0, 30]
+        evidence = memory["previous_physical_attempt"]["images"][0]
+        image_index = int(evidence["image_id"].split("_")[1])
+        assert call["image_paths"][image_index].name == "history_before_rgb.png"
+        assert "HISTORICAL ONLY" in context["images"][image_index]["role"]
+        assert str(session.run_dir) not in call["prompt"]
+    client.backend.responses.append(motion_payload())
+    client.repair_last_grounding_plan(session, "Fold; current_step is hem_up",
+        feedback="Adjust the trajectory before execution")
+    repaired_context = json.loads(client.backend.calls[-1]["prompt"].split("\n", 1)[1])
+    assert repaired_context["trajectory_memory"]["previous_physical_attempt"]["iteration"] == 1
+    # The pipeline clears memory when moving to a step without relevant history.
+    client.backend = FakeBackend(visual_payload(), motion_payload())
+    pipeline._plan_fold_with_retries(images, "Fold; current_step is right_side", history, iteration=13)
+    assert client.trajectory_memory is None
+    assert all("trajectory_memory" not in call["prompt"] for call in client.backend.calls)
+
+
+@pytest.mark.parametrize("derived", [False, True])
+def test_historical_rgb_cannot_supply_executable_motion_pixels(saved_scene, derived):
+    from cloth_agent.motion_image_sources import resolve_motion_sources
+    session, images, _ = saved_scene
+    historical = session.run_dir / "history_before_rgb.png"
+    Image.new("RGB", (30, 40), "pink").save(historical)
+    payload = {"actions": [{"name": "move", "args": {"target": "pixel",
+        "image_id": "image_3", "pixel_xy": [10, 15], "height_above_grasp_mm": 30, "yaw_deg": 0}}]}
+    verified = [{"image_id": "image_3", "size": [30, 40], "original_image_index": 3,
+        "parent_image_id": None, "verification": "VERIFIED"}]
+    if derived:
+        verified.append({"image_id": "view_history_crop", "size": [20, 20], "original_image_index": 3,
+            "parent_image_id": "image_3", "verification": "VERIFIED", "to_parent": [1, 0, 0, 0, 1, 0]})
+        payload["actions"][0]["args"]["image_id"] = "view_history_crop"
+    with pytest.raises(ValueError, match="CURRENT Cam-A RGB"):
+        resolve_motion_sources(payload, [*images, historical], verified)
+
+
 def test_remote_stages_share_current_garment_frame(saved_scene):
     from cloth_agent.fold_frame import build_frame, FRAME_RULE
     session, images, _ = saved_scene

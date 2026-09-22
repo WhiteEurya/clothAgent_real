@@ -4,6 +4,16 @@
 
 公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
 
+## 上次尝试的轨迹与证据
+
+每次 fold 规划从完整经验中选择当前步骤最近一次有实际动作日志的物理尝试，独立于最近 8 条文字历史窗口。连续的上传、规划失败不会挤掉该尝试；跨 run 标记为 `inherited_lesson` 的记录不作为当前物理状态。最新一次尝试的状态另外保留，因此不会把未执行的计划误认为空抓。
+
+`iteration_XXX/previous_attempt/trajectory_memory.json` 分别记录模型原始动作、主机校验后的动作、实际动作日志与视觉评价。位置只传相对历史闭合目标的机器人基座轴位移，标注命令值与实测值；不传绝对机器人坐标。只有动作日志的 `success=true` 标记完成，失败或未结束的动作标为 `ATTEMPTED_NOT_CONFIRMED`，可能存在部分运动。夹爪闭合完成不等于抓到了布料。
+
+可用的上次抓取前 RGB、闭合/提拉快照、动作后 RGB 会另存为 `history_*_rgb.png` 并附给规划；缺少抓取快照时尝试附上已有的 Camera-A 视频联系表。缺失、损坏、run 外或可被覆盖的 `workspace/perception_views` 图像标为不可用，不以当前图代替。抓取点像素仅对应历史 before 图。提示词要求解释上次哪段可能失败、本次保留和改变什么、如何验证；历史图和其工具派生视图不能成为当前运动的坐标来源。
+
+远程视觉规划、运动规划及运动修复共享这份上下文；本地 Claude 模式也接收同一份轨迹记忆。它不经过通用 `semantic_history` 的轨迹字段过滤，视觉评价文本仍使用现有语义过滤。无需新增运行参数。
+
 ## Claude 自选图像工具
 
 远程 backend 默认启用 `cloth_image` MCP 工具，内置工具仍只开放 `Read`。工具清单不是仅供阅读的 Markdown：桥接通过 `--mcp-config` 注册真实可调用工具，并用 `--allowedTools` 逐项授权。`--strict-mcp-config` 将本次 MCP 集合限定为图像工具。

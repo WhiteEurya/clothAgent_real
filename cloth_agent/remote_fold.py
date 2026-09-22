@@ -40,6 +40,7 @@ from .fold_frame import CLAUDE_FOLD_RULE, load_frame
 from .claude_image_debug import debug_directory
 from .motion_image_sources import resolve_motion_sources
 from .claude_molmo_view import prepare_molmo_view
+from .trajectory_memory import HISTORY_RGB_NAMES
 
 
 # Explicit allow-list of RGB artifacts produced by the fold pipeline. Never
@@ -64,7 +65,7 @@ def rgb_evidence(paths: Sequence[Path], root: Path) -> list[Path]:
     seen: set[tuple[str, str]] = set()
     for raw in paths:
         path = Path(raw).resolve()
-        if path.name.lower() not in RGB_NAMES and not re.fullmatch(r"camera_a_lift_checkpoint_\d+\.png", path.name.lower()):
+        if path.name.lower() not in RGB_NAMES | HISTORY_RGB_NAMES and not re.fullmatch(r"camera_a_lift_checkpoint_\d+\.png", path.name.lower()):
             continue
         if root.resolve() not in path.parents or not path.is_file():
             raise ExplorationPlanningError("RGB evidence is missing or outside the run")
@@ -79,7 +80,7 @@ def rgb_evidence(paths: Sequence[Path], root: Path) -> list[Path]:
 
 def image_manifest(images: Sequence[Path], label: str) -> list[dict[str, Any]]:
     # Indices correspond to the backend's image_N.png names, never local paths.
-    return [{"image_index": i, "role": f"{label}: {p.name}"}
+    return [{"image_index": i, "role": f"{'HISTORICAL ONLY; not executable' if p.name.lower() in HISTORY_RGB_NAMES else label}: {p.name}"}
             for i, p in enumerate(images)]
 
 
@@ -338,6 +339,19 @@ class RemoteFoldClient(ClaudeAutoClient):
                                 "previous_candidate_rejected": rejection_category(feedback),
                                 "xy_eligible_transport_pixels_upright": transport_pixels,
                                 "fold_state_reference": fold_reference_context}
+        # This host-built context has its own explicit field selection. Applying
+        # semantic_history would erase the action sequence and relative motion.
+        memory = copy.deepcopy(getattr(self, "trajectory_memory", None))
+        if memory is not None:
+            historical_ids = {p.name: f"image_{i}" for i, p in enumerate(images)
+                              if p.name.lower() in HISTORY_RGB_NAMES}
+            previous = memory.get("previous_physical_attempt") or {}
+            for evidence in previous.get("images", []):
+                evidence["image_id"] = historical_ids.get(evidence.get("name"))
+            if previous.get("grasp_in_before_image"):
+                grasp = previous["grasp_in_before_image"]
+                grasp["image_id"] = historical_ids.get(grasp.get("name"))
+            self._remote_context["trajectory_memory"] = memory
         if (views / 'garment_frame.json').exists():
             try:
                 self._remote_context['molmo_frame_hint'] = load_frame(views, expected)

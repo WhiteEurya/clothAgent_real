@@ -93,6 +93,7 @@ from .grasp_checkpoint import (
 from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, failure_skill, inherit_fold_lessons, released_and_homed
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
+from .trajectory_memory import prepare_trajectory_memory
 from .fold_state_reference import FoldStateReferenceError, stage_fold_state_pair
 from .fold_frame import FRAME_RULE, CLAUDE_FOLD_RULE, build_frame, load_frame, draw_frame, project_pixels
 from .claude_image_debug import debug_directory
@@ -4902,6 +4903,21 @@ class FoldExplorationPipeline:
             objective,
             molmo_hint=molmo_hint,
         )
+        step_match = re.search(r"current_step is ([a-z_]+)", objective)
+        memory_step = step_match.group(1) if step_match else (
+            getattr(self.client, "acquisition_learning", {}) or {}).get("step")
+        trajectory_memory, history_images = None, []
+        if history and memory_step:
+            memory_dir = (iteration_dir or self.session.run_dir / "workspace") / "previous_attempt"
+            trajectory_memory, history_images = prepare_trajectory_memory(
+                history, memory_step, self.session.run_dir, memory_dir)
+        self.client.trajectory_memory = trajectory_memory
+        if trajectory_memory is not None:
+            planning_images.extend(history_images)
+            self._debug("planning", "attached previous attempt trajectory and evidence",
+                iteration=iteration, step=memory_step,
+                previous_physical_iteration=(trajectory_memory.get("previous_physical_attempt") or {}).get("iteration"),
+                historical_images=len(history_images), memory_path=str(memory_dir / "trajectory_memory.json"))
         self._debug(
             "planning",
             "using canonical RGB-only Camera-A evidence",
@@ -6345,7 +6361,8 @@ class FoldExplorationPipeline:
                 )
                 self._active_iteration[1].update(source_path=str(source_path),
                     proposal=model_proposal.as_dict(), execution_proposal=execution_proposal.as_dict(),
-                    trajectory=trajectory, mode=mode, action_mode=action_mode, planning_attempts=planning_attempts)
+                    trajectory=trajectory, mode=mode, action_mode=action_mode, planning_attempts=planning_attempts,
+                    planning_diagnostics=planning_diagnostics)
                 summary["restart_safe"] = False
                 summary["last_operational_stage"] = "execution"
                 _write_json(output / "summary.json", summary)
