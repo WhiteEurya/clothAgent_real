@@ -300,7 +300,8 @@ class RemoteClaudeBackend:
                timeout_s: int | None = None, debug_dir: Path | None = None,
                image_edit_limit: int | None = None, max_turns: int | None = None,
                overall_timeout_s: float | None = None,
-               orientation_correction: bool = False) -> BackendResult:
+               orientation_correction: bool = False, context_files: dict | None = None) -> BackendResult:
+        self._context_files = context_files or {}
         if overall_timeout_s is not None and (type(overall_timeout_s) not in (int, float)
                 or not 0 < overall_timeout_s < float('inf')):
             raise ValueError('overall_timeout_s must be finite and positive')
@@ -565,6 +566,7 @@ class RemoteClaudeBackend:
             "cloth_begin=0; }; " + downloads)
         # Claude receives the prompt through stdin.  This avoids putting a large
         # prompt or image paths into the SSH command line.
+        output_wrapper = Path(__file__).with_name("remote_output.py").read_text()
         remote = (
             "set -eu; cloth_begin=0; cloth_stage=init; cloth_audit_pid=; "
             "cloth_done() { if [ \"$cloth_begin\" != 0 ]; then "
@@ -588,6 +590,7 @@ class RemoteClaudeBackend:
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
+            f'"${{cloth_image_python:-python3}}" -c {shlex.quote(output_wrapper)} {"--context-envelope " if self._context_files else ""}'
             f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
@@ -603,6 +606,15 @@ class RemoteClaudeBackend:
             "If evidence is insufficient, report it using the requested schema; never invent an action. " +
             "\nReturn only the requested JSON object."
         )
+        transport_input = remote_prompt
+        if self._context_files:
+            remote_prompt += f"\nContext directory: {job}/context. Read manifest.json first; select relevant files yourself using Read with offset/limit for long files. Do not read all files by default."
+            transport_input = json.dumps({"prompt": remote_prompt, "files": self._context_files}, ensure_ascii=False)
+            if self._debug_session:
+                context_dir = self._debug_session.directory / "context"
+                context_dir.mkdir(exist_ok=True)
+                for name, content in self._context_files.items():
+                    (context_dir / name).write_text(content, encoding="utf-8")
         ssh = [self.ssh_binary, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", self.ssh_host]
         command = [*ssh, remote]
@@ -614,8 +626,8 @@ class RemoteClaudeBackend:
         self._progress("ssh_download_and_claude", "started", image_count=len(images))
         completed = None
         try:
-            completed = (self._run_streaming(command, remote_prompt, call_timeout) if self._debug_session else subprocess.run(
-                command, input=remote_prompt, text=True, capture_output=True,
+            completed = (self._run_streaming(command, transport_input, call_timeout) if self._debug_session else subprocess.run(
+                command, input=transport_input, text=True, capture_output=True,
                 timeout=call_timeout, check=False, shell=False,
             ))
         except (OSError, subprocess.TimeoutExpired) as exc:

@@ -256,17 +256,17 @@ def test_robot_config_loads_the_shared_grasp_height_policy() -> None:
     root = Path(__file__).resolve().parents[1]
     config = RobotConfig.load(root, root / "config" / "robot.example.json")
 
-    assert config.grasp_surface_compression_mm == pytest.approx(3.0)
+    assert config.grasp_surface_compression_mm == pytest.approx(20.0)
     assert config.grasp_min_compression_mm == pytest.approx(0.75)
-    assert config.grasp_max_compression_mm == pytest.approx(3.0)
+    assert config.grasp_max_compression_mm == pytest.approx(20.0)
     assert config.grasp_table_clearance_mm == pytest.approx(0.0)
     assert config.online_camera_z_bias_correction is False
     assert config.grasp_use_table_clearance_floor is False
     assert config.support_layer_type == "sponge"
     assert config.support_layer_confirmed is True
     assert config.support_layer_thickness_mm == pytest.approx(20.0)
-    assert config.support_layer_press_mm == pytest.approx(6.0)
-    assert config.support_layer_max_compression_mm == pytest.approx(8.0)
+    assert config.support_layer_press_mm == pytest.approx(20.0)
+    assert config.support_layer_max_compression_mm == pytest.approx(20.0)
     assert config.support_layer_hard_clearance_mm == pytest.approx(1.0)
     assert config.gripper_width_mm == pytest.approx(86.0)
 

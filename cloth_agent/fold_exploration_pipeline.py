@@ -4820,10 +4820,13 @@ class FoldExplorationPipeline:
         directory.mkdir(parents=True, exist_ok=True)
         audit = deepcopy(previous["planning_diagnostics"]["grasp_height_resolution"])
         from .grasp_height_retry import compile_model_height_retry, select_height_retry_images
-        context = {"executed_actions": previous["execution"]["actual_robot_actions"],
+        context = {"earlier_attempts": (previous.get("height_retry") or {}).get("attempt_history", []),
+            "executed_actions": previous["execution"]["actual_robot_actions"],
             "geometry": audit, "evaluation": previous.get("evaluation"),
             "diagnosis": previous.get("grasp_execution_experience"),
             "instruction": "Choose contact Z yourself; no fixed retry step."}
+        from .model_context import compact_context
+        context = compact_context(context)
         images, image_catalog = select_height_retry_images(previous)
         context["image_catalog"] = image_catalog
         self._debug("height-retry", "selected RGB evidence for Claude",
@@ -5649,7 +5652,7 @@ class FoldExplorationPipeline:
             "retry_policy": {
                 "grasp_height_retry": self.grasp_height_retry,
                 "grasp_height_retry_step_mm": self.grasp_height_retry_step_mm,
-                "max_height_followups_per_primary_attempt": 1,
+                "max_height_followups_per_primary_attempt": 3,
                 "height_retry_counts_toward_max_iterations": True,
                 "max_stage_retries": self.max_stage_retries,
                 "retry_backoff_s": self.retry_backoff_s,

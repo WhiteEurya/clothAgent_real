@@ -384,7 +384,17 @@ class RemoteFoldClient(ClaudeAutoClient):
             'left/right refer to that displayed image, not anatomy.',
             'left/right are garment-relative; Claude determines them from the current RGB.')
         instructions += ' ' + CLAUDE_FOLD_RULE
-        prompt = instructions + "\n" + json.dumps(context, ensure_ascii=False)
+        from .model_context import compact_context
+        context = compact_context(context)
+        files = {}
+        entries = []
+        for index, (key, value) in enumerate(context.items()):
+            name = f"{index:02d}.json"
+            content = json.dumps({key: value}, ensure_ascii=False, indent=2)
+            files[name] = content
+            entries.append({"file": name, "topic": key, "characters": len(content)})
+        files['manifest.json'] = json.dumps({"stage": stage, "files": entries}, ensure_ascii=False, indent=2)
+        prompt = instructions + "\nDetailed evidence is in the context directory. Read its manifest, then only files relevant to your decision. Use paginated Read for long files. Mandatory task and execution constraints above still apply."
         started = time.monotonic()
         diagnostics = getattr(self, "_call_diagnostics", None)
         invocation = {"stage": stage, "evidence_images": [str(p) for p in images], "status": "RUNNING"}
@@ -394,7 +404,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         if manifest is not None:
             manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
         try:
-            result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
+            result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema, context_files=files,
                 debug_dir=image_debug,
                 image_edit_limit=2 if evaluation_stage else 6,
                 max_turns=8 if evaluation_stage else None,
@@ -473,11 +483,12 @@ class RemoteFoldClient(ClaudeAutoClient):
         bounds = resolve_grasp_height(measurement=surface, table_plane_abc=None, robot_config=session.robot_config)
         context["contact_height_contract"] = {
             "estimated_surface_z_mm": bounds.surface_z_mm,
+            "default_descent_mm": session.robot_config.grasp_surface_compression_mm,
             "minimum_descent_mm": bounds.minimum_compression_mm,
             "maximum_descent_mm": bounds.maximum_compression_mm,
             "minimum_contact_z_mm": bounds.lower_z_mm,
             "physical_contact": "UNKNOWN", "observed_compression_mm": None,
-            "instruction": "Choose contact_descent_mm from evidence and history. No fixed 6 mm descent. Estimated depth and configured sponge are not contact evidence."}
+            "instruction": "Use default_descent_mm as the initial contact_descent_mm when permitted by the contact Z floor. Choose a different value only with an explicit evidence-based reason or to satisfy the floor. Estimated depth and configured sponge are not contact evidence."}
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
             "For FOLD and REPAIR_SLEEVE, the first move after closure must lift vertically at least 30 mm above the grasp. "
