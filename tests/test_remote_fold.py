@@ -822,3 +822,66 @@ def test_upload_batch_deadline_prevents_network_request(monkeypatch):
     monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('network after deadline'))
     with pytest.raises(PlannerBackendError, match='batch deadline'):
         backend._upload(Path('/tmp/unused.png'))
+
+
+@pytest.mark.parametrize('resume_pending', [False, True])
+@pytest.mark.parametrize('interrupt', [False, True])
+def test_manual_reset_gates_run_and_recaptures_before_planning(saved_scene, monkeypatch, resume_pending, interrupt):
+    from cloth_agent.fold_reset import FoldReset, confirm
+    from cloth_agent.fold_exploration_pipeline import FOLD_STEP_IDS
+    session, images, _ = saved_scene
+    session.results = session.run_dir / 'results'
+    pipeline = FoldExplorationPipeline(session, perception_config=Path('unused.json'), max_iterations=1)
+    reset_decision = {**supervisor_payload(), 'trajectory_decision': 'REQUEST_RESET',
+                      'status': 'BLOCKED', 'current_step': 'BLOCKED', 'reason': 'Please unfold the tangled shirt'}
+    reset = FoldReset(session.workspace)
+    if resume_pending:
+        reset.request(session.results / 'old_iteration', reset_decision, stage='before')
+    calls = []
+    confirmed = []
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline.PerceptionConfig.load',
+                        lambda *args: SimpleNamespace(active_camera_labels=('A',)))
+    monkeypatch.setattr('cloth_agent.fold_exploration_pipeline.assess_screen_visibility',
+                        lambda *args, **kw: {'visibility': 'FULL'})
+    pipeline._single_view_execution_confirmation = lambda *args: True
+    pipeline.client.plan = lambda *args, **kwargs: pytest.fail('Planning must not run during reset')
+    pipeline._execute = lambda *args, **kwargs: pytest.fail('Reset must not execute robot actions')
+
+    def capture(*args, **kwargs):
+        if resume_pending or calls:
+            assert confirmed
+        assert kwargs['reuse'] is False
+        calls.append('capture')
+        return {}, session.run_dir / 'capture.json', images
+
+    pipeline._capture_with_retries = capture
+    def inspect(*args):
+        if not resume_pending and not confirmed:
+            return reset_decision
+        assert args[2] == []
+        return {**supervisor_payload(), 'status': 'COMPLETE', 'current_step': 'COMPLETE',
+                'completed_steps': list(FOLD_STEP_IDS)}
+
+    pipeline._supervisor = inspect
+    def human_confirmation(_):
+        request = reset.pending()
+        assert request is not None
+        assert len(calls) == (0 if resume_pending else 1)
+        if interrupt:
+            raise KeyboardInterrupt()
+        confirm(request['request_path'], request['request_id'])
+        confirmed.append(True)
+
+    monkeypatch.setattr('cloth_agent.fold_reset.time.sleep', human_confirmation)
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            pipeline.run()
+        summary_path = next((session.results / 'fold_exploration').glob('*/summary.json'))
+        summary = json.loads(summary_path.read_text())
+        assert summary['status'] == 'WAITING_FOR_RESET'
+        assert summary['restart_safe'] is False
+        assert reset.pending() is not None
+    else:
+        summary = pipeline.run()
+        assert summary['status'] == 'COMPLETE'
+        assert len(calls) == (1 if resume_pending else 2)

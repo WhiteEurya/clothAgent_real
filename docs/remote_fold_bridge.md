@@ -347,3 +347,26 @@ python -m pytest -q tests/test_remote_fold.py tests/test_fold_exploration_pipeli
 ```
 
 这些测试使用模拟传输和保存的合成 RGB/几何数据，验证生产 planner 路由、本地 grounding、坐标逆旋转、失败拦截和清理；不会调用机器人或公司 Claude。
+
+## Claude 主动请求人工 reset
+
+每次动作前，supervisor 都会检查当前衣物状态，包括抓取学习和高度重试。
+Claude 可返回 `trajectory_decision=REQUEST_RESET`，说明观察证据和需要人工恢复的状态。
+衣物缠绕、移出可操作区域，或多次尝试仍无法推进时可以请求；单次抓空或仅触碰图像边界不自动触发。
+执行后的 supervisor 也可以提出请求。
+
+此时终端和 Viser 显示 **等待人工 RESET**、原因、证据以及本次专属确认命令。
+流程保持暂停，不会规划或执行下一条轨迹。确认机械臂已停止，重新摆放衣物并离开工作区后，
+在项目目录的另一个终端运行显示的命令，例如：
+
+```bash
+python -m cloth_agent.fold_reset --request /path/to/iteration_001/reset_request.json --request-id REQUEST_ID --confirm
+```
+
+必须使用当前请求中的路径和 ID；旧请求的确认不会放行新请求。确认后流程重新采图，
+重新判断折叠进度，并丢弃待执行的高度重试。旧记录仍保留，通用经验仍保留，
+但 reset 前的折叠完成状态不再作为当前衣物状态使用。等待本身没有超时自动继续。
+
+请求保存在迭代目录的 `reset_request.json` 和本次 run 的 `workspace/fold_reset/state.json`。
+进程中断后，使用同一 run 恢复仍会等待确认；看门狗不会自动重启 `WAITING_FOR_RESET` 状态。
+每次动作前的检查会增加一次原先可能被跳过的 supervisor 调用。

@@ -54,6 +54,19 @@ def _short(value: Any, limit: int = 1800) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _reset_markdown(summary: Mapping[str, Any]) -> str:
+    request = summary.get('reset_request') or {}
+    if summary.get('status') != 'WAITING_FOR_RESET':
+        return ''
+    evidence = '\n'.join(f'- {item}' for item in request.get('evidence', []))
+    return ('\n\n### 等待人工 RESET\n\n'
+            + str(request.get('reason', 'Claude 请求重新摆放衣物。'))
+            + '\n\n' + evidence
+            + '\n\n流程已暂停。确认机械臂已停止，重新摆放衣物并离开工作区后，'
+              '在项目目录的另一个终端执行以下命令确认：\n\n```bash\n'
+            + str(request.get('confirmation_command', '')) + '\n```\n')
+
+
 def _iteration_dirs(source: Path) -> list[Path]:
     if (source / "claude_image_tools").is_dir():
         return [source]
@@ -892,7 +905,7 @@ class _FoldViserState:
             f"- trajectory overlays: `{len(self.path_handles)}`\n"
             f"- run status: `{summary.get('status', 'RUNNING')}`\n"
             "\nThe viewer is read-only; it does not control the robot."
-        )
+        ) + _reset_markdown(summary)
         self.debug_panel.content = "### Debug tail\n\n```text\n" + _short(debug_tail, 12000) + "\n```"
 
 

@@ -93,6 +93,7 @@ from .grasp_checkpoint import (
     ACQUISITION_PROBE_LIFT_CONTRACT, compile_grasp_capture,
     GraspCheckpointRejected, validate_acquisition_probe_lift,
 )
+from .fold_reset import FoldReset, RESET_INSTRUCTION
 from .fold_recovery import RecoveryExhausted, archive_iteration_video, checkpoint_evaluation, failure_detection, inherit_fold_lessons, released_and_homed
 from .planner_backend import PlannerBackendError, RemoteClaudeBackend, parse_claude_json
 from .remote_fold import RemoteFoldClient, rgb_evidence, image_manifest, semantic_history
@@ -1781,7 +1782,7 @@ SUPERVISOR_SCHEMA: dict[str, Any] = {
         "garment_visibility": {"type": "string", "enum": ["FULL", "PARTIAL", "UNKNOWN"]},
         "trajectory_decision": {
             "type": "string",
-            "enum": ["CONTINUE", "RECOVER_PREVIOUS_TRAJECTORY", "PLAN_INWARD_RECOVERY", "STOP"],
+            "enum": ["CONTINUE", "RECOVER_PREVIOUS_TRAJECTORY", "PLAN_INWARD_RECOVERY", "STOP", "REQUEST_RESET"],
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "evidence": {
@@ -1834,8 +1835,12 @@ def validate_supervisor_payload(payload: Any) -> dict[str, Any]:
         "RECOVER_PREVIOUS_TRAJECTORY",
         "PLAN_INWARD_RECOVERY",
         "STOP",
+        "REQUEST_RESET",
     }:
         raise ExplorationPlanningError("fold supervisor trajectory_decision is invalid")
+    if result["trajectory_decision"] == "REQUEST_RESET":
+        result["status"] = "BLOCKED"
+        result["current_step"] = "BLOCKED"
     confidence = result["confidence"]
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
         raise ExplorationPlanningError("fold supervisor confidence must be numeric")
@@ -1948,6 +1953,9 @@ def _normalize_supervisor_current_step(payload: Mapping[str, Any]) -> dict[str, 
     """
 
     result = dict(payload)
+    if result.get("trajectory_decision") == "REQUEST_RESET":
+        result.update(status="BLOCKED", current_step="BLOCKED")
+        return result
     if result.get("status") == "COMPLETE" or len(result.get("completed_steps", [])) == len(FOLD_STEP_IDS):
         result["current_step"] = "COMPLETE"
     elif result.get("status") == "BLOCKED":
@@ -2635,8 +2643,9 @@ class FoldSupervisor:
                     "current_step means the single garment-state label that is still incomplete, not an instruction to control any device. Do not return a next_step field.",
                     "Set current_step to the earliest incomplete action in the required order, based on completed_steps. With completed_steps empty, current_step must be left_sleeve.",
                     "Camera-A border contact is PARTIAL diagnostics only. This pipeline has no recovery phase, so border contact alone must not block folding.",
-                    "Keep trajectory_decision=CONTINUE unless the garment state is genuinely impossible to assess from the supplied evidence. This is a visual classification task only.",
-                    "Do not control, command, plan, or advise any robot, gripper, trajectory, or physical action. Do not propose coordinates. Return exactly the supplied supervisor JSON schema.",
+                    RESET_INSTRUCTION,
+                    "Otherwise keep trajectory_decision=CONTINUE unless the garment state is impossible to assess from the supplied evidence.",
+                    "Do not command or plan robot actions or coordinates. Human garment reset requests are allowed. Return exactly the supplied supervisor JSON schema.",
                     "",
                 ]
             ),
@@ -2741,7 +2750,7 @@ class FoldSupervisor:
                 image_edit_limit=2,
                 max_turns=8,
                 image_paths=images_remote, schema=SUPERVISOR_SCHEMA,
-                system_prompt="You are a read-only visual state classifier for a real T-shirt folding experiment. Inspect the supplied RGB evidence, determine the garment's folding state using the stated five-step task, and return only the requested garment-state JSON. The host handles calibration, safety, and execution; you have no robot access and must not discuss or plan physical actions.")
+                system_prompt="You are a read-only visual state classifier for a real T-shirt folding experiment. Inspect the supplied RGB evidence, determine the garment's folding state using the stated five-step task, and return only the requested garment-state JSON. The host handles calibration, safety, and execution; you have no robot access. You may request a human garment reset, but must not plan robot actions.")
             result = _normalize_supervisor_current_step(
                 validate_supervisor_payload(parse_claude_json(completed.stdout)))
             result.update(duration_s=time.monotonic() - started,
@@ -5524,6 +5533,27 @@ class FoldExplorationPipeline:
             "fallback": True,
         }, None
 
+    def _wait_for_manual_reset(self, output, summary, *, iteration_dir=None, decision=None, stage=None):
+        reset = FoldReset(self.session.workspace)
+        request = (reset.request(iteration_dir, decision, stage=stage)
+                   if decision is not None else reset.pending())
+        if request is None:
+            return
+        summary.update(status="WAITING_FOR_RESET", restart_safe=False, reset_request=request)
+        _write_json(output / "summary.json", summary)
+        self._last_operational_stage = "manual_reset"
+        self._debug("manual_reset", "等待人工重新摆放衣物并确认", reason=request["reason"],
+                    confirmation_command=request["confirmation_command"])
+        print("\n[人工 RESET 请求] " + request["reason"] +
+              "\n流程已暂停。确认机械臂已停止，重新摆放衣物并离开工作区后，在另一个终端执行：\n" +
+              request["confirmation_command"], flush=True)
+        completed = reset.wait(request)
+        self.reuse_latest_perception = False
+        summary.update(status="RUNNING", restart_safe=True, reset_request=completed)
+        _write_json(output / "summary.json", summary)
+        self._debug("manual_reset", "人工 reset 已确认；重新采图并判断折叠进度",
+                    request_id=completed["request_id"])
+
     def run(self) -> dict[str, Any]:
         """Run until completion, optionally restarting after safe failures.
 
@@ -5625,7 +5655,8 @@ class FoldExplorationPipeline:
         # Keep the full local experience list for host-owned completion
         # bookkeeping; Claude still receives only the compact recent window
         # through ``_compact_history``.
-        history: list[dict[str, Any]] = self.experiences.history(limit=None)
+        reset = FoldReset(self.session.workspace)
+        history: list[dict[str, Any]] = reset.current_history(self.experiences.history(limit=None))
         summary: dict[str, Any] = {
             "schema_version": 1,
             "created_at": _now(),
@@ -5722,6 +5753,9 @@ class FoldExplorationPipeline:
         pending_height_retry = None  # In-memory only: never replay a target across restart.
         self._active_iteration = None
         try:
+            if reset.pending():
+                self._wait_for_manual_reset(output, summary)
+                history.clear()
             while limit is None or iteration < limit:
                 iteration += 1
                 iteration_dir = output / f"iteration_{iteration:03d}"
@@ -5765,31 +5799,9 @@ class FoldExplorationPipeline:
                     bbox=screen_before.get("bbox_xyxy"),
                     touching_edges=screen_before.get("touching_edges"),
                 )
-                reuse_step = _acquisition_supervisor_reuse_step(history)
-                if height_retry_previous is not None:
-                    supervisor_before = deepcopy(height_retry_previous["supervisor_after"])
-                elif reuse_step is not None:
-                    supervisor_before = self._local_acquisition_supervisor(
-                        screen_before,
-                        history,
-                        step=reuse_step,
-                        reason=(
-                            "Reused the previous ordered fold state because the latest "
-                            "iteration was an acquisition failure/reversible probe."
-                        ),
-                    )
-                    self._debug(
-                        "supervisor",
-                        "skipped redundant before-supervisor during acquisition learning",
-                        iteration=iteration,
-                        current_step=reuse_step,
-                    )
-                else:
-                    supervisor_before = self._supervisor(
-                        before_images,
-                        screen_before,
-                        history,
-                    )
+                # Every attempt, including acquisition/height retries, lets Claude
+                # request a reset before another trajectory can be compiled.
+                supervisor_before = self._supervisor(before_images, screen_before, history)
                 _write_json(iteration_dir / "supervisor_before.json", supervisor_before)
                 self._active_iteration[1].update(supervisor_before=supervisor_before,
                                                 planned_step=supervisor_before.get("current_step"))
@@ -5805,6 +5817,15 @@ class FoldExplorationPipeline:
                         "before decision came from fallback; continuing with conservative earliest step",
                         iteration=iteration,
                     )
+                if supervisor_before.get("trajectory_decision") == "REQUEST_RESET":
+                    self._wait_for_manual_reset(output, summary, iteration_dir=iteration_dir,
+                                                decision=supervisor_before, stage="before")
+                    history.clear()
+                    pending_height_retry = None
+                    self._active_iteration = None
+                    if limit is not None:
+                        limit += 1  # Waiting did not consume a physical attempt.
+                    continue
                 if supervisor_before["status"] == "COMPLETE" or supervisor_before["current_step"] == "COMPLETE":
                     summary["status"] = "COMPLETE"
                     summary["completed_at"] = _now()
@@ -6922,6 +6943,15 @@ class FoldExplorationPipeline:
                     next_step=supervisor_after.get("current_step"),
                     duration_s=round(time.monotonic() - iteration_started, 3),
                 )
+                if supervisor_after.get("trajectory_decision") == "REQUEST_RESET":
+                    self._wait_for_manual_reset(output, summary, iteration_dir=iteration_dir,
+                                                decision=supervisor_after, stage="after")
+                    history.clear()
+                    pending_height_retry = None
+                    self._active_iteration = None
+                    if limit is not None:
+                        limit += 1  # Always reobserve after an acknowledged reset.
+                    continue
                 recent = [row for row in history if not row.get("inherited_lesson") and row.get("planned_step") == current_step][-2:]
                 if (len(recent) == 2 and all((row.get("failure_detection") or {}).get("category") in
                         {"GRASP_UNOBSERVABLE", "GRASP_INSPECTION_ERROR"} for row in recent)):
@@ -6952,6 +6982,12 @@ class FoldExplorationPipeline:
             return summary
         except BaseException as exc:
             failed_stage = self._last_operational_stage
+            if summary.get("status") == "WAITING_FOR_RESET":
+                self._restart_safe = False
+                summary["restart_safe"] = False
+                summary["error"] = f"{type(exc).__name__}: {exc}"
+                _write_json(output / "summary.json", summary)
+                raise
             partial = None
             try:
                 partial = self._save_interrupted_iteration(exc)

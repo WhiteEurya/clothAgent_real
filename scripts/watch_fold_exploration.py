@@ -48,7 +48,7 @@ from typing import Any, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cloth_agent.run_storage import new_run_path
 
-TERMINAL_STATUSES = frozenset({"COMPLETE", "BLOCKED", "SUPERVISOR_STOPPED"})
+TERMINAL_STATUSES = frozenset({"COMPLETE", "BLOCKED", "SUPERVISOR_STOPPED", "WAITING_FOR_RESET"})
 FORBIDDEN_CHILD_OPTIONS = frozenset({"--run-id", "--run-dir", "--experience-dir"})
 
 

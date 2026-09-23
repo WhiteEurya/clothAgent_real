@@ -50,7 +50,7 @@ def retry_eligibility(record, *, enabled=True):
     elif observation.get("contact_alignment") == "MISALIGNED":
         reason = "Evidence localizes XY misalignment; a fixed-XY height retry is not applicable."
     after = record.get("supervisor_after") or {}
-    if reason is None and (after.get("trajectory_decision") == "STOP" or after.get("status") in {"BLOCKED", "COMPLETE"}):
+    if reason is None and (after.get("trajectory_decision") in {"STOP", "REQUEST_RESET"} or after.get("status") in {"BLOCKED", "COMPLETE"}):
         reason = "Supervisor terminal decision takes precedence over a height retry."
     return {"status": "NOT_SCHEDULED" if reason else "SCHEDULED",
         "reason": reason or "Acquisition failed; reuse the executed commands for the next bounded Z-only hypothesis test.",
