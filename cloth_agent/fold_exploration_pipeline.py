@@ -4171,27 +4171,34 @@ class FoldExplorationPipeline:
                     observer_thread.start()
             if thread is not None or observer_thread is not None:
                 time.sleep(0.25)
-        # One worker serializes camera access, including the --no-video fallback.
-        # The action callback only queues requests; camera I/O and PNG encoding
-        # never hold up the next robot action. Join after the trajectory returns.
+        # Robot callbacks run after a completed action and before the next command.
+        # Identify contact moves using the validated command sequence, not a Z guess.
+        planned_actions = self.session.runner.preflight(source_path.name).actions
+        contact_indices = set()
+        for index, item in enumerate(planned_actions):
+            if item['name'] == 'close_gripper':
+                moves = [i for i in range(index) if planned_actions[i]['name'] == 'move']
+                if moves:
+                    contact_indices.add(moves[-1])
         evidence_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='fold-evidence')
         evidence_jobs = []
 
-        def save_pre_lift(frame, action_index, boundary_ns):
+        def capture_contact_evidence(action_index, action_payload):
+            after_ns = time.monotonic_ns()
             path = iteration_dir / 'hold_check' / 'camera_A_grasp_before_lift.png'
-            snapshot = {'action_index': action_index, 'captured_before': 'lift',
-                        'closure_completed_monotonic_ns': boundary_ns,
-                        'frame_monotonic_ns': frame.host_monotonic_ns,
-                        'frame_number': frame.color_frame_number, 'frame_utc': frame.host_utc,
-                        'asynchronous': True, 'source': 'active_camera_A_recorder',
-                        'note': 'Contact-pose frame before lift; may be during closure, not proof of grasp.'}
             try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                Image.fromarray(frame.rgb).convert('RGB').save(path)
-                snapshot.update(status='CAPTURED', image=str(path.resolve()))
+                snapshot = (_capture_grasp_check_rgb(config, recorder, path, after_ns)
+                            if self.real else {'status': 'SIMULATED'})
             except Exception as exc:
-                snapshot.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
+                snapshot = {'status': 'FAILED', 'error': str(exc)}
+                self._debug_exception('grasp-evidence', exc, nonfatal=True)
+            snapshot.update(action_index=action_index, action=action_payload,
+                captured_after='contact_move', captured_before='close_gripper',
+                requested_after_monotonic_ns=after_ns, asynchronous=False,
+                capture_completed_monotonic_ns=time.monotonic_ns(),
+                note='Stationary contact target, before closure; reaching commanded Z does not prove physical contact.')
             grasp_snapshots['before_lift'] = snapshot
+            self._debug('grasp-evidence', 'stationary pre-close capture finished', status=snapshot['status'])
 
         def capture_lift_evidence(action_index, action_payload, height, after_ns, probe_index):
             path = (iteration_dir / 'lift_checkpoints' / f'camera_A_lift_checkpoint_{probe_index:02d}.png'
@@ -4205,20 +4212,20 @@ class FoldExplorationPipeline:
                 self._debug_exception('grasp-evidence', exc, nonfatal=True)
             snapshot.update(action_index=action_index, action=action_payload,
                             captured_after='lift_at_least_30mm', requested_lift_mm=height,
-                            requested_after_monotonic_ns=after_ns, asynchronous=True,
+                            requested_after_monotonic_ns=after_ns, asynchronous=False,
                             capture_completed_monotonic_ns=time.monotonic_ns(),
                             duration_s=round(time.monotonic() - started_capture, 3),
-                            note='Requested after lift; arm continues moving during capture. Not a stationary pose or grasp confirmation.')
+                            note='Stationary after completed lift, before next action. Inspect retained cloth; lift completion alone is not grasp confirmation.')
             if probe_index:
                 lift_snapshots.append(snapshot)
             else:
                 grasp_snapshots['after_lift'] = snapshot
-            self._debug('grasp-evidence', 'asynchronous lift evidence capture finished',
+            self._debug('grasp-evidence', 'stationary lift evidence capture finished',
                         status=snapshot['status'], image=snapshot.get('image'),
                         requested_lift_mm=height)
 
         def on_robot_action(action_index: int, action: Mapping[str, Any]) -> None:
-            """Queue lift evidence at completed boundaries without waiting for it."""
+            """Capture contact/lift evidence synchronously before allowing the next action."""
 
             nonlocal capturing_lift, lift_index, grasp_z, last_z, release_ns, lift_capture_scheduled
             nonlocal last_move_completed_ns
@@ -4226,18 +4233,6 @@ class FoldExplorationPipeline:
             if action_payload.get("name") == "close_gripper":
                 capturing_lift = True
                 grasp_z = last_z
-                boundary_ns = time.monotonic_ns()
-                if self.real and recorder is not None and last_move_completed_ns is not None:
-                    try:
-                        frame = recorder.latest_pre_lift_rgb(
-                            after_ns=last_move_completed_ns, before_ns=boundary_ns)
-                        evidence_jobs.append(evidence_pool.submit(save_pre_lift, frame, action_index, boundary_ns))
-                    except Exception as exc:
-                        grasp_snapshots['before_lift'] = {'status': 'UNAVAILABLE', 'reason': str(exc)}
-                else:
-                    grasp_snapshots['before_lift'] = {
-                        'status': 'UNAVAILABLE' if self.real else 'SIMULATED',
-                        'reason': 'Pre-lift evidence requires an active Camera A recorder and contact timestamp.'}
             elif action_payload.get("name") == "open_gripper":
                 if capturing_lift:
                     release_ns = time.monotonic_ns()
@@ -4245,14 +4240,16 @@ class FoldExplorationPipeline:
             if action_payload.get('name') == 'move':
                 last_z = float(action_payload['args']['z'])
                 last_move_completed_ns = time.monotonic_ns()
+                if action_index in contact_indices:
+                    capture_contact_evidence(action_index, action_payload)
             height = last_z - grasp_z if last_z is not None and grasp_z is not None else 0.
             if (capturing_lift and action_payload.get('name') == 'move' and height >= 30. - 1e-6
                     and (hold_action_index is None or action_index >= hold_action_index)
                     and (acquisition_probe or not lift_capture_scheduled)):
                 after_ns = time.monotonic_ns()
                 lift_index += 1
-                evidence_jobs.append(evidence_pool.submit(capture_lift_evidence,
-                    action_index, action_payload, height, after_ns, lift_index if acquisition_probe else None))
+                capture_lift_evidence(
+                    action_index, action_payload, height, after_ns, lift_index if acquisition_probe else None)
                 if not lift_capture_scheduled and self.observer_camera_serial:
                     evidence_jobs.append(evidence_pool.submit(capture_observer_snapshot,
                         action_index, action_payload, after_ns))
@@ -4823,10 +4820,13 @@ class FoldExplorationPipeline:
         directory.mkdir(parents=True, exist_ok=True)
         audit = deepcopy(previous["planning_diagnostics"]["grasp_height_resolution"])
         from .grasp_height_retry import compile_model_height_retry, select_height_retry_images
-        context = {"executed_actions": previous["execution"]["actual_robot_actions"],
+        context = {"earlier_attempts": (previous.get("height_retry") or {}).get("attempt_history", []),
+            "executed_actions": previous["execution"]["actual_robot_actions"],
             "geometry": audit, "evaluation": previous.get("evaluation"),
             "diagnosis": previous.get("grasp_execution_experience"),
             "instruction": "Choose contact Z yourself; no fixed retry step."}
+        from .model_context import compact_context
+        context = compact_context(context)
         images, image_catalog = select_height_retry_images(previous)
         context["image_catalog"] = image_catalog
         self._debug("height-retry", "selected RGB evidence for Claude",
@@ -4910,11 +4910,14 @@ class FoldExplorationPipeline:
                 "selected fold pixel has no usable calibrated surface: "
                 f"{measurement.get('reason', 'unknown measurement failure')}"
             )
+        grasp_index, grasp_move = _first_grasp_move(proposal)
+        proposed_descent = float(measurement["base_xyz_median_mm"][2]) - float(grasp_move["z"])
         try:
             resolution = resolve_grasp_height(
                 measurement=measurement,
                 table_plane_abc=None,
                 robot_config=self.session.robot_config,
+                proposed_descent_mm=proposed_descent,
             )
         except GraspHeightError as exc:
             raise ExplorationPlanningError(
@@ -5649,7 +5652,7 @@ class FoldExplorationPipeline:
             "retry_policy": {
                 "grasp_height_retry": self.grasp_height_retry,
                 "grasp_height_retry_step_mm": self.grasp_height_retry_step_mm,
-                "max_height_followups_per_primary_attempt": 1,
+                "max_height_followups_per_primary_attempt": 3,
                 "height_retry_counts_toward_max_iterations": True,
                 "max_stage_retries": self.max_stage_retries,
                 "retry_backoff_s": self.retry_backoff_s,

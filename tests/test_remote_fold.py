@@ -26,6 +26,17 @@ from cloth_agent.workspace_debug import WorkspaceTargetError, lateral_clearance,
 from cloth_agent.auto_exploration import ClaudeAutoClient, SelectedReferenceNotExecutableError, ReferenceReselectionExhaustedError
 
 
+def available_prompt(call):
+    """Inspect all supplied context, whether inline or in on-demand files."""
+    if not call.get('context_files'):
+        return call['prompt']
+    context = {}
+    for name, content in call['context_files'].items():
+        if name != 'manifest.json':
+            context.update(json.loads(content))
+    return call['prompt'].split('\n', 1)[0] + '\n' + json.dumps(context, ensure_ascii=False)
+
+
 def visual_payload():
     return {"garment_observation": "White shirt", "opening_strategy": "Lift and reverse the selected edge",
         "confidence": 0.8, "selected_reference": {"camera": "A", "reference_id": "R001", "reason": "Visible cloth"},
@@ -37,7 +48,7 @@ def motion_payload():
     def move(height):
         return {"name": "move", "args": {"target": "grasp", "pixel_xy": None,
             "height_above_grasp_mm": height, "yaw_deg": 0}}
-    return {"requires_lift_checkpoint": True, "actions": [
+    return {"contact_descent_mm": 3.0, "requires_lift_checkpoint": True, "actions": [
         move(60), {"name": "open_gripper", "args": {}}, move(0),
         {"name": "close_gripper", "args": {}}, move(30), move(0),
         {"name": "open_gripper", "args": {}}, move(60), {"name": "home", "args": {}}]}
@@ -67,7 +78,7 @@ def test_remote_evaluator_receives_skill_body(saved_scene):
     client = RemoteFoldClient(backend=backend, binary="not-installed")
     client.evaluate(images, images, proposal=SimpleNamespace(reveal_strategy="fold", expected_observation="folded sleeve"),
                     run_dir=session.run_dir, skill_guidance="Provisional detector: occlusion is UNKNOWN, never EMPTY.")
-    assert "Provisional detector: occlusion is UNKNOWN, never EMPTY." in backend.calls[0]["prompt"]
+    assert "Provisional detector: occlusion is UNKNOWN, never EMPTY." in available_prompt(backend.calls[0])
     assert "skill_update" not in backend.calls[0]["schema"]["properties"]
 
 
@@ -83,8 +94,8 @@ def test_remote_experience_stage_is_separate_and_receives_normalized_outcome(sav
     call = backend.calls[0]
     assert call["schema"] == EXPERIENCE_UPDATE_SCHEMA
     assert call["max_turns"] == 8 and call["image_edit_limit"] == 2
-    assert "policy_failure_stage" in call["prompt"]
-    assert "unchanged end state alone" in call["prompt"]
+    assert "policy_failure_stage" in available_prompt(call)
+    assert "unchanged end state alone" in available_prompt(call)
 
 
 @pytest.mark.parametrize('comparison,expected', [
@@ -110,7 +121,7 @@ def test_final_perception_policy_reaches_evaluator_and_controls_acquisition(save
     assert raw.evaluation.grasp_acquisition.status == 'UNKNOWN'
     assert len(backend.calls) == 1
     assert 'perception_comparison' in backend.calls[0]['schema']['required']
-    assert 'FINAL PERCEPTION COMPARISON POLICY' in backend.calls[0]['prompt']
+    assert 'FINAL PERCEPTION COMPARISON POLICY' in available_prompt(backend.calls[0])
     if comparison == 'UNCHANGED':
         assert evaluation.earliest_failure_stage == 'ACQUISITION'
 
@@ -193,21 +204,21 @@ def test_real_plan_path_remote_only_with_local_grounding(saved_scene, monkeypatc
         history=[{"robot_state": {"secret": "private_robot"}, "base_xyz_mm": [999, 999, 999],
                   "evaluation": {"grasp_acquisition": {"status": "UNKNOWN"}}}])
     assert len(backend.calls) == 2
-    assert client.skill_guidance in backend.calls[0]["prompt"]
+    assert client.skill_guidance in available_prompt(backend.calls[0])
     assert proposal.actions[2]["args"] == {"x": 500, "y": 40, "z": 27, "yaw": 0}
     assert proposal.actions[4]["args"]["z"] == 27 + lift_mm
     _validate_acquisition_strategy_change(proposal, {"use_lift_only_probe": True})
     _validate_model_acquisition_probe(proposal)
-    assert "at least 30 mm above the grasp" in backend.calls[1]["prompt"]
-    assert "no fixed probe lift upper limit" in backend.calls[1]["prompt"]
+    assert "at least 30 mm above the grasp" in available_prompt(backend.calls[1])
+    assert "no fixed probe lift upper limit" in available_prompt(backend.calls[1])
     assert client.last_reference_validation["reference_id"] == "R001"
     assert client.last_grounding_verification["authority"] == "local_pixel_compiler"
     for call in backend.calls:
         assert images[2] not in call["image_paths"]
-        assert str(session.run_dir) not in call["prompt"]
-        assert "private_robot" not in call["prompt"]
-        assert "base_xyz_mm" not in call["prompt"]
-        assert "999" not in call["prompt"]
+        assert str(session.run_dir) not in available_prompt(call)
+        assert "private_robot" not in available_prompt(call)
+        assert "base_xyz_mm" not in available_prompt(call)
+        assert "999" not in available_prompt(call)
     client.backend = FakeBackend(PlannerBackendError("SSH failed"))
     with pytest.raises(PlannerBackendError):
         client.plan(images, session, "Probe the garment edge")
@@ -260,7 +271,7 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
     pipeline._plan_fold_with_retries(images, "Fold; current_step is hem_up", history, iteration=12)
     assert len(client.backend.calls) == 2
     for call in client.backend.calls:
-        context = json.loads(call["prompt"].split("\n", 1)[1])
+        context = json.loads(available_prompt(call).split("\n", 1)[1])
         memory = context["trajectory_memory"]
         assert memory["instruction"] == TRAJECTORY_MEMORY_INSTRUCTION
         assert memory["previous_physical_attempt"]["iteration"] == 1
@@ -270,7 +281,7 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
         image_index = int(evidence["image_id"].split("_")[1])
         assert call["image_paths"][image_index].name == "history_before_rgb.png"
         assert "HISTORICAL ONLY" in context["images"][image_index]["role"]
-        assert str(session.run_dir) not in call["prompt"]
+        assert str(session.run_dir) not in available_prompt(call)
         assert context["experience_context"]["next_experiment"] == history[0]["next_experiment"]
         assert context["experience_context"]["failure_diagnosis"]["physical_failure_mode"] == "UNKNOWN"
         assert context["experience_context"]["conditional_experience"] == [rule]
@@ -278,7 +289,7 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
     client.backend.responses.append(motion_payload())
     client.repair_last_grounding_plan(session, "Fold; current_step is hem_up",
         feedback="Adjust the trajectory before execution")
-    repaired_context = json.loads(client.backend.calls[-1]["prompt"].split("\n", 1)[1])
+    repaired_context = json.loads(available_prompt(client.backend.calls[-1]).split("\n", 1)[1])
     assert repaired_context["trajectory_memory"]["previous_physical_attempt"]["iteration"] == 1
     assert repaired_context["experience_context"]["conditional_experience"] == [rule]
     assert repaired_context["experience_context"]["grasp_execution_experience"] == history[0]["grasp_execution_experience"]
@@ -286,7 +297,7 @@ def test_pipeline_relays_previous_execution_to_both_remote_planning_stages(saved
     client.backend = FakeBackend(visual_payload(), motion_payload())
     pipeline._plan_fold_with_retries(images, "Fold; current_step is right_side", history, iteration=13)
     assert client.trajectory_memory is None
-    assert all("trajectory_memory" not in call["prompt"] for call in client.backend.calls)
+    assert all("trajectory_memory" not in available_prompt(call) for call in client.backend.calls)
 
 
 @pytest.mark.parametrize("derived", [False, True])
@@ -319,15 +330,15 @@ def test_remote_stages_share_current_garment_frame(saved_scene):
     client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
     assert len(backend.calls) == 2
     for call in backend.calls:
-        assert json.dumps(frame) in call['prompt']
-        assert 'left/right refer to that displayed image' not in call['prompt']
+        assert json.dumps(frame) in available_prompt(call)
+        assert 'left/right refer to that displayed image' not in available_prompt(call)
         assert call['image_paths'] == images[:2]
     frame['image_sha256'] = 'stale'
     (views / 'garment_frame.json').write_text(json.dumps(frame))
     backend.responses.extend([visual_payload(), motion_payload()])
     client.plan(images, session, 'Probe garment. ' + FRAME_RULE)
     assert len(backend.calls) == 4
-    assert '"molmo_frame_hint": null' in backend.calls[2]['prompt']
+    assert '"molmo_frame_hint": null' in available_prompt(backend.calls[2])
 
 
 def test_claude_semantic_authority_retains_mask_and_workspace_checks(saved_scene):
@@ -362,7 +373,7 @@ def test_remote_claude_receives_molmo_rgb_hint_and_host_resolves_float_destinati
     client.plan([*images, hint], session, 'Fold garment')
     for call in backend.calls:
         assert hint in call['image_paths']
-        assert 'CLAUDE_FOLD_AUTHORITY_V1' in call['prompt']
+        assert 'CLAUDE_FOLD_AUTHORITY_V1' in available_prompt(call)
     trace = client.last_grounding_verification['image_source_resolution']
     assert trace[0]['grounding_pixel_xy'] == [5, 7]
     assert list(session.run_dir.rglob('pixel_source_resolution.json'))
@@ -419,16 +430,16 @@ def test_supervisor_and_both_evaluators_use_bridge(saved_scene, monkeypatch):
         assert call['max_turns'] == 8
         assert call['image_edit_limit'] == 2
     assert all(path in backend.calls[1]['image_paths'] for path in snapshots)
-    assert 'BEFORE lift' in backend.calls[1]['prompt']
-    assert 'same-attempt before-lift and after-lift pair' in backend.calls[1]['prompt']
-    assert 'may be during jaw closure' in backend.calls[1]['prompt']
-    assert 'captured asynchronously during continued motion' in backend.calls[1]['prompt']
-    assert 'lift >=30 mm' in backend.calls[1]['prompt']
-    assert 'Closure confirmation is not proof' in backend.calls[1]['prompt']
+    assert 'at contact' in available_prompt(backend.calls[1])
+    assert 'same-attempt before-lift and after-lift pair' in available_prompt(backend.calls[1])
+    assert 'historical captures may be during closure' in available_prompt(backend.calls[1])
+    assert 'new captures are stationary before lateral motion' in available_prompt(backend.calls[1])
+    assert 'lift >=30 mm' in available_prompt(backend.calls[1])
+    assert 'Closure confirmation is not proof' in available_prompt(backend.calls[1])
     for call in backend.calls:
-        assert str(session.run_dir) not in call["prompt"]
-        assert "123456" not in call["prompt"]
-        assert "private_robot" not in call["prompt"]
+        assert str(session.run_dir) not in available_prompt(call)
+        assert "123456" not in available_prompt(call)
+        assert "private_robot" not in available_prompt(call)
         assert images[2] not in call["image_paths"]
 
 
@@ -445,7 +456,7 @@ def test_parser_and_transport_cleanup(saved_scene, monkeypatch):
         raise subprocess.TimeoutExpired(cmd, 1)
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(PlannerBackendError, match="SSH"):
-        RemoteClaudeBackend(timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", timeout_s=1).invoke(prompt="Read", image_paths=[png], schema={}, system_prompt="Read")
     assert len(calls) == 3
     assert "sha256sum" in calls[1][0][-1]
     assert "https://tempfile.org/poc-id/download" in calls[1][0][-1]
@@ -510,8 +521,8 @@ def test_probe_repair_receives_same_lift_contract_and_preserves_40mm(saved_scene
     assert _validate_model_acquisition_probe(repaired)["max_lift_mm"] == 40
     assert len(backend.calls) == 3  # One visual selection, one motion, one motion correction.
     for call in backend.calls[1:]:
-        assert "at least 30 mm above the grasp" in call["prompt"]
-        assert "no fixed probe lift upper limit" in call["prompt"]
+        assert "at least 30 mm above the grasp" in available_prompt(call)
+        assert "no fixed probe lift upper limit" in available_prompt(call)
 
 
 def test_feedback_keeps_previous_visual_reference_excluded(saved_scene):
@@ -526,7 +537,7 @@ def test_feedback_keeps_previous_visual_reference_excluded(saved_scene):
     client = RemoteFoldClient(backend=backend)
     client.plan(images, session, "Fold garment")
     client.plan(images, session, "Fold garment", feedback="selected reference is inconsistent with the final grasp")
-    context = json.loads(backend.calls[2]["prompt"].split("\n", 1)[1])
+    context = json.loads(available_prompt(backend.calls[2]).split("\n", 1)[1])
     assert context["rejected_references"] == [{"camera": "A", "reference_id": "R001"}]
 
 
@@ -590,9 +601,9 @@ def test_rotated_strip_signed_distances_and_local_failure_images(saved_scene):
     assert client.last_plan_result is None
     assert client.last_grounding_verification is None
     for call in backend.calls:
-        assert "signed_clearance" not in call["prompt"]
+        assert "signed_clearance" not in available_prompt(call)
         assert all(not p.name.startswith("workspace_") for p in call["image_paths"])
-    context = json.loads(backend.calls[1]["prompt"].split("\n", 1)[1])
+    context = json.loads(available_prompt(backend.calls[1]).split("\n", 1)[1])
     assert context["xy_eligible_transport_pixels_upright"] == [[14, 15]]
 
 
@@ -620,7 +631,7 @@ def test_remote_timing_and_failure_snapshot(saved_scene, monkeypatch, failed):
         return SimpleNamespace(returncode=int(failed), stdout='{"result":"{}"}',
             stderr="__CLOTH_TIMING__ download_0 2500000000\n__CLOTH_TIMING__ hash_0 1000000\n__CLOTH_TIMING__ claude 7000000000\n")
     monkeypatch.setattr(subprocess, "run", run)
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     events = []
     backend.progress_callback = lambda *a, **k: events.append((a, k))
     if failed:
@@ -649,7 +660,7 @@ def test_transport_result_and_cleanup_paths(saved_scene, monkeypatch, failure):
         return SimpleNamespace(returncode=1 if failure == "ssh" else 0, stderr="error" if failure == "ssh" else "",
             stdout='not json' if failure == "json" else json.dumps({"is_error": failure == "claude", "result": '{"ok":true}'}))
     monkeypatch.setattr(subprocess, "run", run)
-    backend = RemoteClaudeBackend()
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
     kwargs = dict(prompt="Read RGB", image_paths=[images[0]], schema={}, system_prompt="Read only")
     if failure == "success":
         assert parse_claude_json(backend.invoke(**kwargs).stdout)["ok"] is True
@@ -709,6 +720,7 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
         if command[0] == "curl":
             return SimpleNamespace(returncode=0, stderr="", stdout='{"id":"relay"}')
         remote = command[-1]
+        remote = remote.replace("$HOME/.cache/cloth-agent-images", str(session.run_dir / "image_cache"))
         if remote.startswith("rm -rf"):
             return real_run(["sh", "-c", remote], **kwargs)
         remote = remote.replace("curl -fsSL", "sh " + shlex.quote(str(curl_stub)) + " -fsSL")
@@ -719,7 +731,7 @@ def test_remote_shell_does_not_run_claude_after_download_or_hash_failure(saved_s
         return result
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(PlannerBackendError, match="exited"):
-        RemoteClaudeBackend().invoke(prompt="RGB only", image_paths=images[:2], schema={}, system_prompt="read")
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", ).invoke(prompt="RGB only", image_paths=images[:2], schema={}, system_prompt="read")
     assert len(called) == 1
     assert "CLAUDE_WAS_CALLED" not in called[0].stdout
 
@@ -737,7 +749,7 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
         f'if [ "$n" -le {transient_failures} ]; then printf partial > "$1"; exit 18; fi; '
         f'cp {shlex.quote(str(images[0]))} "$1"\n')
     stub = session.run_dir / "claude_stub.sh"
-    stub.write_text("printf '%s' '{\"result\":\"{\\\"ok\\\":true}\"}'\n")
+    stub.write_text("printf '%s' '{\"type\":\"result\",\"result\":\"{\\\"ok\\\":true}\"}'\n")
     if nonblocking_audit:
         with stub.open("a") as stream:
             stream.write("python3 -c " + shlex.quote(
@@ -748,19 +760,25 @@ def test_real_remote_shell_success_reports_timings_and_cleans_job(saved_scene, m
         if command[0] == "curl":
             return SimpleNamespace(returncode=0, stdout='{"id":"relay"}', stderr="")
         remote = command[-1]
+        remote = remote.replace("$HOME/.cache/cloth-agent-images", str(session.run_dir / "image_cache"))
         if not remote.startswith("rm -rf"):
             import re
-            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 \S+ -o ([^; ]+)",
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 10 --max-time 30 --speed-limit 1024 --speed-time 15 \S+ -o ([^; ]+)",
                 lambda m: f"sh {shlex.quote(str(downloader))} {m[1]}", remote)
             remote = remote.replace("sleep 2;", "sleep 0;")
             remote = remote.replace("claude -p", f"sh {shlex.quote(str(stub))}")
         return real_run(["sh", "-c", remote], **kwargs)
     monkeypatch.setattr(subprocess, "run", run)
-    result = RemoteClaudeBackend().invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
+    result = backend.invoke(prompt="Read", image_paths=images[:1], schema={}, system_prompt="Read")
+    cached = backend.invoke(prompt="Read again", image_paths=images[:1], schema={}, system_prompt="Read")
+    assert parse_claude_json(cached.stdout) == {"ok": True}
+    assert len(backend._upload_cache) == 1
     assert parse_claude_json(result.stdout) == {"ok": True}
     assert int(counter.read_text()) == transient_failures + 1
     if nonblocking_audit:
-        assert result.stderr.count("__CLOTH_IMAGE_TOOL__ AUDIT_PAYLOAD_") == 512
+        # Live forwarding may precede the complete EXIT audit replay.
+        assert result.stderr.count("__CLOTH_IMAGE_TOOL__ AUDIT_PAYLOAD_") >= 512
         assert '"tool":"audit_finished"' in result.stderr
         assert "couldn\'t flush" not in result.stderr
     assert {"remote_download_0_s", "remote_hash_0_s", "remote_claude_s"} <= result.timings.keys()
@@ -778,7 +796,7 @@ def test_upload_retries_same_file_after_transport_failure(monkeypatch, code):
                                stderr='connection reset')
     monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
     monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', delays.append)
-    result = RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+    result = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )._upload(Path('/tmp/image.png'))
     assert 'retry-file' in result
     assert len(calls) == 3 and calls[0] == calls[1] == calls[2]
     assert '--http1.1' in calls[0]
@@ -793,5 +811,14 @@ def test_upload_retry_exhaustion(monkeypatch):
     monkeypatch.setattr('cloth_agent.planner_backend.subprocess.run', run)
     monkeypatch.setattr('cloth_agent.planner_backend.time.sleep', lambda _: None)
     with pytest.raises(PlannerBackendError, match='56'):
-        RemoteClaudeBackend()._upload(Path('/tmp/image.png'))
+        RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )._upload(Path('/tmp/image.png'))
     assert len(calls) == 3
+
+
+def test_upload_batch_deadline_prevents_network_request(monkeypatch):
+    import time
+    backend = RemoteClaudeBackend(upload_url="https://tempfile.org/api/upload/local", )
+    backend._transfer_deadline = time.monotonic() - 1
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('network after deadline'))
+    with pytest.raises(PlannerBackendError, match='batch deadline'):
+        backend._upload(Path('/tmp/unused.png'))

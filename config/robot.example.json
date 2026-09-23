@@ -9,9 +9,9 @@
   "expected_tcp_offset_mm_deg": [0, 0, 172, 0, 0, 0],
   "tcp_offset_tolerance": 1.0,
   "grasp_height": {
-    "surface_compression_mm": 3.0,
+    "surface_compression_mm": 20.0,
     "min_compression_mm": 0.75,
-    "max_compression_mm": 3.0,
+    "max_compression_mm": 20.0,
     "table_clearance_mm": 0.0,
     "use_table_clearance_floor": false
   },
@@ -19,8 +19,8 @@
     "type": "sponge",
     "confirmed": true,
     "thickness_mm": 20.0,
-    "press_mm": 6.0,
-    "max_compression_mm": 8.0,
+    "press_mm": 20.0,
+    "max_compression_mm": 20.0,
     "hard_table_clearance_mm": 1.0,
     "presence_threshold_mm": 3.0
   },

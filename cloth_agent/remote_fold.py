@@ -168,15 +168,16 @@ MOTION_SCHEMA = {
                     "args": {"type": "object", "additionalProperties": False}},
                  "required": ["name", "args"]},
             ]}},
+        "contact_descent_mm": {"type": "number", "description": "Claude-chosen descent below estimated surface; NOT observed compression."},
         "requires_lift_checkpoint": {"type": "boolean"},
     },
-    "required": ["actions", "requires_lift_checkpoint"],
+    "required": ["actions", "requires_lift_checkpoint", "contact_descent_mm"],
 }
 
 
 def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size):
     """Convert explicitly proposed waypoints, without adding/defaulting actions."""
-    if not isinstance(payload, dict) or set(payload) != {"actions", "requires_lift_checkpoint"}:
+    if not isinstance(payload, dict) or set(payload) != {"actions", "requires_lift_checkpoint", "contact_descent_mm"}:
         raise ExplorationPlanningError("invalid remote motion fields")
     raw_actions = payload["actions"]
     if not isinstance(raw_actions, list) or not 1 <= len(raw_actions) <= MAX_EXPLORATION_ACTIONS:
@@ -190,7 +191,7 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
     if surface.get("valid") is not True:
         raise ExplorationPlanningError("selected pixel has no valid local surface")
     height = resolve_grasp_height(measurement=surface, table_plane_abc=None,
-                                 robot_config=robot_config)
+                                 robot_config=robot_config, proposed_descent_mm=payload["contact_descent_mm"])
     grasp_xyz = [*measurement["base_xyz_mm"][:2], float(height.target_xyz_mm[2])]
     if not all(math.isfinite(float(v)) for v in grasp_xyz):
         raise ExplorationPlanningError("non-finite local grasp geometry")
@@ -383,7 +384,17 @@ class RemoteFoldClient(ClaudeAutoClient):
             'left/right refer to that displayed image, not anatomy.',
             'left/right are garment-relative; Claude determines them from the current RGB.')
         instructions += ' ' + CLAUDE_FOLD_RULE
-        prompt = instructions + "\n" + json.dumps(context, ensure_ascii=False)
+        from .model_context import compact_context
+        context = compact_context(context)
+        files = {}
+        entries = []
+        for index, (key, value) in enumerate(context.items()):
+            name = f"{index:02d}.json"
+            content = json.dumps({key: value}, ensure_ascii=False, indent=2)
+            files[name] = content
+            entries.append({"file": name, "topic": key, "characters": len(content)})
+        files['manifest.json'] = json.dumps({"stage": stage, "files": entries}, ensure_ascii=False, indent=2)
+        prompt = instructions + "\nDetailed evidence is in the context directory. Read its manifest, then only files relevant to your decision. Use paginated Read for long files. Mandatory task and execution constraints above still apply."
         started = time.monotonic()
         diagnostics = getattr(self, "_call_diagnostics", None)
         invocation = {"stage": stage, "evidence_images": [str(p) for p in images], "status": "RUNNING"}
@@ -393,7 +404,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         if manifest is not None:
             manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
         try:
-            result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema,
+            result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema, context_files=files,
                 debug_dir=image_debug,
                 image_edit_limit=2 if evaluation_stage else 6,
                 max_turns=8 if evaluation_stage else None,
@@ -466,12 +477,24 @@ class RemoteFoldClient(ClaudeAutoClient):
         # Kept in every motion request, including repair: semantic_task strips
         # the appended host objective, so that text alone cannot convey limits.
         context['acquisition_probe_lift_contract'] = ACQUISITION_PROBE_LIFT_CONTRACT
+        g = GarmentGrounding(session.run_dir / "workspace" / "perception_views")
+        ref = g.lookup_reference("A", visual.selected_reference["reference_id"])
+        surface = g.sample_local_surface("A", *ref["pixel_xy"], radius_px=3, include_nearest_reference=False)
+        bounds = resolve_grasp_height(measurement=surface, table_plane_abc=None, robot_config=session.robot_config)
+        context["contact_height_contract"] = {
+            "estimated_surface_z_mm": bounds.surface_z_mm,
+            "default_descent_mm": session.robot_config.grasp_surface_compression_mm,
+            "minimum_descent_mm": bounds.minimum_compression_mm,
+            "maximum_descent_mm": bounds.maximum_compression_mm,
+            "minimum_contact_z_mm": bounds.lower_z_mm,
+            "physical_contact": "UNKNOWN", "observed_compression_mm": None,
+            "instruction": "Use default_descent_mm as the initial contact_descent_mm when permitted by the contact Z floor. Choose a different value only with an explicit evidence-based reason or to satisfy the floor. Estimated depth and configured sponge are not contact evidence."}
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
             self._remote_images, session.run_dir,
             "For FOLD and REPAIR_SLEEVE, the first move after closure must lift vertically at least 30 mm above the grasp. "
             "The host raises shorter positive vertical lifts to 30 mm and revalidates the full trajectory. "
-            "A lift photo is collected asynchronously for final evaluation; there is no mid-motion visual approval pause. "
-            "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above the host-resolved closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. If fold_state_reference is present, use its target image only as a semantic visual goal for the current step. Select grasp and transport pixels exclusively from the CURRENT Camera-A RGB/Rxxx evidence; never copy reference-image pixels, coordinates, scale, depth, or XYZ. Do not send measured XYZ or code.")
+            "Contact and lift photos are captured synchronously before the next robot action, for final evaluation; no model approval is required between actions. "
+            "Return the complete proposed move/open_gripper/close_gripper/home sequence. Each move uses target=grasp with pixel_xy=null for the fixed selected marker, or target=pixel with [u,v] in the CURRENT upright RGB for transport destinations. height_above_grasp_mm is a proposed NONNEGATIVE relative lift above your chosen closure height; it is not a measured coordinate. yaw_deg is relative to calibrated Home. All conversions, depth checks and execution checks are local. Approach with clearance, open, descend to target=grasp and height=0, close, lift before lateral transport, lay down and release, retreat and home. Explicitly include every action; the host does not insert missing actions. In ACQUISITION_PROBE mode use only target=grasp: lift, reverse to the same contact, release and home; set requires_lift_checkpoint=true. In FOLD mode actually transport inward; in REPAIR_SLEEVE mode transport outward to unbunch, then release. If fold_state_reference is present, use its target image only as a semantic visual goal for the current step. Select grasp and transport pixels exclusively from the CURRENT Camera-A RGB/Rxxx evidence; never copy reference-image pixels, coordinates, scale, depth, or XYZ. Return contact_descent_mm, your chosen descent below the estimated surface within contact_height_contract bounds. It is a commanded geometric offset, not achieved physical compression. Do not send measured XYZ or code.")
         rgb = next(p for p in self._remote_images if p.name.lower() == "camera_a_rgb_upright.png")
         with Image.open(rgb) as image:
             size = image.size
@@ -553,9 +576,9 @@ class RemoteFoldClient(ClaudeAutoClient):
         observers = rgb_evidence(observer_images, run_dir)
         images = [*before, *after, *video, *observers]
         snapshot_roles = {
-            'camera_a_grasp_before_lift.png': 'Camera A wrist RGB at contact BEFORE lift; may be during jaw closure, not proof of completed closure',
+            'camera_a_grasp_before_lift.png': 'Camera A wrist RGB at contact; inspect capture metadata: new synchronous captures are before closure, historical captures may be during closure',
             'camera_a_grasp_after_close.png': 'Camera A wrist RGB after confirmed closure, BEFORE lift',
-            'camera_a_grasp_after_lift.png': 'Camera A wrist RGB requested after lift >=30 mm; captured asynchronously during continued motion',
+            'camera_a_grasp_after_lift.png': 'Camera A wrist RGB requested after lift >=30 mm; capture timing comes from metadata; new captures are stationary before lateral motion, historical captures may be asynchronous',
         }
         roles = (["before"] * len(before) + ["after"] * len(after) +
                  ["rollout RGB contact sheet"] * len(video) +

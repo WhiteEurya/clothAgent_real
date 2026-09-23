@@ -129,7 +129,7 @@ class RemoteClaudeBackend:
     def __init__(
         self,
         ssh_host: str = "company-planner",
-        upload_url: str = "https://tempfile.org/api/upload/local",
+        upload_url: str | None = None,
         download_base_url: str = "https://tempfile.org",
         timeout_s: int = 900,
         ssh_binary: str = "ssh",
@@ -138,7 +138,8 @@ class RemoteClaudeBackend:
         max_turns: int = 16,
     ):
         self.ssh_host = ssh_host
-        self.upload_url = upload_url.rstrip("/")
+        self.upload_url = upload_url.rstrip("/") if upload_url else None
+        self._r2_client = None
         self.download_base_url = download_base_url.rstrip("/")
         self.timeout_s = int(timeout_s)
         self.ssh_binary = ssh_binary
@@ -147,6 +148,8 @@ class RemoteClaudeBackend:
         if type(max_turns) is not int or max_turns < 1:
             raise ValueError('max_turns must be a positive integer')
         self.max_turns = max_turns
+        self._upload_cache = {}
+        self._transfer_deadline = None
         self._overall_deadline = None
         self.progress_callback = None
         self.last_timings: dict[str, float] = {}
@@ -165,15 +168,60 @@ class RemoteClaudeBackend:
             raise PlannerBackendError('remote Claude overall deadline exceeded')
         return min(limit, remaining)
 
+    def _upload_timeout(self):
+        remaining = (self._transfer_deadline - time.monotonic()
+                     if self._transfer_deadline is not None else 180.)
+        if remaining <= 0:
+            raise PlannerBackendError("image transfer batch deadline exceeded")
+        return min(self._remaining_timeout(30), remaining)
+
+    def _r2_urls(self, image: Path) -> tuple[str, str]:
+        from .r2_config import load_r2_env
+        load_r2_env()
+        names = ('R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET')
+        missing = [name for name in names if not os.environ.get(name)]
+        if missing:
+            raise PlannerBackendError('R2 configuration missing: ' + ', '.join(missing))
+        if self._r2_client is None:
+            try:
+                import boto3
+                from botocore.config import Config
+            except ImportError as exc:
+                raise PlannerBackendError('R2 requires boto3; install project dependencies') from exc
+            self._r2_client = boto3.client(
+                's3', endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+                region_name='auto', config=Config(signature_version='s3v4'))
+        # One PUT per PNG; the existing curl watchdog bounds the whole transfer.
+        params = {'Bucket': os.environ['R2_BUCKET'],
+                  'Key': f'cloth-agent/{uuid.uuid4().hex}.png'}
+        try:
+            put_url = self._r2_client.generate_presigned_url(
+                'put_object', Params=params, ExpiresIn=3600)
+            get_url = self._r2_client.generate_presigned_url(
+                'get_object', Params=params, ExpiresIn=3600)
+        except Exception as exc:
+            raise PlannerBackendError('R2 URL signing failed') from exc
+        return put_url, get_url
+
     def _upload(self, image: Path) -> str:
         command = [
-            self.curl_binary, "-fsS", "--http1.1", "-X", "POST", self.upload_url,
+            self.curl_binary, "-fsS", "--http1.1", "--connect-timeout", "10",
+            "--max-time", "30", "--speed-limit", "1024", "--speed-time", "15",
+            "-X", "POST", self.upload_url,
             "-F", f"files=@{image}", "-F", "expiryHours=1",
         ]
+        get_url = None
+        if self.upload_url is None:
+            put_url, get_url = self._r2_urls(image)
+            command = [self.curl_binary, '-fsS', '--http1.1', '--connect-timeout', '10',
+                       '--max-time', '30', '--speed-limit', '1024', '--speed-time', '15',
+                       '--upload-file', str(image), put_url]
         for attempt in range(1, 4):
             try:
                 completed = subprocess.run(command, text=True, capture_output=True,
-                                           timeout=self._remaining_timeout(min(120, self.timeout_s)),
+                                           timeout=self._upload_timeout(),
                                            check=False, shell=False)
             except subprocess.TimeoutExpired as exc:
                 failure = PlannerBackendError("HTTPS image upload timed out")
@@ -197,6 +245,8 @@ class RemoteClaudeBackend:
                            attempt=attempt, next_attempt=attempt + 1, max_attempts=3,
                            retry_delay_s=delay, reason=str(failure))
             time.sleep(delay)
+        if get_url is not None:
+            return get_url
         try:
             payload: Any = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
@@ -250,7 +300,8 @@ class RemoteClaudeBackend:
                timeout_s: int | None = None, debug_dir: Path | None = None,
                image_edit_limit: int | None = None, max_turns: int | None = None,
                overall_timeout_s: float | None = None,
-               orientation_correction: bool = False) -> BackendResult:
+               orientation_correction: bool = False, context_files: dict | None = None) -> BackendResult:
+        self._context_files = context_files or {}
         if overall_timeout_s is not None and (type(overall_timeout_s) not in (int, float)
                 or not 0 < overall_timeout_s < float('inf')):
             raise ValueError('overall_timeout_s must be finite and positive')
@@ -459,17 +510,27 @@ class RemoteClaudeBackend:
             with path.open("rb") as stream:
                 if stream.read(8) != b"\x89PNG\r\n\x1a\n":
                     raise PlannerBackendError("remote planner image is not a PNG")
-        # Uploading is intentionally sequential: each URL is short-lived and the
-        # relay service has a small request quota.
+        # Upload sequentially under a shared transfer deadline; reuse cached URLs.
+        self._transfer_deadline = time.monotonic() + 180.0
         urls = []
         for i, path in enumerate(images):
             started = time.monotonic()
             self._progress(f"upload_{i}", "started", image_name=path.name,
                            bytes=path.stat().st_size, image_count=len(images))
             try:
-                urls.append(self._upload(path))
+                self._upload_timeout()
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                cached = self._upload_cache.get(digest)
+                if cached and time.monotonic() < cached[1]:
+                    urls.append(cached[0])
+                    self._progress("image_upload", "cache_hit", image_name=path.name, sha256=digest)
+                else:
+                    url = self._upload(path)
+                    self._upload_cache[digest] = (url, time.monotonic() + 2400.)
+                    urls.append(url)
             finally:
                 self._finish_phase(f"upload_{i}", started)
+        transfer_remaining = max(1, int(self._transfer_deadline - time.monotonic()))
         call_timeout = self._remaining_timeout(call_timeout)
         job = f"/tmp/cloth_remote_{uuid.uuid4().hex}"
         quoted_job = shlex.quote(job)
@@ -480,21 +541,32 @@ class RemoteClaudeBackend:
         # Keep hash verification before any model invocation.
         downloads = " && ".join(
             f"cloth_stage=download_{i} && cloth_begin=$(date +%s%N) && "
-            f"( cloth_attempt=1; while :; do "
-            f"if curl -fsSL --http1.1 --connect-timeout 20 --max-time 120 {shlex.quote(url)} "
+            f"( cloth_cache=\"$HOME/.cache/cloth-agent-images/{hashlib.sha256(images[i].read_bytes()).hexdigest()}.png\"; "
+            f"if [ -f \"$cloth_cache\" ] && printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} \"$cloth_cache\" | sha256sum -c - >/dev/null 2>&1; then "
+            f"cp -- \"$cloth_cache\" {quoted_job}/image_{i}.png; "
+            f"else cloth_attempt=1; while :; do "
+            f"if curl -fsSL --http1.1 --connect-timeout 10 --max-time 30 --speed-limit 1024 --speed-time 15 {shlex.quote(url)} "
             f"-o {quoted_job}/image_{i}.png; then break; else cloth_rc=$?; fi; "
             'if [ "$cloth_attempt" -ge 3 ]; then exit "$cloth_rc"; fi; '
             'case "$cloth_rc" in 5|6|7|18|28|35|52|55|56|92) ;; *) exit "$cloth_rc" ;; esac; '
             f"printf 'download_{i}: retry after curl exit %s (attempt %s/3)\\n' "
             '\"$cloth_rc\" \"$cloth_attempt\" >&2; '
-            'sleep 2; cloth_attempt=$((cloth_attempt + 1)); done ) && cloth_done && '
+             'sleep 2; cloth_attempt=$((cloth_attempt + 1)); done; '
+            f"printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} {quoted_job}/image_{i}.png | sha256sum -c - >&2 || exit 1; "
+            f"mkdir -p \"$HOME/.cache/cloth-agent-images\"; cp {quoted_job}/image_{i}.png \"$cloth_cache.$$.tmp\" && mv \"$cloth_cache.$$.tmp\" \"$cloth_cache\"; fi ) && cloth_done && "
             f"cloth_stage=hash_{i} && cloth_begin=$(date +%s%N) && "
             f"printf '%s  %s\\n' {hashlib.sha256(images[i].read_bytes()).hexdigest()} "
             f"{quoted_job}/image_{i}.png | sha256sum -c - >&2 && cloth_done"
             for i, url in enumerate(urls)
         )
+        download_script = (
+            "set -eu; cloth_begin=0; cloth_stage=init; "
+            "cloth_done() { cloth_end=$(date +%s%N); "
+            "printf '__CLOTH_TIMING__ %s %s\\n' \"$cloth_stage\" \"$((cloth_end-cloth_begin))\" >&2; "
+            "cloth_begin=0; }; " + downloads)
         # Claude receives the prompt through stdin.  This avoids putting a large
         # prompt or image paths into the SSH command line.
+        output_wrapper = Path(__file__).with_name("remote_output.py").read_text()
         remote = (
             "set -eu; cloth_begin=0; cloth_stage=init; cloth_audit_pid=; "
             "cloth_done() { if [ \"$cloth_begin\" != 0 ]; then "
@@ -513,11 +585,12 @@ class RemoteClaudeBackend:
             f"sed \"s/^/__CLOTH_IMAGE_TOOL__ /\" {quoted_job}/image_tool_calls.jsonl >&2; fi; "
             'printf "__CLOTH_IMAGE_TOOL__ {\\\"tool\\\":\\\"audit_finished\\\",\\\"status\\\":\\\"ok\\\"}\\n" >&2; '
             f"rm -rf {quoted_job}; exit $cloth_rc' EXIT; "
-            f"mkdir -p {quoted_job}; {downloads} || exit $?; "
+            f"mkdir -p {quoted_job}; timeout {transfer_remaining}s sh -c {shlex.quote(download_script)} || exit $?; "
             f"{setup}cd {quoted_job}; "
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
+            f'"${{cloth_image_python:-python3}}" -c {shlex.quote(output_wrapper)} {"--context-envelope " if self._context_files else ""}'
             f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
@@ -533,6 +606,15 @@ class RemoteClaudeBackend:
             "If evidence is insufficient, report it using the requested schema; never invent an action. " +
             "\nReturn only the requested JSON object."
         )
+        transport_input = remote_prompt
+        if self._context_files:
+            remote_prompt += f"\nContext directory: {job}/context. Read manifest.json first; select relevant files yourself using Read with offset/limit for long files. Do not read all files by default."
+            transport_input = json.dumps({"prompt": remote_prompt, "files": self._context_files}, ensure_ascii=False)
+            if self._debug_session:
+                context_dir = self._debug_session.directory / "context"
+                context_dir.mkdir(exist_ok=True)
+                for name, content in self._context_files.items():
+                    (context_dir / name).write_text(content, encoding="utf-8")
         ssh = [self.ssh_binary, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", self.ssh_host]
         command = [*ssh, remote]
@@ -544,8 +626,8 @@ class RemoteClaudeBackend:
         self._progress("ssh_download_and_claude", "started", image_count=len(images))
         completed = None
         try:
-            completed = (self._run_streaming(command, remote_prompt, call_timeout) if self._debug_session else subprocess.run(
-                command, input=remote_prompt, text=True, capture_output=True,
+            completed = (self._run_streaming(command, transport_input, call_timeout) if self._debug_session else subprocess.run(
+                command, input=transport_input, text=True, capture_output=True,
                 timeout=call_timeout, check=False, shell=False,
             ))
         except (OSError, subprocess.TimeoutExpired) as exc:

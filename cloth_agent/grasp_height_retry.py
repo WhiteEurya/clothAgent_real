@@ -1,4 +1,4 @@
-"""One bounded, Z-only follow-up experiment after an unsuccessful acquisition.
+"""Up to three bounded, Z-only follow-up experiments after an unsuccessful acquisition.
 
 Scheduling an experiment is not a causal depth diagnosis or a policy update.
 The controller's existing geometry limits are never expanded here.
@@ -13,6 +13,8 @@ from .fold_recovery import released_and_homed
 from .grasp_execution_experience import runtime_execution_trial
 
 
+MAX_HEIGHT_RETRIES = 3
+
 def retry_eligibility(record, *, enabled=True):
     reason = None
     evaluation = record.get("evaluation") or {}
@@ -22,8 +24,11 @@ def retry_eligibility(record, *, enabled=True):
     observation = (record.get("grasp_execution_experience") or {}).get("observed_result") or {}
     if not enabled:
         reason = "Height retry disabled."
-    elif record.get("height_retry") or record.get("inherited_lesson"):
-        reason = "A secondary or inherited attempt cannot schedule another height retry."
+    elif record.get("inherited_lesson"):
+        reason = "An inherited attempt cannot schedule another height retry."
+    elif record.get("height_retry") and (type(record["height_retry"].get("retry_index")) is not int
+            or not 1 <= record["height_retry"]["retry_index"] < MAX_HEIGHT_RETRIES):
+        reason = "Height retry budget exhausted or retry lineage unavailable."
     elif record.get("status") in {"FAILED", "INTERRUPTED", "PLANNING_FAILURE"}:
         reason = "Only a completed physical attempt can schedule a height retry."
     elif record.get("mode") not in {"FOLD", "REPAIR_SLEEVE"}:
@@ -48,9 +53,9 @@ def retry_eligibility(record, *, enabled=True):
     if reason is None and (after.get("trajectory_decision") == "STOP" or after.get("status") in {"BLOCKED", "COMPLETE"}):
         reason = "Supervisor terminal decision takes precedence over a height retry."
     return {"status": "NOT_SCHEDULED" if reason else "SCHEDULED",
-        "reason": reason or "Acquisition failed; reuse the executed commands for one bounded Z-only hypothesis test.",
+        "reason": reason or "Acquisition failed; reuse the executed commands for the next bounded Z-only hypothesis test.",
         "parent_record_id": record.get("record_id"), "parent_iteration": record.get("iteration"),
-        "causal_claim": "NONE", "maximum_secondary_attempts": 1}
+        "causal_claim": "NONE", "maximum_secondary_attempts": MAX_HEIGHT_RETRIES}
 
 
 def _contact_index(actions):
@@ -138,6 +143,18 @@ def compile_height_retry(record, choices, *, allowed_skill_names=None, selected_
         "single_change": "CONTACT_Z", "causal_claim": "UNTESTED_HYPOTHESIS",
         "held_constant": ["selected_point", "XY", "yaw", "other_trajectory_targets"],
         "command_source": "previous_actual_robot_actions"}
+    prior = record.get("height_retry") or {}
+    history = copy.deepcopy(prior.get("attempt_history", []))
+    history.append({"record_id": record.get("record_id"), "iteration": record.get("iteration"),
+                    "executed_actions": record["execution"]["actual_robot_actions"],
+                    "evaluation": record.get("evaluation"),
+                    "diagnosis": record.get("grasp_execution_experience"),
+                    "runtime_trial": runtime_execution_trial(record)})
+    from .model_context import compact_context
+    history = compact_context(history)
+    metadata.update(retry_index=prior.get("retry_index", 0) + 1,
+                    root_record_id=prior.get("root_record_id", record.get("record_id")),
+                    attempt_history=history)
     return proposal, metadata
 
 

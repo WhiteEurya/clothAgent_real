@@ -40,7 +40,7 @@ def test_failure_schedules_an_experiment_without_claiming_shallow_cause():
     followup = retry_eligibility(row)
     assert followup["status"] == "SCHEDULED"
     assert followup["causal_claim"] == "NONE"
-    assert followup["maximum_secondary_attempts"] == 1
+    assert followup["maximum_secondary_attempts"] == 3
     assert row == original
 
 
@@ -209,3 +209,30 @@ def test_retry_images_fallback_and_missing_evidence(tmp_path):
         'after_images': None, 'observer_images_hold_check': []})
     assert images == [raw]
     assert [c['role'] for c in catalog] == ['before_perception_rgb']
+
+
+def test_retry_chain_budget_and_success_stop():
+    row = record()
+    for index in (1, 2):
+        row['height_retry'] = {'retry_index': index}
+        assert retry_eligibility(row)['status'] == 'SCHEDULED'
+    row['height_retry']['retry_index'] = 3
+    assert retry_eligibility(row)['status'] == 'NOT_SCHEDULED'
+    row['height_retry']['retry_index'] = 1
+    row['evaluation']['grasp_acquisition']['status'] = 'SUCCESS'
+    assert retry_eligibility(row)['status'] == 'NOT_SCHEDULED'
+
+
+def test_retry_metadata_preserves_chain_history():
+    row = record()
+    choices = height_options(row, step_mm=.5)
+    _, first = compile_height_retry(row, choices)
+    assert first['retry_index'] == 1
+    assert len(first['attempt_history']) == 1
+    row['height_retry'] = first
+    choices = height_options(row, step_mm=.5)
+    _, second = compile_height_retry(row, choices)
+    assert second['retry_index'] == 2
+    assert second['root_record_id'] == first['root_record_id']
+    assert len(second['attempt_history']) == 2
+    assert len(first['attempt_history']) == 1

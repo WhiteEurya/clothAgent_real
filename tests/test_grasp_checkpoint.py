@@ -68,7 +68,7 @@ def test_capture_lift_minimum_preserves_other_actions(lift, expected, extended):
     assert compiled.actions[5:] == original.actions[5:]
     assert plan['lift_mm'] >= 30
     assert plan['lift_extended'] is extended
-    assert plan['blocking'] is False and plan['evaluation_stage'] == 'final'
+    assert plan['blocking'] is True and plan['evaluation_stage'] == 'final'
 
 
 @pytest.mark.parametrize('bad', ['lateral', 'down', 'nan'])
@@ -99,8 +99,8 @@ def test_raised_capture_pose_still_fails_workspace_preflight(tmp_path):
     assert session.runner.preflight(source).error
 
 
-@pytest.mark.parametrize('outcome', ['captured', 'capture_failure', 'late'])
-def test_production_pipeline_continues_motion_while_lift_photo_is_pending(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize('outcome', ['captured', 'capture_failure'])
+def test_production_pipeline_waits_for_contact_and_lift_photos(tmp_path, monkeypatch, outcome):
     robot_config = RobotConfig(robot_ip='test', boundaries=WorkspaceBounds(x_min=0, x_max=600,
         y_min=-300, y_max=300, z_min=0, z_max=500), init_joints_deg=(0,)*6,
         init_pose_mm_deg=(300, 0, 200, 180, 0, 0), orientation_roll_deg=180, orientation_pitch_deg=0)
@@ -140,10 +140,11 @@ def test_production_pipeline_continues_motion_while_lift_photo_is_pending(tmp_pa
                               if action['name'] == 'move' else action['name'] + '()'))
     source.write_text('\n'.join(lines) + '\n')
     def snapshot(config, recorder, path, after_ns):
-        # A synchronous callback would time out here and fail this test.
-        assert transport.wait(2), 'camera blocked transport'
-        if outcome == 'late':
-            assert trajectory_finished.wait(2)
+        assert not transport.is_set(), 'transport started before photo'
+        if path.name == 'camera_A_grasp_before_lift.png':
+            assert ('close',) not in log
+        else:
+            assert ('close',) in log
         log.append(('snapshot', path.name))
         if outcome == 'capture_failure':
             raise TimeoutError('no fresh frame')
@@ -180,7 +181,7 @@ def test_production_pipeline_continues_motion_while_lift_photo_is_pending(tmp_pa
     assert not (run / 'iteration_001/hold_check/grasp_decision.json').exists()
     saved = recording['grasp_snapshots']['after_lift']
     assert saved['requested_lift_mm'] == 30
-    assert saved['asynchronous'] is True
+    assert saved['asynchronous'] is False
     assert saved['status'] == {'captured': 'CAPTURED', 'capture_failure': 'FAILED', 'late': 'MISSED_WINDOW'}[outcome]
 
 
