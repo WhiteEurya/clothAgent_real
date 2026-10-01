@@ -10,8 +10,16 @@
 2026-09-14. Its `X_CammountCam` maps camera coordinates into `link_eef`,
 not directly into the robot base frame.
 
-`extrinsics_A.yaml` contains that calibration plus the robot connection,
-mount frame, and model reference. `load_extrinsics()` reads the current joint
+`extrinsics_A.yaml` now uses the candidate hand-eye transform promoted on
+2026-09-23, identical to `extrinsics_A.candidate.yaml`. The previous runtime
+calibration is preserved in `extrinsics_A.pre_candidate_20260923.yaml`.
+The candidate was fitted from 15 board poses and checked on 5 held-out poses;
+see `docs/wrist_candidate_test.md` for validation and limitations.
+Both standard perception configurations use `background_fit` for a measured
+bare-table plane, instead of the camera-parallel assumption.
+
+The runtime file also contains the robot connection, mount frame, and model
+reference. `load_extrinsics()` reads the current joint
 angles and composes `X_base_eef @ X_eef_camera`. The associated
 `calibration_xarm6.urdf` is copied from the same calibration project's
 `assets/robots/xarm6/xarm6_wo_ee.urdf`; it is loaded without meshes for forward

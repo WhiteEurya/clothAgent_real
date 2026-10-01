@@ -1,0 +1,46 @@
+{
+  "manual_base_y_offset_mm": 0.0,
+  "cameras": [
+    {
+      "label": "A",
+      "serial": "317222073552",
+      "extrinsics_file": "config/extrinsics_A.candidate.yaml",
+      "color_exposure": 321.0,
+      "color_white_balance": 3280.0
+    }
+  ],
+  "active_cameras": [
+    "A"
+  ],
+  "table_appearance_mode": "border_background",
+  "table_plane_mode": "background_fit",
+  "table_reference_clearance_px": 24,
+  "background_plane_inlier_threshold_mm": 6.0,
+  "table_roi_xyxy": [
+    0.18,
+    0.03,
+    0.77,
+    0.98
+  ],
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "warmup_frames": 10,
+  "temporal_median_frames": 25,
+  "depth_window_radius_px": 4,
+  "min_depth_m": 0.15,
+  "max_depth_m": 2.0,
+  "max_view_disagreement_mm": 50.0,
+  "support_ring_inner_px": 2,
+  "support_ring_outer_px": 16,
+  "support_ring_min_pixels": 100,
+  "garment_center_workspace_mm": {
+    "x_min": 450.0,
+    "x_max": 750.0,
+    "y_min": -180.0,
+    "y_max": 80.0,
+    "reentry_margin_mm": 30.0,
+    "min_recovery_step_mm": 40.0,
+    "max_recovery_step_mm": 120.0
+  }
+}

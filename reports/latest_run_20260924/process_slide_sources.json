@@ -1,0 +1,34 @@
+[
+  {
+    "title": "过程 1：Claude 实际调用图像工具",
+    "images": [
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/fold_exploration/20260924T031106388377Z/iteration_008/claude_image_tools/visual_planning_7ae40ebded93/images/image_0.png",
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/fold_exploration/20260924T031106388377Z/iteration_008/claude_image_tools/visual_planning_7ae40ebded93/images/view_8fdc95f7d0c544f4.png",
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/fold_exploration/20260924T031106388377Z/iteration_008/claude_image_tools/visual_planning_7ae40ebded93/images/view_1f3dce029a8e4c5a.png"
+    ]
+  },
+  {
+    "title": "过程 2：抓取前的候选点与 Molmo 提示",
+    "images": [
+      "/home/sja/clothAgent_real/results/process_review_20260924/08_00.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/08_01.png",
+      "/home/sja/clothAgent_real/results/molmo_review_20260924/4_processed_image.png"
+    ]
+  },
+  {
+    "title": "过程 3：深度信息与表面高度",
+    "images": [
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/perception/center_20260924T052651802452Z/camera_0_A.png",
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/perception/center_20260924T052651802452Z/camera_A_height_map_heatmap.png",
+      "/mnt/newssd/sja/clothAgent_real/runs/2026-09-24/fold_20260924T014204289928777Z/results/perception/center_20260924T052651802452Z/camera_A_height_map_heatmap_global.png"
+    ]
+  },
+  {
+    "title": "过程 4：抓取取证与最终评估",
+    "images": [
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_02.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_03.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_04.png"
+    ]
+  }
+]

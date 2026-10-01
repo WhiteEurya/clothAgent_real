@@ -1,0 +1,33 @@
+{
+  "robot_ip": "192.168.1.195",
+  "axis": 7,
+  "robot_sn": "XS130501D53A03",
+  "control_box_sn": "AC130412A4001B",
+  "joint_angles_deg": [
+    -1.606516,
+    -20.348768,
+    -0.205978,
+    71.875435,
+    -2.504456,
+    90.656763,
+    0.324294
+  ],
+  "tcp_pose_mm_deg": [
+    369.5802,
+    -25.841688,
+    380.41983,
+    175.938609,
+    -1.554549,
+    -1.128841
+  ],
+  "tcp_offset_mm_deg": [
+    0.0,
+    0.0,
+    172.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "recorded_at": "2026-09-26T05:40:08.682481+00:00",
+  "source": "User designated current arm7 pose as home; not computed mirror"
+}

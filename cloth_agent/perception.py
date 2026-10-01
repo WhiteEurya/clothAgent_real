@@ -220,6 +220,8 @@ class PerceptionConfig:
     table_roi_xyxy: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     table_plane_mode: str = "reference_fit"
     table_reference_clearance_px: int = 12
+    # Residual tolerance for the measured support surface, not a grasp Z offset.
+    background_plane_inlier_threshold_mm: float = 3.0
     # Empirical base-coordinate correction, not a pixel/image displacement.
     manual_base_y_offset_mm: float = 0.0
 
@@ -279,6 +281,7 @@ class PerceptionConfig:
             table_roi_xyxy=tuple(raw.get("table_roi_xyxy", [0, 0, 1, 1])),
             table_plane_mode=raw.get("table_plane_mode", "reference_fit"),
             table_reference_clearance_px=raw.get("table_reference_clearance_px", 12),
+            background_plane_inlier_threshold_mm=raw.get("background_plane_inlier_threshold_mm", 3.0),
             molmo=None,
             active_camera_labels=active_camera_labels,
             width=int(raw.get("width", 640)),
@@ -310,12 +313,16 @@ class PerceptionConfig:
             raise PerceptionError("manual_base_y_offset_mm must be finite")
         if type(self.table_reference_clearance_px) is not int or self.table_reference_clearance_px < 1:
             raise PerceptionError("table_reference_clearance_px must be a positive integer")
-        if self.table_plane_mode not in {"reference_fit", "camera_parallel"}:
+        tolerance = self.background_plane_inlier_threshold_mm
+        if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
+                or not math.isfinite(tolerance) or not 0 < tolerance <= 10):
+            raise PerceptionError("background_plane_inlier_threshold_mm must be finite and in (0, 10]")
+        if self.table_plane_mode not in {"reference_fit", "camera_parallel", "background_fit"}:
             raise PerceptionError("unknown table_plane_mode")
-        if self.table_plane_mode == "camera_parallel" and (
+        if self.table_plane_mode in {"camera_parallel", "background_fit"} and (
             len(self.active_camera_labels) != 1 or self.table_appearance_mode != "border_background"
         ):
-            raise PerceptionError("camera_parallel requires one active camera and border_background appearance")
+            raise PerceptionError(f"{self.table_plane_mode} requires one active camera and border_background appearance")
         if self.table_appearance_mode not in {"bright_table", "border_background"}:
             raise PerceptionError("unknown table_appearance_mode")
         roi = self.table_roi_xyxy
@@ -892,13 +899,78 @@ def _table_background_candidates(
     return roi & valid & ~excluded, excluded & roi
 
 
+def _fit_background_references(frame, records, appearance, config, base_z_offset_mm):
+    """Robust free plane from measured bare-table patches; fail without support."""
+    if not math.isfinite(base_z_offset_mm):
+        raise PerceptionError("background_fit requires finite base Z offset")
+    threshold_mm = config.background_plane_inlier_threshold_mm
+    points = np.array([pixel_to_base_mm(*r["pixel_xy"], r["depth_median_m"],
+                                      frame.intrinsics, frame.X_base_camera) for r in records])
+    points[:, 2] += base_z_offset_mm
+    if not np.isfinite(points).all():
+        raise PerceptionError("background_fit non-finite reference points")
+    design = np.c_[points[:, :2], np.ones(len(points))]
+    rng = np.random.default_rng(0)
+    best = None
+    score = (-1, -float("inf"))
+    for _ in range(512):
+        ids = rng.choice(len(points), 3, replace=False)
+        if np.linalg.matrix_rank(design[ids]) < 3:
+            continue
+        co = np.linalg.solve(design[ids], points[ids, 2])
+        residual = np.abs(points[:, 2] - design @ co)
+        keep = residual <= threshold_mm
+        candidate = (int(keep.sum()), -float(np.median(residual[keep])))
+        if candidate > score:
+            score, best = candidate, keep
+    if best is None:
+        raise PerceptionError("background_fit degenerate reference geometry")
+    for _ in range(3):
+        if best.sum() < 6:
+            raise PerceptionError("background_fit insufficient plane support")
+        co = np.linalg.lstsq(design[best], points[best, 2], rcond=None)[0]
+        residual = points[:, 2] - design @ co
+        best = np.abs(residual) <= threshold_mm
+    if best.sum() < max(6, math.ceil(.7 * len(points))):
+        raise PerceptionError(
+            f"background_fit less than 70% consistent bare-table patches: "
+            f"{int(best.sum())}/{len(points)} inliers within {threshold_mm:g} mm; "
+            f"all-patch p95={np.percentile(np.abs(residual), 95):.2f} mm"
+        )
+    h, w = frame.depth_m.shape
+    roi = config.table_roi_xyxy
+    mid = ((roi[0]+roi[2])*w/2, (roi[1]+roi[3])*h/2)
+    uv = np.array([r["pixel_xy"] for r in records])[best]
+    quadrants = [int(np.sum((uv[:, 0] >= mid[0]) + 2*(uv[:, 1] >= mid[1]) == i)) for i in range(4)]
+    if (sum(n > 0 for n in quadrants) < 3
+            or np.ptp(uv[:, 0]) < .4*(roi[2]-roi[0])*w
+            or np.ptp(uv[:, 1]) < .4*(roi[3]-roi[1])*h
+            or np.linalg.matrix_rank(design[best]) < 3):
+        raise PerceptionError("background_fit insufficient spatial coverage")
+    if np.linalg.norm(co[:2]) > .12:
+        raise PerceptionError("background_fit implausible table slope")
+    for r, pt, error, keep in zip(records, points, residual, best):
+        r.update(base_xyz_mm=pt.tolist(), plane_residual_mm=float(error),
+                 plane_inlier=bool(keep), used_in_fit=bool(keep))
+    stats = {"mode": "background_fit", "background": appearance,
+             "reference_count": len(records), "inlier_count": int(best.sum()),
+             "quadrant_reference_counts": quadrants,
+             "residual_p95_abs_mm": float(np.percentile(np.abs(residual[best]), 95)),
+             "residual_rms_mm": float(np.sqrt(np.mean(residual[best]**2))),
+             "all_reference_residual_p95_mm": float(np.percentile(np.abs(residual), 95)),
+             "inlier_threshold_mm": threshold_mm,
+             "surface_reference": "measured_support_surface_not_hard_table", "normal_source": "measured_background_points"}
+    return co, stats, points, records
+
+
 def _camera_parallel_table(
     frame: RGBDFrame, config: PerceptionConfig, base_z_offset_mm: float = 0.0,
 ) -> tuple[np.ndarray, dict[str, Any], np.ndarray, list[dict[str, Any]]]:
-    """Fit constant camera Z from evenly spaced bare-background patches.
+    """Sample bare-background patches for the selected table model.
 
-    The opt-in assumption is a flat table perpendicular to the optical axis,
-    not a zero slope in robot-base coordinates. No missing depth is filled.
+    camera_parallel assumes a table perpendicular to the optical axis;
+    background_fit instead estimates the plane from measured base-frame points.
+    Neither mode fills missing depth.
     """
     depth = np.asarray(frame.depth_m, dtype=np.float64)
     valid = np.isfinite(depth) & (depth > config.min_depth_m) & (depth < config.max_depth_m)
@@ -907,17 +979,23 @@ def _camera_parallel_table(
         frame.rgb, np.zeros(depth.shape), valid, 24., config.table_roi_xyxy,
     )
     if not appearance["confident"]:
-        raise PerceptionError(f"camera_parallel background rejected: {appearance['reason']}")
+        raise PerceptionError(f"{config.table_plane_mode} background rejected: {appearance['reason']}")
     candidates, excluded = _table_background_candidates(frame, config, appearance)
     if int(candidates.sum()) < 100:
-        raise PerceptionError("camera_parallel requires at least 100 bare table depth samples")
-    # One 3x3 depth patch per ROI grid cell. Every pixel of a patch must be
+        raise PerceptionError(f"{config.table_plane_mode} requires at least 100 bare table depth samples")
+    # One depth patch per ROI grid cell. Every pixel of a patch must be
     # outside the garment clearance. Equal patch weights prevent a large
     # background region at the top of the image from dominating the fit.
     from scipy.ndimage import binary_erosion
 
-    patch_centers = binary_erosion(candidates, structure=np.ones((3, 3), dtype=bool))
     h, w = depth.shape
+    # 15x15 at 1280 px suppresses local depth noise and avoids narrow strips
+    # beside garment edges. Keep the legacy camera_parallel sampler unchanged.
+    radius = max(1, round(7 * w / 1280)) if config.table_plane_mode == "background_fit" else 1
+    patch_size = 2 * radius + 1
+    patch_centers = binary_erosion(
+        candidates, structure=np.ones((patch_size, patch_size), dtype=bool)
+    )
     roi = config.table_roi_xyxy
     x_edges = np.linspace(int(roi[0]*w), int(roi[2]*w), 9, dtype=int)
     y_edges = np.linspace(int(roi[1]*h), int(roi[3]*h), 7, dtype=int)
@@ -931,10 +1009,15 @@ def _camera_parallel_table(
             nearest = np.argmin((xs-(x0+x1-1)/2)**2 + (ys-(y0+y1-1)/2)**2)
             x, y = int(xs[nearest]), int(ys[nearest])
             references.append({"name": f"BG{row}_{col}", "grid_cell": [row, col],
-                               "pixel_xy": [x, y], "valid": True, "sample_count": 9,
-                               "depth_median_m": float(np.median(depth[y-1:y+2, x-1:x+2]))})
+                               "pixel_xy": [x, y], "valid": True,
+                               "sample_count": patch_size**2,
+                               "patch_size_px": patch_size,
+                               "depth_median_m": float(np.median(
+                                   depth[y-radius:y+radius+1, x-radius:x+radius+1]))})
     if len(references) < 6:
-        raise PerceptionError("camera_parallel requires at least six background reference patches after garment clearance")
+        raise PerceptionError(f"{config.table_plane_mode} requires at least six background reference patches after garment clearance")
+    if config.table_plane_mode == "background_fit":
+        return _fit_background_references(frame, references, appearance, config, base_z_offset_mm)
     patch_depths = np.array([r["depth_median_m"] for r in references])
     distance_m = float(np.median(patch_depths))
     p95_mm = float(np.percentile(np.abs(patch_depths-distance_m)*1000., 95))
@@ -999,7 +1082,7 @@ def _sample_table_reference_points(
     cross-camera plane RANSAC.
     """
 
-    if config.table_plane_mode == "camera_parallel":
+    if config.table_plane_mode in {"camera_parallel", "background_fit"}:
         _, _, points, records = _camera_parallel_table(frame, config, base_z_offset_mm)
         return points, records
     numpy = _require_numpy()
@@ -1099,9 +1182,9 @@ def _fit_table_plane_from_references(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Fit the table from sampled edge/corner depths with deterministic RANSAC."""
 
-    if config.table_plane_mode == "camera_parallel":
+    if config.table_plane_mode in {"camera_parallel", "background_fit"}:
         if len(frames) != 1:
-            raise PerceptionError("camera_parallel table fit requires exactly one captured frame")
+            raise PerceptionError(f"{config.table_plane_mode} table fit requires exactly one captured frame")
         frame = frames[0]
         coefficients, stats, _, records = _camera_parallel_table(
             frame, config, float((camera_z_offsets_mm or {}).get(frame.label, 0.0))
@@ -2536,7 +2619,7 @@ def camera_height_map_mm(
             numpy.asarray([0.0, 0.0, 0.0], dtype=numpy.float64),
             camera_z_offsets_mm={frame.label: float(base_z_offset_mm)},
         )
-        if reference_stats.get("mode") in {"corner_edge_depth_interpolation", "camera_parallel"}:
+        if reference_stats.get("mode") in {"corner_edge_depth_interpolation", "camera_parallel", "background_fit"}:
             coefficients = reference_coefficients
         else:
             coefficients, _, _ = _fit_table_plane(base_points_mm, colors)
@@ -3120,7 +3203,7 @@ def _save_camera_height_heatmap(
     # so the zero surface can be audited independently of the color image.
     reference_selection = None
     table_excluded = None
-    if config.table_plane_mode == "camera_parallel":
+    if config.table_plane_mode in {"camera_parallel", "background_fit"}:
         _, reference_selection, _, table_reference_records = _camera_parallel_table(frame, config, base_z_offset_mm)
         table_candidates, table_excluded = _table_background_candidates(frame, config, reference_selection["background"])
         for name, mask in (("table_background_candidates", table_candidates), ("table_garment_exclusion", table_excluded)):
@@ -3181,7 +3264,7 @@ def _save_camera_height_heatmap(
         json.dumps(
             {
                 "camera_label": frame.label,
-                "method": "camera_parallel" if config.table_plane_mode == "camera_parallel" else "corner_edge_depth_interpolation",
+                "method": config.table_plane_mode if config.table_plane_mode in {"camera_parallel", "background_fit"} else "corner_edge_depth_interpolation",
                 "table_plane_coefficients": [float(value) for value in table_coefficients],
                 "samples": table_reference_records,
                 "reference_selection": reference_selection,
@@ -3860,9 +3943,9 @@ class ClothCenterPerception:
             self.config,
             self.robot_config,
         )
-        if self.config.table_plane_mode == "camera_parallel":
+        if self.config.table_plane_mode in {"camera_parallel", "background_fit"}:
             coefficients = numpy.zeros(3)
-            table_stats = {"model": "camera_z = constant transformed to robot base"}
+            table_stats = {"model": self.config.table_plane_mode}
         else:
             coefficients, _, table_stats = _fit_table_plane(fused_points, fused_colors)
         coefficients, table_reference_stats = _fit_table_plane_from_references(

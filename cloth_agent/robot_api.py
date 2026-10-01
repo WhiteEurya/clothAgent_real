@@ -662,10 +662,10 @@ class XArmBackend:
             closing_started = False
             stable_positions = []
             stable_since = None
-            stable_position = None
+            stable_min = stable_max = None
             trace["close_stability_duration_s"] = 3.0
             trace['close_stability_samples'] = 20
-            trace['close_stability_range_pulse'] = 0.0
+            trace['close_stability_range_pulse'] = 3.0
             while True:
                 feedback = self._checked_gripper_feedback()
                 if not feedback['usable_for_completion']:
@@ -682,17 +682,24 @@ class XArmBackend:
                 if target == 'open' and state in {'stop', 'grasp'} and at_target:
                     reason = 'measured_target_reached'
                 if target == 'close':
-                    # Require an unchanged stopped position for three seconds
-                    # after observed closure. Any movement/read failure resets it.
+                    # Require a stopped position band <=3 pulses for three seconds
+                    # after observed closure. Track extrema over the entire period,
+                    # not just adjacent samples, so slow drift cannot pass.
                     if progress > 2:
                         closing_started = True
                     trace['closing_started'] = closing_started
                     if closing_started and progress > 2 and state in {'stop', 'grasp'}:
                         now = time.monotonic()
-                        if stable_since is None or position != stable_position:
+                        if (stable_since is None or
+                                max(stable_max, position) - min(stable_min, position)
+                                > trace['close_stability_range_pulse']):
                             stable_since = now
-                            stable_position = position
+                            stable_min = stable_max = position
                             stable_positions.clear()
+                        else:
+                            stable_min = min(stable_min, position)
+                            stable_max = max(stable_max, position)
+                        trace['close_observed_range_pulse'] = stable_max - stable_min
                         stable_positions.append(position)
                         stable_positions = stable_positions[-20:]
                         trace['close_stable_elapsed_s'] = now - stable_since

@@ -465,13 +465,14 @@ def test_both_entrypoints_use_strict_close_gate(
         assert len(b.arm.moves) == 6
         assert b.arm.moves[2]['samples_read'] >= 66
         if route == 'fold_pipeline':
-            assert capture_samples == [b.arm.moves[2]['samples_read']]  # photo only after measured closure
+            # Lowest-point photo precedes closure; lift evidence still waits for closure.
+            assert capture_samples == [2, b.arm.moves[2]['samples_read']]
         assert home_calls
     else:
         assert len(b.arm.moves) == 2  # approach + descend only
         assert not home_calls
         assert result['gripper_completion_failed'] is True
-        assert capture_samples == []
+        assert capture_samples == ([2] if route == 'fold_pipeline' else [])
 
 
 @pytest.mark.parametrize('interrupt_sample', [sample(722, 1), sample(722, 2, position_result=(9, 722))])
@@ -484,3 +485,30 @@ def test_twenty_stopped_samples_restart_after_motion_or_bad_read(config, backend
     assert result['feedback']['position_pulse'] == 13
     assert b.arm.index >= 101
     assert trace['close_recent_positions_pulse'] == [13]*20
+
+
+@pytest.mark.parametrize('spread', [1, 2, 3])
+def test_three_second_close_accepts_small_jitter(config, backend, spread):
+    b = backend([sample(840), sample(500, 1)] +
+                [sample(8), sample(8 + spread)] * 40 + [KeyboardInterrupt()])
+    result, _ = b.close_gripper(config)
+    trace = result['completion']
+    assert trace['reason'] == 'measured_close_stable'
+    assert trace['close_stable_elapsed_s'] >= 3.0
+    assert trace['close_observed_range_pulse'] == spread
+
+
+@pytest.mark.parametrize('positions', [[8, 12] * 50,
+                                      [100 - i // 8 for i in range(100)],
+                                      [10, 13, 7] * 35])
+def test_close_rejects_wide_band_and_accumulated_slow_drift(config, backend, positions):
+    b = backend([sample(840)] + [sample(p) for p in positions] + [KeyboardInterrupt()])
+    with pytest.raises(KeyboardInterrupt):
+        b.close_gripper(config)
+
+
+def test_out_of_band_change_requires_new_full_three_seconds(config, backend):
+    b = backend([sample(840)] + [sample(12)] * 50 + [sample(8)] * 70)
+    result, _ = b.close_gripper(config)
+    assert result['completion']['duration_s'] >= 5.5
+    assert result['completion']['close_stable_elapsed_s'] >= 3.0

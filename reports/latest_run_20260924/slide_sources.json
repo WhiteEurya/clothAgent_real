@@ -1,0 +1,84 @@
+[
+  {
+    "title": "我们要讲什么故事",
+    "text": [
+      "无需额外训练任务策略，无需 simulator / sim-to-real，",
+      "用预训练模型 + 真实反馈 + 执行约束，构建有效的 harness policy。",
+      "当前：单臂折衣已有完成案例；下一步验证稳定性与泛化。"
+    ],
+    "image_sources": [
+      "/home/sja/clothAgent_real/results/process_review_20260924/01_00.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_04.png"
+    ]
+  },
+  {
+    "title": "算法流程：观测—规划—执行—反馈",
+    "text": [
+      "Harness 将模型决策与机器人执行组织成闭环。"
+    ],
+    "image_sources": [],
+    "flow_nodes": [
+      [
+        "1 观测",
+        "RGB-D 采集\n衣物分割与三维定位"
+      ],
+      [
+        "2 阶段判断",
+        "识别当前折叠阶段\n读取历史经验"
+      ],
+      [
+        "3 选点与规划",
+        "Claude 从 Rxxx 候选中选点\nMolmo 仅辅助袖子定位"
+      ],
+      [
+        "4 执行检查",
+        "解析 XYZ 与抓取高度\n工作空间 / IK 检查"
+      ],
+      [
+        "5 执行与拍照",
+        "抓取、抬升、搬运、释放\n保存过程证据"
+      ],
+      [
+        "6 评估与重试",
+        "比较前后状态、更新经验\n继续下一步或重新规划"
+      ]
+    ],
+    "flow_note": "评估结果与经验返回下一轮规划；规则更新必须通过校验。"
+  },
+  {
+    "title": "中间过程：以最后一轮下摆对折为例",
+    "text": [
+      "选点 R005 → 表面 Z 45.0 mm → 抓取 Z 37.0 mm。",
+      "候选点由程序生成，Claude 选择目标；执行后通过图像评估结果。"
+    ],
+    "image_sources": [
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_01.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_02.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_04.png"
+    ]
+  },
+  {
+    "title": "最新 run：结果与视频",
+    "text": [
+      "15 轮记录、13 段执行录像；重启后的 8 轮结束时，系统判为 COMPLETE。",
+      "32× 视频约 36 秒；仅拼接执行录像，不含规划等待。",
+      "新增 15 条尝试记录，成功写入 1 条条件规则；9 次经验生成 / 校验失败。",
+      "当前局限：折叠仍有起皱、运行偏慢；单次完成不代表稳定成功率。"
+    ],
+    "image_sources": [
+      "/home/sja/clothAgent_real/results/process_review_20260924/08_00.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/14_00.png",
+      "/home/sja/clothAgent_real/results/process_review_20260924/15_04.png"
+    ]
+  },
+  {
+    "title": "当前进度与下一步",
+    "text": [
+      "已完成：单臂观测—规划—执行—评估闭环，并保存视频与中间变量。",
+      "下一步 1：跑通双臂 pipeline，实现固定、牵拉与折叠协同。",
+      "下一步 2：实现衣物展平，衔接“凌乱衣物 → 展平 → 折叠”。",
+      "验证指标：重复成功率、展平 / 折叠质量、耗时与人工干预次数。"
+    ],
+    "image_sources": []
+  }
+]
