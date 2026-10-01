@@ -405,6 +405,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             manifest.write_text(json.dumps(invocation, indent=2), encoding="utf-8")
         try:
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema, context_files=files,
+                usage_run_dir=root, usage_stage=stage,
                 debug_dir=image_debug,
                 image_edit_limit=2 if evaluation_stage else 6,
                 max_turns=8 if evaluation_stage else None,

@@ -21,6 +21,7 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from .token_usage import tracked_call
 from .run_storage import find_run
 from typing import Any, Mapping, Sequence
 
@@ -460,8 +461,8 @@ class NeatFoldEvaluator:
             "You are a strict visual evaluator for a garment-folding experiment. Read only the listed images and return JSON.",
         ]
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=run_dir, usage_stage="fold_evaluation",
                 cwd=run_dir.resolve(),
                 text=True,
                 capture_output=True,

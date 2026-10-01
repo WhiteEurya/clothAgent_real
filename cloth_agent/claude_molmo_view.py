@@ -91,6 +91,7 @@ def prepare_molmo_view(backend, canonical_image: Path, output: Path, *, timeout_
     audit_events = ()
     try:
         result = backend.invoke(prompt=VIEW_PROMPT, image_paths=[canonical_image],
+            usage_stage="molmo_orientation",
             schema=VIEW_SCHEMA, debug_dir=debug, timeout_s=timeout_s,
             image_edit_limit=ORIENTATION_EDIT_LIMIT,
             # Historical flag name retained for compatibility; hooks now only audit.

@@ -230,6 +230,22 @@ runs/<run-id>/
 
 运行结束后，可以用 `label` 记录人工结果（`SUCCESS`、`FAILED_GRASP`、`FAILED_LIFT` 或 `OTHER_FAILURE`），再用 `memory` 保存下一轮实验的假设。
 
+### Token 消耗统计
+
+本地和远程 Claude 调用会自动追加到 `runs/<run-id>/results/token_usage.jsonl`。
+包括代码生成、视觉规划、动作生成、评估、折叠监督、抓取检查和经验更新；每次重试独立记录，重启运行后保留累计记录。
+
+```bash
+python -m cloth_agent token-usage --run-dir runs/preview_01
+python -m cloth_agent token-usage --run-dir runs/preview_01 --json
+```
+
+统计包含输入、输出、缓存读取、缓存写入 token 和 Claude 返回的美元费用；JSON 还提供按阶段、模型的汇总。
+`total_tokens` 为四类 token 之和（含缓存），费用直接采用返回值，不按单价估算。
+只统计 CLI 最终返回的用量，避免流式事件、模型明细与总量重复相加。
+失败调用若返回用量也会计入；缺失字段、超时未返回用量的调用标为未知，汇总中的 `missing_fields` 显示缺失次数，此时数值仅为已知部分。
+该功能从启用后开始记录 Claude 用量，不回填历史日志，也不估算本地 Molmo 的 token。
+
 ## 自动探索与专题文档
 
 需要连续展开、折叠或 Molmo 兼容流程时，再查看：

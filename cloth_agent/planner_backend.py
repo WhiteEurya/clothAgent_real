@@ -25,6 +25,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from .claude_stream import ClaudeStreamProgress
+from .token_usage import tracked_call
 
 
 def claude_result_envelope(stdout: str) -> dict[str, Any]:
@@ -104,8 +105,8 @@ class LocalClaudeBackend:
 
     def invoke(self, *, prompt: str, command: list[str], cwd: Path) -> BackendResult:
         try:
-            completed = subprocess.run(
-                command, cwd=cwd, text=True, capture_output=True,
+            completed = tracked_call(subprocess.run, command, usage_run_dir=cwd, usage_stage="planning",
+                cwd=cwd, text=True, capture_output=True,
                 timeout=self.timeout_s, check=False, shell=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -300,7 +301,10 @@ class RemoteClaudeBackend:
                timeout_s: int | None = None, debug_dir: Path | None = None,
                image_edit_limit: int | None = None, max_turns: int | None = None,
                overall_timeout_s: float | None = None,
-               orientation_correction: bool = False, context_files: dict | None = None) -> BackendResult:
+               orientation_correction: bool = False, context_files: dict | None = None,
+               usage_run_dir: Path | None = None, usage_stage: str = "remote_planning") -> BackendResult:
+        self._usage_run_dir = usage_run_dir if usage_run_dir is not None else debug_dir
+        self._usage_stage = usage_stage
         self._context_files = context_files or {}
         if overall_timeout_s is not None and (type(overall_timeout_s) not in (int, float)
                 or not 0 < overall_timeout_s < float('inf')):
@@ -626,8 +630,13 @@ class RemoteClaudeBackend:
         self._progress("ssh_download_and_claude", "started", image_count=len(images))
         completed = None
         try:
-            completed = (self._run_streaming(command, transport_input, call_timeout) if self._debug_session else subprocess.run(
-                command, input=transport_input, text=True, capture_output=True,
+            completed = (tracked_call(self._run_streaming, command, transport_input, call_timeout,
+                usage_run_dir=getattr(self, "_usage_run_dir", None),
+                usage_stage=getattr(self, "_usage_stage", "remote_planning"), usage_backend="remote")
+                if self._debug_session else tracked_call(subprocess.run, command,
+                usage_run_dir=getattr(self, "_usage_run_dir", None),
+                usage_stage=getattr(self, "_usage_stage", "remote_planning"), usage_backend="remote",
+                input=transport_input, text=True, capture_output=True,
                 timeout=call_timeout, check=False, shell=False,
             ))
         except (OSError, subprocess.TimeoutExpired) as exc:

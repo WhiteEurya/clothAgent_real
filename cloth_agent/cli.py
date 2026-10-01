@@ -273,10 +273,25 @@ def _cmd_session(args: argparse.Namespace) -> int:
         current = next_name
 
 
+def _cmd_token_usage(args: argparse.Namespace) -> int:
+    from .token_usage import format_summary, summarize_usage
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_dir():
+        raise ValueError("--run-dir must be an existing directory")
+    summary = summarize_usage(run_dir)
+    print(json.dumps(summary, ensure_ascii=False, indent=2) if args.as_json else format_summary(summary))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", default=".")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    usage = sub.add_parser("token-usage", help="summarize recorded Claude tokens and reported cost")
+    usage.add_argument("--run-dir", required=True)
+    usage.add_argument("--json", action="store_true", dest="as_json")
+    usage.set_defaults(func=_cmd_token_usage)
 
     create = sub.add_parser("create", help="create runs/<run_id>/workspace")
     create.add_argument("--goal", required=True)

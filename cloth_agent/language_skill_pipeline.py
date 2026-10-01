@@ -25,6 +25,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from .token_usage import tracked_call
 from .run_storage import find_run
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -453,8 +454,8 @@ class _ClaudeJSONClient:
         else:
             command.append("--safe-mode")
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=workspace, usage_stage="language_skill",
                 cwd=workspace.resolve(),
                 text=True,
                 capture_output=True,

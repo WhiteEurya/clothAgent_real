@@ -32,6 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from .token_usage import tracked_call
 from .config import SafetyError
 from .experiment import ExperimentValidationError
 from .evidence_ledger import build_evidence_record, persist_evidence_record
@@ -2131,7 +2132,9 @@ class ClaudeAutoClient:
         output_dir.mkdir(parents=True, exist_ok=True)
         log = {"prompt": prompt, "command": command, "stage": "height_retry"}
         try:
-            completed = subprocess.run(command, input=prompt, cwd=run_dir, text=True,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=run_dir, usage_stage="height_retry",
+                input=prompt, cwd=run_dir, text=True,
                 capture_output=True, timeout=self.timeout_s, check=False, shell=False)
             log.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
             if completed.returncode:
@@ -2160,7 +2163,9 @@ class ClaudeAutoClient:
         output_dir.mkdir(parents=True, exist_ok=True)
         log = {"prompt": prompt, "command": command, "stage": "experience_update"}
         try:
-            completed = subprocess.run(command, input=prompt, cwd=run_dir, text=True,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=run_dir, usage_stage="experience_update",
+                input=prompt, cwd=run_dir, text=True,
                 capture_output=True, timeout=self.timeout_s, check=False, shell=False)
             log.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
             if completed.returncode:
@@ -2290,8 +2295,8 @@ class ClaudeAutoClient:
         command = self._prepare_command(command, stage="visual_planning")
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="visual_planning",
                 cwd=root,
                 text=True,
                 capture_output=True,
@@ -2829,8 +2834,8 @@ class ClaudeAutoClient:
             )
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="grounding",
                 cwd=root,
                 text=True,
                 capture_output=True,
@@ -3775,8 +3780,8 @@ class ClaudeAutoClient:
         import subprocess
 
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="evaluation",
                 cwd=root,
                 text=True,
                 capture_output=True,
@@ -4070,8 +4075,8 @@ class ClaudeAutoClient:
         command = self._prepare_command(command, stage="acquisition_evaluation")
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="acquisition_evaluation",
                 cwd=root,
                 text=True,
                 capture_output=True,

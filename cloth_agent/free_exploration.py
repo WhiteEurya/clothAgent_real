@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from .token_usage import tracked_call
 from .run_storage import find_run
 from typing import Any
 
@@ -1699,6 +1700,7 @@ class ClaudeExplorationClient:
                     and not any(token in path.name.lower() for token in excluded_tokens)
                 ]
                 result = self.backend.invoke(
+                    usage_run_dir=root, usage_stage="exploration_planning",
                     prompt=full_prompt,
                     image_paths=rgb_images,
                     schema=schema,
@@ -1709,8 +1711,8 @@ class ClaudeExplorationClient:
                     stdout=result.stdout, stderr=result.stderr,
                 )
             else:
-                completed = subprocess.run(
-                    command,
+                completed = tracked_call(
+                    subprocess.run, command, usage_run_dir=root, usage_stage="exploration_planning",
                     cwd=root,
                     text=True,
                     input=None if direct_prompt else bootstrap_prompt,
@@ -1977,8 +1979,8 @@ class ClaudeExplorationClient:
         ]
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="hold_checkpoint",
                 cwd=root,
                 text=True,
                 capture_output=True,
@@ -2182,8 +2184,8 @@ class ClaudeExplorationClient:
             ),
         ]
         started = time.monotonic()
-        completed = subprocess.run(
-            command,
+        completed = tracked_call(
+            subprocess.run, command, usage_run_dir=root, usage_stage="rgb_comparison",
             cwd=root,
             text=True,
             capture_output=True,

@@ -153,6 +153,7 @@ def inspect_grasp(backend, images, directory: Path):
                 'reason': 'Recapture from a usable observation pose; verify illumination/exposure and wrist occlusion.',
                 'image_quality': quality, 'continue_transport': False, 'runtime_decision': 'ABORT_RELEASE'}
     result = backend.invoke(
+        usage_stage="grasp_checkpoint",
         prompt=('This is a real T-shirt folding experiment paused at a small vertical lift. '
                 'Use view_image to inspect BOTH images: image_0 is after confirmed jaw closure, BEFORE lifting; '
                 'image_1 is after the small lift, BEFORE any transport. '

@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .token_usage import tracked_call
 from .config import SafetyError
 from .free_exploration import (
     ExplorationProposal,
@@ -679,8 +680,8 @@ def invoke_claude_collar_selector(
         ]
     started = time.monotonic()
     try:
-        completed = subprocess.run(
-            command,
+        completed = tracked_call(
+            subprocess.run, command, usage_run_dir=root, usage_stage="collar_selection",
             cwd=root,
             text=True,
             capture_output=True,
@@ -926,8 +927,8 @@ def invoke_claude_collar_motion_planner(
     ]
     started = time.monotonic()
     try:
-        completed = subprocess.run(
-            command,
+        completed = tracked_call(
+            subprocess.run, command, usage_run_dir=root, usage_stage="collar_motion",
             cwd=root,
             text=True,
             capture_output=True,

@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .token_usage import tracked_call
+
 
 class ClaudeCodeError(RuntimeError):
     """Raised when Claude Code cannot complete a workspace-only turn."""
@@ -82,8 +84,8 @@ class ClaudeCodeClient:
             system_prompt,
         ]
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=workspace, usage_stage="code_generation",
                 cwd=workspace,
                 text=True,
                 capture_output=True,

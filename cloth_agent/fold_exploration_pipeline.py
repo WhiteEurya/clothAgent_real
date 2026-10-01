@@ -60,6 +60,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from .token_usage import tracked_call
 from .auto_exploration import (
     ClaudeAutoClient,
     ClaudeEvaluationResult,
@@ -2746,6 +2747,7 @@ class FoldSupervisor:
             started = time.monotonic()
             image_debug = debug_directory(images_remote, Path(context_bundle["directory"]), "supervisor")
             completed = self.backend.invoke(prompt=prompt_remote,
+                usage_run_dir=root, usage_stage="fold_supervisor",
                 debug_dir=image_debug,
                 image_edit_limit=2,
                 max_turns=8,
@@ -2796,8 +2798,8 @@ class FoldSupervisor:
             )
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage="fold_supervisor",
                 cwd=root,
                 text=True,
                 capture_output=True,

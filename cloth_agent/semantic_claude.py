@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .token_usage import tracked_call
 from .free_exploration import (
     ExplorationProposal,
     _json_from_claude_text,
@@ -285,8 +286,8 @@ class SemanticClaudeClient:
                 ),
             ]
             started = time.monotonic()
-            completed = subprocess.run(
-                command,
+            completed = tracked_call(
+                subprocess.run, command, usage_run_dir=root, usage_stage=stage,
                 cwd=root,
                 text=True,
                 capture_output=True,
