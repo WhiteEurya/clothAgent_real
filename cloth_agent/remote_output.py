@@ -1,5 +1,6 @@
 """Standalone remote CLI wrapper: spool, validate, then send compact JSONL."""
 import json
+import base64
 import os
 from pathlib import Path
 import subprocess
@@ -27,8 +28,24 @@ def compact(value):
     return value
 
 
+def multimodal_message(prompt, images):
+    """Attach actual image bytes to CLI stream input, with no model file reads."""
+    content = [{"type": "text", "text": prompt}]
+    for index, path in enumerate(images):
+        content.append({"type": "text", "text": f"Attached image_{index}"})
+        content.append({"type": "image", "source": {"type": "base64",
+                        "media_type": "image/png", "data": base64.b64encode(Path(path).read_bytes()).decode()}})
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
+
+
 def main(argv):
     model_input = None
+    if argv and argv[0] == '--direct-images':
+        count = int(argv[1])
+        if not 1 <= count <= 64:
+            raise ValueError('invalid direct image count')
+        argv = argv[2:]
+        model_input = multimodal_message(sys.stdin.read(), [Path(f'image_{i}.png') for i in range(count)]).encode()
     if argv and argv[0] == '--context-envelope':
         argv = argv[1:]
         envelope = json.load(sys.stdin)

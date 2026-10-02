@@ -257,6 +257,10 @@ python -m cloth_agent token-usage --run-dir runs/preview_01 --json
 
 推荐先用 `claude_global` 做一轮预览，再考虑启用自动或真实执行。
 
+## 离线 Harness Policy 实验
+
+独立入口 `python -m cloth_agent.harness` 支持 `collect`、`compile`、`replay` 和 `experiment`。系统自动整理 learning run，调用运行时 Claude 编译受限视觉选点 policy，校验冻结后做隔离历史答案的离线回放。不会接入主循环或执行机器人动作。命令、数据要求、统计口径和局限见 [离线实验文档](docs/offline_harness.md)。
+
 ## 测试
 
 ```bash

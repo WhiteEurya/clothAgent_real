@@ -103,19 +103,26 @@ class LocalClaudeBackend:
         self.binary = binary
         self.timeout_s = int(timeout_s)
 
-    def invoke(self, *, prompt: str, command: list[str], cwd: Path) -> BackendResult:
+    def invoke(self, *, prompt: str, command: list[str], cwd: Path,
+               input_data: str | None = None, usage_stage: str = "planning") -> BackendResult:
         try:
-            completed = tracked_call(subprocess.run, command, usage_run_dir=cwd, usage_stage="planning",
+            completed = tracked_call(subprocess.run, command, usage_run_dir=cwd, usage_stage=usage_stage,
                 cwd=cwd, text=True, capture_output=True,
                 timeout=self.timeout_s, check=False, shell=False,
+                **({"input": input_data} if input_data is not None else {}),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise PlannerBackendError(f"local Claude invocation failed: {exc}") from exc
+            error = PlannerBackendError(f"local Claude invocation failed: {exc}")
+            error.stdout = getattr(exc, "stdout", "")
+            error.stderr = getattr(exc, "stderr", "")
+            raise error from exc
         if completed.returncode != 0:
-            raise PlannerBackendError(
+            error = PlannerBackendError(
                 f"Claude exited with {completed.returncode}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
+            error.stdout, error.stderr = completed.stdout, completed.stderr
+            raise error
         return BackendResult(completed.stdout, completed.stderr, completed.returncode, tuple(command))
 
 
@@ -158,6 +165,8 @@ class RemoteClaudeBackend:
         self._debug_session = None
         self._seen_events = set()
         self._seen_timings = set()
+        self._direct_images = False
+        self._model = None
         if self.timeout_s <= 0 or not ssh_host or ssh_host.startswith("-"):
             raise ValueError("positive timeout and a valid SSH host are required")
 
@@ -302,7 +311,12 @@ class RemoteClaudeBackend:
                image_edit_limit: int | None = None, max_turns: int | None = None,
                overall_timeout_s: float | None = None,
                orientation_correction: bool = False, context_files: dict | None = None,
-               usage_run_dir: Path | None = None, usage_stage: str = "remote_planning") -> BackendResult:
+               usage_run_dir: Path | None = None, usage_stage: str = "remote_planning",
+               direct_images: bool = False, model: str | None = None) -> BackendResult:
+        self._direct_images = bool(direct_images)
+        self._model = model
+        if direct_images and (context_files or orientation_correction):
+            raise ValueError("Direct image calls take inline context and no exploratory image tools")
         self._usage_run_dir = usage_run_dir if usage_run_dir is not None else debug_dir
         self._usage_stage = usage_stage
         self._context_files = context_files or {}
@@ -540,6 +554,11 @@ class RemoteClaudeBackend:
         quoted_job = shlex.quote(job)
         setup, tool_flags, tool_prompt = (self._image_tool_setup(job, len(images))
             if self.image_tools else ("", "--allowedTools Read --tools Read --strict-mcp-config ", ""))
+        if self._direct_images:
+            setup, tool_prompt = "", ""
+            tool_flags = ("--tools '' --allowedTools '' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' "
+                          "--safe-mode --no-chrome --disable-slash-commands --settings '{\"disableAllHooks\":true}' --setting-sources user "
+                          "--input-format stream-json ")
         # Retry each GET at most twice, overwriting partial output on retry.
         # Use a shell loop for compatibility with older remote curl versions.
         # Keep hash verification before any model invocation.
@@ -592,11 +611,13 @@ class RemoteClaudeBackend:
             f"mkdir -p {quoted_job}; timeout {transfer_remaining}s sh -c {shlex.quote(download_script)} || exit $?; "
             f"{setup}cd {quoted_job}; "
             + (f'"$cloth_image_python" {quoted_job}/image_tools.py --audit-forward --job {quoted_job} '
-               f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools else "") +
+               f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools and not self._direct_images else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
-            f'"${{cloth_image_python:-python3}}" -c {shlex.quote(output_wrapper)} {"--context-envelope " if self._context_files else ""}'
+            f'"${{cloth_image_python:-python3}}" -c {shlex.quote(output_wrapper)} '
+            f'{f"--direct-images {len(images)} " if self._direct_images else "--context-envelope " if self._context_files else ""}'
             f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
+            + (f"--model {shlex.quote(self._model)} " if self._model else "") +
             f"--add-dir {quoted_job} --json-schema {shlex.quote(json.dumps(schema, separators=(',', ':')))} "
             f"--system-prompt {shlex.quote(system_prompt)}"
         )
@@ -610,6 +631,8 @@ class RemoteClaudeBackend:
             "If evidence is insufficient, report it using the requested schema; never invent an action. " +
             "\nReturn only the requested JSON object."
         )
+        if self._direct_images:
+            remote_prompt = prompt + "\nRGB images are attached directly as image_0, image_1, etc. No tools or file reads. Return the requested JSON."
         transport_input = remote_prompt
         if self._context_files:
             remote_prompt += f"\nContext directory: {job}/context. Read manifest.json first; select relevant files yourself using Read with offset/limit for long files. Do not read all files by default."
@@ -643,7 +666,9 @@ class RemoteClaudeBackend:
             self._remote_timings(getattr(exc, "stderr", ""))
             detail = (f"timed out after {call_timeout}s" if isinstance(exc, subprocess.TimeoutExpired)
                       else str(exc))
-            raise PlannerBackendError(f"remote Claude SSH invocation failed: {detail}") from exc
+            error = PlannerBackendError(f"remote Claude SSH invocation failed: {detail}")
+            error.stdout, error.stderr = getattr(exc, "stdout", ""), getattr(exc, "stderr", "")
+            raise error from exc
         finally:
             self._finish_phase("ssh_download_and_claude", started)
             if completed is not None:
@@ -677,10 +702,12 @@ class RemoteClaudeBackend:
                         if key in envelope}, ensure_ascii=False) + '\n' + detail
             except (ValueError, TypeError, PlannerBackendError):
                 pass
-            raise PlannerBackendError(
+            error = PlannerBackendError(
                 f"remote Claude exited with {completed.returncode}: "
                 f"{detail}"
             )
+            error.stdout, error.stderr = completed.stdout, completed.stderr
+            raise error
         parse_started = time.monotonic()
         try:
             parse_claude_json(completed.stdout)
@@ -688,5 +715,5 @@ class RemoteClaudeBackend:
             self._finish_phase("json_parse", parse_started)
         # Preserve the raw stream in stdout.log; existing planner consumers
         # continue receiving the same final JSON envelope as before.
-        return BackendResult(json.dumps(claude_result_envelope(completed.stdout)),
+        return BackendResult(completed.stdout if self._direct_images else json.dumps(claude_result_envelope(completed.stdout)),
                              completed.stderr, completed.returncode, tuple(command))
