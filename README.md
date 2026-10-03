@@ -272,3 +272,7 @@ python -m pytest
 ## 固定证据上的脑内 Harness Learning
 
 新增独立入口 `python -m cloth_agent.harness.reasoning_learning`：冻结一份选点前证据，由运行时 Claude 反思并生成多版 reasoning harness，重新规划同一 observation，通过抓点与视觉目标共识筛选簇内成本最低版本。支持串行/分支搜索、重复测量、预算、完整调试产物及 HTML 报告；不执行机器人。见 [运行与调试说明](docs/reasoning_learning.md)。单独测试：`python -m pytest -q tests/test_reasoning_learning.py`。
+
+## Candidate patch evolution
+
+独立入口 `python -m cloth_agent.harness.patch_evolution` 支持运行时 Claude 提出 PROMPT/HARNESS/SKILL_CODE/NEW_TOOL patch，写入隔离候选目录，通过强制测试后重新规划并比较；达标才进入离线 working。ObservationHost 已改用版本化 SkillRegistry，候选代码只在受限 observation 接口内运行。源码、测试、diff、坐标不变量、预算、共识与晋升均留 debug；不执行机器人。见 [运行与审核文档](docs/candidate_patch_evolution.md)。

@@ -5,15 +5,18 @@ no robot access, separate parameter-binding call or standalone verifier.
 """
 from __future__ import annotations
 
-import math
-import shutil
+import copy
 import time
 from pathlib import Path
 
-from ..image_tools_mcp import ImageTools
 from .common import canonical, digest, write_json
 from .information_probe import compact_skill
 from .policy import PolicyError, obj, validate_schema
+from .skills import builtin_registry
+
+# Legacy A/B callers still import this catalog. Implementations are owned by
+# the registry, not this compatibility view of their descriptions.
+EXECUTORS = {s['id']: s['method'] for s in builtin_registry().catalog()}
 
 TEXT = {'type': 'string'}
 IDS = {'type': 'array', 'uniqueItems': True, 'items': {'type': 'string'}}
@@ -25,7 +28,7 @@ INFORMATION = obj({
 STATE = {'type': 'array', 'minItems': 1, 'maxItems': 12, 'items': INFORMATION}
 REQUEST = obj({
     'gap_id': {'type': 'string', 'minLength': 1},
-    'skill_id': {'enum': ['orientation', 'local_boundary', 'overlay_occlusion']},
+    'skill_id': {'type': 'string', 'pattern': '^[a-z][a-z0-9_]{0,47}$'},
     'source_image_id': {'type': 'string'},
     'roi': {'anyOf': [{'type': 'null'}, {'type': 'array', 'minItems': 4, 'maxItems': 4,
             'items': {'type': 'number', 'minimum': 0, 'maximum': 1}}]},
@@ -34,16 +37,11 @@ REQUEST = obj({
 })
 REQUESTS = {'type': 'array', 'maxItems': 3, 'items': REQUEST}
 GLOBAL_SCHEMA = obj({'information': STATE, 'observation_requests': REQUESTS})
-EXECUTORS = {
-    'orientation': 'Rotate the current clean/overlay pair by the same angle. No crop or resize.',
-    'local_boundary': 'Crop current clean RGB using a root-normalized ROI; optionally enlarge once.',
-    'overlay_occlusion': 'Crop the aligned current clean/overlay pair with the same root ROI; optionally enlarge both once.',
-}
 
 
-def selection_schema(plan_schema):
+def selection_schema(plan_schema, registry=None):
     return obj({'status': {'enum': ['CANDIDATE', 'NEED_MORE', 'UNKNOWN']},
-                'information': STATE, 'observation_requests': REQUESTS,
+                'information': STATE, 'observation_requests': requests_schema(registry),
                 'plan': {'anyOf': [{'type': 'null'}, plan_schema]}})
 
 
@@ -67,108 +65,26 @@ def validate_state(state, catalog, previous=()):
             raise PolicyError('UNKNOWN must identify missing information')
 
 
-class ObservationHost:
-    """Bounded recipes chosen by gap, with root coordinates and persistent provenance."""
-    def __init__(self, obs, images, artifact, output, max_ops=12):
-        self.directory = Path(output)
-        self.directory.mkdir(parents=True, exist_ok=False)
-        self.catalog = [{**item, 'original_image_id': item['image_id'],
-                         'to_original': [1, 0, 0, 0, 1, 0]} for item in obs['images']]
-        self.paths = []
-        for i, path in enumerate(images):
-            target = self.directory / f'image_{i}.png'
-            shutil.copyfile(path, target)
-            self.paths.append(target)
-        self.roots = {item['image_id']: item for item in self.catalog}
-        self.tools = ImageTools(self.directory, len(images), edit_limit=max_ops)
-        self.skills = {s['id']: s for s in compact_skill(artifact)['skills']}
-        self.max_ops, self.ops, self.elapsed_s = max_ops, 0, 0.0
-        self.seen = set()
-        self.history = []
+from .executors.observation import RegisteredObservationHost as ObservationHost
 
-    def prepare(self, request, information):
-        validate_schema(request, REQUEST)
-        gaps = {i['id'] for i in information if i['status'] == 'UNKNOWN'}
-        if request['gap_id'] not in gaps:
-            raise PolicyError('Observation must address a currently UNKNOWN gap')
-        skill = request['skill_id']
-        if skill not in self.skills:
-            raise PolicyError('Requested skill is not in the supplied library')
-        source = self.roots.get(request['source_image_id'])
-        if source is None or source['role'] != 'clean':
-            raise PolicyError('Observation parameters must reference the current clean root')
-        sources = [source]
-        if skill in ('orientation', 'overlay_occlusion'):
-            overlay = [s for s in self.roots.values() if s['role'] == 'overlay']
-            if len(overlay) != 1 or overlay[0]['size'] != source['size']:
-                raise PolicyError('Observation requires an aligned clean/overlay pair')
-            sources += overlay
-        if skill == 'orientation':
-            if request['roi'] is not None or request['enlarge'] or not request['degrees_clockwise']:
-                raise PolicyError('Orientation requires a nonzero rotation only')
-            args = {'degrees_clockwise': request['degrees_clockwise']}
-            operation, scale = 'rotate_image', 1
-        else:
-            roi = request['roi']
-            if roi is None or not all(math.isfinite(v) for v in roi) or not (roi[0] < roi[2] and roi[1] < roi[3]):
-                raise PolicyError('Crop needs an ordered root ROI')
-            if request['degrees_clockwise']:
-                raise PolicyError('Use the orientation skill for rotation')
-            w, h = source['size']
-            box = [math.floor(roi[0]*w), math.floor(roi[1]*h), math.ceil(roi[2]*w), math.ceil(roi[3]*h)]
-            args = {'box': box}
-            scale = min(3, 768 / max(box[2]-box[0], box[3]-box[1])) if request['enlarge'] else 1
-            scale = max(1, scale)
-            operation = 'crop_image'
-        # One canonical signature per delivered view: prevents repeating a clean crop
-        # under another gap ID or the paired recipe, including equivalent pixel ROIs.
-        signatures = {digest([s['image_id'], operation, args, scale]) for s in sources}
-        operations = len(sources) * (1 + (scale > 1))
-        return sources, operation, args, scale, signatures, operations
 
-    def execute(self, requests, information):
-        """Validate the entire batch before editing. Expected budget exits stay UNKNOWN."""
-        validate_schema(requests, REQUESTS)
-        pending, seen, needed = [], set(self.seen), 0
-        for request in requests:
-            prepared = self.prepare(request, information)
-            signatures, count = prepared[-2:]
-            if signatures & seen:
-                return 'REPEATED_OBSERVATION'
-            seen |= signatures
-            needed += count
-            pending.append((request, prepared))
-        if self.ops + needed > self.max_ops:
-            return 'OBSERVATION_BUDGET_EXHAUSTED'
-        start = time.monotonic()
-        for request, (sources, operation, args, scale, signatures, _) in pending:
-            delivered = []
-            for source in sources:
-                view = self.tools.call(operation, {'image_id': source['image_id'], **args})
-                self.ops += 1
-                if scale > 1:
-                    view = self.tools.call('resize_image', {'image_id': view['image_id'], 'scale': scale})
-                    self.ops += 1
-                item = {'image_id': f'image_{len(self.paths)}', 'role': source['role'],
-                        'original_image_id': source['image_id'], 'size': view['size'],
-                        'to_original': view['to_original'], 'source_view_id': view['image_id'],
-                        'gap_id': request['gap_id'], 'skill_id': request['skill_id'], 'path': view['path']}
-                self.catalog.append(item)
-                self.paths.append(Path(view['path']))
-                delivered.append(item['image_id'])
-            skill = self.skills[request['skill_id']]
-            self.history.append({'request': request, 'delivered_image_ids': delivered,
-                                 'status': 'EXECUTED_NOT_YET_INTERPRETED',
-                                 'success_check': skill['success_check'], 'on_insufficient': skill['on_insufficient']})
-            self.seen |= signatures
-        self.elapsed_s += time.monotonic()-start
-        write_json(self.directory / 'execution.json', {'history': self.history, 'catalog': self.catalog,
-                                                       'host_image_ops': self.ops})
-        return None
+def request_schema(registry=None):
+    from .skills import builtin_registry
+    schema = copy.deepcopy(REQUEST)
+    schema['properties']['skill_id'] = {'enum': [s['id'] for s in (registry or builtin_registry()).catalog()]}
+    return schema
+
+
+def requests_schema(registry=None):
+    return {'type': 'array', 'maxItems': 3, 'items': request_schema(registry)}
+
+
+def global_schema(registry=None):
+    return obj({'information': STATE, 'observation_requests': requests_schema(registry)})
 
 
 def run_information_flow(case, images, artifact, output, *, model, model_name, timeout=600,
-                         max_supplements=1, max_host_ops=12):
+                         max_supplements=1, max_host_ops=12, registry=None):
     """Replace the monolithic planner; never call it again after this flow."""
     if timeout <= 0 or max_supplements not in (0, 1) or not 0 <= max_host_ops <= 12:
         raise ValueError('Information flow allows at most one supplement and twelve edits')
@@ -184,7 +100,7 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
     write_json(output / 'report.json', report)
     state, host = [], None
     try:
-        host = ObservationHost(case['observation'], images, artifact, output/'observations', max_host_ops)
+        host = ObservationHost(case['observation'], images, artifact, output/'observations', max_host_ops, registry=registry)
         skills = compact_skill(artifact)
         # Current pre-decision context is preserved, inlined rather than accessed by Read.
         shared = {'current_goal': case['fold_goal'], 'planning_instructions': case['prompt'],
@@ -204,16 +120,16 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
             'be resolved by these methods, keep UNKNOWN and do not request repeated enlargement. '
             'Be concise. State contains only information needed for the current selection.\n')
         global_payload = {**shared, 'images': host.catalog, 'observation_skills': skills,
-                          'host_executors': EXECUTORS}
+                          'host_executors': host.registry.snapshot()}
         write_json(output/'global_bundle.json', global_payload)
         t = time.monotonic()
         try:
-            result = model.invoke(prompt=instruction+canonical(global_payload), schema=GLOBAL_SCHEMA,
+            result = model.invoke(prompt=instruction+canonical(global_payload), schema=global_schema(host.registry),
                                   images=host.paths, output=output/'global', stage='global_understanding',
                                   timeout_s=timeout-(time.monotonic()-start))
         finally:
             report['global_understanding_s'] = time.monotonic()-t
-        validate_schema(result, GLOBAL_SCHEMA)
+        validate_schema(result, global_schema(host.registry))
         state = result['information']
         validate_state(state, host.catalog)
         requests = result['observation_requests']
@@ -234,7 +150,7 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
                       'information_authority': 'Model observations, not independently certified facts; correct contradictions with image evidence.',
                       'images': [{k:v for k,v in i.items() if k!='path'} for i in host.catalog],
                       'observation_results': host.history, 'observation_skills': skills,
-                      'host_executors': EXECUTORS,
+                      'host_executors': host.registry.snapshot(),
                       'remaining_supplements': max_supplements-report['supplements'],
                       'remaining_host_ops': max_host_ops-host.ops}
             number = report['supplements']
@@ -254,12 +170,12 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
                 'Be concise; do not generate an exploratory narrative.\n')
             t = time.monotonic()
             try:
-                decision = model.invoke(prompt=prompt+canonical(bundle), schema=selection_schema(case['schema']),
+                decision = model.invoke(prompt=prompt+canonical(bundle), schema=selection_schema(case['schema'], host.registry),
                                         images=host.paths, output=output/f'select_{number}', stage='candidate_selection',
                                         timeout_s=timeout-(time.monotonic()-start))
             finally:
                 report['selection_s'] += time.monotonic()-t
-            validate_schema(decision, selection_schema(case['schema']))
+            validate_schema(decision, selection_schema(case['schema'], host.registry))
             validate_state(decision['information'], host.catalog, state)
             state = decision['information']
             requests = decision['observation_requests']
