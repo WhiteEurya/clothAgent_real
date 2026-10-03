@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import re
 from pathlib import Path
 
 from ..image_tools_mcp import pixel_hash, transform_point
@@ -10,9 +9,10 @@ from PIL import Image
 from .common import digest, now, read_json, write_json
 from .executor import _coordinates, inverse, validate_observation
 from .policy import PolicyError, obj, validate_schema
+from .host_operations import HOST_SCHEMA, MEASUREMENTS_SCHEMA, validate_bindings
 
 TEXT = {'type': 'string', 'minLength': 1, 'maxLength': 2400}
-NAME = {'type': 'string', 'pattern': '^[a-z][a-z_]{0,47}$'}
+NAME = {'type': 'string', 'pattern': '^[a-z][a-z0-9_]{0,47}$'}
 POINT = {'type': 'array', 'minItems': 2, 'maxItems': 2, 'items': {'type': 'number'}}
 ACTION_SCHEMA = obj({
     'selected_reference': obj({'camera': {'const': 'A'}, 'reference_id': {'type': 'string', 'pattern': '^R[0-9]+$'}, 'reason': TEXT}),
@@ -25,8 +25,20 @@ JUDGMENT_SCHEMA = obj({
         'name': TEXT, 'finding': TEXT,
         'source_image_ids': {'type': 'array', 'minItems': 1, 'maxItems': 16, 'uniqueItems': True, 'items': TEXT}})},
     'action': {'anyOf': [{'type': 'null'}, ACTION_SCHEMA]},
-    'evidence_summary': TEXT, 'missing_information': {'type': 'string', 'maxLength': 2400},
+    'evidence_summary': TEXT,
+    'missing_information': {'type': 'string', 'maxLength': 2400,
+        'description': 'Only unresolved information that blocks this visual decision. READY requires the empty string.'},
+    'residual_uncertainty': {'type': 'string', 'maxLength': 2400,
+        'description': 'Non-blocking limitations and later physical checks. May be nonempty for READY. Never move a truly blocking gap here.'},
 })
+JUDGMENT_SCHEMA['allOf'] = [
+    {'if': {'properties': {'status': {'const': 'READY'}}},
+     'then': {'properties': {'action': ACTION_SCHEMA, 'missing_information': {'const': ''}}},
+     'else': {'properties': {'action': {'type': 'null'}}}},
+    {'if': {'properties': {'status': {'const': 'NEEDS_LEARNING'}}},
+     'then': {'properties': {'missing_information': {'type': 'string', 'pattern': r'\S'}}}},
+]
+JUDGMENT_SCHEMA['properties']['measurements'] = MEASUREMENTS_SCHEMA
 HARNESS_SCHEMA = obj({
     'schema_version': {'const': 1}, 'name': NAME, 'applicability': TEXT,
     'stages': {'type': 'array', 'minItems': 1, 'maxItems': 6, 'items': obj({
@@ -44,6 +56,16 @@ REFLECTION_SCHEMA = obj({
         'source_rollout_ids': {'type': 'array', 'minItems': 1, 'maxItems': 20, 'uniqueItems': True, 'items': TEXT},
     })},
 })
+HARNESS_SCHEMA['properties']['stages']['items']['properties']['host_operations'] = HOST_SCHEMA
+# Optional for backward compatibility: an absent abstraction must not discard an
+# otherwise executable proposal. These are candidate methods, not approved skills.
+REFLECTION_SCHEMA['properties']['operations'] = {
+    'type': 'array', 'maxItems': 8, 'items': obj({
+        'name': TEXT, 'information_goal': TEXT, 'method': TEXT,
+        'outputs': {'type': 'array', 'minItems': 1, 'maxItems': 16, 'items': TEXT},
+        'success_check': TEXT, 'on_insufficient': TEXT,
+        'replaces': TEXT, 'expected_time_saving': TEXT,
+    })}
 
 
 def baseline_harness():
@@ -62,14 +84,12 @@ def validate_harness(harness):
         if stage['id'] in seen or not set(stage['context']) <= seen:
             raise PolicyError('Stage IDs must be unique and context must reference earlier stages')
         seen.add(stage['id'])
+        validate_bindings(stage)
     if not any(s['allow_ready'] for s in harness['stages']):
         raise PolicyError('Harness has no decision output stage')
-    # Numeric geometry belongs only in runtime judgments. Reflection must not
-    # smuggle the preceding action into executable prompts. Prose semantics
-    # cannot be certified by this lexical check and remain unvalidated.
-    for text in [harness['name'], harness['applicability'], *[s['instruction'] for s in harness['stages']]]:
-        if re.search(r'[0-9/\\]|base64|https?:|fold_', text, re.I):
-            raise PolicyError('Harness prose cannot contain historical IDs, numeric constants, paths or encoded answers')
+    # Parameterization is a generation instruction, not a lexical validity test.
+    # Digits, example IDs and paths in prose do not establish answer leakage.
+    # Keep structural checks here; semantic reusability remains unverified.
     return copy.deepcopy(harness)
 
 
@@ -208,6 +228,24 @@ def load_evidence(path):
 
 
 def validate_judgment(result, evidence, *, allow_ready):
+    # Explain cross-field errors precisely before generic JSON-schema checks.
+    # Reflection must not mistake a serialization failure for bad geometry.
+    if isinstance(result, dict):
+        status = result.get('status')
+        if status in {'CONTINUE', 'NEEDS_LEARNING'} and result.get('action') is not None:
+            raise PolicyError(f'NON_READY_ACTION: status={status} requires action=null; '
+                              'record intermediate findings in concepts. This is a field conflict, not a grasp-quality verdict.')
+        if status == 'READY':
+            if not allow_ready:
+                raise PolicyError('READY_NOT_ALLOWED: this stage has allow_ready=false; use CONTINUE or NEEDS_LEARNING with action=null.')
+            if result.get('action') is None:
+                raise PolicyError('READY_ACTION_MISSING: READY requires a complete action.')
+            gap = result.get('missing_information')
+            if isinstance(gap, str) and gap:
+                raise PolicyError('READY_BLOCKING_GAP: missing_information must be empty for READY. '
+                                  'If this gap blocks the visual proposal, use NEEDS_LEARNING and action=null. '
+                                  'Only non-blocking limitations belong in residual_uncertainty. '
+                                  'No conclusion about grasp or target correctness was reached.')
     validate_schema(result, JUDGMENT_SCHEMA)
     if result['observation_id'] != evidence['observation_id']:
         raise PolicyError('Wrong observation ID')
@@ -221,8 +259,6 @@ def validate_judgment(result, evidence, *, allow_ready):
         if result['status'] == 'NEEDS_LEARNING' and not result['missing_information'].strip():
             raise PolicyError('NEEDS_LEARNING must explain missing information')
         return None
-    if not allow_ready or result['action'] is None or result['missing_information'].strip():
-        raise PolicyError('READY requires an allowed complete action and sufficient information')
     action = result['action']
     candidate = next((c for c in evidence['candidates'] if c['candidate_id'] == action['selected_reference']['reference_id']), None)
     if not candidate:

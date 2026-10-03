@@ -624,7 +624,7 @@ def test_runtime_rejects_tool_use_and_preserves_raw_output(scene, monkeypatch):
     monkeypatch.setattr('cloth_agent.planner_backend.LocalClaudeBackend.invoke',
                         lambda self, **kwargs: BackendResult(stream, '', 0, tuple(kwargs['command'])))
     model = RuntimeClaude()
-    with pytest.raises(ValueError, match='Tool use'):
+    with pytest.raises(ValueError, match='Evidence/tool access outside the fixed-input contract'):
         model.invoke(prompt='synthetic', schema=INSPECTION_SCHEMA, images=[Path(before['images'][0]['path'])],
                      output=root / 'bad_model', stage='test')
     assert (root / 'bad_model/stdout.jsonl').read_text() == stream

@@ -61,7 +61,7 @@ images: [{path, role, status: AVAILABLE, size: [宽, 高], rgb_sha256}]
 
 模型可新增中间概念、重排/合并/拆分推理阶段、修改指令、变量绑定和提前停止条件。每次输出 `CONTINUE / READY / NEEDS_LEARNING`；最后还未 READY 就返回 NEEDS_LEARNING。没有任意 Python、无界循环或自动慢速 fallback。
 
-缓存仅限同一 rollout 的显式阶段状态。后一轮不会拿前一轮的 action、ROI、理由或反思正文作 planning 提示。反思可读取上一轮公开输出和成本，但它的解释与证据保存于 sidecar，只有通过校验的 harness 进入重跑。可执行 prose 禁止数字、路径、历史 ID 和固定坐标；这能阻止明显答案常量，不能证明任意自然语言指令可泛化。Host 不把“删除某步可能更快”的假设记为已验证消融结论。
+缓存仅限同一 rollout 的显式阶段状态。后一轮不会拿前一轮的 action、ROI、理由或反思正文作 planning 提示。反思可读取上一轮公开输出和成本，但它的解释与证据保存于 sidecar，只有通过校验的 harness 进入重跑。可执行 prose 要求尽可能参数化：抓点、目标、锚点、区域和几何量从当前观察、目标和候选表推导，避免复制历史答案。数字、步骤编号、阈值和技术示例不触发词法拒绝；是否真正可泛化仍需后续实验判断。Host 不把“删除某步可能更快”的假设记为已验证消融结论。
 
 最多八个新版本，每版最多六个阶段；默认一次反思机会产生一个 patch，非法 patch 被拒绝且不执行，没有无限格式修复。文件只新增，已有输出目录不会删除或覆盖。
 
@@ -143,3 +143,105 @@ python -m cloth_agent.harness.reasoning_learning \
 新功能测试 41 passed，相关回归 146 passed。全量测试 1294 passed、21 failed、2 skipped；独立归档的未修改基线 c6a5e91 为 1253 passed、相同的 21 failed、2 skipped，没有新增失败用例。语法检查与 git diff --check 通过。
 
 当前 /mnt/newssd 不存在，已有目标 run manifest 没有 pre-decision traces。实跑预检输出 `results/reasoning_learning_20261003_verified_preflight/blocked.json`，模型调用为零；该目录的 `verification.json`、`current_pytest.log` 和 `baseline_pytest.log` 保存软件验证记录。本机尚未获得真实 Claude 修炼结果、规划加速或物理验证；合成测试的选择结果不作为实验结论。
+
+## 本机 k=3 测试入口
+
+`--k` 是 `--variants` 的别名，表示初始 H0 之外最多三次新 harness 提案机会；无效、重复提案或提前 STOP 可能使实际版本数少于四个。`--repeats` 是每个版本独立规划的次数，不是 k。
+
+已校验的左袖选点前证据：`results/reasoning_k3_prepared_20261003/evidence/evidence.json`（prepare-only，未调用模型）。从项目根目录运行：
+
+```bash
+/home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.harness.reasoning_learning \
+  --evidence results/reasoning_k3_prepared_20261003/evidence/evidence.json \
+  --output "results/reasoning_k3_$(date +%Y%m%d_%H%M%S)" \
+  --search serial --k 3 --repeats 2 \
+  --backend remote --ssh-host company-planner \
+  --max-calls 60 --max-seconds 3600 \
+  --call-timeout 300 --rollout-timeout 900
+```
+
+最多四个不同版本，每版两次规划，另有最多三次反思；多阶段版本的一次规划会包含多次模型调用。默认以规划耗时选优，仍要求至少三个不同版本形成唯一稳定共识；没有共识时输出 NO_SELECTION，不强行选择最快版本。此次修复补充读取 `usage.output_tokens_details.thinking_tokens`，保留顶层 thinking_tokens 和嵌套 reasoning_tokens 的兼容，以及未知值不计作零的规则。
+
+## Token 总预算
+
+使用 `--max-tokens 200000` 可设置整个 inner loop 的累计预算，不指定则不限制 token（仍记录用量）。规划、反思以及有用量回执的失败调用共用预算。计数口径为供应商返回的 input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens；thinking 已包含在 output 内，不重复加。该口径不是美元费用，缓存 token 与普通 token 价格不同。
+
+每次实际调用后写 `token_usage` 事件和 `token_budget.json`；最终 `report.json` 的 `totals.token_budget` 保留限额、已知累计值、剩余额度、未知回执数量和停止原因。达到限额时停止后续调用（TOKEN_BUDGET_EXHAUSTED）；用量不完整时，启用预算的实验停止后续调用（TOKEN_USAGE_UNKNOWN），不把缺失用量当零。
+
+预算是调用间检查，不能在 Claude 调用中精确截断：单次调用可能超出剩余预算，超出部分会如实记录。现有结果仍可参与共识选择，但报告必须同时查看 token_budget；达到预算不一定意味着没有可选结果。控制 token 不改变 --k、--repeats 和共识要求。
+
+## 视觉判断的缺口与不确定性
+
+阶段输出新增必填 `residual_uncertainty`：保存不阻止当前视觉提案的残余误差、限制和后续物理验证事项。`missing_information` 仅保存会阻止当前视觉决策的信息缺口。READY 必须允许提前完成、包含完整 action 且 missing_information 为空；CONTINUE/NEEDS_LEARNING 的 action 必须为 null，后者还必须说明具体缺口。这些约束同时写入模型 schema 和提示，Host 不自动清空缺口或把阻塞问题改成残余不确定性。历史实验保留原样，不重新标成成功。
+
+校验记录 READY_BLOCKING_GAP、READY_NOT_ALLOWED、READY_ACTION_MISSING、NON_READY_ACTION 等具体原因，并在阶段记录里保存 validation_error。反思被明确告知字段冲突不是抓点错误或必须拆分阶段的证据。缺少深度/IK 不自动阻止 RGB 视觉提案，也不代表已经满足真实执行条件。
+
+当前 reasoning learning 已移除 harness 说明文字的数字、路径、URL、历史 ID 和 base64 关键词拦截，名称与阶段 ID 允许 `refined_v2`、`stage_1`。反思提示要求尽可能参数化、解释固定启发式的适用条件，并优先使用场景相对量。提到路径或示例不授予文件访问权限，也不使历史答案成为当前证据。仍校验 schema、阶段依赖、当前图片及候选身份、坐标和输出状态；通过校验不代表参数化质量或视觉正确性已获验证。此调整针对 reasoning learning，旧 compiler 的 policy 校验未改动。
+
+输出通道兼容：RuntimeClaude 不再因为仅用于查找 StructuredOutput 的 ToolSearch 请求拒绝整次返回。接受精确查询 `StructuredOutput` 或 `select:StructuredOutput`，并在 `output_tool_lookup_calls` 中单独计数；总工具调用、token 和耗时仍保留。不因此开放 Read、网络搜索或其他证据工具；宽泛/混合查询仍不符合固定输入实验合同。此修改调整 Host 校验，不保证 CLI 环境实际提供 ToolSearch；查找失败时可以直接返回符合 schema 的 JSON，仍须通过原有结果校验。
+
+## 轻量格式预检与自动修复
+
+实验开始先运行本地合成合同预检，输出 `format_preflight.json`，不调用 Claude。每次判断或反思返回后保存 `format_repair.json`（原始返回、规范化结果、字段差异、规则、模型调用数），再执行原有校验。原始 proposal.json 和模型 returned.json 不覆盖。
+
+当前确定性修复范围：旧判断缺少 residual_uncertainty 时补空字符串。阶段指令中的 `(1) … (2) …` 编号原样保留，不再改成项目符号，以保留后文对步骤编号的引用。数字坐标、历史图像编号、抓点、目标、状态、阻塞缺口不改。其他结构或一致性问题仍由原有校验报告，不靠模型猜测字段值。
+
+若某版本所有规划均为合同拒绝，停止对该版本做视觉反思并报告 FORMAT_BLOCKED；其他 ERROR 行不把被拒绝的阶段判断送作视觉失败证据。修复仅意味着格式可接受，不表示策略正确或加速有效。旧实验结果不回写、不追认；离线回放检查仅输出新诊断目录。
+
+## 以降低耗时为目标：只优化一次
+
+反思的首要目标改为降低完整视觉规划的墙钟耗时，保持判断质量和稳定性；token 和调用次数作为次要成本统计。`optimization_objective` 随实际反思请求保存。Claude 自由提出删除、合并、重排、按需深入、提前结束等可执行假设，不预定操作流程；新增阶段必须解释它取代了哪些更昂贵的工作。当前后端仍只支持固定图片与阶段/提示编排；需要新增 Host 算法或工具的提案必须说明未实现，不能当作已经执行。
+
+反思可同时输出 `operations`，描述信息目标、方法、输出、成功条件、信息不足处理、被替代工作及预计省时机制。真正参与下一轮规划的是返回的 harness；操作说明不会触发额外调用。该字段可省略以兼容旧输出，缺失时导出空候选列表，不凭空补写经验。
+
+从项目根目录运行以下命令：
+
+```bash
+/home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.harness.reasoning_learning \
+  --evidence results/reasoning_k3_prepared_20261003/evidence/evidence.json \
+  --output "results/reasoning_opt1_$(date +%Y%m%d_%H%M%S)" \
+  --search branch --k 1 --repeats 2 \
+  --backend remote --ssh-host company-planner \
+  --min-harnesses 2 \
+  --max-calls 30 --max-seconds 3600 \
+  --call-timeout 300 --rollout-timeout 900
+```
+
+执行顺序：H0 基线规划两次 → 一次 Claude 优化提案 → H1 规划两次。`k=1` 是一次提案机会，不是总共只调用一次模型；STOP、无效或重复提案不会产生 H1。单阶段 H1 通常共五次模型调用，多阶段会增加调用次数。没有 token budget，仍完整统计用量。只读取已保存图片，不执行机器人。
+
+`optimization_comparison.json`、`report.md`、`index.html` 会展示各版本中位耗时、调用数、token、重复稳定性及基线/候选耗时比，即使没有形成共识也保留比较结果。只有真实测量且两版所有重复均 READY 才给耗时比；比值大于一只表示本次观察到更短耗时，不说明判断正确或稳定。`min-harnesses=2` 使两个版本有机会形成共识，并不保证能入选；没有共识仍返回 NO_SELECTION（CLI 退出码 2），不等于实验崩溃。
+
+`operation_candidates.json` 单独保存抽象操作候选，初始 UNVERIFIED，不写入 approved skills。evidence 的 supported_by/failed_in/unresolved 只表示观察方法是否得到所需信息：本轮整体 READY 和耗时不能证明单个方法成功，因此试跑引用先归 unresolved，等待方法层面的核对。总学习耗时和 token 仍在 totals 单独记录。固定顺序、单场景实验不能证明普遍加速或正确性。
+
+## 可执行补丁与 Host 数值操作
+
+每个通过校验且非重复的新提案在测试前写入 `reflections/patch_*/executable_patch.json`，包含父版本、新版本哈希、实际 harness 及 Host 操作数量，测试后追加逐轮执行结果。这是由解释器执行的声明式补丁，不是任意生成的 Python 源码。提示优化仍可单独作为补丁；只有显式绑定的 Host 操作才会执行，候选文字不会自动变成工具调用。
+
+新增已实现操作：
+
+- `reflect_point`：点关于直线的镜像。
+- `affine_point`：六参数仿射坐标变换。
+- `rank_candidates`：仅对当前候选表中指定子集按给定轴投影排序。
+
+Claude 在先前阶段的 `measurements` 输出当前观察的测量值；后续阶段通过 `host_operations` 绑定这些值，Host 在下一次模型调用前执行计算，结果以 `host_results` 提供给模型。示例阶段片段：
+
+```json
+{
+  "id": "decide",
+  "instruction": "Use host_results.mirror to propose the target only after verifying the mapped point against the current fabric and reference end-state. UNKNOWN requires resolving its missing evidence or stopping.",
+  "context": ["measure"],
+  "allow_ready": true,
+  "host_operations": [{
+    "id": "mirror",
+    "op": "reflect_point",
+    "source_stage": "measure",
+    "bindings": {"point": "grasp", "line_start": "hinge_a", "line_end": "hinge_b"}
+  }]
+}
+```
+
+`host_results` 实际是按操作 ID 标记的记录数组。前序 `measure` 阶段应输出 `measurements.grasp`、`measurements.hinge_a`、`measurements.hinge_b`（二维当前 clean 像素坐标）。未知值可以为 null，不从历史补坐标。每轮 `host_execution.json` 保存实际输入、输出、耗时与失败缺口；`metrics.host_operation_count` 和 `host_operation_seconds` 单独统计，且仍包含在规划总耗时中。缺失测量、零长度轴等返回 UNKNOWN，不能当作成功几何。
+
+Host 数值计算不识别袖子或缝线，不证明点在布料上，也不自动裁剪越界目标。模型仍需视觉验证，最终动作仍经过当前候选/坐标检查。操作说明与模型视觉判断是否一致尚不能由 schema 保证。额外阶段可能抵消计算省时，反思必须评估总成本；新增目录之外没有机器人动作或正式 skill 更新。
+
+仍可使用上面的命令，改为 `--k 1 --repeats 1`，执行基线一次、提案一次、新方案一次。新方案如采用两阶段“测量→Host 计算→判断”，共四次模型调用，而不是三次；Host 计算本身不调用模型。旧实验不会自动获得这些能力，需启动新的实验。
