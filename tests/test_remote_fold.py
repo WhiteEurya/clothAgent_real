@@ -885,3 +885,21 @@ def test_manual_reset_gates_run_and_recaptures_before_planning(saved_scene, monk
         summary = pipeline.run()
         assert summary['status'] == 'COMPLETE'
         assert len(calls) == (1 if resume_pending else 2)
+
+
+def test_remote_prompt_exposes_exact_schema_without_tool_search(saved_scene, monkeypatch):
+    _, images, _ = saved_scene
+    from cloth_agent.fold_exploration_pipeline import SUPERVISOR_SCHEMA
+    def run(command, **kwargs):
+        if command[0] == 'curl':
+            return SimpleNamespace(returncode=0, stdout='{"id":"schema-test"}', stderr='')
+        if command[-1].startswith('rm -rf'):
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        prompt = kwargs['input']
+        assert json.dumps(SUPERVISOR_SCHEMA, ensure_ascii=False, separators=(',', ':')) in prompt
+        assert 'Do not search for missing tools' in prompt
+        assert '--allowedTools Read,StructuredOutput,' in command[-1]
+        return SimpleNamespace(returncode=0, stdout='{"result":"{}"}', stderr='')
+    monkeypatch.setattr(subprocess, 'run', run)
+    RemoteClaudeBackend(upload_url='https://tempfile.org/api/upload/local').invoke(
+        prompt='Inspect', image_paths=images[:1], schema=SUPERVISOR_SCHEMA, system_prompt='Inspect')

@@ -1,5 +1,46 @@
 # Fold 远程 Claude 桥接
 
+## 原始主流程分阶段计时
+
+若只测试真实观察到运动代码生成，增加 `--real --confirm-real --stop-after-plan`。该模式允许移动到原有观察位并采集真实 RGB-D，沿原流程选择抓取点、确定目标点和编译运动代码；写出代码后立即以 `PLAN_GENERATED` 结束，不运行后续 preflight、控制器 IK、抓取/搬运、执行后评估或经验更新。`_execute` 另有拒绝执行的保护。输出 `generated_motion.py`、`planning_only.json`（含点位和 grounding）以及原始规划结果；代码生成不代表已经通过可执行性校验。
+
+在原来的启动命令后追加 `--timing-output results/full_pipeline_timing_20261003_01` 即可开启；目录必须不存在。需要限制到一次 iteration 时同时添加 `--max-iterations 1`。原有实机确认、重试、模型与安全参数照常生效，计时开关不会改变它们。
+
+这会运行原来的 `FoldExplorationPipeline`，不是离线 `planner_profile` 重放。记录范围包括 session/流水线初始化、RGB-D 采集及感知、Molmo/朝向处理、supervisor、视觉规划、grounding/运动提案、抓取高度解析、preflight、控制器 IK、动作执行、执行后采集、录像证据、评估、经验更新及人工复位等待。每次调用单独保存，重试不覆盖前一次；动作级 move/open/close 等也有记录。
+
+- `events.jsonl`：实时追加开始/结束事件，含阶段、父 ID、iteration（可用时）、开始/结束时间和状态。
+- `summary.json` / `summary.md`：退出时的完整层级时间线，正常结束、失败或 Ctrl-C 均保存；RETURNED 仅表示函数返回，不表示抓取或折叠成功。
+- `claude_calls.json`：按原始调用汇总远端逐轮事件计时、工具参数及结构化输出错误；对应 trace 保留原始证据。
+
+`duration_s` 包含子阶段，`exclusive_s` 扣除直接子阶段覆盖的时间区间，避免重复计时。未单独插桩的代码计入父阶段自身时间；背景录像线程包含在执行墙钟时间内，不单独归因。未执行的阶段没有记录，不以 0 秒假装完成。计时从 Python 主入口解析参数后开始，结束于主流程返回/抛错；shell 启动器的存储检查、相机预设恢复、Python 导入与最终计时报表写入不属于此时间区间。
+
+远端事件时间戳记录于 CLI 产生事件的机器，避免把结束后集中回传的时间误判成模型推理。首事件前等待仍包含网络/输入处理/排队，thinking 块输出窗口也不能直接细分为模型内部某个语义判断的计算时间。
+
+### 按推理任务观测耗时（可选诊断）
+
+需要接入已手工整理的观察 skill 时，再加 `--observation-skill data/skills/experimental/visual_information.json`（remote 后端、默认关闭）。当前模式将压缩后的观察方法、`success_check` 和 `on_insufficient` 直接放进**原始 visual_planning 调用的提示**。Claude 在这次调用内看全图、识别信息缺口，按 skill 调用已有 `cloth_image` 工具；Host 执行并把实际图片直接返回同一对话，Claude 使用这些证据继续原来的选点。原图足够时允许不编辑；不为每条 skill 强制执行操作。
+
+本模式不再调用独立的 `skill_observation`，也不先执行 `prepare_with_skill`。有/无 skill 两组使用相同原图、工具、六次编辑预算、选点 schema、Rxxx 校验和后续 grounding/运动流程；差异只有原视觉调用内的观察 policy。Supervisor、Molmo 和运动规划保持原流程。工具调用允许同一次 CLI 会话内的多轮交互，因此不承诺只进行一次模型推理，也不承诺一定加速。已有 `prepare_skill_observations` 仅保留给旧的独立实验，主流程不再调用。
+
+完整 skill 方法随 prompt 保存到原始视觉调用日志；裁剪、旋转、图片返回、坐标映射仍由原 image-tool 日志记录。总耗时包含 policy 阅读和实际工具调用。对照时应使用相同保存观测、相同任务和计时设置；实机两次不同任务的耗时不能直接作为加速率。此模式不修改后续运动输出格式错误的处理。
+
+同时增加 `--semantic-timing --timing-output <新目录>`，可以要求 Claude 在同一次调用内用公开状态标记声明任务开始和结束。默认关闭，仅支持 remote 后端。覆盖 supervisor、Molmo 朝向准备、视觉选点和 pixel_motion 调用；不修改最终 schema、工具权限、调用次数预算或实机执行边界。它会修改诊断调用的 system prompt，因此不是完全无干预的基线计时，可能影响模型行为与速度。
+
+可记录的阶段包括任务约束读取、衣服方向判断、跨图/坐标对应、抓取候选评估、目标点/运动方案、工具问题处理、结果整理/提交。阶段按实际顺序出现，不强制执行原本不需要的工作；重复访问同一阶段分别记录并累计。例如在开始方向判断前输出 `[[phase:orientation:start]]`，完成后输出 `[[phase:orientation:end]]`。只要求简短阶段标签，不要求输出内部思维过程，也不让模型填写耗时。
+
+```bash
+PYTHON=/home/sja/miniconda3/envs/cali/bin/python \
+  bash scripts/start_fold_exploration.sh \
+  --real --confirm-real --stop-after-plan --max-iterations 1 --no-unattended \
+  --semantic-timing --timing-output results/semantic_timing_01
+```
+
+退出时新增 `semantic_timing.json` / `semantic_timing.md`。每个调用分别列出阶段总秒数、thinking 块窗口、文字输出、工具参数生成、工具等待、响应前等待及其余时间。统计使用远端流式公开文本中的标记时间；完整 assistant 消息副本不重复解析，thinking 内容不用于推断主题。工具等待扣除与输出重叠的部分，各列不会重复相加。
+
+标记缺失、未闭合或错配时，相应时间保留为 `UNKNOWN`；同一事件中合并输出的起止标记标为 `UNRESOLVED`。没有观测到的阶段显示 `—`，不以 0 秒表示完成。结构化提交在 submission 结束标记之后，它的耗时保持未归因，仍可在原始工具计时中查看。失败或中断也生成报告；若原始 trace 未保存，则明确显示 `MISSING_TRACE`。旧日志没有标记，不能据此补造方向判断等阶段耗时。
+
+这些数值表示 **Claude 声明的任务窗口**，不证明该窗口内全部 thinking 都属于同一主题，也不代表服务器内部纯计算时间。若模型先完成思考再输出标记，前面的时间仍是 UNKNOWN；不能把标签事后套到此前的 thinking 上。
+
 `scripts/claude_fold_exploration.py` 默认使用 `--planner-backend remote`，SSH 主机默认是 `company-planner`。规划、运动提案、执行后评估和 fold supervisor 都通过 HTTPS 图片中转 + SSH 调用公司电脑的 Claude。Alienware 不需要本机 Claude。显式指定 `--planner-backend local` 可以使用旧调用链。
 
 公司端需要免密 SSH、`curl`、`sha256sum`、GNU `timeout`、`date`、`sed`、Python 3.10+、Pillow 和已登录的 `claude`。非交互 SSH 环境的 PATH 必须能找到这些命令。桥接不指定模型，使用公司端 Claude CLI 配置的默认模型。远端调用是独立会话，不续用 Alienware 的 Claude session。
@@ -370,3 +411,9 @@ python -m cloth_agent.fold_reset --request /path/to/iteration_001/reset_request.
 请求保存在迭代目录的 `reset_request.json` 和本次 run 的 `workspace/fold_reset/state.json`。
 进程中断后，使用同一 run 恢复仍会等待确认；看门狗不会自动重启 `WAITING_FOR_RESET` 状态。
 每次动作前的检查会增加一次原先可能被跳过的 supervisor 调用。
+
+### 信息需求观察工具实验
+
+启用 `--observation-skill` 后，仅原始 visual_planning 调用额外暴露 `observe_information`。请求携带 information_need、method、image_id、box、scale、degrees_clockwise、success_check、on_insufficient。local_boundary 将源图裁剪和已确定的显示缩放合并执行；orientation 旋转选定源图；inspect_view 返回现有视图。它们是按信息缺口选择的方法，不是必须依次执行的流程。
+
+Host 返回真实图片、可追溯坐标变换及 AWAITING_MODEL_ASSESSMENT；充分性仍由 Claude 判断。内部实际编辑共享原六次预算，操作和参数均写入审计。未启用 skill 时不暴露该工具，运动阶段仍使用原工具。底层工具保留给组合方法不能覆盖的观察，因此是否减少轮次必须由运行记录验证。

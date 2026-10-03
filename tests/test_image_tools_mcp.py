@@ -262,9 +262,9 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
     real_popen = subprocess.Popen
     monkeypatch.setenv("CLOTH_REMOTE_IMAGE_PYTHON", sys.executable)
     def substitute(command):
-        remote = command[-1]
+        remote = command[-1].replace("$HOME/.cache/cloth-agent-images", str(tools.job / "transfer_cache"))
         if not remote.startswith("rm -rf"):
-            remote = re.sub(r"curl -fsSL --connect-timeout 20 --max-time 120 \S+ -o (\S+)",
+            remote = re.sub(r"curl -fsSL --http1.1 --connect-timeout 10 --max-time 30 --speed-limit 1024 --speed-time 15 \S+ -o (\S+)",
                 lambda m: f"cp {shlex.quote(str(tools.job / 'image_0.png'))} {m[1]}", remote)
             remote = remote.replace("claude -p", f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))} -p")
         return ["sh", "-c", remote]
@@ -344,3 +344,61 @@ def test_smoke_generates_direction_chart_without_camera(tmp_path):
         assert image.getpixel((10, 250)) == (0, 0, 255)
     result = json.loads((output / "result.json").read_text())
     assert result["claude_tested"] is False
+
+
+def information_request():
+    return dict(image_id='image_0', information_need='Can the boundary be judged?',
+                method='local_boundary', box=[2, 1, 10, 7], scale=2,
+                degrees_clockwise=0, success_check='Visible boundary supports yes or no',
+                on_insufficient='Return UNKNOWN and identify missing evidence')
+
+
+def test_information_method_batches_edits_returns_pixels_and_mapping(scene):
+    original, _ = scene
+    tools = ImageTools(original.job, 1, edit_limit=6, information_tools=True)
+    result = tools.call('observe_information', information_request())
+    assert result['size'] == [16, 12]
+    assert result['edit_budget']['used'] == 2
+    assert result['information_status'] == 'AWAITING_MODEL_ASSESSMENT'
+    assert tools.image_result(result)['content'][1]['type'] == 'image'
+    mapped = tools.call('map_point', {'image_id': result['image_id'], 'pixel_xy': [4.5, 4.5]})
+    assert mapped['pixel_xy'] == pytest.approx([4, 3])
+
+
+def test_information_method_budget_and_disabled_control(scene):
+    original, _ = scene
+    with pytest.raises(ValueError, match='unknown tool'):
+        original.call('observe_information', information_request())
+    tools = ImageTools(original.job, 1, edit_limit=1, information_tools=True)
+    with pytest.raises(ValueError, match='insufficient shared edit budget'):
+        tools.call('observe_information', information_request())
+    assert tools.created == 0
+    assert tools.edit_budget()['used'] == 0
+
+
+def test_information_view_requires_no_edit_and_does_not_claim_success(scene):
+    original, _ = scene
+    tools = ImageTools(original.job, 1, edit_limit=0, information_tools=True)
+    args = information_request(); args.update(method='inspect_view', box=None, scale=1)
+    result = tools.call('observe_information', args)
+    assert result['image_id'] == 'image_0'
+    assert result['edit_budget']['used'] == 0
+    assert result['information_status'] == 'AWAITING_MODEL_ASSESSMENT'
+
+
+def test_information_tool_is_exposed_and_returns_image_over_stdio(scene):
+    tools, _ = scene
+    script = Path(__file__).resolve().parents[1] / 'cloth_agent/image_tools_mcp.py'
+    command = [sys.executable, str(script), '--job', str(tools.job), '--image-count', '1',
+               '--information-tools', '--edit-limit', '6']
+    subprocess.run([*command, '--prepare'], check=True, capture_output=True, text=True)
+    config = json.loads((tools.job/'image_tools.mcp.json').read_text())['mcpServers']['cloth_image']
+    requests = [dict(jsonrpc='2.0', id=1, method='tools/list'),
+                dict(jsonrpc='2.0', id=2, method='tools/call', params=dict(name='observe_information', arguments=information_request()))]
+    result = subprocess.run([config['command'], *config['args']],
+                            input='\n'.join(map(json.dumps, requests))+'\n',
+                            capture_output=True, text=True, check=True)
+    listed, observed = [json.loads(line)['result'] for line in result.stdout.splitlines()]
+    assert any(t['name'] == 'observe_information' for t in listed['tools'])
+    assert not observed.get('isError')
+    assert observed['content'][1]['type'] == 'image'

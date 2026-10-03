@@ -1,0 +1,425 @@
+{
+  "schema_version": 1,
+  "scope": "visual_information_acquisition",
+  "status": "EXPERIMENTAL_MANUAL_DISTILLATION",
+  "source_summary": "results/harness_image_processing_20261002/image_processing_summary.json",
+  "source_policy_hash": "8e95f30830f4ec1e71adbbbf284552580df3fc6322cd010fae2fc135b4475024",
+  "evidence_semantics": {
+    "supported_by": "采用方法后确实获得所需视觉或图像元信息的记录；否定结论也可完成任务。",
+    "failed_in": "明确采用方法后仍无法获得所需信息的记录，包括明确因图像不足而 UNKNOWN。",
+    "unresolved": "无法确认方法是否奏效，或存在未解释冲突的记录。"
+  },
+  "skills": [
+    {
+      "id": "available_views",
+      "information_need": "有哪些可用视图、图像尺寸、坐标来源和剩余编辑预算",
+      "applicable_when": "输入清单缺少这些元数据时",
+      "method": [
+        "先读取已提供的图像目录和预算；缺失时调用 list_images 或 image_info",
+        "记录视图角色、尺寸和来源；未知对应关系明确标注"
+      ],
+      "success_check": "所需元数据明确，或明确知道哪些元数据未知；元数据不替代查看像素",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "目录不变时无需重复查询。"
+      ],
+      "evidence": {
+        "supported_by": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "list_images 返回了图像尺寸、目录和预算。"
+          }
+        ],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "493c786b21234728da0dd131",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "0a488890e6b1060dc852e875",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "fd15207c944ff34b5e17eb41",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "list_inventory_first",
+        "view_inventory_images_beyond_attachments"
+      ]
+    },
+    {
+      "id": "global_layout",
+      "information_need": "衣物的整体轮廓、朝向及可见的卷曲或堆叠区域",
+      "applicable_when": "需要建立当前场景的全局布局时",
+      "method": [
+        "查看 clean 全图",
+        "根据轮廓、可见衣片边界和遮挡关系描述布局；仅对未解决的局部疑点进一步查看"
+      ],
+      "success_check": "可以描述可见布局并指出不可见或不确定区域；不要求识别出所有衣物结构",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "遮挡后的层次不能从单幅 RGB 确认。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "493c786b21234728da0dd131",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "716f36398d32f3663f62ab34",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "e406e5cb26fa060620d50baf",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "view_clean_before_overlay",
+        "reuse_views_without_editing"
+      ]
+    },
+    {
+      "id": "local_boundary",
+      "information_need": "判断目标区域缝线是否存在、是否连续及其与布料边缘的位置关系",
+      "applicable_when": "已定位疑似边缘，但全图细节不足时",
+      "method": [
+        "先确认现有视图是否已足够清晰",
+        "在 clean 中动态定位目标，裁剪包含边缘及周围上下文的区域",
+        "仅当显示尺度限制辨读时等比放大；若原图缺少细节，停止重复放大",
+        "检查缝线存在性、连续性及其与边缘的位置关系"
+      ],
+      "success_check": "目标区域具有足够的清晰度和可见范围，能够判断缝线是否存在、是否连续及其与布料边缘的位置关系。肯定或否定结论都可以完成信息任务，不要求一定发现连续缝线。",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "裁剪或插值放大不恢复原图缺失细节。",
+        "需要保留足够背景判断边界；不沿用历史裁剪坐标或倍率。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "493c786b21234728da0dd131",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "1f3c0e59967c7af81b916d07",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "0a488890e6b1060dc852e875",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "2b915a750da3a51add82ed01",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "crop_local_roi",
+        "recrop_tighter_from_root",
+        "resize_for_legibility"
+      ]
+    },
+    {
+      "id": "overlay_occlusion",
+      "information_need": "标记或文字是否遮住目标结构，以及真实边界在哪里",
+      "applicable_when": "overlay 上的目标区域存在标记干扰时",
+      "method": [
+        "对照同视角 clean 和 overlay",
+        "全图不足时对两图取相同区域、相同尺度的局部视图",
+        "区分原始织物结构与叠加图形"
+      ],
+      "success_check": "能够判断目标处有无标注遮挡，并在 clean 可见时描述真实结构；无标注遮挡也算完成",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "只有确认两图对齐，才能进行同位置比较。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "79620203bc7f66568c888cce",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "2b915a750da3a51add82ed01",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "493c786b21234728da0dd131",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "716f36398d32f3663f62ab34",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "crop_paired_for_occlusion",
+        "view_clean_before_overlay"
+      ]
+    },
+    {
+      "id": "orientation",
+      "information_need": "以一致朝向理解衣片的位置关系",
+      "applicable_when": "当前朝向妨碍理解结构时",
+      "method": [
+        "优先检查现有适用视图，确认其来源和对应关系",
+        "必要时旋转当前图到便于理解的朝向，保留坐标变换和所属分支",
+        "以衣物结构确定方向，而不是仅按屏幕左右命名"
+      ],
+      "success_check": "可在明确朝向下描述结构，且知道该视图对应哪张原图",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "旋转不增加遮挡区域的信息。",
+        "不同帧未验证几何对应时不能复用坐标。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "716f36398d32f3663f62ab34",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "2b915a750da3a51add82ed01",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "fd15207c944ff34b5e17eb41",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "e406e5cb26fa060620d50baf",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "0a488890e6b1060dc852e875",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "view_alternate_orientation_frame_if_present",
+        "rotate_to_upright_orientation"
+      ]
+    },
+    {
+      "id": "reference_shape",
+      "information_need": "当前外形与参考目标在轮廓、宽高比和紧凑度上的差异",
+      "applicable_when": "任务需要外形对比且存在参考图时",
+      "method": [
+        "查看当前 clean 与相关参考图",
+        "比较可见外轮廓、长宽趋势和突出区域",
+        "对过曝或遮挡导致不可辨的内部结构单独返回 UNKNOWN"
+      ],
+      "success_check": "可明确描述外形相同或不同之处；不能判断的维度明确留空并说明原因",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "参考图不能用于当前场景抓取坐标；不能把过曝解释为内部无褶皱。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "fd15207c944ff34b5e17eb41",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "79620203bc7f66568c888cce",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "view_reference_states_selectively"
+      ]
+    },
+    {
+      "id": "original_coordinates",
+      "information_need": "派生视图中的可见特征对应原图的哪个位置",
+      "applicable_when": "确实需要报告派生视图中特征的原图坐标时",
+      "method": [
+        "确认源视图、父图及变换关系",
+        "对派生视图上的目标坐标调用 map_point",
+        "核对原图身份、返回坐标及边界；原图坐标已知且无需转换时直接复用"
+      ],
+      "success_check": "坐标已绑定明确的原图身份和坐标系，且工具映射成功；结构语义需由图像另行支持",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "坐标映射成功不证明特征识别正确，也不证明可抓取。"
+      ],
+      "evidence": {
+        "supported_by": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "map_point 对派生视图返回原图索引和坐标；仅支持坐标对应信息，不支持特征语义。"
+          }
+        ],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "0a488890e6b1060dc852e875",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "e406e5cb26fa060620d50baf",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "2b915a750da3a51add82ed01",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "map_back_from_derived_view",
+        "map_point_on_root_image"
+      ]
+    },
+    {
+      "id": "information_sufficiency",
+      "information_need": "所需信息是否已足够，仍缺什么以及下一种操作能否补足",
+      "applicable_when": "考虑继续处理图像或结束观察时",
+      "method": [
+        "逐项检查信息任务是否已得到有根据的判断",
+        "对未完成项说明缺口及下一操作预计能增加什么信息",
+        "已足够时结束；预算耗尽或现有方法不能补足时返回 UNKNOWN"
+      ],
+      "success_check": "已完成项与未知项清楚区分；停止不等于所有信息都已获得",
+      "on_insufficient": "如果分辨率、遮挡或观察预算限制导致无法判断，返回 UNKNOWN，并说明缺失的信息。不把无法辨认解释为不存在；不重复执行不能解决当前信息缺口的相同裁剪或放大。",
+      "limitations": [
+        "旧记录的操作序列结束不直接证明信息充分；收益未经消融验证。"
+      ],
+      "evidence": {
+        "supported_by": [],
+        "failed_in": [],
+        "unresolved": [
+          {
+            "decision_id": "b5f17411b9a23a48f4d98406",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "49227566020cb4f434e5a9a2",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "716f36398d32f3663f62ab34",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "e406e5cb26fa060620d50baf",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "fd15207c944ff34b5e17eb41",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          },
+          {
+            "decision_id": "1f3c0e59967c7af81b916d07",
+            "reason": "旧总结记录了相关操作；尚未独立核验该方法是否取得此信息，不能仅凭工具调用判定成功。"
+          }
+        ]
+      },
+      "source_rule_ids": [
+        "reuse_views_without_editing",
+        "stop_when_sufficient_or_budget_exhausted"
+      ]
+    }
+  ],
+  "execution_recipe": {
+    "id": "inspect_local_boundary_once",
+    "purpose": "一次绑定当前局部与条件，宿主执行全部图像操作，最后一次验收；中间不重新规划。",
+    "source_skill_ids": [
+      "local_boundary",
+      "overlay_occlusion"
+    ],
+    "display_long_side": 768,
+    "max_scale": 3,
+    "steps": [
+      {
+        "id": "clean_crop",
+        "operation": "crop_image",
+        "source": "clean",
+        "condition": "has_roi"
+      },
+      {
+        "id": "overlay_crop",
+        "operation": "crop_image",
+        "source": "overlay",
+        "condition": "paired_crop"
+      },
+      {
+        "id": "clean_large",
+        "operation": "resize_image",
+        "source": "clean_crop",
+        "condition": "enlarge"
+      },
+      {
+        "id": "overlay_large",
+        "operation": "resize_image",
+        "source": "overlay_crop",
+        "condition": "paired_enlarge"
+      }
+    ]
+  }
+}

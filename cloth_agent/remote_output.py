@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 
 
 def compact(value):
@@ -39,6 +41,9 @@ def multimodal_message(prompt, images):
 
 
 def main(argv):
+    record_timing = bool(argv and argv[0] == '--record-event-timing')
+    if record_timing:
+        argv = argv[1:]
     model_input = None
     if argv and argv[0] == '--direct-images':
         count = int(argv[1])
@@ -57,8 +62,40 @@ def main(argv):
             (directory / name).write_text(content, encoding='utf-8')
         model_input = envelope['prompt'].encode('utf-8')
     raw = Path('claude_raw.jsonl')
+    event_times = []
     with raw.open('wb') as output:
-        result = subprocess.run(argv, stdout=output, **({"input": model_input} if model_input is not None else {}))
+        if not record_timing:
+            result = subprocess.run(argv, stdout=output, **({"input": model_input} if model_input is not None else {}))
+        else:
+            # Timestamp on the producer host before the validated spool is sent
+            # over SSH. These are CLI emission times, not internal model times.
+            started = time.monotonic()
+            process = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                       **({'stdin': subprocess.PIPE} if model_input is not None else {}))
+            def write_input():
+                try:
+                    process.stdin.write(model_input)
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            writer = None
+            if model_input is not None:
+                writer = threading.Thread(target=write_input, daemon=True)
+                writer.start()
+            for line in process.stdout:
+                if line.strip():
+                    event_times.append(time.monotonic() - started)
+                output.write(line)
+            process.stdout.close()
+            process.wait()
+            if writer is not None:
+                writer.join()
+            result = subprocess.CompletedProcess(argv, process.returncode)
+            print('__CLOTH_PROFILE__ ' + json.dumps({
+                'process_elapsed_s': time.monotonic() - started,
+                'terminal_event_elapsed_s': event_times[-1] if event_times else None,
+                'event_count': len(event_times),
+                'clock': 'remote_monotonic_cli_line_receipt'}), file=sys.stderr, flush=True)
     # stdout now belongs only to this synchronous writer, not the model runtime.
     os.set_blocking(sys.stdout.fileno(), True)
     os.set_blocking(sys.stderr.fileno(), True)
@@ -76,9 +113,12 @@ def main(argv):
         raw.replace(saved)
         print(f'REMOTE_CLI_FAILED: exit={result.returncode}; raw={saved}', file=sys.stderr, flush=True)
     print(f'REMOTE_OUTPUT_VALID: events={len(events)}', file=sys.stderr, flush=True)
-    for event in events:
+    for index, event in enumerate(events):
         # Terminal payload is the authoritative result and must stay unchanged.
         payload = event if event.get('type') == 'result' else compact(event)
+        if record_timing and event.get('type') != 'result':
+            payload = {**payload, '_cloth_timing': {
+                'elapsed_s': event_times[index], 'clock': 'remote_monotonic_cli_line_receipt'}}
         print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')), flush=True)
     return result.returncode
 

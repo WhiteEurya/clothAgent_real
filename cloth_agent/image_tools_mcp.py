@@ -27,7 +27,7 @@ MAX_SIDE = 8192
 MAX_VIEWS = 24
 MAX_CALLS = 64
 EDIT_TOOLS = frozenset({'rotate_image', 'crop_image', 'resize_image'})
-IMAGE_TOOLS = EDIT_TOOLS | {'view_image'}
+IMAGE_TOOLS = EDIT_TOOLS | {'view_image', 'observe_information'}
 VERIFIED_DELIVERIES = frozenset({'VERIFIED', 'VERIFIED_TRANSCODE'})
 IDENTITY = [1., 0., 0., 0., 1., 0.]
 INSTRUCTIONS = (
@@ -78,6 +78,16 @@ TOOLS = [
           {"pixel_xy": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}}),
 ]
 TOOL_NAMES = tuple("mcp__" + SERVER_NAME + "__" + tool["name"] for tool in TOOLS)
+INFORMATION_TOOL = _tool('observe_information',
+    'Obtain evidence for one explicit information gap. Execute a selected observation method in one Host call; return actual pixels, never a semantic verdict. Skip when existing evidence suffices.', {
+    'information_need': {'type': 'string', 'minLength': 1},
+    'method': {'type': 'string', 'enum': ['inspect_view', 'local_boundary', 'orientation']},
+    'box': {'anyOf': [{'type': 'null'}, {'type': 'array', 'minItems': 4, 'maxItems': 4, 'items': {'type': 'integer'}}]},
+    'scale': {'type': 'number', 'minimum': 1, 'maximum': 8},
+    'degrees_clockwise': {'type': 'number', 'minimum': -360, 'maximum': 360},
+    'success_check': {'type': 'string', 'minLength': 1},
+    'on_insufficient': {'type': 'string', 'minLength': 1},
+})
 
 
 def pixel_hash(image):
@@ -348,7 +358,8 @@ def _size(width, height):
 
 
 class ImageTools:
-    def __init__(self, job: Path, image_count: int, edit_limit: int | None = None):
+    def __init__(self, job: Path, image_count: int, edit_limit: int | None = None, information_tools=False):
+        self.information_tools = information_tools
         self.job = job.resolve(strict=True)
         if edit_limit is not None and (type(edit_limit) is not int or not 0 <= edit_limit <= MAX_VIEWS):
             raise ValueError('edit_limit must be an integer in [0, 24]')
@@ -459,7 +470,8 @@ class ImageTools:
                 self.edit_budget(consume=True)
             if self.calls > MAX_CALLS:
                 raise ValueError("image tool call budget exhausted")
-            spec = next((t for t in TOOLS if t["name"] == name), None)
+            available = TOOLS + ([INFORMATION_TOOL] if self.information_tools else [])
+            spec = next((t for t in available if t["name"] == name), None)
             if spec is None or not isinstance(args, dict) or set(args) != set(spec["inputSchema"]["required"]):
                 raise ValueError("unknown tool or invalid argument fields")
             if name == 'list_images':
@@ -468,7 +480,9 @@ class ImageTools:
                 image_id = args["image_id"]
                 if not isinstance(image_id, str) or image_id not in self.views:
                     raise ValueError("unknown image_id; use image_N or a returned view ID")
-                if cached is not None:
+                if name == 'observe_information':
+                    result = self._observe_information(args)
+                elif cached is not None:
                     result = dict(self.views[cached], reused=True,
                                   next_step='Inspect the attached saved image; no extra Read needed.')
                 else:
@@ -493,6 +507,40 @@ class ImageTools:
             temporary.write_text(json.dumps({'images': self.inspection_history(),
                 'tool_calls': self.calls, 'edit_budget': self.edit_budget()}, indent=2), encoding='utf-8')
             temporary.replace(inventory)
+
+    def _observe_information(self, args):
+        for field in ('information_need', 'success_check', 'on_insufficient'):
+            if not isinstance(args[field], str) or not args[field].strip() or len(args[field]) > 2000:
+                raise ValueError('information need and checks require bounded nonempty text')
+        method = args['method']
+        scale, angle = _number(args['scale']), _number(args['degrees_clockwise'])
+        if not 1 <= scale <= 8 or not -360 <= angle <= 360:
+            raise ValueError('invalid observation scale/rotation')
+        if method not in {'inspect_view', 'local_boundary', 'orientation'}:
+            raise ValueError('unknown information method')
+        if method == 'local_boundary':
+            box = args['box']; w, h = self.views[args['image_id']]['size']
+            if (not isinstance(box, list) or len(box) != 4 or any(type(x) is not int for x in box)
+                    or not (0 <= box[0] < box[2] <= w and 0 <= box[1] < box[3] <= h) or angle != 0):
+                raise ValueError('local boundary needs a valid source-pixel box and zero rotation')
+            _size(max(1, round((box[2]-box[0])*scale)), max(1, round((box[3]-box[1])*scale)))
+        elif args['box'] is not None or scale != 1 or (method == 'inspect_view' and angle != 0):
+            raise ValueError('view/orientation methods require null box and unit scale')
+        operations = (1 + int(scale != 1) if method == 'local_boundary' else
+                      int(angle != 0) if method == 'orientation' else 0)
+        budget = self.edit_budget()
+        if self.edit_limit is not None and operations > budget['remaining']:
+            raise ValueError('insufficient shared edit budget for information method')
+        current = dict(self.views[args['image_id']])
+        if method == 'local_boundary':
+            current = self.call('crop_image', {'image_id': current['image_id'], 'box': args['box']})
+            if scale != 1:
+                current = self.call('resize_image', {'image_id': current['image_id'], 'scale': scale})
+        elif method == 'orientation' and angle != 0:
+            current = self.call('rotate_image', {'image_id': current['image_id'], 'degrees_clockwise': angle})
+        return dict(current, information_request=args,
+                    information_status='AWAITING_MODEL_ASSESSMENT',
+                    assessment_instruction='Inspect returned pixels against success_check. A supported negative is valid. If insufficient, state the specific gap; choose a different useful observation or UNKNOWN. Never interpret missing visibility as absence. Host has not verified the semantic answer.')
 
     def _map_point(self, view, point):
         if not isinstance(point, list) or len(point) != 2:
@@ -610,11 +658,11 @@ def serve_stdio(tools):
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {"tools": TOOLS + ([INFORMATION_TOOL] if tools.information_tools else [])}
             elif method == "tools/call":
                 try:
                     value = tools.call(params.get("name"), params.get("arguments", {}))
-                    result = (tools.image_result(value) if params.get('name') in IMAGE_TOOLS else
+                    result = (tools.image_result(value) if params.get('name') in IMAGE_TOOLS | {'observe_information'} else
                               {"content": [{"type": "text", "text": json.dumps(value)}]})
                 except Exception as exc:
                     detail = str(exc)
@@ -640,6 +688,7 @@ def main(argv=None):
     parser.add_argument("--job", type=Path, required=True)
     parser.add_argument("--image-count", type=int, required=True)
     parser.add_argument('--edit-limit', type=int, default=None)
+    parser.add_argument('--information-tools', action='store_true')
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--read-hook", action="store_true")
     parser.add_argument("--audit-forward", action="store_true")
@@ -655,15 +704,15 @@ def main(argv=None):
     if args.orientation_hook:
         print(json.dumps(orientation_guard(args.job.resolve(strict=True), json.load(sys.stdin))), flush=True)
         return 0
-    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit)
+    tools = ImageTools(args.job, args.image_count, edit_limit=args.edit_limit, information_tools=args.information_tools)
     if args.prepare:
         config = {"mcpServers": {SERVER_NAME: {"type": "stdio", "command": sys.executable,
             "args": [str(Path(__file__).resolve()), "--job", str(tools.job),
-                     "--image-count", str(args.image_count)] +
+                     "--image-count", str(args.image_count)] + (['--information-tools'] if args.information_tools else []) +
                     (['--edit-limit', str(args.edit_limit)] if args.edit_limit is not None else [])}}}
         (tools.job / "image_tools.mcp.json").write_text(json.dumps(config), encoding="utf-8")
         (tools.job / "tool_list.json").write_text(json.dumps({"instructions": INSTRUCTIONS,
-            "tools": TOOLS, "images": list(tools.views.values()),
+            "tools": TOOLS + ([INFORMATION_TOOL] if args.information_tools else []), "images": list(tools.views.values()),
             "edit_budget": tools.edit_budget()}, indent=2), encoding="utf-8")
         hook_command = shlex.join([sys.executable, str(Path(__file__).resolve()),
             "--job", str(tools.job), "--image-count", str(args.image_count), "--read-hook"])
@@ -679,7 +728,7 @@ def main(argv=None):
             settings['hooks']['Stop'] = [{'hooks': [guard]}]
         (tools.job / "image_tools.settings.json").write_text(json.dumps(settings), encoding="utf-8")
         audit(tools.job, {"kind": "session", "tool": "image_tools_ready", "status": "ok",
-            "images": list(tools.views.values()), "tools": TOOLS, "settings": settings,
+            "images": list(tools.views.values()), "tools": TOOLS + ([INFORMATION_TOOL] if args.information_tools else []), "settings": settings,
             "edit_budget": tools.edit_budget(),
             "pillow_version": Image.__version__})
     else:

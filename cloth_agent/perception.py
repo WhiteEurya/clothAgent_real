@@ -9,6 +9,8 @@ needed in the execution path.
 
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 import json
 import math
 import subprocess
@@ -583,6 +585,7 @@ class RealSenseRGBD:
                 self.started = False
 
 
+@timed_stage('perception.capture_two_view_rgbd')
 def capture_two_view_rgbd(config: PerceptionConfig) -> list[RGBDFrame]:
     numpy = _require_numpy()
     active_labels = set(config.active_camera_labels)
@@ -3409,6 +3412,7 @@ class MolmoPointClient:
         self.project_root = project_root.resolve()
         self.config = config
 
+    @timed_stage('perception.MolmoPointClient.locate')
     def locate(self, image_paths: list[Path], output_path: Path, prompt: str) -> dict[str, Any]:
         if len(image_paths) not in {1, 2}:
             raise PerceptionError("cloth-center localization requires one or two images")
@@ -3882,6 +3886,7 @@ class ClothCenterPerception:
         # Compatibility only; dense AB fusion never launches Molmo.
         self.molmo = molmo_client
 
+    @timed_stage('perception.ClothCenterPerception.locate')
     def locate(
         self,
         output_dir: Path,

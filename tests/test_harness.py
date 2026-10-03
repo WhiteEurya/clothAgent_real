@@ -9,13 +9,14 @@ from pathlib import Path
 import shutil
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageColor, ImageDraw
 
 from cloth_agent.harness.collector import collect_run, collect_tool_trace
 from cloth_agent.harness.common import digest, read_json, write_json
 from cloth_agent.harness.compiler import compile_policy
 from cloth_agent.harness.executor import execute_policy, prepare_views, validate_observation
 from cloth_agent.harness.model import RuntimeClaude
+from cloth_agent.harness.knowledge import collect_knowledge
 from cloth_agent.harness.policy import INSPECTION_SCHEMA, PolicyError, freeze_policy, load_policy, validate_policy
 from cloth_agent.harness.__main__ import main, replay_policy
 from cloth_agent.image_tools_mcp import IDENTITY, image_content_summary, pixel_hash, transform_point
@@ -123,6 +124,100 @@ def test_merge_sort_dedupe_and_reuse(tmp_path):
         '2026-09-24T01:00:00Z', '2026-09-24T01:10:00Z', '2026-09-24T02:00:00Z']
     assert len(manifest['duplicates']) == 1
     assert manifest['counts']['replayable_decisions'] == 2
+
+
+def test_legacy_nonfinite_diagnostics_imported_with_audit(scene):
+    root, directory, _ = scene
+    path = directory / 'record.json'
+    record = read_json(path)
+    record['host_compilation'] = {'table_clearance_lower_z_mm': float('nan')}
+    record['evaluation']['missing_measurements'] = [float('inf'), -float('inf')]
+    original = json.dumps(record)
+    path.write_text(original)
+    manifest = collect_run(RUN, root)
+    assert manifest['counts']['replayable_decisions'] == 1
+    assert path.read_text() == original
+    issue = next(i for i in manifest['issues'] if i['code'] == 'legacy_nonfinite_normalized')
+    assert len(issue['replacements']) == 3
+    assert {r['original'] for r in issue['replacements']} == {'nan', 'inf', '-inf'}
+    assert manifest['decisions'][0]['post_decision']['evaluation']['missing_measurements'] == [None, None]
+    write_json(root / 'normalized_manifest.json', manifest)
+    with pytest.raises(ValueError):
+        digest({'still_strict': float('nan')})
+
+
+def test_nonfinite_candidate_geometry_still_blocks_replay(scene):
+    root, directory, _ = scene
+    path = directory / 'before_raw/camera_A_coordinate_guide.json'
+    guide = read_json(path)
+    guide['samples'][0]['pixel_xy'][0] = float('nan')
+    path.write_text(json.dumps(guide))
+    manifest = collect_run(RUN, root)
+    assert manifest['counts']['replayable_decisions'] == 0
+    assert any(i['code'] == 'invalid_candidate_coordinates' for i in manifest['decisions'][0]['issues'])
+
+
+def test_final_record_supersedes_partial_but_orphan_partial_survives(scene):
+    root, directory, _ = scene
+    record = read_json(directory / 'record.json')
+    record.pop('evaluation')
+    write_json(directory / 'partial_record.json', record)
+    manifest = collect_run(RUN, root)
+    assert manifest['counts']['iterations'] == 1
+    assert manifest['counts']['independent_visual_decisions'] == 1
+    assert len(manifest['duplicates']) == 1
+    assert manifest['decisions'][0]['post_decision']['evaluation']['status'] == 'SECRET_POST_FEEDBACK'
+    (directory / 'record.json').unlink()
+    assert collect_run(RUN, root)['counts']['independent_visual_decisions'] == 1
+
+
+def test_knowledge_snapshot_is_compiler_only(scene):
+    root, _, manifest = scene
+    write_json(root / 'data/fold_experience/rules.json', {
+        'schema_version': 1, 'rules': {'lesson': {'context': ['SECRET_PRIOR_CONTEXT'],
+        'evidence_count': {'support': 1}, 'confidence': .03}}, 'processed_trials': {}})
+    write_json(root / 'data/skills/approved.json', {'skills': [
+        {'name': 'custom-fold', 'purpose': 'SECRET_PRIOR_SKILL', 'guidance': 'Conditional guidance',
+         'version': 1, 'source': 'reviewed'}]})
+    knowledge = collect_knowledge(root)
+    response = {'policy': synthetic_policy(), 'evidence': [{
+        'decision_id': manifest['decisions'][0]['decision_id'], 'observed': 'Recorded trial',
+        'inferred': 'Conditional selection', 'unverified': 'Generalization'}]}
+    compiler = MockClaude([response])
+    audit = compile_policy(manifest, 'synthetic', root / 'distilled', compiler, knowledge=knowledge)
+    assert audit['status'] == 'FROZEN', audit
+    assert 'SECRET_PRIOR_CONTEXT' in compiler.requests[0]['prompt']
+    assert 'SECRET_PRIOR_SKILL' in compiler.requests[0]['prompt']
+    assert read_json(root / 'distilled/knowledge_snapshot.json') == knowledge
+    provenance = read_json(Path(audit['policy_path']).with_name('provenance.json'))
+    assert provenance['knowledge_hash'] == digest(knowledge)
+    frozen = load_policy(audit['policy_path'])
+    before = manifest['decisions'][0]['pre_decision']
+    replay = MockClaude([judgment(before['observation_id'])])
+    assert execute_policy(frozen, before, replay, root / 'replay')['status'] == 'READY'
+    assert 'SECRET_PRIOR' not in replay.requests[0]['prompt']
+    assert 'SECRET_PRIOR' not in json.dumps(frozen)
+
+
+def test_compilation_subset_is_explicit_and_audited(scene):
+    root, _, _ = scene
+    make_record(root, 'segment_c', 1, '2026-09-24T03:00:00Z')
+    manifest = collect_run(RUN, root)
+    selected, excluded = [d['decision_id'] for d in manifest['decisions']]
+    response = {'policy': synthetic_policy(), 'evidence': [{
+        'decision_id': selected, 'observed': 'Synthetic', 'inferred': 'Synthetic', 'unverified': 'Synthetic'}]}
+    model = MockClaude([response])
+    audit = compile_policy(manifest, 'synthetic', root / 'subset', model, decision_ids=[selected])
+    assert audit['status'] == 'FROZEN'
+    assert audit['selected_decision_ids'] == [selected]
+    assert audit['excluded_decision_ids'] == [excluded]
+    data = read_json(root / 'subset/compiler_iterations/001/input.json')
+    assert [t['decision_id'] for t in data['traces']] == [selected]
+    assert len(manifest['decisions']) == 2  # replay collection remains intact
+    invalid = MockClaude([])
+    audit = compile_policy(manifest, 'synthetic', root / 'invalid_subset', invalid, decision_ids=['unknown'])
+    assert audit['status'] == 'BLOCKED'
+    assert not invalid.calls
 
 
 def test_lineage_identity_noop_and_direct_image_return():
@@ -296,7 +391,7 @@ def test_missing_image_registry_and_wrong_observation(scene):
 
 def test_missing_run_experiment_writes_blocker_and_no_fake_policy(tmp_path):
     output = tmp_path / 'experiment'
-    rc = main(['experiment', '--run-id', RUN, '--project-root', str(tmp_path), '--output', str(output)])
+    rc = main(['experiment', '--scope', 'candidate-selection', '--run-id', RUN, '--project-root', str(tmp_path), '--output', str(output)])
     assert rc == 2
     report = read_json(output / 'report.json')
     assert report['compilation']['status'] == 'BLOCKED'
@@ -304,6 +399,31 @@ def test_missing_run_experiment_writes_blocker_and_no_fake_policy(tmp_path):
     assert report['policy_hash'] is None
     assert report['counts']['READY'] == 0
     assert not list(output.rglob('policy.json'))
+
+
+def test_existing_experiment_is_removed_before_restart(tmp_path):
+    output = tmp_path / 'experiment'
+    write_json(output / 'error.json', {'old': True})
+    write_json(output / 'policies/old/policy.json', {'stale': True})
+    sibling = tmp_path / 'other_experiment/keep.txt'
+    sibling.parent.mkdir()
+    sibling.write_text('keep')
+    assert main(['collect', '--run-id', RUN, '--project-root', str(tmp_path), '--output', str(output)]) == 2
+    assert not (output / 'error.json').exists()
+    assert not (output / 'policies').exists()
+    assert (output / 'manifest.json').is_file()
+    assert sibling.read_text() == 'keep'
+
+
+def test_restart_does_not_delete_project_or_input_policy(tmp_path):
+    output = tmp_path / 'experiment'
+    policy = output / 'policies/old/policy.json'
+    write_json(policy, {'keep': True})
+    write_json(output / 'error.json', {})
+    assert main(['collect', '--run-id', RUN, '--project-root', str(tmp_path), '--output', str(tmp_path)]) == 2
+    assert main(['replay', '--run-id', RUN, '--project-root', str(tmp_path),
+                 '--output', str(output), '--policy', str(policy)]) == 2
+    assert read_json(policy) == {'keep': True}
 
 
 def test_remote_direct_input_contains_images_and_no_tools(tmp_path, monkeypatch):
@@ -428,7 +548,7 @@ def test_complete_experiment_cli_with_mock_is_identified_as_synthetic(scene, mon
     model = MockClaude([compiled, judgment(before['observation_id'])])
     monkeypatch.setattr('cloth_agent.harness.__main__.RuntimeClaude', lambda **kwargs: model)
     output = root / 'synthetic_experiment'
-    assert main(['experiment', '--run-id', RUN, '--project-root', str(root), '--output', str(output)]) == 0
+    assert main(['experiment', '--scope', 'candidate-selection', '--run-id', RUN, '--project-root', str(root), '--output', str(output)]) == 0
     report = read_json(output / 'report.json')
     assert report['counts']['READY'] == 1
     assert report['compilation']['configuration']['backend'] == 'MOCK_TEST_ONLY'
@@ -456,6 +576,7 @@ def test_compile_missing_images_does_not_call_claude(scene):
     for item in manifest['decisions'][0]['pre_decision']['images']:
         item['status'] = 'MISSING'
         item['path'] = None
+    manifest['iterations'][0]['compiler_images'] = []
     model = MockClaude([])
     audit = compile_policy(manifest, 'synthetic', root / 'no_images', model)
     assert audit['status'] == 'BLOCKED'
@@ -613,3 +734,213 @@ def test_invalid_roi_is_rejected_even_on_ready(scene):
     assert result['status'] == 'NEEDS_LEARNING'
     assert result['reason'] == 'INVALID_DYNAMIC_ROI'
     assert result['selected_reference'] is None
+
+
+def incremental_response(request):
+    data = json.loads(request['prompt'].split('\nLEARNING DATA:\n', 1)[1])
+    policy = copy.deepcopy(data['previous_policy'] or synthetic_policy())
+    policy['applicability'] += ' Updated from current evidence.'
+    return {'policy': policy, 'evidence': [
+        {'decision_id': key, 'observed': 'Synthetic current observation',
+         'inferred': 'Conditional synthetic finding', 'unverified': 'Generalization unknown'}
+        for key in data['current_evidence_ids']]}
+
+
+def test_incremental_compilation_orders_iterations_and_carries_draft(tmp_path):
+    # Create out of order and make pixels different across iterations so the
+    # full dataset exceeds the budget although each iteration fits exactly.
+    for segment, when, reused, color in [
+        ('last', '2026-09-24T03:00:00Z', False, 'red'),
+        ('first', '2026-09-24T01:00:00Z', False, 'blue'),
+        ('middle', '2026-09-24T02:00:00Z', True, 'green'),
+    ]:
+        directory = make_record(tmp_path, segment, 1, when, reused=reused)
+        raw_path = directory / 'before_raw/camera_0_A.png'
+        with Image.open(raw_path) as raw:
+            raw.putpixel((0, 0), ImageColor.getrgb(color))
+            raw.save(raw_path)
+            upright = raw.rotate(-90, expand=True)
+            upright.save(directory / 'before_raw/camera_A_rgb_upright.png')
+            upright.putpixel((0, 0), (255, 0, 255))
+            upright.save(directory / 'before_raw/camera_A_rxxx_overlay_upright.png')
+    manifest = collect_run(RUN, tmp_path)
+    manifest['iterations'].reverse()  # compiler must sort, not trust input list order
+    manifest['decisions'].reverse()
+    model = MockClaude([incremental_response] * 3)
+    output = tmp_path / 'incremental'
+    audit = compile_policy(manifest, 'synthetic', output, model, max_images=2)
+    assert audit['status'] == 'FROZEN', audit
+    assert audit['completed_iterations'] == 3
+    assert [r['iteration_id'] for r in audit['iterations']] == ['first:1', 'middle:1', 'last:1']
+    assert all(len(r['images']) == 2 for r in model.requests)
+    for index, request in enumerate(model.requests, 1):
+        data = read_json(output / f'compiler_iterations/{index:03d}/input.json')
+        assert len(data['accumulated_evidence']) == index - 1
+        if index == 1:
+            assert data['previous_policy'] is None
+        else:
+            previous = read_json(output / f'compiler_iterations/{index-1:03d}/draft.json')
+            assert data['previous_policy'] == previous['policy']
+        for image in request['images']:
+            assert f"/{data['iteration_id'].split(':')[0]}/" in str(image)
+    middle = read_json(output / 'compiler_iterations/002/input.json')
+    assert middle['classification'] == 'REUSED'
+    assert middle['current_evidence_ids'] == ['iteration:middle:1']
+    provenance = read_json(Path(audit['policy_path']).with_name('provenance.json'))
+    assert len(provenance['evidence']) == 3
+    assert len(list(output.rglob('policy.json'))) == 1
+    assert load_policy(audit['policy_path'])['policy'] == read_json(output / 'compiler_iterations/003/draft.json')['policy']
+
+
+def test_incremental_failure_keeps_draft_without_freezing(scene):
+    root, _, _ = scene
+    make_record(root, 'later', 1, '2026-09-24T03:00:00Z')
+    manifest = collect_run(RUN, root)
+    def invalid(request):
+        result = incremental_response(request)
+        result['evidence'][0]['decision_id'] = 'future_or_unknown'
+        return result
+    model = MockClaude([incremental_response, invalid, invalid])
+    output = root / 'partial_scan'
+    audit = compile_policy(manifest, 'synthetic', output, model)
+    assert audit['status'] == 'FAILED'
+    assert audit['completed_iterations'] == 1
+    assert audit['policy_path'] is None
+    assert (output / 'compiler_iterations/001/draft.json').is_file()
+    assert not list(output.rglob('policy.json'))
+    assert len(model.requests) == 3
+
+
+def test_incremental_unknown_chronology_stops_before_model(scene):
+    root, _, manifest = scene
+    manifest['iterations'][0]['completed_at'] = None
+    model = MockClaude([])
+    audit = compile_policy(manifest, 'synthetic', root / 'unordered', model)
+    assert audit['status'] == 'BLOCKED'
+    assert 'chronology' in audit['error']
+    assert not model.calls
+
+
+def image_summary_response(request):
+    data = json.loads(request['prompt'].split('\nLEARNING DATA:\n', 1)[1])
+    assert data['scope'] == 'image-processing'
+    assert 'SECRET_HISTORIC_REASON' not in request['prompt']
+    assert 'SECRET_POST_FEEDBACK' not in request['prompt']
+    assert 'candidate_registry' not in request['prompt']
+    assert 'existing_knowledge' not in data
+    assert 'fixed_inspection_output_schema' not in data
+    previous = data['previous_policy']
+    policy = copy.deepcopy(previous) if previous else {
+        'schema_version': 1, 'scope': 'image_processing', 'applicability': '可见衣物的局部图像检查',
+        'rules': [], 'unresolved_questions': ['需要对照实验验证能否减少图像操作']}
+    policy['rules'] = [{
+        'id': 'local_detail', 'operation': 'crop_image', 'when': '全图细节不清楚',
+        'input_views': '同一原图及其标记图', 'procedure': '根据当前图像识别区域并同步裁剪',
+        'expected_visual_information': '更清晰的边界和缝线', 'stop_condition': '目标细节已可辨认',
+        'limitations': '裁剪不增加原始像素信息', 'evidence_ids': data['current_evidence_ids']}]
+    return {'updates': [{'action': 'SKIP' if previous else 'ADD', 'rule_id': 'local_detail',
+        'rule': None if previous else policy['rules'][0], 'conflict_id': None,
+        'reason': '相同经验复用' if previous else '首次提炼', 'evidence_ids': data['current_evidence_ids']}],
+        'evidence': [{'decision_id': key, 'observed': '调用过裁剪工具',
+        'inferred': '局部检查可能有用', 'unverified': '必要性未验证'} for key in data['current_evidence_ids']]}
+
+
+def test_image_processing_cli_default_only_summarizes(scene, monkeypatch):
+    root, _, _ = scene
+    model = MockClaude([image_summary_response])
+    monkeypatch.setattr('cloth_agent.harness.__main__.RuntimeClaude', lambda **kwargs: model)
+    def forbidden(*args, **kwargs):
+        pytest.fail('Image-only mode must not load skill libraries or run candidate replay')
+    monkeypatch.setattr('cloth_agent.harness.__main__.collect_knowledge', forbidden)
+    monkeypatch.setattr('cloth_agent.harness.__main__.replay_policy', forbidden)
+    output = root / 'image_summary'
+    assert main(['experiment', '--run-id', RUN, '--project-root', str(root), '--output', str(output)]) == 0
+    assert len(model.requests) == 1
+    result = read_json(output / 'image_processing_summary.json')
+    assert result['scope'] == 'image_processing'
+    assert result['executable'] is False
+    assert 'selected_reference' not in json.dumps(result)
+    assert (output / 'image_processing_summary.md').is_file()
+    assert read_json(output / 'report.json')['replay_performed'] is False
+    with pytest.raises(PolicyError):
+        load_policy(output / 'image_processing_summary.json')
+
+
+def test_image_processing_skips_reuse_and_passes_previous_summary(scene):
+    root, _, _ = scene
+    make_record(root, 'retry', 1, '2026-09-24T02:10:00Z', reused=True)
+    make_record(root, 'later', 1, '2026-09-24T02:20:00Z')
+    manifest = collect_run(RUN, root)
+    model = MockClaude([image_summary_response, image_summary_response])
+    out = root / 'scan_images'
+    audit = compile_policy(manifest, '总结图像处理', out, model, scope='image-processing',
+                           knowledge={'forbidden': 'SECRET_SKILL'})
+    assert audit['status'] == 'SUMMARIZED', audit
+    assert audit['completed_iterations'] == 3
+    assert audit['iterations'][1]['status'] == 'NO_NEW_IMAGE_TRACE'
+    assert len(model.requests) == 2
+    data = read_json(out / 'compiler_iterations/003/input.json')
+    assert data['previous_policy'] == read_json(out / 'compiler_iterations/001/draft.json')['policy']
+    assert len(data['accumulated_evidence']) == 1
+    assert not (out / 'knowledge_snapshot.json').exists()
+
+
+def test_image_summary_rejects_candidate_outputs_and_unknown_sources():
+    from cloth_agent.harness.image_processing import validate_image_summary
+    request = {'prompt': '\nLEARNING DATA:\n' + json.dumps({
+        'scope': 'image-processing', 'previous_policy': None, 'current_evidence_ids': ['current']})}
+    from cloth_agent.harness.image_processing import apply_image_updates
+    policy, _ = apply_image_updates(None, image_summary_response(request), {'current'}, {'current'})
+    assert validate_image_summary(policy, {'current'})
+    policy['rules'][0]['operation'] = 'return_decision'
+    with pytest.raises(PolicyError):
+        validate_image_summary(policy, {'current'})
+    policy['rules'][0]['operation'] = 'crop_image'
+    policy['rules'][0]['procedure'] = '选择 R005'
+    with pytest.raises(PolicyError):
+        validate_image_summary(policy, {'current'})
+    policy['rules'][0]['procedure'] = '查看细节'
+    with pytest.raises(PolicyError):
+        validate_image_summary(policy, {'other'})
+
+
+def test_image_updates_accumulate_and_defer_conflicts():
+    from cloth_agent.harness.image_processing import apply_image_updates
+    request = {'prompt': '\nLEARNING DATA:\n' + json.dumps({
+        'scope': 'image-processing', 'previous_policy': None, 'current_evidence_ids': ['first']})}
+    state, _ = apply_image_updates(None, image_summary_response(request), {'first'}, {'first'})
+    original = copy.deepcopy(state)
+    known = {'first', 'second', 'third', 'fourth'}
+
+    def update(state, action, ref, rule=None, conflict=None):
+        result = {'updates': [{'action': action, 'rule_id': 'local_detail', 'rule': rule,
+                  'conflict_id': conflict, 'reason': '根据当前证据更新', 'evidence_ids': [ref]}],
+                  'evidence': [{'decision_id': ref, 'observed': '局部边界可见',
+                                'inferred': '条件需要区分', 'unverified': '尚未验证必要性'}]}
+        return apply_image_updates(state, result, {ref}, known)[0]
+
+    state = update(state, 'SKIP', 'second')
+    assert len(state['rules']) == 1
+    assert state['rules'][0]['procedure'] == original['rules'][0]['procedure']
+    assert state['rules'][0]['evidence_ids'] == ['first', 'second']
+    merged = copy.deepcopy(state['rules'][0])
+    merged['limitations'] += '；细节已清晰时停止裁剪'
+    state = update(state, 'MERGE', 'second', merged)
+    alternative = copy.deepcopy(merged)
+    alternative['procedure'] = '先放大原图，再判断是否裁剪'
+    pending = update(state, 'CONFLICT', 'second', alternative, 'crop_order')
+    assert pending['rules'] == state['rules']
+    assert pending['conflicts'][0]['status'] == 'PENDING'
+    unchanged = update(pending, 'SKIP', 'third')
+    assert unchanged['conflicts'] == pending['conflicts']
+    snapshot = copy.deepcopy(pending)
+    with pytest.raises(PolicyError, match='Pending conflict'):
+        update(pending, 'MERGE', 'third', alternative)
+    with pytest.raises(PolicyError, match='later evidence'):
+        update(pending, 'RESOLVE', 'second', alternative, 'crop_order')
+    assert pending == snapshot
+    resolved = update(pending, 'RESOLVE', 'fourth', alternative, 'crop_order')
+    assert resolved['rules'][0]['procedure'] == alternative['procedure']
+    assert resolved['conflicts'][0]['status'] == 'RESOLVED'
+    assert resolved['conflicts'][0]['original_rule'] == state['rules'][0]
+    assert original['rules'][0]['evidence_ids'] == ['first']

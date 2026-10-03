@@ -34,7 +34,27 @@ def _read(path, issues):
         value = read_json(path)
         if not isinstance(value, dict):
             raise ValueError("Expected object")
-        return value
+        # Older robot logs use NaN for unavailable diagnostic measurements.
+        # Normalize only at the historical-input boundary; policy JSON and
+        # current geometry validation must remain strict.
+        replacements = []
+
+        def normalize(item, location):
+            if isinstance(item, dict):
+                return {key: normalize(child, location + [key]) for key, child in item.items()}
+            if isinstance(item, list):
+                return [normalize(child, location + [index]) for index, child in enumerate(item)]
+            if isinstance(item, float) and not math.isfinite(item):
+                replacements.append({"location": location, "original": str(item), "replacement": None})
+                return None
+            return item
+
+        normalized = normalize(value, [])
+        if replacements:
+            issues.append({"code": "legacy_nonfinite_normalized", "path": str(path),
+                           "replacements": replacements,
+                           "detail": "Unavailable historical values imported as null; source file unchanged."})
+        return normalized
     except (OSError, ValueError) as exc:
         issues.append({"code": "unreadable_json", "path": str(path), "detail": str(exc)})
         return {}
@@ -401,12 +421,23 @@ def collect_run(run_id, project_root, *, search_roots=()):
     collected, hashes, identities, duplicates, conflicting_paths = [], {}, {}, [], set()
     # Prefer original records with their adjacent evidence over review copies.
     for path in sorted(candidates, key=lambda p: (p.name != "record.json", str(p))):
-        data = _read(path, issues)
-        if "iteration" not in data:
-            continue
+        record_issues = []
+        data = _read(path, record_issues)
         summary_dir = next((p for p in path.parents if p in summaries), None)
+        if "iteration" not in data:
+            if run_id in path.parts or summary_dir:
+                issues.extend(record_issues)
+            continue
         if not (run_id in path.parts or summary_dir or _belongs(data, run_id)):
             continue
+        issues.extend(record_issues)
+        if path.name == "partial_record.json":
+            final_path = path.with_name("record.json")
+            final = _read(final_path, []) if final_path.is_file() else {}
+            if final.get("iteration") == data["iteration"]:
+                duplicates.append({"path": str(path), "duplicate_of": str(final_path),
+                                   "reason": "Final record supersedes the same iteration's partial snapshot"})
+                continue
         fingerprint = digest(data)
         if fingerprint in hashes:
             duplicates.append({"path": str(path), "duplicate_of": str(hashes[fingerprint])})
@@ -437,6 +468,17 @@ def collect_run(run_id, project_root, *, search_roots=()):
         iteration = {"iteration_id": f"{segment}:{data['iteration']}", "iteration": data["iteration"],
                      "segment": segment, "completed_at": data.get("completed_at"), "source": str(path),
                      "classification": kind, "reuse_evidence": data.get("height_retry") if reused else None}
+        # Compiler-only feedback for every iteration, including Z retries and
+        # interruptions without a new visual selection. Never sent to replay.
+        iteration["compiler_feedback"] = {key: data.get(key) for key in (
+            "status", "planned_step", "outcome", "evaluation", "failure_diagnosis",
+            "experience_update", "experience_generation", "height_retry")}
+        iteration["compiler_images"] = [
+            _image(raw, phase, path.parent, resolution_roots)
+            for field, phase in (("before_images", "iteration_before"), ("after_images", "iteration_after"))
+            for raw in data.get(field, [])
+            if Path(str(raw)).suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
         iterations.append(iteration)
         if fresh:
             for debug_dir in debug_dirs or [None]:

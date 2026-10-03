@@ -6,6 +6,8 @@ heights, never measured XYZ. Remote MCP exposes only RGB inspection tools.
 """
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 import json
 import hashlib
 import math
@@ -175,6 +177,7 @@ MOTION_SCHEMA = {
 }
 
 
+@timed_stage('remote_fold.compile_pixel_motion')
 def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size):
     """Convert explicitly proposed waypoints, without adding/defaulting actions."""
     if not isinstance(payload, dict) or set(payload) != {"actions", "requires_lift_checkpoint", "contact_descent_mm"}:
@@ -273,17 +276,23 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
 class RemoteFoldClient(ClaudeAutoClient):
     """Use the parent's local selection/reselection gates with remote model stages."""
 
-    def __init__(self, *, backend: RemoteClaudeBackend, **kwargs):
+    def __init__(self, *, backend: RemoteClaudeBackend, observation_skill_path=None, **kwargs):
         kwargs["persistent_session"] = None  # Company CLI calls are stateless.
         super().__init__(**kwargs)
         self.backend = backend
         self._remote_context: dict[str, Any] | None = None
         self._remote_images: list[Path] = []
         self.diagnostics_dir: Path | None = None
+        self.observation_skill = None
+        if observation_skill_path is not None:
+            from .visual_skill_observation import load_observation_skill
+            self.observation_skill = load_observation_skill(observation_skill_path)
 
+    @timed_stage('remote_fold.RemoteFoldClient.prepare_molmo_view')
     def prepare_molmo_view(self, canonical_image: Path, output: Path):
         return prepare_molmo_view(self.backend, canonical_image, output, timeout_s=self.timeout_s)
 
+    @timed_stage('remote_fold.RemoteFoldClient.plan')
     def plan(self, image_paths, session, objective, feedback=None, history=None,
              phase_callback=None, reference_policy="uniform", workspace_recovery=None):
         objective += '\n' + CLAUDE_FOLD_RULE
@@ -376,7 +385,8 @@ class RemoteFoldClient(ClaudeAutoClient):
             (self._call_diagnostics / "reference_prevalidation.json").write_text(
                 json.dumps(self.last_reference_candidate_report, indent=2), encoding="utf-8")
 
-    def _ask(self, stage, context, schema, images, root, instructions):
+    @timed_stage('remote_fold.RemoteFoldClient._ask')
+    def _ask(self, stage, context, schema, images, root, instructions, *, image_edit_limit=None):
         evaluation_stage = stage in {'evaluation', 'acquisition_evaluation', 'experience_update'}
         instructions = instructions.replace('with [u,v] in the CURRENT upright RGB for transport destinations.',
             'with image_id naming the exact source RGB/view and pixel_xy in that view; the host maps transport destinations.')
@@ -407,7 +417,8 @@ class RemoteFoldClient(ClaudeAutoClient):
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema, context_files=files,
                 usage_run_dir=root, usage_stage=stage,
                 debug_dir=image_debug,
-                image_edit_limit=2 if evaluation_stage else 6,
+                information_tools=(stage == 'visual_planning' and self.observation_skill is not None),
+                image_edit_limit=(2 if evaluation_stage else 6) if image_edit_limit is None else image_edit_limit,
                 max_turns=8 if evaluation_stage else None,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
                 system_prompt="You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
@@ -434,6 +445,7 @@ class RemoteFoldClient(ClaudeAutoClient):
                 "status": "COMPLETED", "response": payload}, indent=2), encoding="utf-8")
         return payload, result, prompt, time.monotonic() - started
 
+    @timed_stage('remote_fold.RemoteFoldClient._visual_plan')
     def _visual_plan(self, image_paths, base_prompt, run_dir):
         if self._remote_context is None:
             raise ExplorationPlanningError("remote visual stage has no current request")
@@ -444,15 +456,22 @@ class RemoteFoldClient(ClaudeAutoClient):
             "locally_executable_reference_ids": (self.last_reference_candidate_report or {}).get("executable_reference_ids"),
             "rejected_references": [{"camera": r["camera"], "reference_id": r["reference_id"]}
                                     for r in self.last_rejected_visual_references]}
+        instructions = "Select one visible Camera-A Rxxx marker for the exact current task. The current RGB and marker overlay are rotated clockwise90 upright; left/right refer to that displayed image, not anatomy. Flat reference images are topology references only. If fold_state_reference is present, its source/target images are static cross-garment visual examples of the requested state transition. Use them only for semantic fold geometry and the desired target state; never copy their pixels, scale, grasp points, depth, XYZ, or robot coordinates. All executable points must come from the current Camera-A RGB and current Rxxx overlay. Do not choose an already rejected marker. Describe your motion strategy and expected physical evidence. Do not output XYZ or actions."
+        images, edit_budget = self._remote_images, 6
+        if self.observation_skill is not None:
+            from .visual_skill_observation import inline_observation_policy
+            # Same original model call and tool budget as the control arm.
+            # Host image tools return pixels into this ongoing conversation.
+            instructions += '\n' + inline_observation_policy(self.observation_skill)
         payload, result, prompt, duration = self._ask("visual_planning", context,
-            VISUAL_PLAN_JSON_SCHEMA, self._remote_images, run_dir,
-            "Select one visible Camera-A Rxxx marker for the exact current task. The current RGB and marker overlay are rotated clockwise90 upright; left/right refer to that displayed image, not anatomy. Flat reference images are topology references only. If fold_state_reference is present, its source/target images are static cross-garment visual examples of the requested state transition. Use them only for semantic fold geometry and the desired target state; never copy their pixels, scale, grasp points, depth, XYZ, or robot coordinates. All executable points must come from the current Camera-A RGB and current Rxxx overlay. Do not choose an already rejected marker. Describe your motion strategy and expected physical evidence. Do not output XYZ or actions.")
+            VISUAL_PLAN_JSON_SCHEMA, images, run_dir, instructions, image_edit_limit=edit_budget)
         decision = validate_visual_plan_payload(payload, allowed_skill_names=self.skill_names)
         record = ClaudeVisualPlanResult(prompt, result.command, result.returncode,
             result.stdout, result.stderr, _now(), duration, decision)
         self._save_visual_log(run_dir, record.as_dict())
         return record
 
+    @timed_stage('remote_fold.RemoteFoldClient._ground_final_plan')
     def _ground_final_plan(self, visual, session, objective, history=None, workspace_recovery=None):
         self.last_plan_result = None
         self.last_grounding_verification = None
@@ -563,6 +582,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             rollout_evidence_images=rollout_evidence_images, observer_images=observer_images,
             acquisition=True, skill_guidance=skill_guidance)
 
+    @timed_stage('remote_fold.RemoteFoldClient._evaluate_remote')
     def _evaluate_remote(self, before_images, after_images, *, proposal, run_dir,
             objective=None, rollout_recording_dir=None, rollout_evidence_images=(),
             observer_images=(), acquisition=False, skill_guidance=None, perception_comparison=False):

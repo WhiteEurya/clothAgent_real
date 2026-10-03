@@ -69,6 +69,8 @@ def write_report(output, manifest, compilation, rows, *, policy_hash=None):
         lines.append(f"| {row['decision_id']} | {metric.get('claude_calls')} | {metric.get('host_image_ops')} | {row.get('historical_metrics', {}).get('visible_tool_round_trips')} | {metric.get('visible_tool_round_trips')} | {reason} |")
     lines += ["", f"Fallback ratio: {report['fallback_ratio']}; skip ratio: {report['skip_ratio']}; ready coverage: {report['ready_coverage']}."]
     if compilation:
+        if compilation.get("mode") == "sequential_iterations":
+            lines += [f"Sequential compilation: {compilation.get('completed_iterations', 0)}/{compilation.get('total_iterations', 0)} iterations completed."]
         lines += [f"Compilation backend invoked: {compilation.get('compilation_backend_invoked')}; response received: {compilation.get('compilation_response_received')}.",
                   f"Compilation elapsed seconds: {compilation.get('compilation_seconds')}; calls: {compilation.get('claude_call_count')}.",
                   f"Model configuration: {compilation.get('configuration')}."]

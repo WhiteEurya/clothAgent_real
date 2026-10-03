@@ -6,6 +6,8 @@ only the small orchestration command and Claude's structured response.
 
 from __future__ import annotations
 
+from .pipeline_timing import active_timing, timed_stage
+
 import json
 import base64
 import hashlib
@@ -103,6 +105,7 @@ class LocalClaudeBackend:
         self.binary = binary
         self.timeout_s = int(timeout_s)
 
+    @timed_stage('planner_backend.LocalClaudeBackend.invoke')
     def invoke(self, *, prompt: str, command: list[str], cwd: Path,
                input_data: str | None = None, usage_stage: str = "planning") -> BackendResult:
         try:
@@ -144,6 +147,7 @@ class RemoteClaudeBackend:
         curl_binary: str = "curl",
         image_tools: bool = True,
         max_turns: int = 16,
+        record_event_timing: bool = False,
     ):
         self.ssh_host = ssh_host
         self.upload_url = upload_url.rstrip("/") if upload_url else None
@@ -153,6 +157,7 @@ class RemoteClaudeBackend:
         self.ssh_binary = ssh_binary
         self.curl_binary = curl_binary
         self.image_tools = bool(image_tools)
+        self.record_event_timing = bool(record_event_timing)
         if type(max_turns) is not int or max_turns < 1:
             raise ValueError('max_turns must be a positive integer')
         self.max_turns = max_turns
@@ -305,6 +310,7 @@ class RemoteClaudeBackend:
             raise PlannerBackendError("HTTPS upload returned an invalid file ID")
         return f"{self.download_base_url}/{file_id}/download"
 
+    @timed_stage('planner_backend.RemoteClaudeBackend.invoke')
     def invoke(self, *, prompt: str, image_paths: Iterable[Path],
                schema: dict[str, Any], system_prompt: str,
                timeout_s: int | None = None, debug_dir: Path | None = None,
@@ -312,7 +318,14 @@ class RemoteClaudeBackend:
                overall_timeout_s: float | None = None,
                orientation_correction: bool = False, context_files: dict | None = None,
                usage_run_dir: Path | None = None, usage_stage: str = "remote_planning",
-               direct_images: bool = False, model: str | None = None) -> BackendResult:
+               direct_images: bool = False, model: str | None = None,
+               information_tools: bool = False) -> BackendResult:
+        self._information_tools = bool(information_tools)
+        timing = active_timing()
+        if timing is not None and timing.semantic_phases:
+            from .semantic_timing import PLANNING_CALLS, diagnostic_instructions
+            if usage_stage in PLANNING_CALLS:
+                system_prompt += '\n\n' + diagnostic_instructions()
         self._direct_images = bool(direct_images)
         self._model = model
         if direct_images and (context_files or orientation_correction):
@@ -423,6 +436,8 @@ class RemoteClaudeBackend:
         quoted_job = shlex.quote(job)
         limit = getattr(self, '_image_edit_limit', None)
         budget_flag = f' --edit-limit {limit}' if limit is not None else ''
+        if getattr(self, '_information_tools', False):
+            budget_flag += ' --information-tools'
         correction_flag = ' --orientation-correction' if getattr(self, '_orientation_correction', False) else ''
         setup = (
             'cloth_image_python=${CLOTH_REMOTE_IMAGE_PYTHON:-python3}; '
@@ -432,7 +447,9 @@ class RemoteClaudeBackend:
         )
         allowed = TOOL_NAMES if limit != 0 else tuple(t for t in TOOL_NAMES
             if not t.endswith(('__crop_image', '__rotate_image', '__resize_image')))
-        flags = (f"--allowedTools {shlex.quote(','.join(('Read', *allowed)))} --tools Read "
+        if getattr(self, '_information_tools', False):
+            allowed = (*allowed, 'mcp__cloth_image__observe_information')
+        flags = (f"--allowedTools {shlex.quote(','.join(('Read', 'StructuredOutput', *allowed)))} --tools Read "
                  f"--mcp-config {quoted_job}/image_tools.mcp.json --strict-mcp-config "
                  f"--settings {quoted_job}/image_tools.settings.json "
                  "--disable-slash-commands ")
@@ -614,6 +631,7 @@ class RemoteClaudeBackend:
                f'--image-count {len(images)} < /dev/null & cloth_audit_pid=$!; ' if self.image_tools and not self._direct_images else "") +
             "cloth_stage=claude; cloth_begin=$(date +%s%N); "
             f'"${{cloth_image_python:-python3}}" -c {shlex.quote(output_wrapper)} '
+            + ('--record-event-timing ' if self.record_event_timing or active_timing() is not None else '') +
             f'{f"--direct-images {len(images)} " if self._direct_images else "--context-envelope " if self._context_files else ""}'
             f"timeout {call_timeout}s claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk "
             f"{tool_flags}--no-session-persistence --max-turns {self._call_max_turns} "
@@ -633,6 +651,17 @@ class RemoteClaudeBackend:
         )
         if self._direct_images:
             remote_prompt = prompt + "\nRGB images are attached directly as image_0, image_1, etc. No tools or file reads. Return the requested JSON."
+        # Also expose the contract as ordinary prompt text. Some CLI/provider
+        # sessions return textual JSON despite --json-schema; they must still
+        # know the exact fields/enums. Local validators remain authoritative.
+        remote_prompt += (
+            '\nExact final JSON schema (all required fields and enums apply):\n'
+            + json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
+            + '\nUse StructuredOutput if it is available. If it is unavailable, return only '
+              'one JSON object satisfying this same schema. Do not search for missing tools '
+              'with ToolSearch; call only tools exposed in this session. Do not substitute '
+              'field names, enum values, or action structures.'
+        )
         transport_input = remote_prompt
         if self._context_files:
             remote_prompt += f"\nContext directory: {job}/context. Read manifest.json first; select relevant files yourself using Read with offset/limit for long files. Do not read all files by default."

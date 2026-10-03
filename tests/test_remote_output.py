@@ -68,3 +68,21 @@ def test_context_files_do_not_enter_initial_model_prompt(tmp_path):
         input=json.dumps(envelope), cwd=tmp_path, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['result'] == 'ok'
+
+
+def test_opt_in_timing_preserves_input_terminal_and_remote_intervals(tmp_path):
+    script = tmp_path / 'model.py'
+    script.write_text("import sys,json,time\nassert sys.stdin.read()=='original prompt'\n"
+                      "print(json.dumps({'type':'system','subtype':'init'}),flush=True)\n"
+                      "time.sleep(0.12)\n"
+                      "print(json.dumps({'type':'assistant','message':{'content':[]}}),flush=True)\n"
+                      "print(json.dumps({'type':'result','result':'ok'}),flush=True)\n")
+    result = subprocess.run([sys.executable,str(WRAPPER),'--record-event-timing','--context-envelope',
+                             sys.executable,str(script)],cwd=tmp_path,capture_output=True,text=True,
+                            input=json.dumps({'prompt':'original prompt','files':{}}))
+    assert result.returncode == 0,result.stderr
+    rows=[json.loads(s) for s in result.stdout.splitlines()]
+    assert rows[1]['_cloth_timing']['elapsed_s']-rows[0]['_cloth_timing']['elapsed_s'] >= .10
+    assert rows[-1] == {'type':'result','result':'ok'}
+    assert '__CLOTH_PROFILE__' in result.stderr
+    assert '_cloth_timing' not in (tmp_path/'claude_raw.jsonl').read_text()

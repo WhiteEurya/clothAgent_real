@@ -16,6 +16,8 @@ an in-progress physical command.
 
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 import argparse
 import json
 import math
@@ -2146,6 +2148,7 @@ class ClaudeAutoClient:
         finally:
             (output_dir / "invocation.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    @timed_stage('auto_exploration.ClaudeAutoClient.update_experience')
     def update_experience(self, *, context, image_paths, run_dir, output_dir):
         """Independent, read-only post-policy analysis for the local backend."""
         from .fold_experience_learning import EXPERIENCE_INSTRUCTION, EXPERIENCE_UPDATE_SCHEMA
@@ -2191,6 +2194,7 @@ class ClaudeAutoClient:
             raise ExplorationPlanningError("at least one garment image is required")
         return safe
 
+    @timed_stage('auto_exploration.ClaudeAutoClient._visual_plan')
     def _visual_plan(
         self,
         image_paths: Sequence[Path],
@@ -2684,6 +2688,7 @@ class ClaudeAutoClient:
             "rejected": rejected,
         }
 
+    @timed_stage('auto_exploration.ClaudeAutoClient._ground_final_plan')
     def _ground_final_plan(
         self,
         visual: VisualPlanDecision,
@@ -3087,6 +3092,7 @@ class ClaudeAutoClient:
         }
         return response.proposal
 
+    @timed_stage('auto_exploration.ClaudeAutoClient.plan')
     def plan(
         self,
         image_paths: list[Path],
@@ -3492,6 +3498,7 @@ class ClaudeAutoClient:
         self.last_plan_result = response
         return response.proposal
 
+    @timed_stage('auto_exploration.ClaudeAutoClient.evaluate')
     def evaluate(
         self,
         before_images: list[Path],
@@ -3899,6 +3906,7 @@ class ClaudeAutoClient:
         self._save_evaluation_log(root, result.as_dict())
         return evaluation
 
+    @timed_stage('auto_exploration.ClaudeAutoClient.evaluate_acquisition_probe')
     def evaluate_acquisition_probe(
         self,
         before_images: Sequence[Path],
@@ -4445,6 +4453,7 @@ def _video_contact_sheet(
     }
 
 
+@timed_stage('auto_exploration.prepare_rollout_video_evidence')
 def prepare_rollout_video_evidence(
     recording_dir: Path,
     *, execution: Mapping[str, Any] | None = None,

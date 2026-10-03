@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 import json
 import shutil
 from dataclasses import asdict
@@ -58,6 +60,7 @@ def _now() -> str:
 class AgentSession:
     """Small, explicit loop: inspect -> ask Claude -> preflight -> execute -> reflect."""
 
+    @timed_stage('session.AgentSession.__init__')
     def __init__(self, project_root: Path, run_dir: Path, robot_config: RobotConfig, experiment_config: ExperimentConfig, claude: ClaudeCodeClient | None = None):
         self.project_root = project_root.resolve()
         self.run_dir = run_dir.resolve()
@@ -302,6 +305,7 @@ class AgentSession:
         )
         return result
 
+    @timed_stage('session.AgentSession.locate_cloth_center')
     def locate_cloth_center(
         self,
         config: PerceptionConfig,
@@ -461,6 +465,7 @@ class AgentSession:
             )
         return result
 
+    @timed_stage('session.AgentSession.run_experiment')
     def run_experiment(
         self,
         path: str | Path,
@@ -542,6 +547,7 @@ class AgentSession:
                         encoding="utf-8",
                     )
 
+    @timed_stage('session.AgentSession.run_checkpointed_experiment')
     def run_checkpointed_experiment(
         self,
         path: str | Path,
@@ -628,6 +634,7 @@ class AgentSession:
                         encoding="utf-8",
                     )
 
+    @timed_stage('session.AgentSession._attempt_pre_run_home')
     def _attempt_pre_run_home(self, *, notes: str) -> dict[str, Any]:
         """Attempt the Home required between perception and physical execution."""
 
@@ -682,6 +689,7 @@ class AgentSession:
             raise interrupted
         return outcome
 
+    @timed_stage('session.AgentSession._attempt_return_home')
     def _attempt_return_home(self, *, notes: str) -> dict[str, Any]:
         """Attempt isolated Home unless gripper completion requires inspection."""
         if getattr(self.runner, 'operator_interrupted', False):

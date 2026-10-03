@@ -38,9 +38,12 @@ class RuntimeClaude:
     """No caching or repair here. Compiler/executor own their finite budgets."""
 
     def __init__(self, *, backend="local", binary="claude", ssh_host="company-planner",
-                 model=None, timeout_s=120):
+                 model=None, timeout_s=120, max_turns=4):
         self.backend_kind, self.binary, self.ssh_host = backend, binary, ssh_host
         self.model, self.timeout_s = model, timeout_s
+        if type(max_turns) is not int or not 2 <= max_turns <= 6:
+            raise ValueError("Structured output turn budget must be between two and six")
+        self.max_turns = max_turns
         if backend not in {"local", "remote"}:
             raise ValueError("backend must be local or remote")
         self.calls = []
@@ -49,7 +52,7 @@ class RuntimeClaude:
     def configuration(self):
         return {"backend": self.backend_kind, "binary": self.binary, "ssh_host": self.ssh_host if self.backend_kind == "remote" else None,
                 "requested_model": self.model or "CLI configured default", "timeout_s": self.timeout_s,
-                "tools": [], "max_turns": 2, "image_delivery": "base64 stream-json input", "cache_replay": False,
+                "tools": [], "max_turns": self.max_turns, "image_delivery": "base64 stream-json input", "cache_replay": False,
                 "customizations": "safe-mode; no CLAUDE.md, skills, hooks, plugins or memory"}
 
     def invoke(self, *, prompt, schema, images, output, stage, timeout_s=None):
@@ -89,7 +92,7 @@ class RuntimeClaude:
                 command = [binary, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                            "--tools", "", "--allowedTools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                            "--permission-mode", "dontAsk", "--safe-mode", "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
-                           "--settings", '{"disableAllHooks":true}', "--setting-sources", "user", "--max-turns", "2",
+                           "--settings", '{"disableAllHooks":true}', "--setting-sources", "user", "--max-turns", str(self.max_turns),
                            "--system-prompt", SYSTEM, "--json-schema", json.dumps(schema, separators=(",", ":"))]
                 if self.model:
                     command.extend(["--model", self.model])
@@ -104,7 +107,7 @@ class RuntimeClaude:
                 backend = RemoteClaudeBackend(ssh_host=self.ssh_host, timeout_s=max(1, int(seconds)), image_tools=False)
                 audit["backend_invoked"] = True
                 result = backend.invoke(prompt=prompt, image_paths=paths, schema=schema, system_prompt=SYSTEM,
-                                        direct_images=True, model=self.model, max_turns=2, overall_timeout_s=seconds,
+                                        direct_images=True, model=self.model, max_turns=self.max_turns, overall_timeout_s=seconds,
                                         debug_dir=directory / "transport", usage_run_dir=directory, usage_stage=stage)
             audit["response_received"] = True
             (directory / "stdout.jsonl").write_text(result.stdout)

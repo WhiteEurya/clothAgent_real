@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import math
@@ -408,6 +410,7 @@ def _controller_trajectory_with_arm(
     )
 
 
+@timed_stage('robot_api.validate_controller_trajectory')
 def validate_controller_trajectory(
     config: RobotConfig,
     actions: list[dict[str, Any]],
@@ -816,6 +819,7 @@ class XArmBackend:
             self.arm.disconnect()
 
 
+@timed_stage('robot_api.move_robot_to_perception_position')
 def move_robot_to_perception_position(
     config: RobotConfig,
     *,
@@ -900,6 +904,7 @@ class RobotAPI:
             record.gripper_result = {'completion': exc.gripper_completion}
         self.halted = True
 
+    @timed_stage('robot_api.RobotAPI.move')
     def move(self, x: float, y: float, z: float, yaw: float) -> None:
         record = self._begin("move", {"x": float(x), "y": float(y), "z": float(z), "yaw": float(yaw)})
         try:
@@ -915,6 +920,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
+    @timed_stage('robot_api.RobotAPI.open_gripper')
     def open_gripper(self) -> None:
         record = self._begin("open_gripper", {})
         try:
@@ -924,6 +930,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
+    @timed_stage('robot_api.RobotAPI.close_gripper')
     def close_gripper(self) -> None:
         record = self._begin("close_gripper", {})
         try:
@@ -933,6 +940,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
+    @timed_stage('robot_api.RobotAPI.shake')
     def shake(self) -> None:
         record = self._begin("shake", {})
         try:
@@ -941,6 +949,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
+    @timed_stage('robot_api.RobotAPI.shake_open')
     def shake_open(self) -> None:
         record = self._begin("shake_open", {})
         try:
@@ -949,6 +958,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
+    @timed_stage('robot_api.RobotAPI.home')
     def home(self) -> None:
         record = self._begin("home", {})
         try:

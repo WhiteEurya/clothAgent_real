@@ -38,6 +38,8 @@ compiler is available only with ``--host-compile-acquisition-probe``.
 
 from __future__ import annotations
 
+from .pipeline_timing import PipelineTiming, timed_stage
+
 import argparse
 import errno
 import itertools
@@ -1508,6 +1510,7 @@ def _condition_after_action(
     return current
 
 
+@timed_stage('fold_exploration_pipeline._write_fold_evidence_package')
 def _write_fold_evidence_package(
     iteration_dir: Path,
     *,
@@ -1968,6 +1971,7 @@ def _normalize_supervisor_current_step(payload: Mapping[str, Any]) -> dict[str, 
     return result
 
 
+@timed_stage('fold_exploration_pipeline.assess_screen_visibility')
 def assess_screen_visibility(
     perception: Mapping[str, Any],
     perception_path: Path,
@@ -2266,6 +2270,7 @@ def _clockwise90_pixel(
     return float(raw_height - 1 - y_px), float(x_px)
 
 
+@timed_stage('fold_exploration_pipeline._build_upright_camera_a_planning_images')
 def _build_upright_camera_a_planning_images(
     result: Mapping[str, Any],
     result_path: Path,
@@ -2708,6 +2713,7 @@ class FoldSupervisor:
             "files": dict(manifest["files"]),
         }
 
+    @timed_stage('fold_exploration_pipeline.FoldSupervisor.inspect')
     def inspect(
         self,
         images: Sequence[Path],
@@ -2860,6 +2866,7 @@ class FoldSupervisor:
 class FoldExplorationPipeline:
     """Five-step closed-loop fold experiment with video-backed evaluation."""
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline.__init__')
     def __init__(
         self,
         session: AgentSession,
@@ -2874,6 +2881,8 @@ class FoldExplorationPipeline:
         max_iterations: int | None = None,
         real: bool = False,
         confirm_real: bool = False,
+        stop_after_plan: bool = False,
+        observation_skill_path: Path | None = None,
         record_video: bool = True,
         prune_evaluated_video: bool = False,
         recording_native: bool = True,
@@ -2914,6 +2923,8 @@ class FoldExplorationPipeline:
             raise ValueError("planner_backend must be local or remote")
         self.planner_backend = planner_backend
         self.remote_planner_host = remote_planner_host
+        if observation_skill_path is not None and planner_backend != 'remote':
+            raise ValueError('observation skills require the remote planner')
         self.claude_timeout_s = int(claude_timeout_s)
         # Final grounding is a separate Claude turn, but it must not have a
         # smaller hidden ceiling than the user-configured Claude timeout.  A
@@ -2929,6 +2940,7 @@ class FoldExplorationPipeline:
         self.max_iterations = max_iterations
         self.real = bool(real)
         self.confirm_real = bool(confirm_real)
+        self.stop_after_plan = bool(stop_after_plan)
         self.record_video = bool(record_video)
         self.prune_evaluated_video = bool(prune_evaluated_video)
         self.recording_native = bool(recording_native)
@@ -2999,6 +3011,8 @@ class FoldExplorationPipeline:
         client_type = RemoteFoldClient if planner_backend == "remote" else ClaudeAutoClient
         backend_options = ({"backend": RemoteClaudeBackend(ssh_host=remote_planner_host,
                             timeout_s=self.claude_timeout_s)} if planner_backend == "remote" else {})
+        if observation_skill_path is not None:
+            backend_options['observation_skill_path'] = observation_skill_path
         self.client = client_type(
             binary=claude_binary,
             timeout_s=self.claude_timeout_s,
@@ -3043,6 +3057,7 @@ class FoldExplorationPipeline:
         # update conditional experience, not provisional skill templates.
         return self.skill_store.prompt()
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._update_fold_experience')
     def _update_fold_experience(self, iteration_dir: Path, record: dict[str, Any]) -> None:
         evaluation = record.get("evaluation") or {}
         # Even skipped/failed reflection preserves the three geometry layers and
@@ -3109,6 +3124,7 @@ class FoldExplorationPipeline:
             _write_json(directory / "error.json", record["experience_generation"])
             self._debug_exception("experience", exc, iteration=record["iteration"], nonfatal=True)
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._save_iteration_learning')
     def _save_iteration_learning(self, iteration_dir: Path, record: dict[str, Any]) -> None:
         record.setdefault("record_id", str(iteration_dir.resolve()))
         record.setdefault("completed_at", _now())
@@ -3174,6 +3190,11 @@ class FoldExplorationPipeline:
                 record["execution"] = json.loads(result_path.read_text(encoding="utf-8"))
         record.update(status="INTERRUPTED" if isinstance(exc, KeyboardInterrupt) else "FAILED",
                       error=f"{type(exc).__name__}: {exc}", failed_stage=self._last_operational_stage)
+        if getattr(self, 'stop_after_plan', False):
+            record.update(stop_after_plan=True, manipulation_executed=False,
+                          experience_update='NOT_RUN')
+            _write_json(iteration_dir / 'planning_only_failure.json', record)
+            return record
         if "evaluation" not in record:
             record["evaluation"] = checkpoint_evaluation((record.get("execution") or {}).get("checkpoint") or {})
         if not (record.get("execution") or {}).get("checkpoint"):
@@ -3747,6 +3768,7 @@ class FoldExplorationPipeline:
             source=str(output),
         )
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._capture_observer_rgb')
     def _capture_observer_rgb(self, output_dir: Path) -> Path | None:
         """Capture one optional uncalibrated observer RGB frame.
 
@@ -3799,6 +3821,7 @@ class FoldExplorationPipeline:
         )
         return image
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._prepare_garment_frame')
     def _prepare_garment_frame(self, output_dir: Path, upright_rgb: Path) -> None:
         """Produce optional Molmo evidence; semantic uncertainty is for Claude."""
         views = self.session.workspace / 'perception_views'
@@ -3835,6 +3858,7 @@ class FoldExplorationPipeline:
         image.save(hint_path)
         _write_json(output_dir / 'molmo_frame_hint.json', status)
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._measure_molmo_frame')
     def _measure_molmo_frame(self, output_dir: Path, upright_rgb: Path) -> None:
         """Query Molmo for a tentative axis without assigning decision authority."""
         views = self.session.workspace / 'perception_views'
@@ -3880,6 +3904,7 @@ class FoldExplorationPipeline:
                     frame=frame, duration_s=round(time.monotonic()-started, 3),
                     overlay=str(output_dir / 'camera_A_garment_frame.png'))
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._capture')
     def _capture(self, config: PerceptionConfig, output_dir: Path, *, reuse: bool) -> tuple[dict[str, Any], Path, list[Path]]:
         started = time.monotonic()
         self._debug("perception", "capture started", reuse=reuse, output_dir=str(output_dir))
@@ -3960,6 +3985,7 @@ class FoldExplorationPipeline:
         )
         return saved, saved_path, images
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._capture_with_retries')
     def _capture_with_retries(
         self,
         config: PerceptionConfig,
@@ -4050,6 +4076,7 @@ class FoldExplorationPipeline:
             return True
         return False
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._execute')
     def _execute(
         self,
         source_path: Path,
@@ -4061,6 +4088,8 @@ class FoldExplorationPipeline:
         grasp_capture: Mapping[str, Any] | None = None,
         acquisition_probe: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if getattr(self, 'stop_after_plan', False):
+            raise PermissionError('stop-after-plan prohibits all generated trajectory execution')
         started = time.monotonic()
         single_view_confirmed = self._single_view_execution_confirmation(config)
         if grasp_capture is not None:
@@ -4464,6 +4493,7 @@ class FoldExplorationPipeline:
             raise RuntimeError('gripper completion unconfirmed; fold loop stopped before any further motion; inspect execution trace')
         return execution, recording
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._locate_sleeve_with_molmo')
     def _locate_sleeve_with_molmo(
         self, *, step, iteration, iteration_dir, history=(),
     ):
@@ -4512,6 +4542,7 @@ class FoldExplorationPipeline:
         _write_json(iteration_dir / 'molmo_sleeve_hint.json', hint)
         return hint
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._locate_sleeve_in_claude_view')
     def _locate_sleeve_in_claude_view(self, *, step, iteration, iteration_dir):
         """Claude aligns RGB -> Molmo annotates that exact RGB -> Claude decides."""
         started = time.monotonic()
@@ -4617,6 +4648,7 @@ class FoldExplorationPipeline:
                     status=hint['status'], duration_s=round(time.monotonic()-started, 3))
         return hint
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._query_sleeve_with_molmo')
     def _query_sleeve_with_molmo(
         self,
         *,
@@ -4789,6 +4821,7 @@ class FoldExplorationPipeline:
             )
             return hint
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._plan_recovery')
     def _plan_recovery(
         self,
         screen: Mapping[str, Any],
@@ -4825,6 +4858,7 @@ class FoldExplorationPipeline:
         )
         return proposal
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._compile_grasp_height_retry')
     def _compile_grasp_height_retry(self, previous, iteration_dir):
         """Reuse the previous runtime target and commands, changing contact Z only."""
         directory = iteration_dir / "height_retry"
@@ -4870,6 +4904,7 @@ class FoldExplorationPipeline:
                                               "proposal": proposal.as_dict()})
         return proposal, audit, choices, metadata
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._resolve_fold_grasp_height')
     def _resolve_fold_grasp_height(
         self,
         proposal: ExplorationProposal,
@@ -4972,6 +5007,7 @@ class FoldExplorationPipeline:
         )
         return grounded, audit
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._plan_fold_with_retries')
     def _plan_fold_with_retries(
         self,
         images: Sequence[Path],
@@ -5216,6 +5252,7 @@ class FoldExplorationPipeline:
             f"Claude {attempt_kind} planning failed after {attempts} attempt(s): {error_text}"
         ) from last_error
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._supervisor')
     def _supervisor(self, images: Sequence[Path], screen: Mapping[str, Any], history: Sequence[Mapping[str, Any]], *, video: Sequence[Path] = ()) -> dict[str, Any]:
         started = time.monotonic()
         selected_images = _select_supervisor_images(images)
@@ -5449,6 +5486,7 @@ class FoldExplorationPipeline:
             "completion_ledger_source": "fallback_bookkeeping",
         }
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._evaluate_with_retries')
     def _evaluate_with_retries(
         self,
         *args: Any,
@@ -5535,6 +5573,7 @@ class FoldExplorationPipeline:
             "fallback": True,
         }, None
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._wait_for_manual_reset')
     def _wait_for_manual_reset(self, output, summary, *, iteration_dir=None, decision=None, stage=None):
         reset = FoldReset(self.session.workspace)
         request = (reset.request(iteration_dir, decision, stage=stage)
@@ -5556,6 +5595,48 @@ class FoldExplorationPipeline:
         self._debug("manual_reset", "人工 reset 已确认；重新采图并判断折叠进度",
                     request_id=completed["request_id"])
 
+    @timed_stage('planning.save_generated_code_and_stop')
+    def _finish_plan_only(self, *, output, iteration_dir, iteration, step, mode,
+                          source_path, model_proposal, execution_proposal,
+                          host_compilation, summary):
+        """Persist a generated plan without preflight, controller IK or execution."""
+        artifact = iteration_dir / 'generated_motion.py'
+        shutil.copyfile(source_path, artifact)
+        grounding = getattr(self.client, 'last_grounding_verification', None) or {}
+        moves = (grounding.get('workspace_trace') or {}).get('moves', [])
+        record = {
+            'status': 'PLAN_GENERATED', 'iteration': iteration, 'step': step, 'mode': mode,
+            'source_path': str(artifact), 'workspace_source_path': str(source_path),
+            'model_proposal': model_proposal.as_dict(),
+            'execution_proposal': execution_proposal.as_dict(),
+            'host_compilation': host_compilation,
+            'grasp': next((p for p in moves if p.get('target') == 'grasp'), None),
+            'transport_destinations': [p for p in moves if p.get('target') == 'pixel'],
+            'grounding': grounding,
+            'preflight': 'NOT_RUN', 'controller_ik': 'NOT_RUN',
+            'execution': {'status': 'NOT_EXECUTED', 'reason': 'stop_after_plan'},
+            'evaluation': 'NOT_RUN', 'experience_update': 'NOT_RUN',
+        }
+        _write_json(iteration_dir / 'planning_only.json', record)
+        _write_json(iteration_dir / 'claude_plan.json', model_proposal.as_dict())
+        _write_json(iteration_dir / 'execution_plan.json', execution_proposal.as_dict())
+        for name in ('last_visual_plan_result', 'last_plan_result'):
+            value = getattr(self.client, name, None)
+            if value is not None and hasattr(value, 'as_dict'):
+                _write_json(iteration_dir / (name + '.json'), value.as_dict())
+        summary.update(status='PLAN_GENERATED', completed_at=_now(), stop_after_plan=True,
+                       generated_motion=str(artifact), manipulation_executed=False,
+                       last_operational_stage='plan_generated')
+        summary['iterations'].append({'iteration': iteration, 'status': 'PLAN_GENERATED',
+                                      'step': step, 'planning_only': str(iteration_dir / 'planning_only.json')})
+        _write_json(output / 'summary.json', summary)
+        self._active_iteration = None
+        self._last_operational_stage = 'plan_generated'
+        self._debug('planning-only', 'motion code saved; stopping before preflight, IK and execution',
+                    iteration=iteration, source=str(artifact))
+        return summary
+
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline.run')
     def run(self) -> dict[str, Any]:
         """Run until completion, optionally restarting after safe failures.
 
@@ -5610,6 +5691,7 @@ class FoldExplorationPipeline:
                 if delay > 0:
                     time.sleep(delay)
 
+    @timed_stage('fold_exploration_pipeline.FoldExplorationPipeline._run_once')
     def _run_once(self) -> dict[str, Any]:
         self._last_operational_stage = None
         self._active_iteration = None
@@ -5668,6 +5750,7 @@ class FoldExplorationPipeline:
             "run_dir": str(self.session.run_dir),
             "output_dir": str(output),
             "physical_execution": self.real,
+            "stop_after_plan": getattr(self, 'stop_after_plan', False),
             "video_recording": self.record_video,
             "unattended": self.unattended,
             "unattended_attempt": self._unattended_restart_count + 1,
@@ -6272,6 +6355,12 @@ class FoldExplorationPipeline:
                             exploration_source(execution_proposal),
                             encoding="utf-8",
                         )
+                        if getattr(self, 'stop_after_plan', False):
+                            return self._finish_plan_only(
+                                output=output, iteration_dir=iteration_dir, iteration=iteration,
+                                step=current_step, mode=action_mode, source_path=source_path,
+                                model_proposal=model_proposal, execution_proposal=execution_proposal,
+                                host_compilation=host_compilation, summary=summary)
                         candidate_preflight = self.session.runner.preflight(source_path.name)
                         if candidate_preflight.error:
                             raise ExperimentValidationError(candidate_preflight.error)
@@ -6995,7 +7084,7 @@ class FoldExplorationPipeline:
                 partial = self._save_interrupted_iteration(exc)
                 if partial is not None:
                     summary["iterations"].append({"iteration": partial["iteration"], "status": partial["status"],
-                                                  "failure_detection": partial["failure_detection"]})
+                                                  "failure_detection": partial.get("failure_detection")})
             except Exception as save_error:
                 self._debug_exception("experience", save_error, operation="persist_partial_iteration")
             self._last_operational_stage = failed_stage
@@ -7032,6 +7121,12 @@ class FoldExplorationPipeline:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", default=".")
+    parser.add_argument("--timing-output", type=Path,
+                        help="write full original pipeline stage timings to a new directory")
+    parser.add_argument('--semantic-timing', action='store_true',
+                        help='diagnostic: request public planning phase markers (requires --timing-output and remote backend)')
+    parser.add_argument('--observation-skill', type=Path,
+                        help='experimental visual information policy inside the original visual planning call; no extra observer call')
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--run-dir", type=Path)
     group.add_argument("--run-id")
@@ -7062,6 +7157,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--supervisor-timeout-s", type=int, default=900)
     parser.add_argument("--max-iterations", type=int, default=0, help="0 means continuous until supervisor COMPLETE or a hard failure")
+    parser.add_argument('--stop-after-plan', action='store_true',
+                        help='allow real observation, save generated motion code, then stop before preflight/IK/manipulation')
     parser.add_argument("--max-replans", type=int, default=1)
     parser.add_argument("--max-stage-retries", type=int, default=0, help="extra retries for capture, supervisor, and evaluation failures (default: none)")
     parser.add_argument("--no-grasp-height-retry", action="store_true",
@@ -7147,7 +7244,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.semantic_timing and (not args.timing_output or args.planner_backend != 'remote'):
+        parser.error('--semantic-timing requires --timing-output and --planner-backend remote')
+    if args.observation_skill and args.planner_backend != 'remote':
+        parser.error('--observation-skill requires --planner-backend remote')
+    if args.timing_output:
+        with PipelineTiming(args.timing_output, semantic_phases=args.semantic_timing) as timing:
+            with timing.span('program'):
+                return _run_main(args)
+    return _run_main(args)
+
+
+@timed_stage('startup.session_and_pipeline')
+def _run_main(args) -> int:
     root = Path(args.project_root).resolve()
     perception = args.perception_config if args.perception_config.is_absolute() else root / args.perception_config
     robot_path = args.robot_config if args.robot_config.is_absolute() else root / args.robot_config
@@ -7187,6 +7298,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_iterations=args.max_iterations,
         real=args.real,
         confirm_real=args.confirm_real,
+        stop_after_plan=args.stop_after_plan,
+        observation_skill_path=((root / args.observation_skill).resolve() if args.observation_skill else None),
         record_video=not args.no_video,
         prune_evaluated_video=args.prune_evaluated_video,
         recording_native=not args.recording_no_native,
@@ -7226,7 +7339,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     ).run()
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if summary.get("status") in {"COMPLETE", "MAX_ITERATIONS_REACHED"} else 1
+    return 0 if summary.get("status") in {"COMPLETE", "MAX_ITERATIONS_REACHED", "PLAN_GENERATED"} else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

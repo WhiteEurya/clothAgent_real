@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .pipeline_timing import timed_stage
+
 import ast
 import io
 import json
@@ -326,6 +328,7 @@ class ExperimentRunner:
             raise FileNotFoundError(candidate)
         return candidate
 
+    @timed_stage('experiment.ExperimentRunner.preflight')
     def preflight(self, path: str | Path) -> Preflight:
         source_path = self._safe_source_path(path)
         source = source_path.read_text(encoding="utf-8")
