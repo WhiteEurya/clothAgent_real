@@ -38,7 +38,7 @@ compiler is available only with ``--host-compile-acquisition-probe``.
 
 from __future__ import annotations
 
-from .pipeline_timing import PipelineTiming, timed_stage
+from .pipeline_timing import PipelineTiming, timed_stage, timed_call, active_timing
 
 import argparse
 import errno
@@ -2435,7 +2435,7 @@ def _filter_fold_sleeve_planning_overlay(
     objective: str,
     molmo_hint: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Preserve the full uniform Rxxx grid and add only a Molmo hint."""
+    """Highlight the uniform Rxxx nearest the Molmo hint, without moving candidates."""
 
     step = _fold_sleeve_step_from_objective(objective)
     if step is None:
@@ -2467,7 +2467,7 @@ def _filter_fold_sleeve_planning_overlay(
             continue
         reference_id = sample.get("reference_id")
         pixel_xy = sample.get("pixel_xy")
-        if not isinstance(reference_id, str) or not isinstance(pixel_xy, list):
+        if not isinstance(reference_id, str) or not isinstance(pixel_xy, list) or len(pixel_xy) != 2:
             continue
         visible.append(
             {
@@ -2486,6 +2486,7 @@ def _filter_fold_sleeve_planning_overlay(
         "role": "hint_only_no_candidate_filtering",
     }
     molmo_upright = None
+    snapped = None
     if (
         isinstance(molmo_hint, Mapping)
         and molmo_hint.get("status") == "MOLMO_POINT_AVAILABLE"
@@ -2502,37 +2503,55 @@ def _filter_fold_sleeve_planning_overlay(
             "role": "hint_only_no_candidate_filtering",
         }
 
+        # Compare in the displayed frame; guide coordinates belong to raw RGB.
+        with Image.open(raw_path) as raw:
+            raw_height = raw.height
+        def upright_point(sample):
+            return _clockwise90_pixel(float(sample['pixel_xy'][0]),
+                                      float(sample['pixel_xy'][1]), raw_height=raw_height)
+        snapped = min(visible, key=lambda sample: (
+            sum((a-b)**2 for a,b in zip(upright_point(sample), molmo_upright)),
+            sample['reference_id']))
+        sx, sy = upright_point(snapped)
+        molmo_fusion.update(
+            snapped_reference_id=snapped['reference_id'],
+            snapped_upright_pixel_xy=[sx, sy],
+            original_upright_pixel_xy=molmo_upright,
+            snap_distance_px=((sx-molmo_upright[0])**2+(sy-molmo_upright[1])**2)**0.5,
+            snap_rule='nearest_uniform_reference_in_upright_pixel_space',
+            semantics='Visual hint only; not a selected or validated grasp point',
+        )
+
     all_overlay_path = overlay_path.with_name("camera_A_rxxx_overlay_upright_all.png")
     if not all_overlay_path.is_file():
         shutil.copy2(overlay_path, all_overlay_path)
-    with Image.open(all_overlay_path) as source_overlay:
+    # Redraw from clean RGB so neither old crosshairs nor old labels survive.
+    with Image.open(rgb_path) as source_overlay:
         annotated = source_overlay.convert("RGB")
     draw = ImageDraw.Draw(annotated)
     font = ImageFont.load_default()
+    with Image.open(raw_path) as raw:
+        raw_height = raw.height
+    highlight_id = snapped['reference_id'] if snapped else None
+    for sample in sorted(visible, key=lambda s: s['reference_id'] == highlight_id):
+        x, y = _clockwise90_pixel(float(sample['pixel_xy'][0]),
+                                  float(sample['pixel_xy'][1]), raw_height=raw_height)
+        highlighted = sample['reference_id'] == highlight_id
+        if highlighted:
+            draw.polygon([(x,y-6),(x+6,y),(x,y+6),(x-6,y)],
+                         fill=(255,190,0), outline=(0,0,0), width=2)
+        else:
+            draw.ellipse((x-5,y-5,x+5,y+5), fill=(0,220,220), outline=(0,0,0), width=2)
+        draw.text((x+7,y-8),sample['reference_id'],fill=(0,0,0),font=font,
+                  stroke_width=2,stroke_fill=(255,190,0) if highlighted else (255,255,255))
     draw.rectangle((0, 0, annotated.width, 28), fill=(255, 255, 255))
     draw.text(
         (8, 8),
-        f"{step.upper()} | CYAN=ALL GARMENT Rxxx | MAGENTA=MOLMO HYPOTHESIS",
+        f"{step.upper()} | CYAN=Rxxx | GOLD DIAMOND=MOLMO HINT"
+        + (f" ({highlight_id})" if highlight_id else " (unavailable)"),
         fill=(180, 0, 0),
         font=font,
     )
-    if molmo_upright is not None:
-        mx, my = molmo_upright
-        draw.ellipse(
-            (mx - 13, my - 13, mx + 13, my + 13),
-            outline=(255, 0, 220),
-            width=5,
-        )
-        draw.line((mx - 17, my, mx + 17, my), fill=(255, 0, 220), width=4)
-        draw.line((mx, my - 17, mx, my + 17), fill=(255, 0, 220), width=4)
-        draw.text(
-            (mx + 16, my - 14),
-            "MOLMO",
-            fill=(255, 0, 220),
-            font=font,
-            stroke_width=2,
-            stroke_fill=(255, 255, 255),
-        )
     annotated.save(overlay_path)
     report = {
         "step": step,
@@ -2883,6 +2902,7 @@ class FoldExplorationPipeline:
         confirm_real: bool = False,
         stop_after_plan: bool = False,
         observation_skill_path: Path | None = None,
+        two_stage_vision: bool = False,
         record_video: bool = True,
         prune_evaluated_video: bool = False,
         recording_native: bool = True,
@@ -3010,7 +3030,7 @@ class FoldExplorationPipeline:
         approved_skills = self.skill_store.approved()
         client_type = RemoteFoldClient if planner_backend == "remote" else ClaudeAutoClient
         backend_options = ({"backend": RemoteClaudeBackend(ssh_host=remote_planner_host,
-                            timeout_s=self.claude_timeout_s)} if planner_backend == "remote" else {})
+                            timeout_s=self.claude_timeout_s), "two_stage_vision": two_stage_vision} if planner_backend == "remote" else {})
         if observation_skill_path is not None:
             backend_options['observation_skill_path'] = observation_skill_path
         self.client = client_type(
@@ -3211,6 +3231,9 @@ class FoldExplorationPipeline:
         if stage != "run":
             self._last_operational_stage = str(stage)
         active = getattr(self, "_active_iteration", None)
+        timing = active_timing()
+        if timing is not None:
+            timing.mark(stage, message, iteration=fields.get('iteration', active[1].get('iteration') if active else None))
         if active and stage != previous_stage:
             _write_json(active[0] / "partial_record.json", {
                 **active[1], "last_event": {"stage": stage, "message": message, "timestamp": _now()},
@@ -3924,7 +3947,7 @@ class FoldExplorationPipeline:
                 images.append(output_dir / 'camera_A_molmo_frame_hint.png')
             if observer_image is not None:
                 images.append(observer_image)
-            staged = _stage_image_artifacts(images, output_dir)
+            staged = timed_call('capture.stage_image_artifacts', _stage_image_artifacts, images, output_dir)
             self._debug(
                 "perception",
                 "reused latest perception",
@@ -3940,25 +3963,25 @@ class FoldExplorationPipeline:
             self._debug("perception", "moving robot to calibrated perception pose")
             pose_started = time.monotonic()
             try:
-                move_robot_to_perception_position(self.session.robot_config)
+                timed_call('capture.move_to_observation_pose', move_robot_to_perception_position, self.session.robot_config)
             finally:
                 self._debug("perception-timing", "move to observation pose finished", duration_s=round(time.monotonic()-pose_started, 3))
             self._debug("perception", "capturing synchronized configured RGB-D cameras")
         capture_started = time.monotonic()
         try:
-            frames = capture_two_view_rgbd(config)
+            frames = timed_call('capture.rgbd_frames', capture_two_view_rgbd, config)
         finally:
             self._debug("perception-timing", "RGB-D capture finished", duration_s=round(time.monotonic()-capture_started, 3))
         self._debug("perception", "running garment localization and depth fusion", frames=len(frames))
         fusion_started = time.monotonic()
         try:
-            self.session.locate_cloth_center(config, frames=frames)
+            timed_call('capture.localization_depth_fusion', self.session.locate_cloth_center, config, frames=frames)
         finally:
             self._debug("perception-timing", "localization and fusion finished", duration_s=round(time.monotonic()-fusion_started, 3))
         saved, saved_path = _load_latest_perception(self.session)
         if saved is None or saved_path is None:
             raise RuntimeError("perception completed without saved result")
-        raw = _save_frame_images(frames, output_dir)
+        raw = timed_call('capture.save_raw_images', _save_frame_images, frames, output_dir)
         upright = _build_upright_camera_a_planning_images(
             saved,
             saved_path,
@@ -3971,7 +3994,7 @@ class FoldExplorationPipeline:
             images.append(output_dir / 'camera_A_molmo_frame_hint.png')
         if observer_image is not None:
             images.append(observer_image)
-        staged = _stage_image_artifacts(images, output_dir)
+        staged = timed_call('capture.stage_image_artifacts', _stage_image_artifacts, images, output_dir)
         self._debug(
             "perception",
             "capture completed",
@@ -4418,7 +4441,7 @@ class FoldExplorationPipeline:
             if recorder is not None:
                 recorder.request_stop("fold_action_completed")
             if thread is not None:
-                thread.join(timeout=recorder_join_timeout)
+                timed_call('recording.wait_for_camera_recorder', thread.join, timeout=recorder_join_timeout)
             if recorder is not None and thread is not None and thread.is_alive():
                 recording_errors.append("recording thread did not stop within 300 seconds")
                 recorder.close()
@@ -4426,7 +4449,7 @@ class FoldExplorationPipeline:
             if observer_recorder is not None:
                 observer_recorder.request_stop("fold_action_completed")
             if observer_thread is not None:
-                observer_thread.join(timeout=recorder_join_timeout)
+                timed_call('recording.wait_for_observer_recorder', observer_thread.join, timeout=recorder_join_timeout)
             if (
                 observer_recorder is not None
                 and observer_thread is not None
@@ -5751,6 +5774,7 @@ class FoldExplorationPipeline:
             "output_dir": str(output),
             "physical_execution": self.real,
             "stop_after_plan": getattr(self, 'stop_after_plan', False),
+            "two_stage_vision": bool(getattr(self.client, 'two_stage_vision', False)),
             "video_recording": self.record_video,
             "unattended": self.unattended,
             "unattended_attempt": self._unattended_restart_count + 1,
@@ -7124,7 +7148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timing-output", type=Path,
                         help="write full original pipeline stage timings to a new directory")
     parser.add_argument('--semantic-timing', action='store_true',
-                        help='diagnostic: request public planning phase markers (requires --timing-output and remote backend)')
+                        help='diagnostic: request public planning/evaluation phase markers (requires --timing-output and remote backend)')
     parser.add_argument('--observation-skill', type=Path,
                         help='experimental visual information policy inside the original visual planning call; no extra observer call')
     group = parser.add_mutually_exclusive_group()
@@ -7197,6 +7221,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(unattended=False)
     parser.add_argument("--no-inherit-experience", action="store_true",
                         help="start without lessons from the most recent run")
+    parser.add_argument('--two-stage-vision', action=argparse.BooleanOptionalAction, default=True,
+                        help='remote planner: prepare sufficient image evidence, then reason with editing disabled (default on)')
     parser.add_argument("--molmo-confidence-threshold", type=float, default=0.50)
     parser.add_argument("--molmo-timeout-s", type=int, default=900)
     parser.add_argument("--molmo-python", type=Path)
@@ -7300,6 +7326,7 @@ def _run_main(args) -> int:
         confirm_real=args.confirm_real,
         stop_after_plan=args.stop_after_plan,
         observation_skill_path=((root / args.observation_skill).resolve() if args.observation_skill else None),
+        two_stage_vision=args.two_stage_vision,
         record_video=not args.no_video,
         prune_evaluated_video=args.prune_evaluated_video,
         recording_native=not args.recording_no_native,

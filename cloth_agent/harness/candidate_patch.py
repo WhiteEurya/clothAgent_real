@@ -6,6 +6,7 @@ import ast
 import difflib
 import json
 import math
+import re
 import traceback
 from pathlib import Path
 
@@ -28,6 +29,54 @@ PROPOSAL_SCHEMA = obj({'level': {'enum': ['PROMPT','HARNESS','SKILL_CODE','NEW_T
     'must_preserve': {'type': 'array', 'minItems': 1, 'maxItems': 12, 'items': TEXT},
     'evidence_rollouts': {'type': 'array', 'minItems': 1, 'maxItems': 20, 'uniqueItems': True, 'items': TEXT},
     'unverified': TEXT})
+PROPOSAL_SCHEMA['properties']['evidence_explanation'] = {
+    'type': 'string', 'description': 'Explanation of evidence; keep evidence_rollouts limited to exact allowed rollout IDs.'}
+
+
+def proposal_schema(rollout_ids):
+    schema = copy.deepcopy(PROPOSAL_SCHEMA)
+    schema['properties']['evidence_rollouts']['items'] = {'type': 'string', 'enum': sorted(set(rollout_ids))}
+    return schema
+
+
+def proposal_transport_schema(rollout_ids):
+    """Use one quoted prose field rather than a fragile tool-call prose array."""
+    schema=proposal_schema(rollout_ids)
+    schema['properties']['must_preserve']={'type':'string','minLength':1,'maxLength':12000,
+        'description':'One JSON string describing all invariants, separated by semicolons or newlines. Do not emit repeated must_preserve keys.'}
+    return schema
+
+
+def normalize_proposal_transport(proposal):
+    proposal=copy.deepcopy(proposal)
+    if isinstance(proposal.get('must_preserve'),str):
+        # Preserve text exactly. Each chunk obeys the canonical per-item bound;
+        # this is representation conversion, not rewriting constraints.
+        text=proposal['must_preserve']
+        proposal['must_preserve']=[text[i:i+2400] for i in range(0,len(text),2400)]
+    return proposal
+
+
+def normalize_citations(proposal, rollout_ids):
+    """Extract only unambiguous explicit IDs, preserving every original citation."""
+    validate_schema(proposal, PROPOSAL_SCHEMA)
+    known = set(rollout_ids)
+    resolved, entries = [], []
+    for original in proposal['evidence_rollouts']:
+        matches = sorted(k for k in known if re.search(r'(?<![\w-])'+re.escape(k)+r'(?![\w-])', original))
+        exact = original.strip() in known
+        status = 'EXACT' if exact else 'EXTRACTED' if len(matches) == 1 else 'UNRESOLVED'
+        ids = [original.strip()] if exact else matches if len(matches) == 1 else []
+        for key in ids:
+            if key not in resolved:
+                resolved.append(key)
+        entries.append({'original': original, 'status': status, 'resolved_ids': ids})
+    normalized = copy.deepcopy(proposal)
+    normalized['evidence_rollouts'] = resolved
+    audit = {'original': proposal, 'normalized': normalized, 'entries': entries,
+             'status': 'ACCEPTED' if resolved else 'NEEDS_CITATION_REPAIR',
+             'meaning': 'Trace identity only; no claim that the cited explanation is true.'}
+    return normalized, audit
 TEST_SCHEMA = obj({'request': {'type': 'object'}, 'source_size': {'type': 'array', 'minItems': 2, 'maxItems': 2,
     'items': {'type': 'integer', 'minimum': 16, 'maximum': 256}}, 'expected_recipe': RECIPE_SCHEMA})
 IMPLEMENTATION_SCHEMA = obj({'config': CONFIG_SCHEMA,
@@ -76,9 +125,8 @@ def registry_from_bundle(bundle):
 def bundle_hash(bundle): return digest(bundle)
 
 
-def materialize_candidate(directory, proposal, implementation, baseline):
-    """The model cannot supply paths or edit production; host owns every target."""
-    directory = Path(directory)
+def validate_implementation(proposal, implementation, baseline):
+    """Validate semantics without writing files; errors can be repaired locally."""
     validate_schema(proposal, PROPOSAL_SCHEMA)
     validate_schema(implementation, IMPLEMENTATION_SCHEMA)
     registry = registry_from_bundle(baseline)
@@ -103,11 +151,8 @@ def materialize_candidate(directory, proposal, implementation, baseline):
                 raise PolicyError('SKILL_CODE needs the next version of an existing skill')
         elif target in existing or spec['version'] != 1:
             raise PolicyError('NEW_TOOL needs a new ID and version one')
-        # Code ablation may enable the new capability, but cannot simultaneously
-        # rewrite reasoning to make attribution impossible.
-        if (config['reasoning_harness'] != baseline['config']['reasoning_harness']
-                or config['observation_instruction'] != baseline['config']['observation_instruction']):
-            raise PolicyError('Code patch must preserve baseline prompts and reasoning')
+        # Joint implementation/prompt changes are permitted. Their measured
+        # benefit belongs to the whole patch, not an isolated code ablation.
         if target not in config['enabled_skills']: raise PolicyError('Generated capability is not enabled')
         if level == 'SKILL_CODE' and config['enabled_skills'] != baseline['config']['enabled_skills']:
             raise PolicyError('SKILL_CODE cannot change the other enabled capabilities')
@@ -120,6 +165,14 @@ def materialize_candidate(directory, proposal, implementation, baseline):
     bundle = {'schema_version': 1, 'config': config, 'skills': [
         {'specification': registry.get(s['id']).specification, 'source': registry.get(s['id']).source}
         for s in registry.catalog()]}
+    return bundle
+
+
+def materialize_candidate(directory, proposal, implementation, baseline):
+    """The model cannot supply paths or edit production; host owns every target."""
+    directory = Path(directory)
+    bundle = validate_implementation(proposal, implementation, baseline)
+    config, generated, target = implementation['config'], implementation['skill'], proposal['target']
     files = {'config.json': config}
     if generated:
         base = f'cloth_agent/harness/skills/{target}'

@@ -15,9 +15,12 @@ from ..skills.registry import builtin_registry
 
 
 class RegisteredObservationHost:
-    def __init__(self, obs, images, artifact, output, max_ops=12, *, registry=None):
+    def __init__(self, obs, images, artifact, output, max_ops=12, *, registry=None, reuse_observations=False, defer_over_budget=False):
         if type(max_ops) is not int or not 0 <= max_ops <= 24:
             raise PolicyError('Invalid observation operation budget')
+        self.defer_over_budget = defer_over_budget
+        self.deferred = []
+        self.reuse_observations = reuse_observations
         self.directory = Path(output)
         self.directory.mkdir(parents=True, exist_ok=False)
         self.registry = (registry or builtin_registry()).clone()
@@ -36,7 +39,7 @@ class RegisteredObservationHost:
             shutil.copyfile(source, target)
             self.input_hashes.append((Path(source), sha))
             self.catalog.append({**item, 'original_image_id': item['image_id'], 'to_original': [1,0,0,0,1,0],
-                                 'rgb_sha256': sha, 'path': str(target)})
+                                 'parent_image_id': None, 'operations': [], 'lineage': [], 'rgb_sha256': sha, 'path': str(target)})
             self.paths.append(target)
         self.roots = {i['image_id']: i for i in self.catalog}
         self.tools = ImageTools(self.directory, len(images), edit_limit=max_ops)
@@ -47,22 +50,30 @@ class RegisteredObservationHost:
         from ..information_flow import request_schema
         from ..policy import validate_schema
         validate_schema(request, request_schema(self.registry))
-        if request['gap_id'] not in {i['id'] for i in information if i['status'] == 'UNKNOWN'}:
-            raise PolicyError('Observation must address a currently UNKNOWN gap')
+        if request['gap_id'] not in {i['id'] for i in information}:
+            raise PolicyError('Observation must reference an existing information item')
         if request['skill_id'] not in self.skills: raise PolicyError('Requested skill is not in the supplied library')
         skill = self.registry.get(request['skill_id'])
-        source = self.roots.get(request['source_image_id'])
-        if source is None or source['role'] != 'clean': raise PolicyError('Observation parameters must reference the current clean root')
+        source = next((s for s in self.catalog if s['image_id'] == request['source_image_id']), None)
+        if source is None: raise PolicyError('Observation references an unavailable image')
+        with Image.open(source['path']) as image:
+            if pixel_hash(image) != source['rgb_sha256']: raise PolicyError('Source view changed')
         source_data = {k: source[k] for k in ('image_id', 'role', 'size')}
         if not skill.applicable(request, source_data): raise PolicyError('Skill input capability mismatch')
         recipe = skill.prepare(request, source_data, {'cached_views': len(self.cache), 'remaining_ops': self.max_ops-self.ops})
         paths = []
         for role in recipe['roles']:
-            matches = [s for s in self.roots.values() if s['role'] == role]
-            if len(matches) != 1 or matches[0]['size'] != source['size']:
-                raise PolicyError('Observation requires an aligned clean/overlay pair')
-            root = matches[0]
-            width, height = root['size']
+            # Single-view operations use the selected view, including references.
+            # Paired operations replay its exact processing chain on the aligned root.
+            if len(recipe['roles']) == 1 or role == source['role']:
+                root, prefix = source, []
+            else:
+                origin = self.roots[source['original_image_id']]
+                matches = [s for s in self.roots.values() if s['role'] == role]
+                if origin['role'] not in ('clean', 'overlay') or len(matches) != 1 or matches[0]['size'] != origin['size']:
+                    raise PolicyError('Observation requires an aligned clean/overlay pair')
+                root, prefix = matches[0], source['operations']
+            width, height = source['size']
             chain, steps = [], []
             for operation in recipe['operations']:
                 if operation['op'] == 'crop':
@@ -81,8 +92,17 @@ class RegisteredObservationHost:
                 chain.append([op,args])
                 signature = digest([root['image_id'], chain])
                 steps.append({'signature': signature, 'op': op, 'arguments': args})
-            paths.append({'root': root, 'steps': steps})
-        return {'skill': skill, 'request': request, 'recipe': recipe, 'paths': paths}
+            prefix_steps = []
+            chain_prefix = []
+            for operation in prefix:
+                chain_prefix.append([operation['op'], operation['arguments']])
+                prefix_steps.append({**operation, 'signature': digest([root['image_id'], chain_prefix])})
+            if prefix:
+                for n, step in enumerate(steps):
+                    step['signature'] = digest([root['image_id'], chain_prefix + chain[:n+1]])
+            paths.append({'root': root, 'steps': prefix_steps + steps})
+        return {'skill': skill, 'request': request, 'recipe': recipe, 'paths': paths,
+                'information_status': next(i['status'] for i in information if i['id'] == request['gap_id'])}
 
     def execute(self, requests, information):
         from ..information_flow import requests_schema
@@ -94,9 +114,18 @@ class RegisteredObservationHost:
                 if pixel_hash(im) != sha: raise PolicyError('Source input changed')
         prepared = [self.prepare(r, information) for r in requests]
         available, finals, needed = set(self.cache), set(self.seen), 0
+        selected = []
         for plan in prepared:
+            signatures = {step["signature"] for path in plan["paths"] for step in path["steps"]}
+            incremental = len(signatures - available)
+            if self.defer_over_budget and self.ops + needed + incremental > self.max_ops:
+                self.deferred.append({"request": plan["request"], "status": "DEFERRED",
+                    "reason": "OBSERVATION_BUDGET_EXHAUSTED", "required_new_ops": incremental,
+                    "remaining_ops": self.max_ops - self.ops - needed, "delivered_image_ids": []})
+                continue
+            selected.append(plan)
             targets = {p['steps'][-1]['signature'] for p in plan['paths']}
-            if targets <= finals or (targets & finals and not plan['recipe']['reuse_existing']):
+            if not self.reuse_observations and (targets <= finals or (targets & finals and not plan['recipe']['reuse_existing'])):
                 return 'REPEATED_OBSERVATION'
             for path in plan['paths']:
                 for step in path['steps']:
@@ -105,20 +134,22 @@ class RegisteredObservationHost:
         if self.ops + needed > self.max_ops: return 'OBSERVATION_BUDGET_EXHAUSTED'
         started = time.monotonic()
         try:
-            for plan in prepared:
+            for plan in selected:
                 delivered = plan['skill'].execute(self, plan)
                 plan['skill'].validate_output(self, delivered)
         finally:
             self.elapsed_s += time.monotonic()-started
             write_json(self.directory/'execution.json', {'registry': self.registry.snapshot(), 'history': self.history,
-                       'catalog': self.catalog, 'host_image_ops': self.ops})
+                       'catalog': self.catalog, 'deferred': self.deferred, 'host_image_ops': self.ops})
         return None
 
     def execute_prepared(self, plan):
         delivered, reused, lineages = [], [], []
         request = plan['request']
         for path in plan['paths']:
-            root, current = path['root'], path['root']['image_id']
+            root = path['root']
+            current = root.get('source_view_id', root['image_id'])
+            parent = root
             for step in path['steps']:
                 if step['signature'] not in self.cache:
                     view = self.tools.call(step['op'], {'image_id': current, **step['arguments']})
@@ -130,20 +161,31 @@ class RegisteredObservationHost:
                     with Image.open(view['path']) as im:
                         if pixel_hash(im) != view['rgb_sha256']: raise PolicyError('Cached view changed')
                 current = view['image_id']
-                lineages.append({k: view.get(k) for k in ('image_id','parent_image_id','operation','arguments','to_original','to_parent','size')})
-            existing = next((i for i in self.catalog if i.get('source_view_id') == current), None)
-            if existing:
-                item = existing; reused.append(item['image_id'])
-            else:
-                item = {'image_id': f'image_{len(self.paths)}', 'role': root['role'], 'original_image_id': root['image_id'],
-                    'size': view['size'], 'to_original': view['to_original'], 'source_view_id': current,
-                    'rgb_sha256': view['rgb_sha256'], 'gap_id': request['gap_id'], 'skill_id': request['skill_id'], 'path': view['path']}
-                if len(self.paths) >= 32: raise PolicyError('Delivered view budget exhausted')
-                self.catalog.append(item); self.paths.append(Path(view['path']))
+                lineage = {k: view.get(k) for k in ('operation','arguments','to_original','to_parent','size')}
+                lineage.update(parent_image_id=parent['image_id'], arguments=step['arguments'])
+                existing = next((i for i in self.catalog if i.get('source_view_id') == current), None)
+                if existing:
+                    item = existing
+                    reused.append(item['image_id'])
+                else:
+                    if len(self.paths) >= 32: raise PolicyError('Delivered view budget exhausted')
+                    item = {'image_id': f'image_{len(self.paths)}', 'role': root['role'],
+                        'original_image_id': root['original_image_id'], 'parent_image_id': parent['image_id'],
+                        'size': view['size'], 'to_original': view['to_original'], 'to_parent': view['to_parent'],
+                        'source_view_id': current, 'rgb_sha256': view['rgb_sha256'],
+                        'operation': view['operation'], 'arguments': step['arguments'],
+                        'operations': parent['operations'] + [{'op': step['op'], 'arguments': step['arguments']}],
+                        'lineage': parent['lineage'] + [lineage],
+                        'gap_id': request['gap_id'], 'skill_id': request['skill_id'], 'path': view['path']}
+                    self.catalog.append(item)
+                    self.paths.append(Path(view['path']))
+                lineages.append({'image_id': item['image_id'], **lineage})
+                parent = item
             delivered.append(item)
             self.seen.add(path['steps'][-1]['signature'])
         spec = self.skills[request['skill_id']]
-        self.history.append({'request': request, 'skill_version': plan['skill'].key, 'implementation_hash': plan['skill'].content_hash,
+        self.history.append({'request': request, 'information_status_at_request': plan['information_status'],
+            'skill_version': plan['skill'].key, 'implementation_hash': plan['skill'].content_hash,
             'delivered_image_ids': [i['image_id'] for i in delivered], 'reused_image_ids': reused,
             'lineage': lineages, 'status': 'EXECUTED_NOT_YET_INTERPRETED', 'success_check': spec['success_check'],
             'on_insufficient': spec['on_insufficient']})

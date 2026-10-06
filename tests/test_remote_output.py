@@ -86,3 +86,72 @@ def test_opt_in_timing_preserves_input_terminal_and_remote_intervals(tmp_path):
     assert rows[-1] == {'type':'result','result':'ok'}
     assert '__CLOTH_PROFILE__' in result.stderr
     assert '_cloth_timing' not in (tmp_path/'claude_raw.jsonl').read_text()
+
+
+def test_event_arrives_before_cli_finishes(tmp_path):
+    import selectors
+    script=tmp_path/'model.py'
+    script.write_text("import json,time\nfrom pathlib import Path\n"
+                      "print(json.dumps({'type':'system','subtype':'api_retry','error_status':524,'attempt':1}),flush=True)\n"
+                      "while not Path('release').exists(): time.sleep(.02)\n"
+                      "print(json.dumps({'type':'result','result':'ok'}),flush=True)\n")
+    process=subprocess.Popen([sys.executable,str(WRAPPER),'--record-event-timing',sys.executable,str(script)],
+                             cwd=tmp_path,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout,selectors.EVENT_READ)
+            assert selector.select(timeout=3), 'Event was buffered until process exit'
+        event=json.loads(process.stdout.readline())
+        assert event['subtype']=='api_retry' and event['error_status']==524
+        assert event['_cloth_timing']['elapsed_s']>=0
+        assert process.poll() is None
+        (tmp_path/'release').touch()
+        stdout,stderr=process.communicate(timeout=3)
+        assert process.returncode==0
+        assert json.loads(stdout)['type']=='result'
+    finally:
+        if process.poll() is None:
+            (tmp_path/'release').touch()
+            process.communicate(timeout=3)
+
+
+def test_remote_timeout_keeps_partial_events_without_fake_result(tmp_path):
+    import shutil
+    import pytest
+    timeout=shutil.which('timeout')
+    if not timeout: pytest.skip('GNU timeout unavailable')
+    job=tmp_path/'job';job.mkdir()
+    code="import json,time; print(json.dumps({'type':'system','subtype':'api_retry','error_status':524}),flush=True); time.sleep(20)"
+    result=subprocess.run([sys.executable,str(WRAPPER),'--record-event-timing',timeout,'--kill-after=1s','.3s',sys.executable,'-c',code],
+                          cwd=job,capture_output=True,text=True,timeout=4)
+    assert result.returncode==124
+    events=[json.loads(line) for line in result.stdout.splitlines()]
+    assert len(events)==1 and events[0]['subtype']=='api_retry'
+    assert not any(e['type']=='result' for e in events)
+    assert '"terminal_received":false' in result.stderr
+    assert (tmp_path/'job.failed.jsonl').is_file()
+
+
+def test_failing_process_cannot_publish_success_terminal(tmp_path):
+    code="import json,sys; print(json.dumps({'type':'result','result':'ok'})); sys.exit(1)"
+    result=subprocess.run([sys.executable,str(WRAPPER),sys.executable,'-c',code],cwd=tmp_path,capture_output=True,text=True)
+    assert result.returncode==1
+    assert not result.stdout
+    assert 'unaccepted_terminal' in result.stderr
+
+
+def test_silent_cli_heartbeat_identifies_waiting(tmp_path):
+    code="import json,time; time.sleep(5.2); print(json.dumps({'type':'result','result':'ok'}))"
+    result=subprocess.run([sys.executable,str(WRAPPER),sys.executable,'-c',code],cwd=tmp_path,capture_output=True,text=True,timeout=8)
+    events=[json.loads(line.split(' ',1)[1]) for line in result.stderr.splitlines() if line.startswith('__CLOTH_PROGRESS__ ')]
+    pulse=next(e for e in events if e['phase']=='waiting_for_cli')
+    assert pulse['event_count']==0 and pulse['idle_s']>=5
+    assert result.returncode==0
+
+
+def test_text_only_stream_has_no_images(tmp_path):
+    code="import json,sys; m=json.loads(sys.stdin.readline()); assert m['message']['content']==[{'type':'text','text':'saved evidence'}]; print(json.dumps({'type':'result','subtype':'success','result':'ok'}))"
+    result=subprocess.run([sys.executable,str(WRAPPER),'--text-only',sys.executable,'-c',code],
+                          input='saved evidence',text=True,capture_output=True,cwd=tmp_path)
+    assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout.splitlines()[-1])['result']=='ok'

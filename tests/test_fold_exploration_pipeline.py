@@ -398,7 +398,7 @@ def test_fold_planning_overlay_preserves_full_uniform_grid_with_molmo_hint(
         "The supervisor says the next incomplete step is left_sleeve.",
         molmo_hint={
             "status": "MOLMO_POINT_AVAILABLE",
-            "upright_pixel_xy": [10, 85],
+            "upright_pixel_xy": [12, 88],
             "confidence": 0.8,
         },
     )
@@ -415,6 +415,25 @@ def test_fold_planning_overlay_preserves_full_uniform_grid_with_molmo_hint(
         "MOLMO_HINT_OVER_FULL_UNIFORM_GRID"
     )
     assert report["molmo_fusion"]["narrowed_candidates"] is False
+    assert report['molmo_fusion']['snapped_reference_id'] == 'R001'
+    assert report['molmo_fusion']['snapped_upright_pixel_xy'] == [10,85]
+    assert report['molmo_fusion']['original_upright_pixel_xy'] == [12,88]
+    assert report['molmo_fusion']['snap_distance_px'] == (13 ** .5)
+    with Image.open(overlay_path) as image:
+        assert image.getpixel((10,85)) == (255,190,0)
+        assert image.getpixel((55,85)) == (0,220,220)
+        before = np.asarray(image).copy()
+        assert not np.any(np.all(before == (255,0,220),axis=2))
+    # Re-rendering must not accumulate decorations; missing hints remove highlights.
+    _filter_fold_sleeve_planning_overlay([upright_path,overlay_path],
+        'The next incomplete step is left_sleeve.',molmo_hint=report['molmo_hint'])
+    with Image.open(overlay_path) as image:
+        assert np.array_equal(before,np.asarray(image))
+    no_hint = _filter_fold_sleeve_planning_overlay([upright_path,overlay_path],
+        'The next incomplete step is left_sleeve.')
+    assert no_hint['molmo_fusion']['status'] == 'MOLMO_NOT_AVAILABLE'
+    with Image.open(overlay_path) as image:
+        assert image.getpixel((10,85)) == (0,220,220)
     assert (planning / "camera_A_rxxx_overlay_upright_all.png").is_file()
     assert (planning / "camera_A_left_sleeve_candidate_filter.json").is_file()
 

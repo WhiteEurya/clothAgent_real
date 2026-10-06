@@ -53,7 +53,7 @@ def checked(value, depth=0, remaining=None):
 
 
 class RestrictedProgram:
-    def __init__(self, source):
+    def __init__(self, source, *, function_name='prepare', parameters=('request', 'source', 'available'), allow_loops=False):
         if not isinstance(source, str) or len(source) > 16000:
             raise PolicyError('Candidate source size exceeded')
         self.source = source
@@ -63,16 +63,18 @@ class RestrictedProgram:
         except (SyntaxError, ValueError, RecursionError) as exc:
             raise PolicyError(f'Candidate syntax invalid: {exc}') from exc
         nodes = list(ast.walk(self.tree))
-        if len(nodes) > 1200 or any(not isinstance(n, ALLOWED) for n in nodes):
+        allowed = ALLOWED + ((ast.For,) if allow_loops else ())
+        if len(nodes) > 1200 or any(not isinstance(n, allowed) for n in nodes):
             raise PolicyError('Unsupported Python: imports, attributes, loops and arbitrary code are forbidden')
         if len(self.tree.body) != 1 or not isinstance(self.tree.body[0], ast.FunctionDef):
-            raise PolicyError('Only def prepare(request, source, available) is allowed')
+            raise PolicyError(f'Only def {function_name}{parameters} is allowed')
         function = self.tree.body[0]
         args = function.args
-        if (function.name != 'prepare' or function.decorator_list or function.returns
-                or [a.arg for a in args.args] != ['request', 'source', 'available']
+        if (function.name != function_name or function.decorator_list or function.returns
+                or [a.arg for a in args.args] != list(parameters)
                 or args.defaults or args.kwonlyargs or args.posonlyargs or args.vararg or args.kwarg):
-            raise PolicyError('Invalid pure prepare signature')
+            raise PolicyError('Invalid pure function signature')
+        self.parameters = parameters
         for node in nodes:
             if isinstance(node, ast.FunctionDef) and node is not function:
                 raise PolicyError('Nested functions are forbidden')
@@ -84,12 +86,16 @@ class RestrictedProgram:
                 raise PolicyError('Only numeric primitive calls are allowed')
             if isinstance(node, ast.Assign) and (len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name)):
                 raise PolicyError('Only local variable assignment is allowed')
+            if isinstance(node, ast.For) and (not isinstance(node.target, ast.Name) or node.orelse):
+                raise PolicyError('For requires a local name and no else clause')
             if isinstance(node, ast.Constant):
                 checked(node.value)
         self.body = function.body
 
-    def run(self, request, source, available):
-        values = checked({'request': request, 'source': source, 'available': available})
+    def run(self, *arguments):
+        if len(arguments) != len(self.parameters):
+            raise PolicyError('Incorrect pure function argument count')
+        values = checked(dict(zip(self.parameters, arguments)))
         self.remaining = 3000
         def evaluate(node):
             self.remaining -= 1
@@ -102,9 +108,14 @@ class RestrictedProgram:
             elif isinstance(node, ast.Subscript): value = evaluate(node.value)[evaluate(node.slice)]
             elif isinstance(node, ast.BinOp):
                 a, b = evaluate(node.left), evaluate(node.right)
-                if type(a) not in (int, float) or type(b) not in (int, float):
+                if isinstance(node.op, ast.Add) and type(a) is list and type(b) is list:
+                    if len(a) + len(b) > 128:
+                        raise PolicyError('Candidate collection budget exceeded')
+                    value = a + b
+                elif type(a) not in (int, float) or type(b) not in (int, float):
                     raise PolicyError('Arithmetic operands must be numeric; no sequence multiplication')
-                value = BINARY[type(node.op)](a, b)
+                else:
+                    value = BINARY[type(node.op)](a, b)
             elif isinstance(node, ast.UnaryOp):
                 a = evaluate(node.operand)
                 if isinstance(node.op, ast.Not): value = not a
@@ -134,6 +145,16 @@ class RestrictedProgram:
                 elif isinstance(node, ast.If):
                     done, result = statements(node.body if evaluate(node.test) else node.orelse)
                     if done: return done, result
+                elif isinstance(node, ast.For):
+                    sequence = evaluate(node.iter)
+                    if not isinstance(sequence, (list, tuple)):
+                        raise PolicyError('For can iterate only a bounded JSON array')
+                    for item in sequence:
+                        self.remaining -= 1
+                        if self.remaining < 0: raise PolicyError('Candidate instruction budget exhausted')
+                        values[node.target.id] = item
+                        done, result = statements(node.body)
+                        if done: return done, result
                 elif isinstance(node, ast.Expr): evaluate(node.value)
             return False, None
         try:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import math
 from pathlib import Path
 import re
@@ -10,13 +11,27 @@ import re
 PHASES = {
     'context': '任务与约束读取',
     'orientation': '衣服方向判断',
+    'image_inspection': '图像结构识别与证据读取',
+    'observation_planning': '信息缺口与观察操作选择',
     'correspondence': '跨图与坐标对应',
     'candidate': '抓取候选评估',
     'motion_target': '目标点与运动方案',
+    'target_construction': '目标点构造',
+    'selection_check': '抓取点与目标点核验',
+    'evaluation_evidence': '评估证据读取与前后对应',
+    'acquisition_check': '抓取与提拉结果判断',
+    'transport_check': '搬运与放置结果判断',
+    'outcome_comparison': '衣物前后变化与任务进度判断',
+    'failure_diagnosis': '失败原因与不确定性整理',
+    'next_action': '后续动作或停止判断',
+    'mixed_visual_selection': '看图与选点交织（不可拆分）',
     'tool_recovery': '工具问题处理',
     'submission': '结果整理与提交',
 }
-PLANNING_CALLS = {'fold_supervisor', 'molmo_orientation', 'visual_planning', 'pixel_motion', 'skill_observation'}
+PLANNING_CALLS = {'fold_supervisor', 'molmo_orientation', 'visual_planning', 'pixel_motion', 'skill_observation',
+                  'reasoning_rollout', 'reasoning_optional_code', 'evaluation', 'acquisition_evaluation',
+                  'experience_update', 'hold_checkpoint', 'rgb_comparison'}
+PLANNING_CALLS.add('image_preparation')
 CATEGORIES = ('thinking', 'text', 'tool_arguments', 'tool_wait', 'response_wait', 'other')
 _MARKER = re.compile(r'^\[\[phase:([a-z_]+):(start|end)\]\]$')
 
@@ -27,9 +42,24 @@ Optional diagnostic phase timing (changes observability, not the task or schema)
 In public progress text, emit a standalone [[phase:NAME:start]] line BEFORE
 starting a task, and [[phase:NAME:end]] AFTER finishing that task. Names:
 context = reading task/constraints; orientation = garment orientation/left-right;
-correspondence = matching views/coordinate transforms; candidate = grasp selection;
-motion_target = destination/motion proposal; tool_recovery = handling tool errors;
+image_inspection = identifying visible cuffs, seams, edges and other image evidence;
+observation_planning = choosing an observation/edit to resolve a specific information gap;
+correspondence = matching views/coordinate transforms;
+candidate = comparing/selecting grasp candidates using identified evidence;
+target_construction = constructing the destination from the intended fold and identified structure;
+selection_check = checking the selected grasp/destination against evidence and constraints;
+evaluation_evidence = reading before/after frames, lift stills or video and matching their roles;
+acquisition_check = assessing whether cloth was actually held/lifted;
+transport_check = assessing actual transport and laydown;
+outcome_comparison = comparing garment state and task progress before/after;
+failure_diagnosis = summarizing evidence-supported failure hypotheses and uncertainty;
+next_action = deciding the next action or whether to stop;
+mixed_visual_selection = inspecting images and selecting points when these cannot be separated;
+motion_target = subsequent motion proposal; tool_recovery = handling tool errors;
 submission = assembling/submitting the final schema.
+Distinguish obtaining visual evidence from choosing points based on that evidence ONLY when
+there is an actual observable task switch. Use mixed_visual_selection when inseparable.
+Do not label all image-bearing work orientation. These labels are not required stages.
 Mark only tasks actually performed, in their natural order. Do not add work just
 to fill phases. Keep one phase active at a time; end it before switching tasks.
 Revisiting a task uses another start/end pair with the same name. Keep tool use
@@ -170,11 +200,18 @@ def analyze_semantic_events(stdout, event_analysis=None):
     for row in complete:
         boundaries.update((row['start_s'], row['end_s']))
     points = sorted(boundaries)
+    timeline = []
     for start, end in zip(points, points[1:]):
         mid, duration = (start+end)/2, end-start
         category = next((k for k in CATEGORIES if any(a <= mid < b for a, b in intervals[k])), 'other')
         row = next((r for r in complete if r['start_s'] <= mid < r['end_s']), None)
         total = totals[row['phase'] if row else 'UNKNOWN']
+        phase = row['phase'] if row else 'UNKNOWN'
+        if timeline and timeline[-1]['phase'] == phase and timeline[-1]['category'] == category and timeline[-1]['end_s'] == start:
+            timeline[-1].update(end_s=end, duration_s=end-timeline[-1]['start_s'])
+        else:
+            timeline.append({'phase': phase, 'category': category, 'start_s': start,
+                             'end_s': end, 'duration_s': duration})
         total['wall_s'] += duration
         total[category+'_s'] += duration
         if row is not None:
@@ -182,12 +219,19 @@ def analyze_semantic_events(stdout, event_analysis=None):
     if not saw_timestamp:
         for total in totals.values():
             total.update(wall_s=None, **{k+'_s': None for k in CATEGORIES})
+    thinking_ends = [end for start, end in intervals['thinking']]
+    post_thinking = bool(complete and thinking_ends and
+                         all(r['start_s'] >= max(thinking_ends) for r in complete))
+    if post_thinking:
+        warnings.append('All measured phase markers follow the last observed thinking block; these are public declaration windows, not measured internal task reasoning durations.')
     return {'status': 'NO_TIMESTAMPS' if not saw_timestamp else
             'INVALID_TIMESTAMPS' if not valid_clock else 'NO_MARKERS' if not markers else
             'PARTIAL' if warnings else 'OBSERVED',
             'elapsed_s': last_t if saw_timestamp else None,
             'attribution': 'model_declared_public_phase_windows',
+            'phase_interpretation': 'POST_THINKING_DECLARATION_WINDOWS' if post_thinking else 'DECLARED_WINDOWS_ONLY',
             'markers': markers, 'occurrences': occurrences, 'totals': list(totals.values()),
+            'timeline': timeline if saw_timestamp and valid_clock else [],
             'warnings': warnings,
             'notes': [
                 'Phase labels are model declarations, not verified internal reasoning topics.',
@@ -202,6 +246,18 @@ def analyze_semantic_events(stdout, event_analysis=None):
 def write_semantic_report(directory, calls):
     directory = Path(directory)
     (directory/'semantic_timing.json').write_text(json.dumps(calls, ensure_ascii=False, indent=2)+'\n')
+    # UTF-8 BOM permits direct opening in Excel without garbling Chinese labels.
+    for filename, key, columns in (
+        ('semantic_timing.csv', 'totals', ['phase', 'label', 'status', 'visits', 'wall_s',
+                                         *(c+'_s' for c in CATEGORIES)]),
+        ('semantic_timeline.csv', 'timeline', ['phase', 'category', 'start_s', 'end_s', 'duration_s'])):
+        with (directory/filename).open('w', encoding='utf-8-sig', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=['span_id', 'stage', 'iteration', 'trace', *columns],
+                                    extrasaction='ignore')
+            writer.writeheader()
+            for call in calls:
+                for row in call.get('semantic', {}).get(key, []):
+                    writer.writerow({**{k: call.get(k) for k in ('span_id', 'stage', 'iteration', 'trace')}, **row})
     lines = ['# Claude 声明的任务阶段耗时', '',
              '诊断模式保留单次调用，增加公开阶段标记，可能影响模型行为和耗时。',
              '阶段标签由模型声明；thinking 是流式块的观测窗口，不是内部纯计算时间。',

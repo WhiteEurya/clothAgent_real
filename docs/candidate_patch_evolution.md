@@ -201,3 +201,279 @@ python -m cloth_agent.harness.patch_lifecycle freeze \
 新增 43 个合成/mock 测试，相关回归合计 178 passed；生成到候选目录的独立 pytest 包装另测 2 passed。完整测试为 1376 passed、21 failed、2 skipped；未修改 HEAD `94701ff` 为 1333 passed、21 failed、2 skipped，失败 test ID 集合完全一致。
 
 实际重新收集 `fold_20260924T014204289928777Z`，仍因 `/mnt/newssd` 未挂载而发现 0 条决策。新入口在调用 Claude 前明确返回 BLOCKED；没有真实生成 patch、速度收益、共识或 working/frozen 实验结论。审计文件位于 `results/patch_evolution_20261003_preflight/verification.json`，本次新 manifest 为该目录下 `collection/manifest.json`，入口结果为 `fresh_preflight/blocked.json`。
+
+## 快速单补丁实验：耗时优先
+
+诊断和实现阶段明确以降低完整 replay 墙钟耗时为目标，涵盖观察调用、图片传输、Host 处理和全部规划阶段；token 与调用次数作为次要指标记录。诊断请求包含 `optimization_objective`、`evaluation_policy`（提速门槛、共识要求、重复次数），报告也保存目标。要求解释省掉或替代哪些工作，不因答案分歧自动增加阶段，也不能为赶时间隐藏真正的信息缺口。具体补丁方向仍由 Claude 选择，不强制生成源码。
+
+`--patches 1` 默认要求两个版本形成共识；其他设置仍默认三个。可用 `--min-harnesses` 显式覆盖，该值不会被自动降低。单次试跑只用于探索性比较，不能衡量重复稳定性。候选仍须测试通过、与基线满足共识条件、真实测量且达到默认 10% 提速，才可能标记 WORKING；正确性与物理效果未因此得到证明。
+
+```bash
+/home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.harness.patch_evolution \
+  --evidence results/reasoning_k3_prepared_20261003/evidence/evidence.json \
+  --output "results/patch_opt1_$(date +%Y%m%d_%H%M%S)" \
+  --patches 1 --repeats 1 \
+  --backend remote --ssh-host company-planner \
+  --max-calls 15 --max-seconds 1800 \
+  --call-timeout 300 --replay-timeout 900
+```
+
+顺序是基线一次、诊断提案一次、实现一次、测试、新方案一次。基线/新方案各包含观察和规划调用，单阶段正常路径共六次模型调用；没有自动增加重复次数。基线失败或测试拒绝会提前停止相应路径。仅使用保存图片，不执行机器人，不设置 token 上限。
+
+## 简化实验前置拦截（2026-10-04）
+
+当前补丁实验调整如下（以本节为准）：
+
+- 不再要求每个 UNKNOWN 配一个观察请求。所有信息缺口原样交给规划阶段，由模型判断哪些真正阻止当前 RGB 视觉决策；物理执行验证可作为 residual_uncertainty。真正阻塞的缺口仍必须输出 NEEDS_LEARNING，不能自动清空或标成已知。
+- 不再用最终 concept 名称是否完全等于缺口 ID 判断任务完成。仍检查输出结构、图片引用、候选身份、坐标和 READY/missing_information 一致性。语义正确性需另行核对，不由字段名证明。
+- 观察请求数量上限从 3 调整为 12，与信息条目上限一致；实际图像操作仍受 max-host-ops 约束，一个视图可以供多个信息任务使用。
+- 补丁 replay 启用重复观察复用：相同操作链只生成一次图像，后续请求复用同一 image ID 并记录 reused_image_ids，不增加图像操作数，不把复用计成新的独立证据。旧 information_flow 的补充观察停止策略不变。
+- SKILL_CODE/NEW_TOOL 可配套更新观察和规划提示；所有变化写入 config/diff，评价的是整个补丁，不再声称隔离了代码贡献。既有代码执行范围、图像坐标检查和版本约束不变。
+
+保留最终筛选：测试通过、相同决策前输入、有效规划、基线与候选共识、最低成本及默认至少 10% 总耗时改善。基线真正失败仍不进入炼化。图片身份、坐标对齐、输入不可覆写、执行资源上限与受限代码解释器继续保留。
+
+### KNOWN 附带缺失信息说明：非阻塞提示
+
+`KNOWN` 的 `missing_information` 非空不再直接拒绝。观察原文保留在 `observation.json`；`information_validation.json`、replay 结果和事件日志记录 `KNOWN_WITH_MISSING_INFORMATION`，并将原文与提示一起交给后续规划。提示要求区分“无缺失”的解释、对其他信息项的引用和真实阻塞缺口，不自动清空字段或把未知变为已知。真正阻塞的视觉问题仍应由规划返回 NEEDS_LEARNING。
+
+没有图片依据、引用不存在图片、空 finding、结构错误等仍拒绝；最终规划的 READY/action/missing_information 一致性与补丁筛选条件未放宽。
+
+### 提案引用的轻量规范化
+
+诊断 schema 将 evidence_rollouts 限定为本轮实际 rollout ID；可选 evidence_explanation 保存解释。Host 兼容带说明的旧引用：仅在词边界明确且唯一对应一个已知 ID 时提取并去重，原文及无法解析的条目记录在 citation_audit.json，并作为补充说明传给实现阶段。图片说明不冒充 rollout 引用。proposal.json 保留模型原始返回，proposal_normalized.json 保存真正送入实现的提案。
+
+至少一个有效引用时继续；全部无法解析时最多进行一次 patch_citation_repair，只修正引用字段，不重跑基线、诊断或改变其他提案字段。修正仍无支持记录则停止该候选；调用计入原有时间、调用数与 token 统计。引用身份有效不代表引用中的因果解释已经验证。
+
+### 已知信息也可以请求辅助图像操作
+
+KNOWN/UNKNOWN 只描述信息状态，不再作为 Host 图像操作的权限条件。请求的 gap_id 必须对应已有信息项，但可以针对 KNOWN 执行转正、放大等辅助操作；expected_information_gain 说明预期用途。观察提示同步说明这一点，不要求模型为操作而把 KNOWN 改为 UNKNOWN。
+
+execution.json 每条历史增加 information_status_at_request，保留发起时状态，便于之后评估该操作是否多余。原始信息不改写。未知信息 ID、无效图像/参数、坐标对齐、操作预算和最终补丁筛选继续保留。
+
+### Observation source lineage
+
+Observation requests may reference any available catalog image, including overlays,
+references, and intermediate crop/rotate/resize outputs. ROI coordinates are local
+normalized coordinates of the selected image, not coordinates of the original.
+Every executed intermediate is published in the catalog with `parent_image_id`,
+`original_image_id`, operation/arguments, `to_parent`, `to_original`, and the full
+lineage. Derived reference images retain their reference identity; processing does
+not turn reference geometry into current-scene geometry.
+
+Single-view recipes process the chosen image. Paired clean/overlay recipes replay
+the selected view's operation chain on the aligned counterpart before applying the
+new recipe. Unknown sources, changed pixels, unaligned pairs, and resource limits
+remain errors. Only existing catalog IDs can be requested; dependent requests use
+the IDs returned by a previous host execution, not guessed future IDs. Planning
+evidence includes the lineage as well as the final affine mapping.
+
+### Combined orientation and measured implementation scope
+
+The built-in orientation recipe accepts optional ROI and enlargement: crop in the
+selected source coordinates, rotate clockwise, then enlarge if useful. Null ROI
+preserves full-view rotation. Each operation retains its own affine lineage. An
+unsupported generated recipe returning null now reports the skill and parameters
+instead of a generic JSON object error.
+
+Replay metrics include `exclusive_phases_s`: observation call, Host dispatch,
+planning, and other work, whose sum equals `elapsed_s`. Planning submetrics and
+Host compute are nested measurements, not additional elapsed time. The diagnosis
+prompt explicitly explains this and distinguishes aggregate model calls from
+observation rounds. Failed/incomplete replays have no latency-reduction score.
+
+Each candidate now records `implementation_effects.json` computed from actual
+config/source differences. This reports prompt changes, topology, enabled skills,
+and generated skill code. The existing isolated contract cannot edit Host dispatch;
+writing a merging/dispatch policy into a prompt does not implement a deterministic
+Host gate. This is disclosed to both proposal and implementation calls and in the
+report without adding a prose-based rejection rule. Proposed speedups remain
+unverified until a complete candidate replay.
+
+### Complete baseline first; reuse completed measurements
+
+Patch replays no longer abandon the whole observation batch when its estimated
+operation count exceeds the Host limit. In request order, the Host executes whole
+requests that fit (including exact-cache reuse); overflow is recorded as DEFERRED
+with no delivered evidence. Planning receives executed views and the explicit
+unexecuted requests, and decides whether information is sufficient. There is no
+forced READY or fabricated observation. This behavior applies equally to baseline
+and candidate. Legacy information-flow batch behavior is unchanged.
+
+The CLI now defaults to a verified baseline cache at
+`<output-parent>/.patch_baseline_cache`. The first complete READY baseline is saved
+before optimization begins, so a later candidate failure does not lose it. Reuse
+requires matching evidence/task, baseline bundle, runtime code, model configuration,
+repeat count and execution limits; copied artifacts are checked by file hashes.
+The cache key uses the configured model selection, so use an explicit model or a
+fresh run if the provider's implicit default changes. Failed baselines are not
+cached as successful measurements. Candidate observation/planning still receives
+only the same pre-decision evidence, not the cached baseline's answer.
+
+Use `--baseline-cache-dir PATH` to select a cache or `--no-baseline-cache` for fresh
+measurements. A hit preserves original timing for comparison and is marked
+historical, never a new independent sample. Current-run call/token totals and
+replay/Host totals exclude the copied historical artifacts; cached baseline time
+is reported separately. Cache write failure does not cancel a valid experiment.
+
+### Fixed-observation comparison for planning-only changes
+
+When observation instruction, enabled skills and registry hashes are unchanged,
+candidate replay copies the corresponding baseline `prepared/` package verbatim
+and invokes only the candidate reasoning harness. Its original/derived image IDs,
+lineage, information gaps and Host history are identical. The baseline's final
+answer and reasoning are never passed to candidate planning. Observation-changing
+patches still run a fresh observation pipeline.
+
+`observation_reuse` identifies the reused baseline and evidence hash. Current
+`elapsed_s`, calls and tokens measure only work actually performed. Promotion also
+reports baseline and candidate planning seconds. Consensus/promotion total-time
+comparison uses `comparison_elapsed_s`: shared baseline non-planning cost plus new
+planning cost. This is explicitly a reconstructed total, not an independently
+measured end-to-end speedup. Failed candidates still have no latency-reduction score.
+
+For an already completed historical run, including across runtime updates, use
+`--reuse-baseline-run results/patch_opt1_20261004_164702` with matching original
+model/time-limit settings (`--call-timeout 600 --replay-timeout 900 --max-host-ops 12
+--repeats 1`). Evidence, baseline bundle, settings, result and prepared image hashes
+are checked before reuse. A mismatch fails without silently rerunning a baseline.
+Historical measurements remain marked as such. This option skips baseline calls;
+it still generates a new proposal/implementation, and planning-only candidates
+then need just one planning call for the default single-stage harness.
+
+### Live remote diagnostics and timeout recovery
+
+Remote CLI nonterminal JSONL events now stream immediately, with timestamps from
+the remote monotonic clock; raw output is still spooled for audit. Terminal results
+are released only after complete-stream and process-exit validation. Partial events
+on timeout do not count as a completed planning result. Retry events (including
+status and attempt) and token/text/tool event types are preserved in the local
+`transport/claude_events.jsonl` and `stdout.log` as they arrive.
+
+`stderr.log` also contains `__CLOTH_PROGRESS__` diagnostics: CLI start, a five-second
+heartbeat with event count, last event type and idle seconds, and CLI finish with
+exit code and terminal availability. These describe observable CLI activity, not
+internal model reasoning. A silent interval alone cannot distinguish upstream
+queueing from other provider waits. Invalid output bytes are retained as base64
+diagnostic records, never parsed as successful model output.
+
+Remote work has a deadline shorter than the local SSH wait (30 seconds reserved
+for a 600-second call, scaled down for short calls). Download/setup time is deducted
+before launching CLI; GNU timeout terminates the CLI before the local waiter,
+allowing partial diagnostics and status to return. If local SSH still times out,
+all already received streams are flushed and saved as `claude_stdout.txt` and
+`claude_stderr.txt` as well as the streaming logs. A dropped connection can still
+prevent delivery; no fabricated completion or inference-time attribution is made.
+
+### Capability-aware generation and one local implementation repair
+
+Diagnosis and implementation now receive the explicit editable runtime contract.
+Stage context refers only to earlier reasoning stages; observation evidence is
+already supplied directly. Session continuation, provider cache controls, and
+transport/dispatcher edits are not implemented by writing stage names or prompts.
+`stage_costs` separates whole-replay counters from planning counters and calculates
+observation counters as their difference; output tokens already include thinking.
+
+Candidate structural validation runs without creating bundle/source files. On a
+structural error there is one bounded `patch_implementation_repair` call with the
+original proposal, initial implementation, exact error, schemas and capabilities.
+It does not repeat baseline or diagnosis. Both initial and repaired artifacts are
+kept. If preserving the proposed mechanism requires an unavailable runtime API,
+the repair returns NEEDS_RUNTIME_SUPPORT instead of silently deleting references
+and presenting an unrelated prompt as an implementation. A repaired candidate
+still passes the same deterministic gates and actual replay before evaluation.
+
+### Proposal transport and retrying a saved candidate
+
+The proposal transport represents `must_preserve` as one quoted string, avoiding
+provider/tool-call failures from unquoted repeated long prose array entries. Host
+normalization preserves its contents in the canonical list representation; both
+transport and canonical proposal artifacts remain available. This changes output
+representation, not policy constraints or the allowed optimization mechanisms.
+
+Use `--retry-candidate <old-run>/candidates/patch_00` together with
+`--reuse-baseline-run <baseline-run>` and `--patches 1` to re-evaluate an already
+materialized, tested candidate. The seal, baseline bundle and input evidence must
+match. Diagnosis and implementation calls are skipped; deterministic checks are
+rerun. For a planning-only candidate this makes exactly one new planning call.
+The old run is preserved and the new output directory contains its own complete
+result. Do not re-generate candidates merely to recover from provider timeouts.
+
+### Sequential feedback for unattended offline runs
+
+Each candidate now writes `feedback.json` with its actual implementation, replay actions,
+measured phase costs, failure details, and provisional promotion checks. Before generating
+another candidate, the runner writes `diagnosis_context.json` containing all completed
+rollouts and previous feedback. Diagnosis can cite prior candidate rollout IDs; implementation
+also receives the feedback so it can revise earlier code/configuration. Provisional consensus
+is explicitly provisional and is recomputed at the end. Failed execution is never a speedup.
+
+The baseline remains fixed for comparison. Each implementation is a complete replacement
+relative to that baseline, not a diff blindly applied to the previous candidate. Earlier
+answers are supplied only to optimization calls, never to the evaluated planner.
+
+`--max-consecutive-failures` defaults to 3. Consecutive generation/validation failures or
+ERROR/BUDGET_EXHAUSTED replays stop further candidates. A completed valid replay resets the
+streak even if it is slow or not promoted. Existing finite call/time/operation limits remain;
+tokens are counted without adding a token budget. Reports and candidate files stay in the
+experiment directory; there is no automatic production activation or robot execution.
+
+Example: reuse the historical baseline and explore up to five candidates, one replay each:
+
+```bash
+/home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.harness.patch_evolution \
+  --evidence results/reasoning_k3_prepared_20261003/evidence/evidence.json \
+  --reuse-baseline-run results/patch_opt1_20261004_164702 \
+  --output "results/patch_iter5_$(date +%Y%m%d_%H%M%S)" \
+  --patches 5 --repeats 1 \
+  --backend remote --ssh-host company-planner \
+  --max-calls 25 --max-seconds 7200 \
+  --call-timeout 600 --replay-timeout 900 \
+  --max-host-ops 12 --max-consecutive-failures 3
+```
+
+This is an exploratory search, not a repeatability/physical accuracy test. CLI exit code 2
+can mean a completed search with NO_PROMOTION; inspect report status, stop_reason and rollout
+statuses before treating it as a crash.
+
+Transport stderr embedded in failure reasons is summarized before entering later prompts;
+full raw errors remain in the report and transport files. This prevents repeated heartbeat
+logs from exhausting the prompt limit. Semantic findings and implementations are not truncated.
+The capability description explicitly limits each code candidate to one concrete skill ID.
+
+After a run has terminated, `--resume-run <previous-output>` continues its completed candidate
+history in a fresh output directory. Keep the evidence, baseline, model, repeats and replay
+settings identical; `--patches` is the desired total candidate count, including imported ones.
+A final prompt-limit stop before any proposal is retried at that index. Candidate seals are
+verified, histories copied for audit, and imported calls/timing are excluded from new totals.
+The consecutive-failure streak starts fresh on an explicit resume. A source report still in
+progress is refused. This option is separate from `--retry-candidate`, which only evaluates
+one previously generated candidate again.
+
+### Experience reflection without optimization
+
+Use `python -m cloth_agent.harness.experience_review --run <experiment-directory> --output <new-directory>`
+to summarize saved experience rather than generate/evaluate faster candidates. Default backend is remote;
+`--ssh-host`, `--model`, `--call-timeout` and `--prepare-only` are supported. One text-only Claude call
+receives operation traces, reported judgments, actual implementations, and failure summaries. No image
+upload, baseline/replay invocation, latency gate, candidate promotion or skill activation occurs.
+
+Outputs: `context.json`, exact `prompt.txt`, `schema.json`, raw call artifacts, `experience.json`,
+`experience.md`, and `report.json` with elapsed time and token accounting. Each lesson declares its
+information need, method, success_check, on_insufficient, evidence.supported_by/failed_in/unresolved,
+and limitations. Citation IDs must exist in the input. Evidence describes information acquisition,
+not physical grasp outcomes; a saved READY result does not certify visual truth. This is a draft text
+review, not an independent visual assessment or an automatically approved skill. The older optimization
+entry point remains available explicitly via patch_evolution.
+# Reasoning 经验实验模式
+
+`--learning-mode experience --reasoning-record <reasoning_experience目录>` 在原有
+diagnose → implement → materialize → gates → replay → feedback 链路中运行一次经验实验。
+配合 `--reuse-baseline-run`、`--patches 1 --repeats 1` 跳过重复 baseline，并直接复用其预决策图片包。
+新的 reasoning 记录与审核意见只进入诊断；历史 action 不进入候选执行输入。
+
+该模式要求 reasoning-only HARNESS 补丁，保持图像处理配置不变，并实际绑定 Host Python 算子。
+产物是可执行 harness 程序及参数绑定，复用已有 `reflect_point` / `affine_point` / `rank_candidates`
+实现；不是新生成 Python 算子源文件。缺少运行时支持的计算不能仅靠文字声称已实现。
+补丁经过原有本地检查后重跑；结果记录具体 Host 输入、输出及状态，时间和 token 仅用于统计。
+不执行 latency promotion、不自动修改正式 skill。`TESTED` 表示至少一个 Host 算子实际计算，
+不是视觉正确性认证；planning_statuses 仍单独记录 READY / NEEDS_LEARNING / ERROR。

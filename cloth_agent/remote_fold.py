@@ -276,10 +276,12 @@ def compile_pixel_motion(payload, visual, grounding, robot_config, upright_size)
 class RemoteFoldClient(ClaudeAutoClient):
     """Use the parent's local selection/reselection gates with remote model stages."""
 
-    def __init__(self, *, backend: RemoteClaudeBackend, observation_skill_path=None, **kwargs):
+    def __init__(self, *, backend: RemoteClaudeBackend, observation_skill_path=None, two_stage_vision=False, **kwargs):
         kwargs["persistent_session"] = None  # Company CLI calls are stateless.
         super().__init__(**kwargs)
         self.backend = backend
+        self.two_stage_vision = two_stage_vision
+        self._prepared_vision = None
         self._remote_context: dict[str, Any] | None = None
         self._remote_images: list[Path] = []
         self.diagnostics_dir: Path | None = None
@@ -300,6 +302,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         self.last_grounding_verification = None
         self._remote_context = None
         self._remote_images = []
+        self._prepared_vision = None
         if workspace_recovery is not None and workspace_recovery.required:
             raise ExplorationPlanningError("remote fold does not support metric workspace-recovery requests")
         images = rgb_evidence(image_paths, session.run_dir)
@@ -388,12 +391,23 @@ class RemoteFoldClient(ClaudeAutoClient):
     @timed_stage('remote_fold.RemoteFoldClient._ask')
     def _ask(self, stage, context, schema, images, root, instructions, *, image_edit_limit=None):
         evaluation_stage = stage in {'evaluation', 'acquisition_evaluation', 'experience_update'}
+        readonly = self.two_stage_vision and stage in {'visual_planning', 'pixel_motion', 'height_retry'}
+        if readonly:
+            image_edit_limit = 0
         instructions = instructions.replace('with [u,v] in the CURRENT upright RGB for transport destinations.',
             'with image_id naming the exact source RGB/view and pixel_xy in that view; the host maps transport destinations.')
         instructions = instructions.replace(
             'left/right refer to that displayed image, not anatomy.',
             'left/right are garment-relative; Claude determines them from the current RGB.')
         instructions += ' ' + CLAUDE_FOLD_RULE
+        if readonly:
+            instructions += '\nREAD-ONLY REASONING: image preparation is complete. Read supplied original/prepared views and findings. No crop, rotate, resize, observe_information, or new image acquisition. If a blocking gap remains, report it; never invent image evidence or coordinates.'
+            schema = {'type': 'object', 'additionalProperties': False,
+                'properties': {'reasoning_status': {'enum': ['READY', 'INSUFFICIENT']},
+                    'missing_information': {'type': 'array', 'items': {'type': 'string', 'minLength': 1}},
+                    'result': {'anyOf': [schema, {'type': 'null'}]}},
+                'required': ['reasoning_status', 'missing_information', 'result']}
+            instructions += '\nWrap the requested task result in result. READY requires a complete result and empty missing_information. If fixed images cannot support the decision, return INSUFFICIENT, result=null and concrete missing_information; do not request edits.'
         from .model_context import compact_context
         context = compact_context(context)
         files = {}
@@ -409,6 +423,7 @@ class RemoteFoldClient(ClaudeAutoClient):
         diagnostics = getattr(self, "_call_diagnostics", None)
         invocation = {"stage": stage, "evidence_images": [str(p) for p in images], "status": "RUNNING"}
         image_debug = debug_directory(images, diagnostics or root, stage)
+        self._last_image_debug = image_debug
         invocation["image_debug_directory"] = str(image_debug)
         manifest = diagnostics / f"{stage}_invocation.json" if diagnostics is not None else None
         if manifest is not None:
@@ -417,12 +432,24 @@ class RemoteFoldClient(ClaudeAutoClient):
             result = self.backend.invoke(prompt=prompt, image_paths=images, schema=schema, context_files=files,
                 usage_run_dir=root, usage_stage=stage,
                 debug_dir=image_debug,
-                information_tools=(stage == 'visual_planning' and self.observation_skill is not None),
+                information_tools=(stage == 'visual_planning' and self.observation_skill is not None and not readonly),
                 image_edit_limit=(2 if evaluation_stage else 6) if image_edit_limit is None else image_edit_limit,
                 max_turns=8 if evaluation_stage else None,
                 timeout_s=self.grounding_timeout_s if stage == "pixel_motion" else self.timeout_s,
-                system_prompt="You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
+                system_prompt=("You are a garment reasoning assistant. Inspect supplied RGB using view_image. Image editing is disabled. " if readonly else
+                    "You are a garment reasoning assistant. Inspect RGB using view_image and the images returned directly by editing tools. ")+
+                    "Claude decides semantic targets; Molmo annotations are optional hints. Follow the response schema's image_id/pixel source contract exactly; the host performs coordinate transforms and safety checks. Return only the requested JSON. No robot access.")
             payload = parse_claude_json(result.stdout)
+            if readonly:
+                from jsonschema import Draft202012Validator
+                Draft202012Validator(schema).validate(payload)
+                if payload['reasoning_status'] == 'INSUFFICIENT':
+                    if payload['result'] is not None or not payload['missing_information']:
+                        raise ExplorationPlanningError('Invalid insufficient-evidence response')
+                    raise ExplorationPlanningError('READ_ONLY_REASONING_INSUFFICIENT: '+'; '.join(payload['missing_information']))
+                if payload['result'] is None or payload['missing_information']:
+                    raise ExplorationPlanningError('READY reasoning requires result and no blocking gaps')
+                payload = payload['result']
         except Exception as exc:
             invocation.update(status="FAILED", error=f"{type(exc).__name__}: {exc}",
                               timings=getattr(exc, "timings", {}), duration_s=time.monotonic() - started,
@@ -445,6 +472,22 @@ class RemoteFoldClient(ClaudeAutoClient):
                 "status": "COMPLETED", "response": payload}, indent=2), encoding="utf-8")
         return payload, result, prompt, time.monotonic() - started
 
+    @timed_stage('planning.image_preparation')
+    def _prepare_visual_evidence(self, context, images, root):
+        from .visual_preparation import PREPARATION_SCHEMA, PREPARATION_INSTRUCTIONS, build_handoff, snapshot_preparation
+        instructions = PREPARATION_INSTRUCTIONS
+        if self.observation_skill is not None:
+            from .harness.information_probe import compact_skill
+            instructions += '\nOptional observation methods (not current scene facts):\n'+json.dumps(compact_skill(self.observation_skill), ensure_ascii=False)
+        payload, result, _, _ = self._ask('image_preparation', context, PREPARATION_SCHEMA,
+                                          images, root, instructions, image_edit_limit=6)
+        debug = Path(self._last_image_debug)
+        try:
+            return build_handoff(payload, result.image_sources, images, debug,
+                                 debug/'prepared_handoff')
+        finally:
+            snapshot_preparation(debug, images, context, payload)
+
     @timed_stage('remote_fold.RemoteFoldClient._visual_plan')
     def _visual_plan(self, image_paths, base_prompt, run_dir):
         if self._remote_context is None:
@@ -458,7 +501,14 @@ class RemoteFoldClient(ClaudeAutoClient):
                                     for r in self.last_rejected_visual_references]}
         instructions = "Select one visible Camera-A Rxxx marker for the exact current task. The current RGB and marker overlay are rotated clockwise90 upright; left/right refer to that displayed image, not anatomy. Flat reference images are topology references only. If fold_state_reference is present, its source/target images are static cross-garment visual examples of the requested state transition. Use them only for semantic fold geometry and the desired target state; never copy their pixels, scale, grasp points, depth, XYZ, or robot coordinates. All executable points must come from the current Camera-A RGB and current Rxxx overlay. Do not choose an already rejected marker. Describe your motion strategy and expected physical evidence. Do not output XYZ or actions."
         images, edit_budget = self._remote_images, 6
-        if self.observation_skill is not None:
+        if self.two_stage_vision:
+            self._prepared_vision = None
+            prepared, bundle, lineage, aliases = self._prepare_visual_evidence(context, images, run_dir)
+            self._prepared_vision = (prepared, bundle, lineage, aliases)
+            images, edit_budget = prepared, 0
+            context['images'] = image_manifest(images, 'current/reference RGB or prepared view; see coordinate_lineage')
+            context['prepared_visual_evidence'] = bundle
+        elif self.observation_skill is not None:
             from .visual_skill_observation import inline_observation_policy
             # Same original model call and tool budget as the control arm.
             # Host image tools return pixels into this ongoing conversation.
@@ -482,6 +532,13 @@ class RemoteFoldClient(ClaudeAutoClient):
             "repair_requested": "HOST VALIDATION CORRECTION" in objective,
             "repair_category": rejection_category(objective.split("HOST VALIDATION CORRECTION", 1)[1])
                                if "HOST VALIDATION CORRECTION" in objective else None}
+        motion_images = self._remote_images
+        if self.two_stage_vision:
+            if self._prepared_vision is None:
+                raise ExplorationPlanningError('Read-only motion reasoning requires prepared visual evidence')
+            motion_images, bundle, _, _ = self._prepared_vision
+            context['prepared_visual_evidence'] = bundle
+            context['images'] = image_manifest(motion_images, 'current/reference RGB or prepared view; see coordinate_lineage')
         context["transport_guidance"] = (
             "Prefer xy_eligible_transport_pixels_upright for transport destinations. These are image-plane "
             "samples which passed local XY limits only, not final height, yaw or IK approval. "
@@ -510,7 +567,7 @@ class RemoteFoldClient(ClaudeAutoClient):
             "physical_contact": "UNKNOWN", "observed_compression_mm": None,
             "instruction": "Use default_descent_mm as the initial contact_descent_mm when permitted by the contact Z floor. Choose a different value only with an explicit evidence-based reason or to satisfy the floor. Estimated depth and configured sponge are not contact evidence."}
         payload, result, prompt, duration = self._ask("pixel_motion", context, MOTION_SCHEMA,
-            self._remote_images, session.run_dir,
+            motion_images, session.run_dir,
             "For FOLD and REPAIR_SLEEVE, the first move after closure must lift vertically at least 30 mm above the grasp. "
             "The host raises shorter positive vertical lifts to 30 mm and revalidates the full trajectory. "
             "Contact and lift photos are captured synchronously before the next robot action, for final evaluation; no model approval is required between actions. "
@@ -520,8 +577,12 @@ class RemoteFoldClient(ClaudeAutoClient):
             size = image.size
         compile_started = time.monotonic()
         try:
+            verified_sources = getattr(result, 'image_sources', ())
+            if self.two_stage_vision:
+                from .visual_preparation import reasoning_sources
+                verified_sources = reasoning_sources(verified_sources, self._prepared_vision[2], self._prepared_vision[3])
             canonical_payload, source_trace = resolve_motion_sources(payload, self._remote_images,
-                getattr(result, 'image_sources', ()))
+                verified_sources)
             (self._call_diagnostics / 'pixel_source_resolution.json').write_text(
                 json.dumps({'remote_motion': payload, 'canonical_motion': canonical_payload,
                             'resolutions': source_trace}, indent=2), encoding='utf-8')

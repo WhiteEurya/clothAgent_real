@@ -35,7 +35,7 @@ REQUEST = obj({
     'degrees_clockwise': {'enum': [0, 90, 180, 270]}, 'enlarge': {'type': 'boolean'},
     'expected_information_gain': {'type': 'string', 'minLength': 1},
 })
-REQUESTS = {'type': 'array', 'maxItems': 3, 'items': REQUEST}
+REQUESTS = {'type': 'array', 'maxItems': 12, 'items': REQUEST}
 GLOBAL_SCHEMA = obj({'information': STATE, 'observation_requests': REQUESTS})
 
 
@@ -46,7 +46,9 @@ def selection_schema(plan_schema, registry=None):
 
 
 def validate_state(state, catalog, previous=()):
+    """Reject invalid evidence bindings; report prose conflicts without rewriting them."""
     validate_schema(state, STATE)
+    warnings = []
     ids = [item['id'] for item in state]
     if len(ids) != len(set(ids)):
         raise PolicyError('Duplicate information ID')
@@ -59,10 +61,18 @@ def validate_state(state, catalog, previous=()):
         if not set(item['source_image_ids']) <= available:
             raise PolicyError('Information cites an unavailable image')
         if item['status'] == 'KNOWN':
-            if not item['finding'].strip() or not item['source_image_ids'] or item['missing_information'].strip():
-                raise PolicyError('KNOWN needs image evidence and a finding, without a remaining gap')
+            if not item['finding'].strip() or not item['source_image_ids']:
+                raise PolicyError('KNOWN needs image evidence and a finding')
+            if item['missing_information'].strip():
+                warnings.append({'code': 'KNOWN_WITH_MISSING_INFORMATION', 'information_id': item['id'],
+                    'missing_information': item['missing_information'],
+                    'instruction': 'Read this text in context: it may say no information is missing, '
+                        'refer to another item, or describe a real gap. Do not clear it automatically '
+                        'or treat KNOWN as proof. Resolve any decision-blocking contradiction with '
+                        'image evidence or report insufficient information.'})
         elif not item['missing_information'].strip():
             raise PolicyError('UNKNOWN must identify missing information')
+    return warnings
 
 
 from .executors.observation import RegisteredObservationHost as ObservationHost
@@ -76,7 +86,7 @@ def request_schema(registry=None):
 
 
 def requests_schema(registry=None):
-    return {'type': 'array', 'maxItems': 3, 'items': request_schema(registry)}
+    return {'type': 'array', 'maxItems': 12, 'items': request_schema(registry)}
 
 
 def global_schema(registry=None):
@@ -112,10 +122,12 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
             'Use all attached current roots and semantic references. Do not select a grasp or write a robot plan yet. '
             'Track each required information need as KNOWN (visible finding with image sources) or UNKNOWN '
             '(specific missing information). A visible negative finding can be KNOWN; unreadable is never absent. '
-            'Only request an operation if it can address a specific UNKNOWN gap. No arbitrary workflow generation. '
+            'Request operations tied to existing information items, whether KNOWN or UNKNOWN, when they '
+            'resolve a gap or simplify subsequent interpretation; explain the expected benefit. '
+            'Do not relabel a known fact as unknown merely to request image processing. '
             'Inventory, global layout and reference comparison use the supplied full images now; coordinate '
             'provenance is host-owned. Executable skills are listed below. ROIs always use normalized current '
-            'clean ROOT coordinates, even if orientation is also requested. Rotation preserves clean/overlay alignment. '
+            'selected source image coordinates, even if orientation is also requested. Rotation preserves clean/overlay alignment. '
             'If existing images suffice return no observation requests. If occlusion or missing sensor detail cannot '
             'be resolved by these methods, keep UNKNOWN and do not request repeated enlargement. '
             'Be concise. State contains only information needed for the current selection.\n')
@@ -131,7 +143,8 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
             report['global_understanding_s'] = time.monotonic()-t
         validate_schema(result, global_schema(host.registry))
         state = result['information']
-        validate_state(state, host.catalog)
+        state_warnings = validate_state(state, host.catalog)
+        report['information_warnings'] = list(state_warnings)
         requests = result['observation_requests']
         write_json(output/'global_result.json', result)
         while True:
@@ -147,6 +160,7 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
                 report.update(status='UNKNOWN', stop_reason='NO_SUPPORTED_OBSERVATION')
                 break
             bundle = {**shared, 'information': state,
+                      'information_warnings': state_warnings,
                       'information_authority': 'Model observations, not independently certified facts; correct contradictions with image evidence.',
                       'images': [{k:v for k,v in i.items() if k!='path'} for i in host.catalog],
                       'observation_results': host.history, 'observation_skills': skills,
@@ -176,7 +190,8 @@ def run_information_flow(case, images, artifact, output, *, model, model_name, t
             finally:
                 report['selection_s'] += time.monotonic()-t
             validate_schema(decision, selection_schema(case['schema'], host.registry))
-            validate_state(decision['information'], host.catalog, state)
+            state_warnings = validate_state(decision['information'], host.catalog, state)
+            report['information_warnings'].extend(state_warnings)
             state = decision['information']
             requests = decision['observation_requests']
             write_json(output/f'decision_{number}.json', decision)

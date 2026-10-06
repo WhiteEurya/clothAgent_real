@@ -209,8 +209,16 @@ class ImageDebugSession:
         self._last_snapshot = now
 
     def progress(self, stage, event, duration_s, details):
-        self.state["progress"].append(dict(stage=stage, event=event, duration_s=duration_s,
-                                          elapsed_s=time.monotonic()-self.started, **details))
+        # Keep local clock/identity fields authoritative; retain colliding source
+        # fields as diagnostics instead of crashing the model invocation.
+        reserved = {'stage', 'event', 'duration_s', 'elapsed_s', 'source_details'}
+        extra = {k:v for k,v in details.items() if k not in reserved}
+        collisions = {k:v for k,v in details.items() if k in reserved}
+        row = dict(stage=stage, event=event, duration_s=duration_s,
+                   elapsed_s=time.monotonic()-self.started, **extra)
+        if collisions:
+            row['source_details'] = collisions
+        self.state['progress'].append(row)
         if stage in {'claude_stream', 'claude_text'}:
             self.append_stream('claude_transcript.md',
                 f'## {stage} at +{time.monotonic()-self.started:.3f}s\n\n' +
@@ -399,6 +407,13 @@ class ImageDebugSession:
 
     def finish(self, status, error=None):
         self.state.update(status=status, error=error)
+        # A separate public-only export is consumable by learning without reading
+        # provider thinking blocks from the raw diagnostic stream.
+        try:
+            from .public_process import stream_process
+            self.write('public_process.json', stream_process(self.directory/'claude_events.jsonl'))
+        except Exception as exc:
+            self.state['errors'].append(f'Public process export: {type(exc).__name__}: {exc}')
         self.save_timings()
         self._match_reads()
         self.flush(force=True)

@@ -1,4 +1,4 @@
-"""Standalone remote CLI wrapper: spool, validate, then send compact JSONL."""
+"""Remote CLI wrapper: stream diagnostic events, spool raw output, validate terminal results."""
 import json
 import base64
 import os
@@ -45,6 +45,9 @@ def main(argv):
     if record_timing:
         argv = argv[1:]
     model_input = None
+    if argv and argv[0] == '--text-only':
+        argv = argv[1:]
+        model_input = multimodal_message(sys.stdin.read(), []).encode()
     if argv and argv[0] == '--direct-images':
         count = int(argv[1])
         if not 1 <= count <= 64:
@@ -62,65 +65,101 @@ def main(argv):
             (directory / name).write_text(content, encoding='utf-8')
         model_input = envelope['prompt'].encode('utf-8')
     raw = Path('claude_raw.jsonl')
-    event_times = []
-    with raw.open('wb') as output:
-        if not record_timing:
-            result = subprocess.run(argv, stdout=output, **({"input": model_input} if model_input is not None else {}))
-        else:
-            # Timestamp on the producer host before the validated spool is sent
-            # over SSH. These are CLI emission times, not internal model times.
-            started = time.monotonic()
-            process = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                       **({'stdin': subprocess.PIPE} if model_input is not None else {}))
-            def write_input():
-                try:
-                    process.stdin.write(model_input)
-                    process.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-            writer = None
-            if model_input is not None:
-                writer = threading.Thread(target=write_input, daemon=True)
-                writer.start()
-            for line in process.stdout:
-                if line.strip():
-                    event_times.append(time.monotonic() - started)
-                output.write(line)
-            process.stdout.close()
-            process.wait()
-            if writer is not None:
-                writer.join()
-            result = subprocess.CompletedProcess(argv, process.returncode)
-            print('__CLOTH_PROFILE__ ' + json.dumps({
-                'process_elapsed_s': time.monotonic() - started,
-                'terminal_event_elapsed_s': event_times[-1] if event_times else None,
-                'event_count': len(event_times),
-                'clock': 'remote_monotonic_cli_line_receipt'}), file=sys.stderr, flush=True)
-    # stdout now belongs only to this synchronous writer, not the model runtime.
-    os.set_blocking(sys.stdout.fileno(), True)
-    os.set_blocking(sys.stderr.fileno(), True)
+    started = time.monotonic()
+    state = {'event_count': 0, 'last_event_elapsed_s': None, 'last_event_type': None}
+    stopped = threading.Event()
+
+    def emit(payload, *, diagnostic=False):
+        stream = sys.stderr if diagnostic else sys.stdout
+        os.set_blocking(stream.fileno(), True)
+        prefix = '__CLOTH_PROGRESS__ ' if diagnostic else ''
+        print(prefix + json.dumps(payload, ensure_ascii=False, separators=(',', ':')), file=stream, flush=True)
+
+    def heartbeat():
+        while not stopped.wait(5):
+            elapsed = time.monotonic() - started
+            last = state['last_event_elapsed_s']
+            emit({'phase': 'waiting_for_cli', 'elapsed_s': elapsed, **state,
+                  'idle_s': elapsed - last if last is not None else elapsed}, diagnostic=True)
+
+    terminal = None
+    invalid = False
+    last_type = None
+    emit({'phase': 'cli_started', 'elapsed_s': 0., **state}, diagnostic=True)
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                               **({'stdin': subprocess.PIPE} if model_input is not None else {}))
+    def write_input():
+        try:
+            process.stdin.write(model_input)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+    writer = None
+    if model_input is not None:
+        writer = threading.Thread(target=write_input, daemon=True)
+        writer.start()
+    pulse = threading.Thread(target=heartbeat, daemon=True)
+    pulse.start()
     try:
-        events = [json.loads(line) for line in raw.read_text().splitlines() if line.strip()]
-        if not events or any(not isinstance(event, dict) for event in events) or events[-1].get('type') != 'result':
-            raise ValueError('missing terminal result')
-    except (ValueError, UnicodeError):
+        with raw.open('wb') as output:
+            for line in process.stdout:
+                output.write(line)
+                output.flush()
+                if not line.strip():
+                    continue
+                elapsed = time.monotonic() - started
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict):
+                        raise ValueError('CLI event must be an object')
+                except (ValueError, UnicodeError):
+                    invalid = True
+                    last_type = 'invalid'
+                    # Keep malformed bytes as diagnostics, never as a model result.
+                    emit({'phase': 'invalid_cli_line', 'elapsed_s': elapsed,
+                          'raw_base64': base64.b64encode(line).decode()}, diagnostic=True)
+                    continue
+                nested = event.get('event') if isinstance(event.get('event'), dict) else {}
+                delta = nested.get('delta') if isinstance(nested.get('delta'), dict) else {}
+                label = delta.get('type') or nested.get('type') or event.get('subtype') or event.get('type')
+                state.update(event_count=state['event_count']+1, last_event_elapsed_s=elapsed,
+                             last_event_type=label)
+                last_type = event.get('type')
+                if last_type == 'result':
+                    terminal = event
+                    continue
+                payload = compact(event)
+                if record_timing:
+                    payload = {**payload, '_cloth_timing': {
+                        'elapsed_s': elapsed, 'clock': 'remote_monotonic_cli_line_receipt'}}
+                emit(payload)
+        process.stdout.close()
+        process.wait()
+        if writer is not None:
+            writer.join(timeout=1)
+    finally:
+        stopped.set()
+        pulse.join(timeout=1)
+    emit({'phase': 'cli_finished', 'elapsed_s': time.monotonic()-started,
+          'returncode': process.returncode, 'terminal_received': terminal is not None, **state}, diagnostic=True)
+    if record_timing:
+        print('__CLOTH_PROFILE__ ' + json.dumps({
+            'process_elapsed_s': time.monotonic()-started,
+            'terminal_event_elapsed_s': state['last_event_elapsed_s'],
+            'event_count': state['event_count'],
+            'clock': 'remote_monotonic_cli_line_receipt'}), file=sys.stderr, flush=True)
+    if invalid or last_type != 'result' or terminal is None or process.returncode:
         saved = raw.resolve().parent.with_suffix('.failed.jsonl')
         raw.replace(saved)
-        print(f'REMOTE_OUTPUT_INVALID: exit={result.returncode}; raw={saved}', file=sys.stderr, flush=True)
-        return result.returncode or 65
-    if result.returncode:
-        saved = raw.resolve().parent.with_suffix('.failed.jsonl')
-        raw.replace(saved)
-        print(f'REMOTE_CLI_FAILED: exit={result.returncode}; raw={saved}', file=sys.stderr, flush=True)
-    print(f'REMOTE_OUTPUT_VALID: events={len(events)}', file=sys.stderr, flush=True)
-    for index, event in enumerate(events):
-        # Terminal payload is the authoritative result and must stay unchanged.
-        payload = event if event.get('type') == 'result' else compact(event)
-        if record_timing and event.get('type') != 'result':
-            payload = {**payload, '_cloth_timing': {
-                'elapsed_s': event_times[index], 'clock': 'remote_monotonic_cli_line_receipt'}}
-        print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')), flush=True)
-    return result.returncode
+        label = 'REMOTE_CLI_FAILED' if process.returncode and terminal is not None else 'REMOTE_OUTPUT_INVALID'
+        print(f'{label}: exit={process.returncode}; raw={saved}', file=sys.stderr, flush=True)
+        # A terminal-looking object from a failing process is diagnostic only.
+        if terminal is not None:
+            emit({'phase': 'unaccepted_terminal', 'result': terminal}, diagnostic=True)
+        return process.returncode or 65
+    print(f'REMOTE_OUTPUT_VALID: events={state["event_count"]}', file=sys.stderr, flush=True)
+    emit(terminal)
+    return 0
 
 
 if __name__ == '__main__':

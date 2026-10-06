@@ -1,5 +1,44 @@
 # Fold 远程 Claude 桥接
 
+## 当前默认：图像准备与只读推理解耦
+
+实机 CLI 默认开启 `--two-stage-vision`（remote 后端），`--no-two-stage-vision` 可恢复旧的混合观察/选点模式。
+Python API 为兼容已有离线调用保留旧默认；直接创建 `RemoteFoldClient` 或 `FoldExplorationPipeline` 时显式传 `two_stage_vision=True`。
+
+1. `image_preparation`：Claude 根据当前任务自主查看、裁剪、旋转、缩放，直到认为证据足以支持抓取点和目标点选择。
+   不规定编辑顺序或最低编辑次数；沿用最多 6 次编辑和调用时限。原图已足够时可以不编辑。
+   返回 READY/INSUFFICIENT、选中的视图、带图片引用的发现、充分性检查、缺失信息与剩余不确定性。
+   预算耗尽不等于准备成功，缺少必要证据必须返回 INSUFFICIENT。
+2. reasoning：原有 `visual_planning` 选择抓取点，`pixel_motion` 选择目标并提出动作序列。
+   这两个调用均接收原图、准备好的局部图及证据说明，仍可 Read/view_image，但编辑预算为 0，
+   工具列表和权限都不提供 crop/rotate/resize；复合编辑工具也未开启。两阶段是职责划分，不是总共只有两次 Claude 调用。
+   返回 READY 包裹原始结果，或 INSUFFICIENT + 具体缺口；证据不足时不会假装得到可执行点位。
+
+Host 验证选中视图的实际交付状态、本地重放像素哈希及源图片，保留完整父图引用链。
+reasoning 中追加图片的 image_N 与准备阶段 view_ID 映射保存在 `prepared_handoff/handoff.json`。
+目标点可以从已验证的中间图发起，但必须沿引用链回到当前干净 Camera-A RGB；参考图和标记图不能成为运动坐标来源。
+安全检查、workspace、depth、IK 和物理执行确认继续使用原流程。
+
+准备阶段产物：`image_preparation_invocation.json` 与对应 `claude_image_tools/image_preparation_*/prepared_handoff/`；
+里面保存实际准备图、发现、充分性检查和坐标链。原始编辑调用保留在该调用的 audit 中。
+计时里新增 `planning.image_preparation` 与 Claude 的 `image_preparation` 调用；后续 visual_planning、pixel_motion 分开记录。
+`_visual_plan` 的父阶段总时间仍包含图像准备，分析时不要再把子阶段叠加上去。
+
+提供 `--observation-skill` 时，方法提示只进入准备阶段；后续 reasoning 不再请求新的编辑。
+下文关于“同一次视觉调用内按 skill 编辑”的说明仅适用于 `--no-two-stage-vision` 的旧模式。
+
+显式开启新模式的单轮实机命令（会执行机器人）：
+
+```bash
+PYTHON=/home/sja/miniconda3/envs/cali/bin/python \
+  bash scripts/start_fold_exploration.sh \
+  --real --confirm-real --max-iterations 1 --no-unattended --no-inherit-experience \
+  --two-stage-vision --semantic-timing \
+  --timing-output "results/two_stage_iteration_timing_$(date +%Y%m%d_%H%M%S)"
+```
+
+准备充分是模型判断而非语义正确性保证；本模式会增加一次模型调用，是否加速和是否影响选点质量仍须实测。
+
 ## 原始主流程分阶段计时
 
 若只测试真实观察到运动代码生成，增加 `--real --confirm-real --stop-after-plan`。该模式允许移动到原有观察位并采集真实 RGB-D，沿原流程选择抓取点、确定目标点和编译运动代码；写出代码后立即以 `PLAN_GENERATED` 结束，不运行后续 preflight、控制器 IK、抓取/搬运、执行后评估或经验更新。`_execute` 另有拒绝执行的保护。输出 `generated_motion.py`、`planning_only.json`（含点位和 grounding）以及原始规划结果；代码生成不代表已经通过可执行性校验。
@@ -417,3 +456,45 @@ python -m cloth_agent.fold_reset --request /path/to/iteration_001/reset_request.
 启用 `--observation-skill` 后，仅原始 visual_planning 调用额外暴露 `observe_information`。请求携带 information_need、method、image_id、box、scale、degrees_clockwise、success_check、on_insufficient。local_boundary 将源图裁剪和已确定的显示缩放合并执行；orientation 旋转选定源图；inspect_view 返回现有视图。它们是按信息缺口选择的方法，不是必须依次执行的流程。
 
 Host 返回真实图片、可追溯坐标变换及 AWAITING_MODEL_ASSESSMENT；充分性仍由 Claude 判断。内部实际编辑共享原六次预算，操作和参数均写入审计。未启用 skill 时不暴露该工具，运动阶段仍使用原工具。底层工具保留给组合方法不能覆盖的观察，因此是否减少轮次必须由运行记录验证。
+
+### 单轮实机端到端详细计时（含执行与 evaluation）
+
+```bash
+cd /home/sja/clothAgent_real
+PYTHON=/home/sja/miniconda3/envs/cali/bin/python \
+  bash scripts/start_fold_exploration.sh \
+  --real --confirm-real --max-iterations 1 --no-unattended \
+  --planner-backend remote --remote-planner-host company-planner \
+  --semantic-timing \
+  --timing-output "results/full_iteration_timing_$(date +%Y%m%d_%H%M%S)"
+```
+
+这是完整实机动作试验，不能添加 `--stop-after-plan`。保留原有 preflight、控制器 IK、
+执行确认和失败停止行为；遇到原流程拒绝时不绕过，也不能保证一定执行到 evaluation。
+不使用离线 `reasoning_timing` 或 `patch_evolution`。原流程已有的经验更新/归档仍执行并计时，
+不增加额外的提炼实验。这里只提供入口，修改代码本身不会启动机器人。
+
+程序计时覆盖：观察位运动 → RGB-D 拍照 → 原图保存、定位/深度融合与规划图准备 →
+Molmo/朝向处理、supervisor → 上传每张图片、SSH/远程调用 → 视觉选点 → grounding/运动代码 →
+preflight/IK → move/open/close/lift/transport/release/home（以实际执行动作命名为准） →
+录像收尾等待 → 执行后拍照 → 视频证据准备 → evaluation → 后置 supervisor、经验记录及归档。
+
+新增或补齐的产物：
+
+- `host_spans.csv`：每个程序阶段的开始、包含时间、自身时间、iteration 和状态。
+- `host_timeline.json/csv`：本地主线程及已记录并发区间的不重叠墙钟分配；可相加回整个计时区间。
+  未插桩的工作保留在父阶段或 UNINSTRUMENTED；并发叶阶段标记 CONCURRENT，不能独立累加。
+- `milestones.csv`：原流程公开事件的时间戳，包括本轮开始、执行、评估返回和本轮结束；不将文字事件当成内部思考。
+- `claude_calls.json`：每次原始调用的流式事件分析，以及 transport/timing.json 中的图片上传、远端下载/校验和 CLI 计时。
+  transport 数据中的父子阶段重叠，不能与 Host 或模型表再相加。
+- `semantic_timing.json/md/csv`、`semantic_timeline.csv`：规划、evaluation、acquisition_evaluation、
+  experience_update 等远端调用的公开声明窗口。新增评估证据读取、抓取判断、搬运/放置判断、
+  前后变化、失败假设、下一步判断等标签，只标记实际进行的任务，不强制执行这些步骤。
+
+每次 Claude 调用都保留独立时钟，通过调用 span_id、stage、iteration、trace 关联。
+远端事件时钟与本地程序时钟不能直接相减。所有声明窗口若位于最后一个 thinking 块之后，
+报告明确标为 `POST_THINKING_DECLARATION_WINDOWS` 并显示警告：这些是输出/声明窗口，不是
+看图、选点或评估的内部计算耗时。只到达内存或批量发送的 thinking 时间不能恢复，保留 UNKNOWN。
+
+脚本的相机预设恢复和存储检查发生在 Python 计时入口之前；从移动观察位、拍照开始的本轮流程均在计时区间内。
+背景录像与机器人运动并行，不把整段录像时长额外累加；主流程等待录像结束的时间独立记录。

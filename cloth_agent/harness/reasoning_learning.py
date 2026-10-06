@@ -51,6 +51,12 @@ the CURRENT FULL CLEAN pixel frame; emit null for an unknown measurement. host_r
 computations from earlier measurements, not new visual evidence or proof of on-fabric validity. Reuse
 COMPUTED results rather than redoing their arithmetic. UNKNOWN results have no usable output: resolve
 the missing evidence or report NEEDS_LEARNING, never substitute invented geometry.
+Include a concise decision_log where evidence permits: the information need, actual observation or
+operation, source image/result IDs, factual result, and any candidate kept/rejected/selected with a
+brief evidence-based reason. Describe reported observations and decisions, not private thinking.
+Do not invent candidate comparisons or tool use to fill the log. Direct inspection is a model image
+assessment; it is not a Host crop or computation. Use depends_on only for explicit prior log records.
+These are provenance records, not a prescribed workflow and not measured per-step timing.
 '''
 REFLECT_CONTRACT = '''You are the runtime harness meta-agent. Your primary objective is to REDUCE total
 visual-planning wall-clock time while preserving decision quality and stability. Token usage and model
@@ -154,11 +160,14 @@ class CallBudget:
         if len(prompt) > self.prompt_chars:
             raise BudgetExceeded('PROMPT_BUDGET_EXHAUSTED; no silent truncation')
         images = verify_evidence(frozen, evidence_dir)
+        if getattr(model, 'text_only', False):
+            images = []
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
         # Saved even when model setup fails before RuntimeClaude creates its call folder.
         write_json(output.parent / (output.name + '_input.json'), {'stage': stage, 'prompt': prompt,
-            'schema': schema, 'evidence_hash': frozen['evidence_hash'], 'image_ids': [i['image_id'] for i in frozen['evidence']['images']]})
+            'schema': schema, 'evidence_hash': frozen['evidence_hash'],
+            'image_ids': [i['image_id'] for i in frozen['evidence']['images']] if images else []})
         self.attempts += 1
         self.debug.event('call_start', stage=stage, call_attempt=self.attempts,
                          evidence_hash=frozen['evidence_hash'], artifact=str(output), timeout_s=min(remaining, self.call_timeout))
@@ -194,10 +203,13 @@ class CallBudget:
             write_json(self.debug.output / 'token_budget.json', self.token_report())
 
 
-def call_metrics(calls, directory):
+def call_metrics(calls, directory, *, exclude_dirs=()):
     """Use terminal usage only; hidden/provider reasoning is never reconstructed."""
     usages, thinking = [], []
+    excluded = [(Path(directory)/name).resolve() for name in exclude_dirs]
     for path in sorted(Path(directory).rglob('stdout.jsonl')):
+        if any(path.resolve().is_relative_to(root) for root in excluded):
+            continue
         stdout = path.read_text()
         usages.append(parse_usage(stdout))
         try:
@@ -293,6 +305,12 @@ def run_rollout(version, frozen, evidence_dir, model, output, budget, *, rollout
         row['metrics']['host_operation_count'] = len(row.get('host_operations', []))
         row['metrics']['host_operation_seconds'] = sum(op['elapsed_s'] for op in row.get('host_operations', []))
         row['metrics']['call_attempts'] = len(list((output / 'calls').glob('*_input.json')))
+        try:
+            from ..public_process import collect_rollout_trace, write_trace
+            row['operation_trace'] = collect_rollout_trace(row, output)
+            write_trace(row['operation_trace'], output/'trace')
+        except Exception as exc:
+            row['trace_error'] = f'{type(exc).__name__}: {exc}'
         write_json(output / 'call_audits.json', calls)
         write_json(output / 'result.json', row)
         budget.debug.event('rollout_end', rollout_id=rollout_id, status=row['status'], metrics=row['metrics'])

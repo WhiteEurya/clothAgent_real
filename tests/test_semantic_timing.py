@@ -97,6 +97,42 @@ def test_no_markers_no_timestamps_and_bad_clock_are_explicit():
     assert totals(result)['UNKNOWN']['wall_s'] == 5
 
 
+def test_visual_selection_timeline_and_excel_export(tmp_path):
+    import csv
+    from cloth_agent.semantic_timing import write_semantic_report
+    phases = ['image_inspection', 'candidate', 'target_construction', 'selection_check',
+              'mixed_visual_selection']
+    rows = [event(0, 'message_start')]
+    for i, phase in enumerate(phases):
+        rows += marker(1+i*4, phase, 'start') + marker(4+i*4, phase, 'end')
+    rows += [event(22, 'message_stop')]
+    result = analyze(rows)
+    assert all(totals(result)[phase]['wall_s'] == 3 for phase in phases)
+    assert sum(r['duration_s'] for r in result['timeline']) == 22
+    assert sum(r['duration_s'] for r in result['timeline'] if r['phase'] == 'UNKNOWN') == 7
+    assert all(a['end_s'] == b['start_s'] for a, b in zip(result['timeline'], result['timeline'][1:]))
+    write_semantic_report(tmp_path, [{'span_id': 1, 'stage': 'reasoning_optional_code', 'semantic': result}])
+    with (tmp_path/'semantic_timeline.csv').open(encoding='utf-8-sig') as handle:
+        exported = list(csv.DictReader(handle))
+    assert len(exported) == len(result['timeline'])
+    assert (tmp_path/'semantic_timing.csv').read_bytes().startswith(b'\xef\xbb\xbf')
+
+
+def test_evaluation_markers_after_thinking_are_flagged_as_declarations():
+    rows = [event(1, 'message_start'),
+            event(10, 'content_block_start', index=0, content_block={'type': 'thinking'}),
+            event(10.001, 'content_block_stop', index=0),
+            *marker(11, 'evaluation_evidence', 'start'),
+            *marker(15, 'evaluation_evidence', 'end'),
+            *marker(16, 'outcome_comparison', 'start'),
+            *marker(18, 'outcome_comparison', 'end'), event(20, 'message_stop')]
+    result = analyze(rows)
+    assert result['phase_interpretation'] == 'POST_THINKING_DECLARATION_WINDOWS'
+    assert result['warnings']
+    assert totals(result)['evaluation_evidence']['wall_s'] == 4
+    assert sum(r['wall_s'] or 0 for r in result['totals']) == 20
+
+
 def test_coalesced_or_aggregate_only_markers_are_not_measurements():
     result = analyze([event(1, 'message_start'), *marker(2, 'orientation', 'start'),
                       *marker(2, 'orientation', 'end'), event(8, 'message_stop')])
@@ -131,7 +167,11 @@ def test_backend_injection_is_opt_in_and_preserves_original_schema_and_task(tmp_
         call('visual_planning')
         call('pixel_motion')
         call('experience_update')
-    assert [x['system_prompt'] != 'original system' for x in received] == [False, False, True, True, False]
+        call('reasoning_optional_code')
+        call('reasoning_rollout')
+        call('evaluation')
+        call('acquisition_evaluation')
+    assert ['Optional diagnostic phase timing' in x['system_prompt'] for x in received] == [False, False, True, True, True, True, True, True, True]
     assert all(x['schema'] == schema and x['prompt'] == 'original task' for x in received)
     assert '[[phase:NAME:start]]' in received[2]['system_prompt']
 

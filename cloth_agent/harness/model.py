@@ -1,6 +1,8 @@
 """Bounded, tool-free vision calls through the project's existing Claude backends."""
 from __future__ import annotations
 
+from ..pipeline_timing import timed_stage
+
 import json
 import re
 import shutil
@@ -53,7 +55,8 @@ class RuntimeClaude:
     """No caching or repair here. Compiler/executor own their finite budgets."""
 
     def __init__(self, *, backend="local", binary="claude", ssh_host="company-planner",
-                 model=None, timeout_s=120, max_turns=4):
+                 model=None, timeout_s=120, max_turns=4, text_only=False):
+        self.text_only = text_only
         self.backend_kind, self.binary, self.ssh_host = backend, binary, ssh_host
         self.model, self.timeout_s = model, timeout_s
         if type(max_turns) is not int or not 2 <= max_turns <= 6:
@@ -68,12 +71,14 @@ class RuntimeClaude:
         return {"backend": self.backend_kind, "binary": self.binary, "ssh_host": self.ssh_host if self.backend_kind == "remote" else None,
                 "requested_model": self.model or "CLI configured default", "timeout_s": self.timeout_s,
                 "tools": [], "max_turns": self.max_turns, "image_delivery": "base64 stream-json input", "cache_replay": False,
-                "customizations": "safe-mode; no CLAUDE.md, skills, hooks, plugins or memory"}
+                "customizations": "safe-mode; no CLAUDE.md, skills, hooks, plugins or memory",
+                **({"evidence_mode": "text_only"} if self.text_only else {})}
 
+    @timed_stage('harness.RuntimeClaude.invoke')
     def invoke(self, *, prompt, schema, images, output, stage, timeout_s=None):
         directory = Path(output)
         directory.mkdir(parents=True, exist_ok=False)
-        if not 1 <= len(images) <= 64:
+        if (self.text_only and images) or (not self.text_only and not 1 <= len(images) <= 64):
             raise ValueError("Each call requires one to sixty-four actual images")
         paths, catalog = [], []
         for index, source in enumerate(images):
@@ -119,7 +124,8 @@ class RuntimeClaude:
                 result = backend.invoke(prompt=prompt, command=command, cwd=directory.resolve(),
                                         input_data=message, usage_stage=stage)
             else:
-                backend = RemoteClaudeBackend(ssh_host=self.ssh_host, timeout_s=max(1, int(seconds)), image_tools=False)
+                backend = RemoteClaudeBackend(ssh_host=self.ssh_host, timeout_s=max(1, int(seconds)), image_tools=False,
+                                              allow_text_only=self.text_only)
                 audit["backend_invoked"] = True
                 result = backend.invoke(prompt=prompt, image_paths=paths, schema=schema, system_prompt=SYSTEM,
                                         direct_images=True, model=self.model, max_turns=self.max_turns, overall_timeout_s=seconds,

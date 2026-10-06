@@ -470,7 +470,7 @@ class ImageTools:
                 self.edit_budget(consume=True)
             if self.calls > MAX_CALLS:
                 raise ValueError("image tool call budget exhausted")
-            available = TOOLS + ([INFORMATION_TOOL] if self.information_tools else [])
+            available = self.available_tools()
             spec = next((t for t in available if t["name"] == name), None)
             if spec is None or not isinstance(args, dict) or set(args) != set(spec["inputSchema"]["required"]):
                 raise ValueError("unknown tool or invalid argument fields")
@@ -507,6 +507,11 @@ class ImageTools:
             temporary.write_text(json.dumps({'images': self.inspection_history(),
                 'tool_calls': self.calls, 'edit_budget': self.edit_budget()}, indent=2), encoding='utf-8')
             temporary.replace(inventory)
+
+    def available_tools(self):
+        if self.edit_limit == 0:
+            return [t for t in TOOLS if t['name'] not in EDIT_TOOLS] + ([INFORMATION_TOOL] if self.information_tools else [])
+        return TOOLS + ([INFORMATION_TOOL] if self.information_tools else [])
 
     def _observe_information(self, args):
         for field in ('information_need', 'success_check', 'on_insufficient'):
@@ -658,7 +663,7 @@ def serve_stdio(tools):
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
-                result = {"tools": TOOLS + ([INFORMATION_TOOL] if tools.information_tools else [])}
+                result = {"tools": tools.available_tools()}
             elif method == "tools/call":
                 try:
                     value = tools.call(params.get("name"), params.get("arguments", {}))

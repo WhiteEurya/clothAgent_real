@@ -1,6 +1,8 @@
 """Contracts for offline, fixed-evidence reasoning rollouts, not robot commands."""
 from __future__ import annotations
 
+from ..pipeline_timing import timed_stage
+
 import copy
 from pathlib import Path
 
@@ -39,6 +41,18 @@ JUDGMENT_SCHEMA['allOf'] = [
      'then': {'properties': {'missing_information': {'type': 'string', 'pattern': r'\S'}}}},
 ]
 JUDGMENT_SCHEMA['properties']['measurements'] = MEASUREMENTS_SCHEMA
+JUDGMENT_SCHEMA['properties']['decision_log'] = {
+    'type': 'array', 'maxItems': 12,
+    'description': 'Brief factual observation/decision records, not private thinking or invented tool steps.',
+    'items': obj({
+        'id': NAME, 'information_need': TEXT, 'operation': TEXT,
+        'evidence_refs': {'type': 'array', 'maxItems': 16, 'items': TEXT},
+        'result_summary': TEXT,
+        'candidate_updates': {'type': 'array', 'maxItems': 16, 'items': obj({
+            'candidate_id': TEXT, 'outcome': {'enum': ['considered', 'kept', 'rejected', 'selected', 'unknown']},
+            'reason': TEXT})},
+        'depends_on': {'type': 'array', 'maxItems': 12, 'items': NAME},
+    })}
 HARNESS_SCHEMA = obj({
     'schema_version': {'const': 1}, 'name': NAME, 'applicability': TEXT,
     'stages': {'type': 'array', 'minItems': 1, 'maxItems': 6, 'items': obj({
@@ -81,8 +95,11 @@ def validate_harness(harness):
     validate_schema(harness, HARNESS_SCHEMA)
     seen = set()
     for stage in harness['stages']:
-        if stage['id'] in seen or not set(stage['context']) <= seen:
-            raise PolicyError('Stage IDs must be unique and context must reference earlier stages')
+        if stage['id'] in seen:
+            raise PolicyError(f"Duplicate stage ID {stage['id']!r}; each stage must have a unique ID")
+        missing = sorted(set(stage['context']) - seen)
+        if missing:
+            raise PolicyError(f"Stage {stage['id']!r} context references unavailable stages {missing}; available earlier stages: {sorted(seen)}. Context lists prior reasoning-stage IDs only, not observation sessions or image IDs.")
         seen.add(stage['id'])
         validate_bindings(stage)
     if not any(s['allow_ready'] for s in harness['stages']):
@@ -133,6 +150,7 @@ def evidence_from_manifest(manifest, decision_id=None):
             'images': images}
 
 
+@timed_stage('harness.freeze_evidence')
 def freeze_evidence(evidence, output, *, base=None):
     """Copy and hash the exact Z once. Optional crops need explicit lineage."""
     if set(evidence) != {'schema_version', 'observation_id', 'fold_goal', 'candidate_registry', 'images'}:
@@ -193,6 +211,7 @@ def freeze_evidence(evidence, output, *, base=None):
     return frozen
 
 
+@timed_stage('harness.verify_evidence')
 def verify_evidence(frozen, directory):
     evidence = frozen['evidence']
     if digest(evidence) != frozen['evidence_hash']:
@@ -227,6 +246,7 @@ def load_evidence(path):
                 'raw_size': evidence['raw_size'], 'to_raw': evidence['to_raw']}}
 
 
+@timed_stage('harness.validate_judgment')
 def validate_judgment(result, evidence, *, allow_ready):
     # Explain cross-field errors precisely before generic JSON-schema checks.
     # Reflection must not mistake a serialization failure for bad geometry.

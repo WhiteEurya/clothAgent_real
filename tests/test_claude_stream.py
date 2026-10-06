@@ -148,3 +148,45 @@ def test_real_pipe_drain_saves_burst_and_flushes_pending_text(tmp_path, monkeypa
     state = json.loads((debug_dir / 'image_debug.json').read_text())
     assert state['status'] == ('FAILED' if timeout else 'COMPLETED')
     assert state['claude_event_count'] == len(rows)
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_remote_wrapper_progress_through_real_backend_logger(tmp_path, timeout):
+    import shutil
+    from cloth_agent import remote_output
+    image=tmp_path/'image.png'; Image.new('RGB',(8,8)).save(image)
+    backend=RemoteClaudeBackend()
+    notices=[]; backend.progress_callback=lambda *args,**kwargs:notices.append((args,kwargs))
+    backend._debug_session=ImageDebugSession(tmp_path/'debug',[image],{})
+    backend._seen_timings=set(); backend._seen_events=set()
+    code="import json,time; print(json.dumps({'type':'system','subtype':'api_retry','error_status':524,'attempt':1}),flush=True); "
+    code += "time.sleep(10)" if timeout else "print(json.dumps({'type':'result','structured_output':{'ok':True}}),flush=True)"
+    command=[sys.executable,str(remote_output.__file__),'--record-event-timing']
+    if timeout:
+        executable=shutil.which('timeout')
+        if not executable: pytest.skip('GNU timeout unavailable')
+        command += [executable,'--kill-after=1s','.3s']
+    command += [sys.executable,'-c',code]
+    # Wrapper writes raw files in cwd; isolate it without changing global cwd.
+    launcher=[sys.executable,'-c','import os,sys; os.chdir(sys.argv[1]); os.execv(sys.argv[2],sys.argv[2:])',str(tmp_path),*command]
+    result=backend._run_streaming(launcher,'',4)
+    assert result.returncode == (124 if timeout else 0)
+    progress=[r for r in backend._debug_session.state['progress'] if r['stage']=='remote_cli']
+    assert progress[0]['event']=='cli_started'
+    assert progress[0]['remote_elapsed_s']==0
+    assert progress[0]['elapsed_s']>=0
+    assert progress[-1]['event']=='cli_finished'
+    assert progress[-1]['returncode']==result.returncode
+    assert 'api_retry' in result.stdout
+    assert 'remote_elapsed_s' in next(fields for args,fields in notices if args[0]=='remote_cli')
+    if not timeout: assert parse_claude_json(result.stdout)=={'ok':True}
+
+
+def test_progress_metadata_collision_preserves_local_clock(tmp_path):
+    image=tmp_path/'image.png'; Image.new('RGB',(8,8)).save(image)
+    debug=ImageDebugSession(tmp_path/'debug',[image],{})
+    debug.progress('local_stage','started',None,{'elapsed_s':999,'stage':'remote_stage','event':'remote_event','duration_s':12})
+    row=debug.state['progress'][-1]
+    assert row['stage']=='local_stage' and row['event']=='started'
+    assert row['duration_s'] is None and row['elapsed_s']<999
+    assert row['source_details']['elapsed_s']==999

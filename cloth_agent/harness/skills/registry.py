@@ -46,10 +46,13 @@ class ObservationSkill:
 
     def applicable(self, request, source):
         # Semantic applicability is model-judged; host checks only input capabilities.
-        return source['role'] == 'clean' and request['skill_id'] == self.specification['id']
+        return request['skill_id'] == self.specification['id']
 
     def prepare(self, request, source, available):
-        return validate_recipe(RestrictedProgram(self.source).run(copy.deepcopy(request), copy.deepcopy(source), copy.deepcopy(available)))
+        recipe = RestrictedProgram(self.source).run(copy.deepcopy(request), copy.deepcopy(source), copy.deepcopy(available))
+        if recipe is None:
+            raise PolicyError(f"Skill {self.key} cannot prepare the requested operation combination: roi={request.get('roi')}, degrees_clockwise={request.get('degrees_clockwise')}, enlarge={request.get('enlarge')}")
+        return validate_recipe(recipe)
 
     def execute(self, host, prepared):
         return host.execute_prepared(prepared)
@@ -90,9 +93,22 @@ class SkillRegistry:
 
 
 ORIENTATION = '''def prepare(request, source, available):
-    if request["roi"] != None or request["enlarge"] or request["degrees_clockwise"] == 0:
-        return None
-    return {"roles": ["clean", "overlay"], "operations": [{"op": "rotate", "degrees": request["degrees_clockwise"]}], "reuse_existing": False}
+    roles = ["clean", "overlay"] if source["role"] in ["clean", "overlay"] else ["clean"]
+    roi = request["roi"]
+    w = source["size"][0]
+    h = source["size"][1]
+    if roi != None:
+        w = ceil(roi[2] * w) - floor(roi[0] * w)
+        h = ceil(roi[3] * h) - floor(roi[1] * h)
+    scale = max(1, min(3, 768 / max(w, h)))
+    if roi != None:
+        if request["enlarge"] and scale > 1:
+            return {"roles": roles, "operations": [{"op": "crop", "roi": roi}, {"op": "rotate", "degrees": request["degrees_clockwise"]}, {"op": "resize", "scale": scale}], "reuse_existing": False}
+        return {"roles": roles, "operations": [{"op": "crop", "roi": roi}, {"op": "rotate", "degrees": request["degrees_clockwise"]}], "reuse_existing": False}
+    else:
+        if request["enlarge"] and scale > 1:
+            return {"roles": roles, "operations": [{"op": "rotate", "degrees": request["degrees_clockwise"]}, {"op": "resize", "scale": scale}], "reuse_existing": False}
+        return {"roles": roles, "operations": [{"op": "rotate", "degrees": request["degrees_clockwise"]}], "reuse_existing": False}
 '''
 CROP = '''def prepare(request, source, available):
     if request["degrees_clockwise"] != 0:
@@ -111,8 +127,8 @@ CROP = '''def prepare(request, source, available):
 def builtin_registry():
     registry = SkillRegistry()
     for name, source, method in [
-        ('orientation', ORIENTATION, 'Rotate the aligned current clean and overlay pair.'),
-        ('local_boundary', CROP.replace('ROLES', '["clean"]'), 'Crop the current clean root and optionally enlarge.'),
+        ('orientation', ORIENTATION, 'Optionally crop the selected ROI, rotate clockwise, then optionally enlarge; preserve aligned clean/overlay views. ROI null rotates the full selected view.'),
+        ('local_boundary', CROP.replace('ROLES', '["clean"]'), 'Crop the selected view and optionally enlarge.'),
         ('overlay_occlusion', CROP.replace('ROLES', '["clean", "overlay"]'), 'Crop the aligned pair and optionally enlarge both.')]:
         registry.register(ObservationSkill({'id': name, 'version': 1,
             'information_need': 'Resolve a current visible information gap',

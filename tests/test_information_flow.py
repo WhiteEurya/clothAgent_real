@@ -175,11 +175,113 @@ def test_host_validates_whole_batch_and_equivalent_crop_repetition(tmp_path, set
     case, images, artifact = setup_case
     host = ObservationHost(case['observation'],images,artifact,tmp_path/'host')
     good = request('local_boundary',[.1,.2,.7,.8])
-    bad = request();bad['source_image_id']='image_2'  # reference cannot ground grasp ROI
-    with pytest.raises(PolicyError,match='clean root'):
+    bad = request();bad['source_image_id']='image_missing'
+    with pytest.raises(PolicyError,match='unavailable image'):
         host.execute([good,bad],info())
     assert host.ops==0
     assert host.execute([good],info()) is None
     equivalent = request('local_boundary',[.10001,.20001,.69999,.79999])
     assert host.execute([equivalent],info())=='REPEATED_OBSERVATION'
     assert host.ops==1
+
+
+@pytest.mark.parametrize('fault',['missing_image','empty_finding','no_sources'])
+def test_known_prose_relaxation_preserves_evidence_checks(fault):
+    from cloth_agent.harness.information_flow import validate_state
+    state=info(known=True)
+    state[0]['missing_information']='Nothing further needed'
+    if fault=='missing_image': state[0]['source_image_ids']=['image_missing']
+    if fault=='empty_finding': state[0]['finding']=' '
+    if fault=='no_sources': state[0]['source_image_ids']=[]
+    with pytest.raises(PolicyError):
+        validate_state(state,[{'image_id':'image_0'}])
+
+
+def test_unknown_information_id_is_still_rejected(tmp_path,setup_case):
+    case,images,artifact=setup_case
+    host=ObservationHost(case['observation'],images,artifact,tmp_path/'host')
+    missing=request();missing['gap_id']='not_in_state'
+    with pytest.raises(PolicyError,match='existing information item'):
+        host.execute([missing],info(known=True))
+    assert host.ops==0
+
+
+def test_known_orientation_can_request_preparation(tmp_path,setup_case):
+    model=Model(global_result(known=True),decision())
+    report=run(tmp_path,setup_case,model)
+    assert report['status']=='COMPLETED'
+    assert len(model.requests[1]['images'])==5
+
+
+def test_intermediate_crop_rotate_crop_preserves_pixels_and_lineage(tmp_path, setup_case):
+    from cloth_agent.image_tools_mcp import transform_point
+    case, images, artifact = setup_case
+    host = ObservationHost(case['observation'], images, artifact, tmp_path/'chain')
+    crop = request('local_boundary', [.1,.2,.7,.8])
+    assert host.execute([crop], info()) is None
+    first = host.catalog[-1]
+    rotate = request()
+    rotate['source_image_id'] = first['image_id']
+    assert host.execute([rotate], info()) is None
+    clean, overlay = [next(i for i in host.catalog if i['image_id'] == id)
+                      for id in host.history[-1]['delivered_image_ids']]
+    assert clean['original_image_id'] == 'image_0'
+    assert overlay['original_image_id'] == 'image_1'
+    assert clean['to_original'] == overlay['to_original']
+    assert len(overlay['lineage']) == 2
+    final = request('local_boundary', [.25,.25,.75,.75])
+    final['source_image_id'] = clean['image_id']
+    assert host.execute([final], info()) is None
+    result = host.catalog[-1]
+    assert result['parent_image_id'] == clean['image_id']
+    assert result['original_image_id'] == 'image_0'
+    assert len(result['lineage']) == 3
+    x,y = transform_point(result['to_original'], [0,0])
+    with Image.open(result['path']) as actual, Image.open(images[0]) as original:
+        assert actual.getpixel((0,0)) == original.getpixel((round(x),round(y)))
+    assert all(item['parent_image_id'] is None or any(p['image_id']==item['parent_image_id'] for p in host.catalog)
+               for item in host.catalog)
+
+
+def test_overlay_and_reference_are_valid_sources(tmp_path, setup_case):
+    case, images, artifact = setup_case
+    host = ObservationHost(case['observation'], images, artifact, tmp_path/'sources')
+    req = request('overlay_occlusion', [.1,.2,.7,.8])
+    req['source_image_id'] = 'image_1'
+    assert host.execute([req], info()) is None
+    req = request('local_boundary', [.2,.2,.8,.8])
+    req['source_image_id'] = 'image_2'
+    assert host.execute([req], info()) is None
+    assert host.catalog[-1]['original_image_id'] == 'image_2'
+    assert host.catalog[-1]['role'] == 'reference'
+
+
+def test_every_recipe_intermediate_is_reusable(tmp_path, setup_case):
+    case, images, artifact = setup_case
+    host = ObservationHost(case['observation'], images, artifact, tmp_path/'intermediate')
+    req = request('local_boundary', [.1,.2,.7,.8]); req['enlarge'] = True
+    assert host.execute([req], info()) is None
+    crop, enlarged = host.catalog[-2:]
+    assert crop['operation'] == 'crop_image'
+    assert enlarged['parent_image_id'] == crop['image_id']
+    follow = request('local_boundary', [.1,.1,.9,.9])
+    follow['source_image_id'] = crop['image_id']
+    assert host.execute([follow], info()) is None
+    assert host.catalog[-1]['parent_image_id'] == crop['image_id']
+
+
+@pytest.mark.parametrize('enlarge', [False, True])
+def test_orientation_crop_rotate_combination(tmp_path, setup_case, enlarge):
+    case, images, artifact = setup_case
+    host = ObservationHost(case['observation'], images, artifact, tmp_path/'combined')
+    req = request('orientation', [.1,.2,.7,.8]); req['enlarge'] = enlarge
+    assert host.execute([req], info()) is None
+    delivered = [next(i for i in host.catalog if i['image_id']==id)
+                 for id in host.history[-1]['delivered_image_ids']]
+    assert delivered[0]['to_original'] == delivered[1]['to_original']
+    assert [x['operation'] for x in delivered[0]['lineage']] == ['crop_image','rotate_image'] + (['resize_image'] if enlarge else [])
+    assert delivered[0]['size'] == ([108,72] if enlarge else [36,24])
+    if not enlarge:
+        with Image.open(images[0]) as original, Image.open(delivered[0]['path']) as actual:
+            expected = original.crop((4,12,28,48)).transpose(Image.Transpose.ROTATE_270)
+            assert actual.tobytes() == expected.tobytes()
