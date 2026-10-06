@@ -1,0 +1,12 @@
+[
+  {
+    "source": "cloth_agent/robot_api.py",
+    "copy": "cloth_agent/dual_arm/single_arm_backend.py",
+    "source_sha256": "0c9da12f82c2100d1719d482e66c82f0bcc5cbeabbf3f37f96df210fcf28e765"
+  },
+  {
+    "source": "cloth_agent/kinematics.py",
+    "copy": "cloth_agent/dual_arm/kinematics.py",
+    "source_sha256": "131ee7f96fe8a8ab2576d21a1d0c11e8eb2c8a3cabbdc3a678d17e88d33309de"
+  }
+]

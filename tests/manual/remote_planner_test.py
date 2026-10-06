@@ -3,7 +3,7 @@
 
 Live usage (from the Alienware machine)::
 
-    python scripts/remote_planner_test.py path/to/camera_A.png
+    python tests/manual/remote_planner_test.py path/to/camera_A.png
 
 The test only sends an RGB PNG and asks Claude for a small JSON observation. It
 never imports or starts the camera, grounding, or robot controller. ``--mock``
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

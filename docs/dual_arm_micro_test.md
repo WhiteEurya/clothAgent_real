@@ -1,6 +1,6 @@
 # 双臂末端小范围测试
 
-脚本：`scripts/dual_arm_micro_test.py`。默认只读取 home 文件并输出计划，不连接机器人。
+脚本：`tests/manual/dual_arm_micro_test.py`。默认只读取 home 文件并输出计划，不连接机器人。
 实机使用带 xArm SDK 的 Python，例如 `/home/sja/miniconda3/envs/robo/bin/python`。
 
 ## 设置对称 home
@@ -15,7 +15,7 @@
 记录前两台应静止，夹爪空载，短程上移和回程空间均无障碍。脚本不会开合夹爪。
 
 ```bash
-/home/sja/miniconda3/envs/robo/bin/python scripts/dual_arm_micro_test.py --capture-home
+/home/sja/miniconda3/envs/robo/bin/python tests/manual/dual_arm_micro_test.py --capture-home
 ```
 
 默认 IP 按顺序为 `192.168.2.232`、`192.168.1.195`，可用 `--ips IP_A IP_B` 修改。
@@ -25,8 +25,8 @@
 ## 预览和执行
 
 ```bash
-python3 scripts/dual_arm_micro_test.py
-/home/sja/miniconda3/envs/robo/bin/python scripts/dual_arm_micro_test.py --execute
+python3 tests/manual/dual_arm_micro_test.py
+/home/sja/miniconda3/envs/robo/bin/python tests/manual/dual_arm_micro_test.py --execute
 ```
 
 执行前必须已经位于记录的 home（TCP 误差不超过 0.5 mm / 0.5°，关节差不超过 1°）。

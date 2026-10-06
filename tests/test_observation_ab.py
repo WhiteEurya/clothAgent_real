@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_information_flow import setup_case, plan, request
+from tests.test_information_flow import setup_case, plan, request
 from cloth_agent.harness.common import read_json, write_json
 from cloth_agent.harness.observation_ab import run_arm, render
 from cloth_agent.image_tools_mcp import ImageTools

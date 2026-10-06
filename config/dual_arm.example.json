@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "frame_id": "world_mm",
+  "calibration_status": "incomplete",
+  "calibration_id": null,
+  "collision_geometry_verified": false,
+  "servo_commissioned": false,
+  "arm_layout_description": "SET physical left/right ownership and their visible positions in Camera A.",
+  "arms": {
+    "left": {
+      "ip": "192.168.2.232",
+      "axis": 6,
+      "control_box_sn": "AC130308A40050",
+      "home_joints_deg": [
+        -1.318376,
+        5.0579,
+        -97.67074,
+        1.831001,
+        92.259899,
+        -1.41744
+      ],
+      "tcp_offset_mm_deg": [
+        0.0,
+        0.0,
+        172.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "urdf": "assets/robots/xarm6/xarm6_wo_ee.urdf",
+      "flange_link": "link_eef",
+      "world_from_base_mm": null,
+      "grasp_rpy_world_deg": null,
+      "workspace": {
+        "min_mm": null,
+        "max_mm": null
+      },
+      "collision_capsules": [],
+      "gripper": {
+        "open": 850,
+        "close": 5,
+        "speed": 200,
+        "open_tolerance": 15,
+        "timeout_s": 20
+      }
+    },
+    "right": {
+      "ip": "192.168.1.195",
+      "axis": 7,
+      "control_box_sn": "AC130412A4001B",
+      "home_joints_deg": [
+        -1.606516,
+        -20.348768,
+        -0.205978,
+        71.875435,
+        -2.504456,
+        90.656763,
+        0.324294
+      ],
+      "tcp_offset_mm_deg": [
+        0.0,
+        0.0,
+        172.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "urdf": "assets/robots/xarm7/xarm7.urdf",
+      "flange_link": "link_eef",
+      "world_from_base_mm": null,
+      "grasp_rpy_world_deg": null,
+      "workspace": {
+        "min_mm": null,
+        "max_mm": null
+      },
+      "collision_capsules": [],
+      "gripper": {
+        "open": 850,
+        "close": 5,
+        "speed": 200,
+        "open_tolerance": 15,
+        "timeout_s": 20
+      }
+    }
+  },
+  "limits": {
+    "rate_hz": 20,
+    "cartesian_speed_mm_s": 15,
+    "cartesian_accel_mm_s2": 30,
+    "joint_speed_deg_s": 10,
+    "joint_accel_deg_s2": 20,
+    "max_ik_step_deg": 3,
+    "tracking_error_mm": 5,
+    "tracking_error_deg": 2,
+    "arrival_error_mm": 2,
+    "dispatch_skew_s": 0.02,
+    "max_tick_lateness_s": 0.04,
+    "clearance_mm": 10,
+    "max_grasp_age_s": 180,
+    "max_span_mm": 1000,
+    "min_span_mm": 80,
+    "max_spread_mm": 100,
+    "max_spread_step_mm": 10,
+    "max_lift_mm": 150,
+    "max_approach_mm": 100,
+    "contact_descent_mm": 1,
+    "max_vision_wait_s": 120,
+    "stationary_tolerance_deg": 0.2,
+    "max_plan_samples": 40000,
+    "max_surface_spread_mm": 8,
+    "center_radius_mm": 150,
+    "center_line_tolerance_mm": 30
+  },
+  "safety": {
+    "status": "unmeasured",
+    "validation_id": null,
+    "open_tools_and_attachments_verified": false,
+    "controller_watchdog_verified": false,
+    "joint_segment_tracking_verified": false,
+    "max_feedback_age_s": 0.1,
+    "controller_watchdog_s": 0.15,
+    "stop_command_latency_s": 0.05,
+    "max_sweep_nodes": 4096,
+    "arms": {
+      "left": {
+        "base_error_mm": null,
+        "geometry_error_mm": null,
+        "max_joint_speed_deg_s": null,
+        "stop_excursion_deg": null
+      },
+      "right": {
+        "base_error_mm": null,
+        "geometry_error_mm": null,
+        "max_joint_speed_deg_s": null,
+        "stop_excursion_deg": null
+      }
+    }
+  },
+  "obstacles": [],
+  "camera": {
+    "serial": "317222073552",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "mount_arm": "left",
+    "mount_link": "link_eef",
+    "mount_from_camera_mm": null
+  }
+}

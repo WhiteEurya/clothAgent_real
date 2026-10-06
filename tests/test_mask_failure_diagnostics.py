@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from cloth_agent.perception import RGBDFrame, _occlusion_aware_garment_mask
-from scripts.test_height_map_pipeline import _load_raw_capture, _save_raw_capture
+from tests.manual.test_height_map_pipeline import _load_raw_capture, _save_raw_capture
 
 
 @pytest.mark.parametrize("height_mm,gray,failed_gate", [

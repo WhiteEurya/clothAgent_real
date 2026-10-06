@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import replay_gripper_test as replay
+from tests.manual import replay_gripper_test as replay
 from cloth_agent.config import RobotConfig, WorkspaceBounds
 
 

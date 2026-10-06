@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from cloth_agent.fold_exploration_pipeline import (
     FOLD_STEP_IDS, FoldExplorationPipeline, _build_upright_camera_a_planning_images,

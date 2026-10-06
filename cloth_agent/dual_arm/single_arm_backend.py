@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from .pipeline_timing import timed_stage
-
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-import math
 import io
+import math
 import sys
 import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .config import RobotConfig, SafetyError
+from ..config import RobotConfig, SafetyError
+from ..pipeline_timing import timed_stage
 
 
 class RobotExecutionError(RuntimeError):
@@ -95,7 +94,7 @@ def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
     def result_value(name: str, getter: Any) -> Any:
         try:
             result = getter()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- record SDK read failures as unavailable feedback
             feedback["read_errors"].append(
                 {"field": name, "error": f"{type(exc).__name__}: {exc}"}
             )
@@ -104,16 +103,18 @@ def _read_gripper_feedback(arm: Any) -> dict[str, Any]:
             try:
                 code = int(result[0])
             except (TypeError, ValueError, OverflowError):
-                feedback['read_errors'].append({'field': name, 'error': 'invalid SDK return code'})
+                feedback["read_errors"].append(
+                    {"field": name, "error": "invalid SDK return code"}
+                )
                 return None
             feedback[f"{name}_code"] = code
             if code != 0:
-                feedback["read_errors"].append(
-                    {"field": name, "code": code}
-                )
+                feedback["read_errors"].append({"field": name, "code": code})
                 return None
             return result[1]
-        feedback["read_errors"].append({"field": name, "error": "invalid SDK result", "result": repr(result)})
+        feedback["read_errors"].append(
+            {"field": name, "error": "invalid SDK result", "result": repr(result)}
+        )
         return None
 
     position = result_value("position", getattr(arm, "get_gripper_position", None))
@@ -251,8 +252,8 @@ def _controller_trajectory_with_arm(
         angular_distance_deg = max(abs(value) for value in angular_deltas)
         sample_count = max(
             1,
-            int(math.ceil(cartesian_distance_mm / 10.0)),
-            int(math.ceil(angular_distance_deg / 10.0)),
+            math.ceil(cartesian_distance_mm / 10.0),
+            math.ceil(angular_distance_deg / 10.0),
         )
         if cartesian_distance_mm < 1e-9 and angular_distance_deg < 1e-9:
             current_pose = list(pose)
@@ -264,8 +265,7 @@ def _controller_trajectory_with_arm(
         for sample_index in range(1, sample_count + 1):
             fraction = sample_index / sample_count
             sample_pose = [
-                segment_start[index]
-                + fraction * (pose[index] - segment_start[index])
+                segment_start[index] + fraction * (pose[index] - segment_start[index])
                 for index in range(6)
             ]
             for index, delta in zip(range(3, 6), angular_deltas):
@@ -280,9 +280,7 @@ def _controller_trajectory_with_arm(
                 sample_pose[0],
                 sample_pose[1],
                 sample_pose[2],
-                relative_yaw_deg=config.relative_yaw_from_absolute_deg(
-                    sample_pose[5]
-                ),
+                relative_yaw_deg=config.relative_yaw_from_absolute_deg(sample_pose[5]),
             )
             code, angles_deg = arm.get_inverse_kinematics(
                 sample_pose,
@@ -315,12 +313,14 @@ def _controller_trajectory_with_arm(
     for action_index, action in enumerate(actions):
         name = action.get("name")
         if name == "home":
-            targets[action_index] = tuple(math.radians(value) for value in config.init_joints_deg)
+            targets[action_index] = tuple(
+                math.radians(value) for value in config.init_joints_deg
+            )
             reference_deg = [float(value) for value in config.init_joints_deg]
             current_pose = list(home_pose)
             continue
         if name == "shake_open":
-            from .shake_open import (
+            from ..shake_open import (
                 DIAGONAL_SCALE_CANDIDATES,
                 build_shake_open_plan,
             )
@@ -382,7 +382,7 @@ def _controller_trajectory_with_arm(
                 )
             )
         elif name == "shake":
-            from .shake_once import build_shake_plan
+            from ..shake_once import build_shake_plan
 
             plan = build_shake_plan(current_pose, config)
             poses.extend(
@@ -410,7 +410,7 @@ def _controller_trajectory_with_arm(
     )
 
 
-@timed_stage('robot_api.validate_controller_trajectory')
+@timed_stage("robot_api.validate_controller_trajectory")
 def validate_controller_trajectory(
     config: RobotConfig,
     actions: list[dict[str, Any]],
@@ -420,7 +420,9 @@ def validate_controller_trajectory(
     try:
         from xarm.wrapper import XArmAPI
     except ImportError as exc:
-        raise RobotExecutionError("xarm package is required for controller IK validation") from exc
+        raise RobotExecutionError(
+            "xarm package is required for controller IK validation"
+        ) from exc
     arm = XArmAPI(config.robot_ip)
     try:
         if not getattr(arm, "connected", True):
@@ -445,13 +447,21 @@ class ActionRecord:
 
 
 class Backend(Protocol):
-    def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
-    def open_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
-    def close_gripper(self, config: RobotConfig) -> tuple[Any, tuple[list[float] | None, Any]]: ...
+    def move(
+        self, x: float, y: float, z: float, yaw: float, config: RobotConfig
+    ) -> tuple[list[float] | None, Any]: ...
+    def open_gripper(
+        self, config: RobotConfig
+    ) -> tuple[Any, tuple[list[float] | None, Any]]: ...
+    def close_gripper(
+        self, config: RobotConfig
+    ) -> tuple[Any, tuple[list[float] | None, Any]]: ...
     def shake(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def shake_open(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
     def home(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
-    def perception_position(self, config: RobotConfig) -> tuple[list[float] | None, Any]: ...
+    def perception_position(
+        self, config: RobotConfig
+    ) -> tuple[list[float] | None, Any]: ...
     def close(self) -> None: ...
 
 
@@ -498,25 +508,41 @@ class SimulatedBackend:
 
     def open_gripper(self, config: RobotConfig):
         self.gripper = config.gripper_open
-        return {"position": self.gripper, "simulated": True, "feedback": self._gripper_feedback()}, (list(self.pose), self._state())
+        return {
+            "position": self.gripper,
+            "simulated": True,
+            "feedback": self._gripper_feedback(),
+        }, (list(self.pose), self._state())
 
     def close_gripper(self, config: RobotConfig):
         self.gripper = config.gripper_close
-        return {"position": self.gripper, "simulated": True, "feedback": self._gripper_feedback()}, (list(self.pose), self._state())
+        return {
+            "position": self.gripper,
+            "simulated": True,
+            "feedback": self._gripper_feedback(),
+        }, (list(self.pose), self._state())
 
     def shake(self, config: RobotConfig):
-        from .shake_once import build_shake_plan
+        from ..shake_once import build_shake_plan
 
         plan = build_shake_plan(self.pose, config)
         self.pose = list(plan.steps[-1].target_pose_mm_deg)
-        return list(self.pose), {"state": self.state, "shake": plan.as_dict(), "gripper_feedback": self._gripper_feedback()}
+        return list(self.pose), {
+            "state": self.state,
+            "shake": plan.as_dict(),
+            "gripper_feedback": self._gripper_feedback(),
+        }
 
     def shake_open(self, config: RobotConfig):
-        from .shake_open import build_shake_open_plan
+        from ..shake_open import build_shake_open_plan
 
         plan = build_shake_open_plan(self.pose, config)
         self.pose = list(plan.steps[-1].target_pose_mm_deg)
-        return list(self.pose), {"state": self.state, "shake_open": plan.as_dict(), "gripper_feedback": self._gripper_feedback()}
+        return list(self.pose), {
+            "state": self.state,
+            "shake_open": plan.as_dict(),
+            "gripper_feedback": self._gripper_feedback(),
+        }
 
     def home(self, config: RobotConfig):
         self.pose = list(config.init_pose_mm_deg)
@@ -549,7 +575,9 @@ class XArmBackend:
         self.arm = XArmAPI(config.robot_ip)
         try:
             if not getattr(self.arm, "connected", True):
-                raise RobotExecutionError(f"unable to connect to xArm at {config.robot_ip}")
+                raise RobotExecutionError(
+                    f"unable to connect to xArm at {config.robot_ip}"
+                )
             _validated_live_tcp_offset(self.arm, config)
             self._check("motion_enable", self.arm.motion_enable(enable=True))
             self._check("set_mode", self.arm.set_mode(0))
@@ -557,7 +585,9 @@ class XArmBackend:
             # These are the concrete gripper APIs used by the existing project.
             self._check("set_gripper_mode", self.arm.set_gripper_mode(0))
             self._check("set_gripper_enable", self.arm.set_gripper_enable(True))
-            self._check("set_gripper_speed", self.arm.set_gripper_speed(config.gripper_speed))
+            self._check(
+                "set_gripper_speed", self.arm.set_gripper_speed(config.gripper_speed)
+            )
         except BaseException:
             if getattr(self.arm, "connected", False):
                 self.arm.disconnect()
@@ -600,134 +630,191 @@ class XArmBackend:
         feedback = _read_gripper_feedback(self.arm)
         # A failed read is not a hardware fault or completion. Keep polling.
         # Only successfully decoded fault feedback stops the command here.
-        if feedback['error_code'] not in (None, 0) or feedback['state'] == 'error':
-            exc = RobotExecutionError(f'xArm gripper hardware fault: {feedback}')
+        if feedback["error_code"] not in (None, 0) or feedback["state"] == "error":
+            exc = RobotExecutionError(f"xArm gripper hardware fault: {feedback}")
             exc.gripper_feedback = feedback
             raise exc
-        feedback['usable_for_completion'] = bool(
-            getattr(self.arm, 'connected', True) and not feedback['read_errors'] and
-            feedback['position_pulse'] is not None and feedback['error_code'] == 0 and
-            feedback['state'] in {'stop', 'moving', 'grasp'})
+        feedback["usable_for_completion"] = bool(
+            getattr(self.arm, "connected", True)
+            and not feedback["read_errors"]
+            and feedback["position_pulse"] is not None
+            and feedback["error_code"] == 0
+            and feedback["state"] in {"stop", "moving", "grasp"}
+        )
         return feedback
 
     def _command_gripper(self, config: RobotConfig, *, target: str):
         """Poll until measured completion or operator interrupt; never time out into motion."""
-        target_position = config.gripper_open if target == 'open' else config.gripper_close
+        target_position = (
+            config.gripper_open if target == "open" else config.gripper_close
+        )
         started = time.monotonic()
-        trace = {'target': target, 'target_position_pulse': target_position,
-                 'position_tolerance_pulse': config.gripper_open_tolerance_pulse if target == 'open' else 5.0,
-                 'samples': [], 'status': 'WAITING',
-                 'timeout_s': None, 'wait_policy': 'feedback_until_complete_or_interrupt',
-                 'warning_after_s': config.gripper_completion_timeout_s,
-                 'sample_count': 0, 'dropped_sample_count': 0}
+        trace = {
+            "target": target,
+            "target_position_pulse": target_position,
+            "position_tolerance_pulse": config.gripper_open_tolerance_pulse
+            if target == "open"
+            else 5.0,
+            "samples": [],
+            "status": "WAITING",
+            "timeout_s": None,
+            "wait_policy": "feedback_until_complete_or_interrupt",
+            "warning_after_s": config.gripper_completion_timeout_s,
+            "sample_count": 0,
+            "dropped_sample_count": 0,
+        }
         before = None
-        last_print = -1.
+        last_print = -1.0
 
         def record_sample(feedback, phase, *, progress=None, reason=None):
             nonlocal last_print
             elapsed = time.monotonic() - started
-            trace['sample_count'] += 1
-            trace['samples'].append({'elapsed_s': elapsed, 'phase': phase, 'feedback': feedback,
-                                    'progress_pulse': progress, 'completion_reason': reason})
+            trace["sample_count"] += 1
+            trace["samples"].append(
+                {
+                    "elapsed_s": elapsed,
+                    "phase": phase,
+                    "feedback": feedback,
+                    "progress_pulse": progress,
+                    "completion_reason": reason,
+                }
+            )
             # Waiting can last indefinitely. Keep a bounded recent history plus
             # the initial state, total count, and final result.
-            if len(trace['samples']) > 200:
-                del trace['samples'][0]
-                trace['dropped_sample_count'] += 1
+            if len(trace["samples"]) > 200:
+                del trace["samples"][0]
+                trace["dropped_sample_count"] += 1
             if reason or elapsed - last_print >= 5.0:
-                waiting = 'READ_RETRY' if not feedback['usable_for_completion'] else 'WAITING'
-                _gripper_log(f'[gripper] {target}: phase={phase}, elapsed={elapsed:.2f}s, '
-                    f'position={feedback["position_pulse"]}, target={target_position}, '
-                    f'tolerance={trace["position_tolerance_pulse"]}, state={feedback["state"]}, '
-                    f'progress={progress}, result={reason or waiting}, '
-                    f'read_errors={feedback["read_errors"]}; '
-                    + ('completion confirmed' if reason else 'arm stays still; Ctrl+C to interrupt'))
+                waiting = (
+                    "READ_RETRY" if not feedback["usable_for_completion"] else "WAITING"
+                )
+                _gripper_log(
+                    f"[gripper] {target}: phase={phase}, elapsed={elapsed:.2f}s, "
+                    f"position={feedback['position_pulse']}, target={target_position}, "
+                    f"tolerance={trace['position_tolerance_pulse']}, state={feedback['state']}, "
+                    f"progress={progress}, result={reason or waiting}, "
+                    f"read_errors={feedback['read_errors']}; "
+                    + (
+                        "completion confirmed"
+                        if reason
+                        else "arm stays still; Ctrl+C to interrupt"
+                    )
+                )
                 last_print = elapsed
             return elapsed
 
         try:
-            _gripper_log(f'[gripper] {target}: acquiring initial feedback; arm stays still')
+            _gripper_log(
+                f"[gripper] {target}: acquiring initial feedback; arm stays still"
+            )
             while True:
+                cancel_check = getattr(self, "check_gripper_wait", None)
+                if cancel_check is not None:
+                    cancel_check(started)
                 before = self._checked_gripper_feedback()
-                if before['usable_for_completion'] and before['state'] != 'moving':
+                if before["usable_for_completion"] and before["state"] != "moving":
                     break
-                record_sample(before, 'before_command')
-                time.sleep(.05)
-            trace['before_command'] = before
-            initial = before['position_pulse']
+                record_sample(before, "before_command")
+                time.sleep(0.05)
+            trace["before_command"] = before
+            initial = before["position_pulse"]
             direction = 1 if target_position > initial else -1
-            _gripper_log(f'[gripper] {target}: before={initial}, target={target_position}; waiting for measured completion')
+            _gripper_log(
+                f"[gripper] {target}: before={initial}, target={target_position}; waiting for measured completion"
+            )
             # The SDK's wait=True itself has status/no-progress success paths.
             # Keep its default wait_motion=True, but own gripper completion here.
-            result = self._check('set_gripper_position', self.arm.set_gripper_position(
-                target_position, speed=config.gripper_speed, wait=False))
-            trace['command_result'] = result
+            result = self._check(
+                "set_gripper_position",
+                self.arm.set_gripper_position(
+                    target_position, speed=config.gripper_speed, wait=False
+                ),
+            )
+            trace["command_result"] = result
             closing_started = False
             stable_positions = []
             stable_since = None
             stable_min = stable_max = None
             trace["close_stability_duration_s"] = 3.0
-            trace['close_stability_samples'] = 20
-            trace['close_stability_range_pulse'] = 3.0
+            trace["close_stability_samples"] = 20
+            trace["close_stability_range_pulse"] = 3.0
             while True:
+                cancel_check = getattr(self, "check_gripper_wait", None)
+                if cancel_check is not None:
+                    cancel_check(started)
                 feedback = self._checked_gripper_feedback()
-                if not feedback['usable_for_completion']:
+                if not feedback["usable_for_completion"]:
                     stable_positions.clear()
                     stable_since = None
-                    record_sample(feedback, 'after_command')
-                    time.sleep(.05)
+                    record_sample(feedback, "after_command")
+                    time.sleep(0.05)
                     continue
-                position = feedback['position_pulse']
-                state = feedback['state']
+                position = feedback["position_pulse"]
+                state = feedback["state"]
                 progress = direction * (position - initial)
-                at_target = abs(position - target_position) <= trace['position_tolerance_pulse']
+                at_target = (
+                    abs(position - target_position) <= trace["position_tolerance_pulse"]
+                )
                 reason = None
-                if target == 'open' and state in {'stop', 'grasp'} and at_target:
-                    reason = 'measured_target_reached'
-                if target == 'close':
+                if target == "open" and state in {"stop", "grasp"} and at_target:
+                    reason = "measured_target_reached"
+                if target == "close":
                     # Require a stopped position band <=3 pulses for three seconds
                     # after observed closure. Track extrema over the entire period,
                     # not just adjacent samples, so slow drift cannot pass.
                     if progress > 2:
                         closing_started = True
-                    trace['closing_started'] = closing_started
-                    if closing_started and progress > 2 and state in {'stop', 'grasp'}:
+                    trace["closing_started"] = closing_started
+                    if closing_started and progress > 2 and state in {"stop", "grasp"}:
                         now = time.monotonic()
-                        if (stable_since is None or
-                                max(stable_max, position) - min(stable_min, position)
-                                > trace['close_stability_range_pulse']):
+                        if (
+                            stable_since is None
+                            or max(stable_max, position) - min(stable_min, position)
+                            > trace["close_stability_range_pulse"]
+                        ):
                             stable_since = now
                             stable_min = stable_max = position
                             stable_positions.clear()
                         else:
                             stable_min = min(stable_min, position)
                             stable_max = max(stable_max, position)
-                        trace['close_observed_range_pulse'] = stable_max - stable_min
+                        trace["close_observed_range_pulse"] = stable_max - stable_min
                         stable_positions.append(position)
                         stable_positions = stable_positions[-20:]
-                        trace['close_stable_elapsed_s'] = now - stable_since
+                        trace["close_stable_elapsed_s"] = now - stable_since
                         if len(stable_positions) == 20 and now - stable_since >= 3.0:
-                            reason = 'measured_close_stable'
+                            reason = "measured_close_stable"
                     else:
                         stable_positions.clear()
                         stable_since = None
-                        trace['close_stable_elapsed_s'] = 0.0
-                    trace['close_recent_positions_pulse'] = list(stable_positions)
-                elapsed = record_sample(feedback, 'after_command', progress=progress, reason=reason)
+                        trace["close_stable_elapsed_s"] = 0.0
+                    trace["close_recent_positions_pulse"] = list(stable_positions)
+                elapsed = record_sample(
+                    feedback, "after_command", progress=progress, reason=reason
+                )
                 if reason:
-                    trace.update(status='COMPLETED', reason=reason, duration_s=elapsed)
+                    trace.update(status="COMPLETED", reason=reason, duration_s=elapsed)
                     pose, robot_state = self._state()
-                    robot_state['gripper_feedback'] = feedback
-                    robot_state['gripper_completion'] = trace
-                    return {'command_result': result, 'feedback': feedback, 'completion': trace}, (pose, robot_state)
-                time.sleep(.05)
+                    robot_state["gripper_feedback"] = feedback
+                    robot_state["gripper_completion"] = trace
+                    return {
+                        "command_result": result,
+                        "feedback": feedback,
+                        "completion": trace,
+                    }, (pose, robot_state)
+                time.sleep(0.05)
         except BaseException as exc:
-            trace.update(status='FAILED', duration_s=time.monotonic()-started,
-                         error=f'{type(exc).__name__}: {exc}')
-            if hasattr(exc, 'gripper_feedback'):
-                trace['failed_feedback'] = exc.gripper_feedback
+            trace.update(
+                status="FAILED",
+                duration_s=time.monotonic() - started,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            if hasattr(exc, "gripper_feedback"):
+                trace["failed_feedback"] = exc.gripper_feedback
             exc.gripper_completion = trace
-            _gripper_log(f'[gripper] {target}: FAILED; next robot action blocked: {exc}')
+            _gripper_log(
+                f"[gripper] {target}: FAILED; next robot action blocked: {exc}"
+            )
             raise
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
@@ -747,13 +834,13 @@ class XArmBackend:
         return self._state()
 
     def open_gripper(self, config: RobotConfig):
-        return self._command_gripper(config, target='open')
+        return self._command_gripper(config, target="open")
 
     def close_gripper(self, config: RobotConfig):
-        return self._command_gripper(config, target='close')
+        return self._command_gripper(config, target="close")
 
     def shake(self, config: RobotConfig):
-        from .shake_once import shake
+        from ..shake_once import shake
 
         shake_result = shake(self.arm, config)
         pose, state = self._state()
@@ -762,7 +849,7 @@ class XArmBackend:
         return pose, state
 
     def shake_open(self, config: RobotConfig):
-        from .shake_open import shake_open
+        from ..shake_open import shake_open
 
         shake_open_result = shake_open(self.arm, config)
         pose, state = self._state()
@@ -797,7 +884,9 @@ class XArmBackend:
         self._check("set_servo_angle(perception_position)", code)
         actual = self._state()
         state = actual[1]
-        actual_joints = state.get("servo_angles_deg") if isinstance(state, dict) else None
+        actual_joints = (
+            state.get("servo_angles_deg") if isinstance(state, dict) else None
+        )
         if not isinstance(actual_joints, list) or len(actual_joints) != 7:
             raise RobotExecutionError(
                 "xArm did not report seven joint angles at perception_position"
@@ -819,7 +908,7 @@ class XArmBackend:
             self.arm.disconnect()
 
 
-@timed_stage('robot_api.move_robot_to_perception_position')
+@timed_stage("robot_api.move_robot_to_perception_position")
 def move_robot_to_perception_position(
     config: RobotConfig,
     *,
@@ -885,12 +974,20 @@ class RobotAPI:
 
     def _begin(self, name: str, args: dict[str, Any]) -> ActionRecord:
         if self.halted:
-            raise RobotExecutionError("robot execution is halted after a previous failure")
+            raise RobotExecutionError(
+                "robot execution is halted after a previous failure"
+            )
         record = ActionRecord(name=name, args=args, requested_at=_timestamp())
         self.actions.append(record)
         return record
 
-    def _finish(self, record: ActionRecord, *, actual: tuple[list[float] | None, Any] | None = None, gripper: Any = None) -> None:
+    def _finish(
+        self,
+        record: ActionRecord,
+        *,
+        actual: tuple[list[float] | None, Any] | None = None,
+        gripper: Any = None,
+    ) -> None:
         record.completed_at = _timestamp()
         record.success = True
         record.gripper_result = gripper
@@ -900,13 +997,15 @@ class RobotAPI:
     def _fail(self, record: ActionRecord, exc: BaseException) -> None:
         record.completed_at = _timestamp()
         record.error = f"{type(exc).__name__}: {exc}"
-        if hasattr(exc, 'gripper_completion'):
-            record.gripper_result = {'completion': exc.gripper_completion}
+        if hasattr(exc, "gripper_completion"):
+            record.gripper_result = {"completion": exc.gripper_completion}
         self.halted = True
 
-    @timed_stage('robot_api.RobotAPI.move')
+    @timed_stage("robot_api.RobotAPI.move")
     def move(self, x: float, y: float, z: float, yaw: float) -> None:
-        record = self._begin("move", {"x": float(x), "y": float(y), "z": float(z), "yaw": float(yaw)})
+        record = self._begin(
+            "move", {"x": float(x), "y": float(y), "z": float(z), "yaw": float(yaw)}
+        )
         try:
             self.config.validate_workspace_pose(
                 record.args["x"],
@@ -914,13 +1013,19 @@ class RobotAPI:
                 record.args["z"],
                 relative_yaw_deg=record.args["yaw"],
             )
-            actual = self.backend.move(record.args["x"], record.args["y"], record.args["z"], record.args["yaw"], self.config)
+            actual = self.backend.move(
+                record.args["x"],
+                record.args["y"],
+                record.args["z"],
+                record.args["yaw"],
+                self.config,
+            )
             self._finish(record, actual=actual)
         except BaseException as exc:
             self._fail(record, exc)
             raise
 
-    @timed_stage('robot_api.RobotAPI.open_gripper')
+    @timed_stage("robot_api.RobotAPI.open_gripper")
     def open_gripper(self) -> None:
         record = self._begin("open_gripper", {})
         try:
@@ -930,7 +1035,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
-    @timed_stage('robot_api.RobotAPI.close_gripper')
+    @timed_stage("robot_api.RobotAPI.close_gripper")
     def close_gripper(self) -> None:
         record = self._begin("close_gripper", {})
         try:
@@ -940,7 +1045,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
-    @timed_stage('robot_api.RobotAPI.shake')
+    @timed_stage("robot_api.RobotAPI.shake")
     def shake(self) -> None:
         record = self._begin("shake", {})
         try:
@@ -949,7 +1054,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
-    @timed_stage('robot_api.RobotAPI.shake_open')
+    @timed_stage("robot_api.RobotAPI.shake_open")
     def shake_open(self) -> None:
         record = self._begin("shake_open", {})
         try:
@@ -958,7 +1063,7 @@ class RobotAPI:
             self._fail(record, exc)
             raise
 
-    @timed_stage('robot_api.RobotAPI.home')
+    @timed_stage("robot_api.RobotAPI.home")
     def home(self) -> None:
         record = self._begin("home", {})
         try:

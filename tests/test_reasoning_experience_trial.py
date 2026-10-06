@@ -2,7 +2,7 @@ import json
 from cloth_agent.harness import reasoning_experience_trial as trial
 from cloth_agent.harness.common import write_json
 from cloth_agent.harness.reasoning_contract import freeze_evidence, freeze_harness, baseline_harness
-from test_observation_code_trial import setup, Model
+from tests.test_observation_code_trial import setup, Model
 
 
 def test_snapshot_replay_and_reflection_do_not_supply_baseline_answer(tmp_path, monkeypatch):

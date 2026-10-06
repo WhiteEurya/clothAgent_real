@@ -1,7 +1,7 @@
 from dataclasses import replace
 import numpy as np
 import pytest
-from test_camera_parallel_table import scene
+from tests.test_camera_parallel_table import scene
 from cloth_agent.perception import _fit_table_plane_from_references, camera_height_map_mm, PerceptionError
 
 

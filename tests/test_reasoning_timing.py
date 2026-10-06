@@ -2,7 +2,7 @@ import pytest
 
 from cloth_agent.harness.common import read_json
 from cloth_agent.harness.reasoning_timing import run_once
-from test_reasoning_code import Model, baseline, final
+from tests.test_reasoning_code import Model, baseline, final
 
 
 def test_one_fresh_call_without_learning_or_historical_answers(tmp_path):

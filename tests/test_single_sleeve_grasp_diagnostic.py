@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from scripts.test_claude_single_sleeve_grasp import (
+from tests.manual.test_claude_single_sleeve_grasp import (
     LIFT_DELTAS_MM,
     _abort_actions,
     _experiment_source,

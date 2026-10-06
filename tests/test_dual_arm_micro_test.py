@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from scripts import dual_arm_micro_test as m
+from tests.manual import dual_arm_micro_test as m
 
 
 class Arm:

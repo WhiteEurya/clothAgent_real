@@ -403,7 +403,7 @@ def test_failed_emergency_release_also_blocks_home(tmp_path, config, backend, mo
 def test_both_entrypoints_use_strict_close_gate(
         tmp_path, config, backend, monkeypatch, route, reaches_closed_target):
     import json
-    from scripts import replay_gripper_test as replay
+    from tests.manual import replay_gripper_test as replay
     from cloth_agent.config import ExperimentConfig
     from cloth_agent.fold_exploration_pipeline import FoldExplorationPipeline
     from cloth_agent.session import AgentSession

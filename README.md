@@ -269,6 +269,8 @@ python -m pytest
 
 测试通常不需要连接真实机器人；涉及相机、xArm 或 GPU 的脚本应在对应硬件/环境中单独运行。
 
+按需运行的相机参数扫描、机械臂专项验证和远程接口冒烟测试集中在 [tests/manual/](tests/manual/README.md)，其中列出了各脚本用途。自动回归测试位于 `tests/`。
+
 ## 固定证据上的脑内 Harness Learning
 
 新增独立入口 `python -m cloth_agent.harness.reasoning_learning`：冻结一份选点前证据，由运行时 Claude 反思并生成多版 reasoning harness，重新规划同一 observation，通过抓点与视觉目标共识筛选簇内成本最低版本。支持串行/分支搜索、重复测量、预算、完整调试产物及 HTML 报告；不执行机器人。见 [运行与调试说明](docs/reasoning_learning.md)。单独测试：`python -m pytest -q tests/test_reasoning_learning.py`。

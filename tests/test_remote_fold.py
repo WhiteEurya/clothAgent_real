@@ -674,7 +674,7 @@ def test_transport_result_and_cleanup_paths(saved_scene, monkeypatch, failure):
 
 def test_saved_run_smoke_uses_production_path_without_hardware(saved_scene, monkeypatch):
     from cloth_agent.session import AgentSession
-    from scripts.remote_fold_smoke import main
+    from tests.manual.remote_fold_smoke import main
     source, _, _ = saved_scene
     project = source.run_dir / "project"
     session = AgentSession.create(project, "offline bridge test", source.robot_config,

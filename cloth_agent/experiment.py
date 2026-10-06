@@ -279,7 +279,7 @@ def format_action_sequence(actions: list[dict[str, Any]]) -> str:
                 f"acceleration={FLICK_ACCELERATION_MM_S2:.1f} mm/s^2)"
             )
         elif action["name"] == "shake_open":
-            from .shake_open_test import (
+            from .shake_open import (
                 DIAGONAL_ACCELERATION_MM_S2,
                 DIAGONAL_CYCLES,
                 DIAGONAL_SPEED_MM_S,

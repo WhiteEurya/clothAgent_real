@@ -10,7 +10,7 @@ from cloth_agent.motion_image_sources import resolve_motion_sources
 from cloth_agent.planner_backend import BackendResult
 from cloth_agent.remote_fold import RemoteFoldClient
 from cloth_agent.visual_preparation import build_handoff, reasoning_sources
-from test_remote_fold import saved_scene, visual_payload, motion_payload
+from tests.test_remote_fold import saved_scene, visual_payload, motion_payload
 
 
 def ready(identity):

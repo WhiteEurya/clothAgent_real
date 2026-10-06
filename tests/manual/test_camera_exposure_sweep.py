@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture a labeled manual-white-balance sweep from one RealSense RGB camera."""
+"""Capture a labeled RGB exposure sweep from one configured RealSense camera."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -32,10 +32,10 @@ def _save_grid(
     tile_width: int = 320,
 ) -> None:
     if not captures:
-        raise RuntimeError("white-balance sweep produced no images")
+        raise RuntimeError("exposure sweep produced no images")
     source_width, source_height = captures[0][1].size
     tile_height = int(round(tile_width * source_height / source_width))
-    label_height = 34
+    label_height = 32
     rows = (len(captures) + columns - 1) // columns
     grid = Image.new(
         "RGB",
@@ -43,29 +43,13 @@ def _save_grid(
         (12, 12, 14),
     )
     draw = ImageDraw.Draw(grid)
-    for index, (white_balance, image) in enumerate(captures):
+    for index, (exposure, image) in enumerate(captures):
         x = (index % columns) * tile_width
         y = (index // columns) * (tile_height + label_height)
         resized = image.resize((tile_width, tile_height), Image.Resampling.LANCZOS)
         grid.paste(resized, (x, y + label_height))
-        draw.text((x + 10, y + 10), f"White balance {white_balance} K", fill=(255, 255, 255))
+        draw.text((x + 10, y + 9), f"Exposure {exposure}", fill=(255, 255, 255))
     grid.save(output_path)
-
-
-def _bright_region_metrics(rgb: np.ndarray) -> dict[str, object]:
-    values = rgb.astype(np.float64)
-    luminance = values.mean(axis=2)
-    threshold = float(np.percentile(luminance, 75))
-    mask = luminance >= threshold
-    mean_rgb = values[mask].mean(axis=0)
-    normalized = mean_rgb / max(float(mean_rgb.mean()), 1.0)
-    return {
-        "bright_region_threshold": threshold,
-        "bright_region_mean_rgb": mean_rgb.tolist(),
-        "bright_region_normalized_rgb": normalized.tolist(),
-        "bright_region_neutral_error": float(np.abs(normalized - 1.0).sum()),
-        "saturated_fraction": float(np.mean(rgb >= 250)),
-    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,10 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("config/perception.free_exploration.json"),
     )
     parser.add_argument("--camera", default="A")
-    parser.add_argument("--start", type=int, default=2800)
-    parser.add_argument("--end", type=int, default=6400)
-    parser.add_argument("--step", type=int, default=400)
-    parser.add_argument("--settle-frames", type=int, default=12)
+    parser.add_argument("--start", type=int, default=100)
+    parser.add_argument("--end", type=int, default=800)
+    parser.add_argument("--step", type=int, default=50)
+    parser.add_argument("--settle-frames", type=int, default=10)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args(argv)
 
@@ -96,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = (
         args.output_dir.expanduser().resolve()
         if args.output_dir
-        else root / "results" / "white_balance_sweep" / stamp / f"camera_{label}"
+        else root / "results" / "exposure_sweep" / stamp
     )
     output_dir.mkdir(parents=True, exist_ok=False)
 
@@ -124,59 +108,45 @@ def main(argv: list[str] | None = None) -> int:
     if sensor is None:
         pipeline.stop()
         raise RuntimeError(f"camera {label} has no RGB Camera sensor")
-    required = (rs.option.enable_auto_white_balance, rs.option.white_balance)
-    if any(not sensor.supports(option) for option in required):
-        pipeline.stop()
-        raise RuntimeError(f"camera {label} does not support manual white balance")
 
-    white_balances = list(range(args.start, args.end + 1, args.step))
+    exposures = list(range(args.start, args.end + 1, args.step))
     captures: list[tuple[int, Image.Image]] = []
     records: list[dict[str, object]] = []
-    restore_auto = float(sensor.get_option(rs.option.enable_auto_white_balance))
-    restore_white_balance = float(sensor.get_option(rs.option.white_balance))
-    exposure = (
-        float(sensor.get_option(rs.option.exposure))
-        if sensor.supports(rs.option.exposure)
-        else None
-    )
-    gain = (
-        float(sensor.get_option(rs.option.gain))
-        if sensor.supports(rs.option.gain)
-        else None
-    )
+    restore_exposure = float(spec.color_exposure or args.end)
     try:
-        sensor.set_option(rs.option.enable_auto_white_balance, 0.0)
+        sensor.set_option(rs.option.enable_auto_exposure, 0.0)
         for _ in range(args.settle_frames):
             pipeline.wait_for_frames()
-        for requested in white_balances:
-            sensor.set_option(rs.option.white_balance, float(requested))
+        for requested in exposures:
+            sensor.set_option(rs.option.exposure, float(requested))
             for _ in range(args.settle_frames):
                 frames = pipeline.wait_for_frames()
             color_frame = frames.get_color_frame()
             if not color_frame:
-                raise RuntimeError(f"camera {label} returned no RGB frame at {requested} K")
-            actual = float(sensor.get_option(rs.option.white_balance))
+                raise RuntimeError(f"camera {label} returned no RGB frame at {requested}")
+            actual = float(sensor.get_option(rs.option.exposure))
             rgb = np.asanyarray(color_frame.get_data()).copy()
             image = Image.fromarray(rgb).convert("RGB")
-            image_name = f"white_balance_{requested:04d}K.png"
+            image_name = f"exposure_{requested:04d}.png"
             image.save(output_dir / image_name)
             captures.append((requested, image))
             records.append(
                 {
-                    "requested_white_balance_k": requested,
-                    "actual_white_balance_k": actual,
+                    "requested_exposure": requested,
+                    "actual_exposure": actual,
                     "image": image_name,
-                    **_bright_region_metrics(rgb),
+                    "rgb_mean": float(rgb.mean()),
+                    "rgb_p95": float(np.percentile(rgb, 95)),
+                    "saturated_fraction": float(np.mean(rgb >= 250)),
                 }
             )
     finally:
         try:
-            sensor.set_option(rs.option.white_balance, restore_white_balance)
-            sensor.set_option(rs.option.enable_auto_white_balance, restore_auto)
+            sensor.set_option(rs.option.exposure, restore_exposure)
         finally:
             pipeline.stop()
 
-    grid_path = output_dir / "white_balance_grid.png"
+    grid_path = output_dir / "exposure_grid.png"
     _save_grid(captures, grid_path)
     (output_dir / "manifest.json").write_text(
         json.dumps(
@@ -184,12 +154,10 @@ def main(argv: list[str] | None = None) -> int:
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                 "camera_label": label,
                 "camera_serial": spec.serial,
-                "exposure": exposure,
-                "gain": gain,
-                "white_balances_k": white_balances,
+                "auto_exposure": False,
+                "exposures": exposures,
                 "settle_frames": args.settle_frames,
-                "restored_auto_white_balance": restore_auto,
-                "restored_white_balance_k": restore_white_balance,
+                "restored_exposure": restore_exposure,
                 "grid": grid_path.name,
                 "captures": records,
                 "robot_motion": False,
@@ -199,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         encoding="utf-8",
     )
-    print(f"White-balance sweep complete: {grid_path}")
+    print(f"Exposure sweep complete: {grid_path}")
     return 0
 
 

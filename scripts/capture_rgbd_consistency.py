@@ -3,7 +3,7 @@
 
 This module deliberately does *only* acquisition. It does not fit a table,
 segment the garment, start Claude, open Viser, move the robot, or overwrite a
-previous capture. Feed its output to ``scripts/test_height_map_pipeline.py``
+previous capture. Feed its output to ``tests/manual/test_height_map_pipeline.py``
 with ``--input-capture`` and then to
 ``scripts/diagnose_perception_consistency.py``.
 """

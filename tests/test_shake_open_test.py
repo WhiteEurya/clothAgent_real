@@ -12,7 +12,8 @@ from cloth_agent.robot_api import (
     SimulatedBackend,
     _controller_trajectory_with_arm,
 )
-from cloth_agent.shake_open_test import (
+from tests.manual.xarm_shake_open_test import main
+from cloth_agent.shake_open import (
     DIAGONAL_CYCLES,
     DIAGONAL_SCALE_CANDIDATES,
     DIAGONAL_X_MM,
@@ -24,7 +25,6 @@ from cloth_agent.shake_open_test import (
     WORK_Z_DROP_MM,
     build_shake_open_plan,
     execute_shake_open,
-    main,
     select_controller_valid_shake_open_plan,
     validate_shake_open_with_controller,
 )

@@ -8,7 +8,7 @@ from cloth_agent.harness.common import write_json
 from cloth_agent.harness.executors.restricted import RestrictedProgram
 from cloth_agent.harness.policy import PolicyError
 from cloth_agent.harness.reasoning_contract import baseline_harness, freeze_evidence, freeze_harness
-from test_observation_code_trial import setup
+from tests.test_observation_code_trial import setup
 
 
 def function():

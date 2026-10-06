@@ -4,7 +4,7 @@ from cloth_agent.public_process import collect_rollout_trace, stream_process
 from cloth_agent.harness.reasoning_code import public_records
 from cloth_agent.harness.reasoning_contract import JUDGMENT_SCHEMA
 from cloth_agent.harness.policy import validate_schema
-from test_reasoning_code import final
+from tests.test_reasoning_code import final
 
 
 def test_export_preserves_tool_order_links_and_excludes_private_blocks(tmp_path):

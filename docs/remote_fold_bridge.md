@@ -194,13 +194,13 @@ Alienware 使用已有 RGB 验证（无机器人连接）：
 
 ```bash
 # 仅验证本地图像变换和坐标映射，不联网、不调用 Claude
-python scripts/remote_image_tools_test.py test.png --offline
+python tests/manual/remote_image_tools_test.py tests/fixtures/test.png --offline
 
 # 验证 HTTPS → 公司 Claude → 实际 MCP 调用 → 原图坐标返回
-python scripts/remote_image_tools_test.py test.png --host company-planner
+python tests/manual/remote_image_tools_test.py tests/fixtures/test.png --host company-planner
 
 # 在公司电脑直接验证本机 Claude，省去 HTTPS 和 SSH；省略图片时生成测试色块图
-python scripts/remote_image_tools_test.py --local-claude
+python tests/manual/remote_image_tools_test.py --local-claude
 ```
 
 在线测试检查真实工具审计中存在旋转、裁剪、缩放、坐标映射调用，并核对返回坐标及 CLI 中的原图／旋转图／放大图像素；不会只相信模型自报成功。结果保存在 `results/image_tools_smoke/<时间>/`。`replayed_views/` 是本地根据审计重建的处理图，不是从远端下载的截图。CLI 自动将 PNG 转为同尺寸 JPEG 时，使用下述转码校验；CLI 隐式缩放、错误图片或超出容差的内容变化仍会阻止交接。
@@ -265,7 +265,7 @@ iteration_001/claude_image_tools/<阶段>_<ID>/
 也可以在完全不连接硬件时查看在线工具测试结果：
 
 ```bash
-python scripts/remote_image_tools_test.py test.png
+python tests/manual/remote_image_tools_test.py tests/fixtures/test.png
 python -m cloth_agent.fold_exploration_viser results/image_tools_smoke/<测试输出的时间目录>
 ```
 
@@ -290,7 +290,7 @@ bash scripts/setup_molmo.sh
 仅有一张 RGB PNG 时，先检查传输和公司 Claude 的图像读取：
 
 ```bash
-python scripts/remote_planner_test.py test.png
+python tests/manual/remote_planner_test.py tests/fixtures/test.png
 ```
 
 `--mock` 可在不联网时测试传输命令和 JSON parser；它不验证公司 Claude。
@@ -298,7 +298,7 @@ python scripts/remote_planner_test.py test.png
 已有成功保存的 perception run 时，运行实际 fold planner 链路：
 
 ```bash
-python scripts/remote_fold_smoke.py \
+python tests/manual/remote_fold_smoke.py \
   --run-dir runs/<已有的run目录名> \
   --host company-planner \
   --step left_sleeve \
@@ -321,7 +321,7 @@ python scripts/remote_fold_smoke.py \
 
 ### 夹爪完成反馈
 
-需要跳过模型和相机、直接复现已记录轨迹时，可运行 `python scripts/replay_gripper_test.py`。默认模拟，不连接机器人；真实执行用 `python scripts/replay_gripper_test.py --real --confirm-real`。脚本固定复现这次记录的 10 步（抓取 `[410.527, -149.384, 36.690]`，放置 `[382.736, -79.166, 42.690]`，单位 mm），不根据当前衣物重新定位。它使用当前 `config/robot.example.json`，也可用 `--config` 指定折叠运行所用的配置；保留工作区、TCP、控制器 IK 与夹爪反馈检查。
+需要跳过模型和相机、直接复现已记录轨迹时，可运行 `python tests/manual/replay_gripper_test.py`。默认模拟，不连接机器人；真实执行用 `python tests/manual/replay_gripper_test.py --real --confirm-real`。脚本固定复现这次记录的 10 步（抓取 `[410.527, -149.384, 36.690]`，放置 `[382.736, -79.166, 42.690]`，单位 mm），不根据当前衣物重新定位。它使用当前 `config/robot.example.json`，也可用 `--config` 指定折叠运行所用的配置；保留工作区、TCP、控制器 IK 与夹爪反馈检查。
 
 每次创建 `runs/gripper_replay_<UTC时间戳>/`，保存配置快照、轨迹源码、逐步完成日志和 `results/recorded_gripper_test.trace.json`。Home 仅在记录的第 10 步执行，失败或 Ctrl+C 后不额外发送释放或回 Home。模拟只能检查轨迹与调用链；实际夹爪反馈需真实执行验证。
 

@@ -320,7 +320,7 @@ print(json.dumps({"type": "result", "result": "{\\"ok\\":true}"}))
 
 
 def test_standalone_offline_smoke_produces_views_and_replay(scene):
-    from scripts.remote_image_tools_test import main as smoke, replay
+    from tests.manual.remote_image_tools_test import main as smoke, replay
     tools, _ = scene
     output = tools.job / "smoke"
     assert smoke([str(tools.job / "image_0.png"), "--offline", "--output-dir", str(output)]) == 0
@@ -335,7 +335,7 @@ def test_standalone_offline_smoke_produces_views_and_replay(scene):
 
 
 def test_smoke_generates_direction_chart_without_camera(tmp_path):
-    from scripts.remote_image_tools_test import main as smoke
+    from tests.manual.remote_image_tools_test import main as smoke
     output = tmp_path / "chart_smoke"
     assert smoke(["--offline", "--output-dir", str(output)]) == 0
     with Image.open(output / "synthetic_rgb.png") as image:

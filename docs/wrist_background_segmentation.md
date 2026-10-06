@@ -18,7 +18,7 @@ adjust it in `config/perception.free_exploration.json`.
 Preview a saved photograph without camera/robot access:
 
 ```bash
-python scripts/preview_background_mask.py test.png
+python scripts/preview_background_mask.py tests/fixtures/test.png
 ```
 
 Inspect `results/background_preview/appearance_overlay.png` (green foreground,
@@ -30,7 +30,7 @@ To test the complete perception pipeline while the robot is already stationary
 at the calibrated observation pose:
 
 ```bash
-python scripts/test_height_map_pipeline.py
+python tests/manual/test_height_map_pipeline.py
 ```
 
 Live wrist capture reads the joints for the camera transform; it sends no motion
@@ -104,7 +104,7 @@ domain stays black; black is not itself a rejection classification.
 Replay an existing capture without any camera or robot connection:
 
 ```bash
-python scripts/test_height_map_pipeline.py --input-capture path/to/raw_capture
+python tests/manual/test_height_map_pipeline.py --input-capture path/to/raw_capture
 ```
 
 The directory must contain `capture_manifest.json`, RGB and depth arrays from
