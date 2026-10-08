@@ -1,0 +1,4 @@
+# Optional isolated stage 1-3 viewer/checker; existing FK/URDF stack is reused.
+# Install in an environment that already satisfies pyproject.toml.
+python-fcl==0.7.0.11
+trimesh>=4,<5

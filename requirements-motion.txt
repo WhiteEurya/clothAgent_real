@@ -1,0 +1,3 @@
+-r requirements-collision.txt
+# Existing scipy/yourdfpy/Viser are reused; no second FK model is installed.
+ompl==2.0.1

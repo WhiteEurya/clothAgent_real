@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "units": "m_rad",
+  "world_frame": "xArm6 link_base",
+  "calibration_status": "applied_coordinate_correction_pending_live_validation",
+  "geometry_verified": false,
+  "safety_distance_m": 0.01,
+  "geometry_uncertainty_m": {
+    "left": 0.0,
+    "right": 0.0,
+    "environment": 0.0
+  },
+  "provenance": {
+    "calibration_directory": "config/calibration/dual_arm_working_20261008",
+    "import_manifest": {
+      "imported_at": "2026-10-08T05:17:36.719166+00:00",
+      "files": [
+        {
+          "file": "dual_arm_base.yaml",
+          "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/dual_arm_base.yaml",
+          "sha256": "f38f1eac3d9a95bde29b5e803e6edfbf1fbf31502443dbd4f79fc0bd98036444",
+          "updated_at": "2026-10-08T06:56:01.977331+00:00",
+          "status": "applied_coordinate_correction_pending_live_validation"
+        },
+        {
+          "file": "camA_intrinsics.yaml",
+          "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camA_intrinsics.yaml",
+          "sha256": "33fa31b61358ff702d288ca8364871debaa22931d8812cac2e6907beefc6f5bf"
+        },
+        {
+          "file": "camA_extrinsics.yaml",
+          "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camA_extrinsics.yaml",
+          "sha256": "4f0f418c31c0edda6473d28b79298ea0c31401c1f2108fa00f3ddc0358377f2d"
+        },
+        {
+          "file": "camB_intrinsics.yaml",
+          "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camB_intrinsics.yaml",
+          "sha256": "4c1a7cd0eff912b239c8cf5f835ce87395a9705a904c6e449a087eb9e2509174"
+        },
+        {
+          "file": "camB_extrinsics.yaml",
+          "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camB_extrinsics.yaml",
+          "sha256": "dae7ef11ed2f4cfae8d90074c840336af38934025a08d82789b433256dcaef42"
+        }
+      ],
+      "camera_assignment": {
+        "label": "B",
+        "robot": "xArm7",
+        "serial": "233622079809",
+        "source": "user-provided assignment; intrinsics serial checked"
+      },
+      "validation": "YAML parse, serial, finite proper rigid matrices, translation_units and byte-identical SHA256 verified; not a new physical calibration validation",
+      "runtime_config_updated": false,
+      "last_base_update": {
+        "source": "config/calibration/dual_arm_working_20261008/dual_arm_base.yaml",
+        "original_source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/dual_arm_base.yaml",
+        "status": "applied_coordinate_correction_pending_live_validation",
+        "source_units": "m",
+        "runtime_units": "mm",
+        "sha256": "f38f1eac3d9a95bde29b5e803e6edfbf1fbf31502443dbd4f79fc0bd98036444",
+        "imported_at": "2026-10-08T06:56:01.977331+00:00",
+        "source_calibration": "outputs/coordinate_correction_20261008_145014/calibration/dual_arm_base.yaml"
+      },
+      "last_camera_update": "2026-10-08T07:05:52.970822+00:00"
+    },
+    "initial_state": "historical saved Home, NOT a live controller read",
+    "initial_state_timestamp": "2026-09-26T05:40:08.682481+00:00",
+    "mount_link_assumption": "link_eef; must confirm both physical camera mounts"
+  },
+  "arms": {
+    "left": {
+      "axis": 6,
+      "serial": "AC130308A40050",
+      "urdf": "assets/robots/xarm6/xarm6_wo_ee.urdf",
+      "world_from_base_m": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "flange_link": "link_eef",
+      "native_gripper_root": null,
+      "tcp_offset_m_rad": [
+        0.0,
+        0.0,
+        0.172,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "initial_q_rad": [
+        -0.023010001979272762,
+        0.0882770082366212,
+        -1.7046759958593263,
+        0.031956996057308694,
+        1.610239005107424,
+        -0.024738994949468424
+      ]
+    },
+    "right": {
+      "axis": 7,
+      "serial": "AC130412A4001B",
+      "urdf": "assets/robots/xarm7/xarm7.urdf",
+      "world_from_base_m": [
+        [
+          -0.9986242086913215,
+          -0.0014657442315932025,
+          -0.052416995425922694,
+          1.1260379512017846
+        ],
+        [
+          0.0014298590879815712,
+          -0.9999987170345603,
+          0.0007221026407705937,
+          -0.019482407939521527
+        ],
+        [
+          -0.052417986594509386,
+          0.0006461602609590042,
+          0.9986250232986837,
+          0.016563068795618755
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "flange_link": "link_eef",
+      "native_gripper_root": "xarm_gripper_base_link",
+      "tcp_offset_m_rad": [
+        0.0,
+        0.0,
+        0.172,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "initial_q_rad": [
+        -0.028038993685969224,
+        -0.3551530003244615,
+        -0.00359499428667288,
+        1.2544629920531705,
+        -0.043711003171327104,
+        1.582259003550172,
+        0.005659998044462491
+      ]
+    }
+  },
+  "attachments": [
+    {
+      "name": "cam_a",
+      "kind": "camera",
+      "arm": "left",
+      "serial": "317222073552",
+      "link": "link_eef",
+      "link_from_optical_m": [
+        [
+          -0.020616121886707174,
+          -0.9978977851749548,
+          -0.06144091357777988,
+          0.0787092711644584
+        ],
+        [
+          0.9989846386164664,
+          -0.0230228973488814,
+          0.038725159857548916,
+          -0.03605625930050328
+        ],
+        [
+          -0.040058299098716645,
+          -0.060580166231058184,
+          0.9973592011571043,
+          0.027152990926238345
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "optical_from_housing_m": null,
+      "size_m": [
+        0.09,
+        0.025,
+        0.025
+      ],
+      "note": "Nominal D435 housing example; measure optical origin to housing center, connectors, bracket and cable envelope."
+    },
+    {
+      "name": "left_gripper",
+      "kind": "gripper",
+      "arm": "left",
+      "link": "link_eef",
+      "link_from_box_m": null,
+      "size_m": null,
+      "note": "Must enclose all jaw openings and installed fingertips; replaces native gripper meshes for 13DoF queries."
+    },
+    {
+      "name": "cam_b",
+      "kind": "camera",
+      "arm": "right",
+      "serial": "233622079809",
+      "link": "link_eef",
+      "link_from_optical_m": [
+        [
+          0.0017365241460240608,
+          0.9999597828343619,
+          -0.008798704321957307,
+          0.07437856358688474
+        ],
+        [
+          -0.9999762713913845,
+          0.0017950743642663304,
+          0.00665089183583648,
+          0.03711145444169727
+        ],
+        [
+          0.00666641868438461,
+          0.008786946106680564,
+          0.9999391723700213,
+          0.02338532120812982
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "optical_from_housing_m": null,
+      "size_m": [
+        0.09,
+        0.025,
+        0.025
+      ],
+      "note": "Nominal D435 housing example; measure optical origin to housing center, connectors, bracket and cable envelope."
+    },
+    {
+      "name": "right_gripper",
+      "kind": "gripper",
+      "arm": "right",
+      "link": "link_eef",
+      "link_from_box_m": null,
+      "size_m": null,
+      "note": "Must enclose all jaw openings and installed fingertips; replaces native gripper meshes for 13DoF queries."
+    }
+  ],
+  "obstacles": [
+    {
+      "name": "table",
+      "size_m": null,
+      "world_from_box_m": null
+    }
+  ],
+  "base_mount_contacts": []
+}
