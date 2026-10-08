@@ -536,6 +536,13 @@ def main(argv=None):
     commissioning.add_argument("--real", action="store_true")
     commissioning.add_argument("--confirm-real", action="store_true")
     commissioning.add_argument("--preflight-only", action="store_true")
+    home = sub.add_parser("home", help="collision-checked joint Home for BOTH arms, then open grippers")
+    home.add_argument("--config", type=Path, default=ROOT / "config/dual_arm.local.json")
+    from datetime import datetime, timezone
+    home.add_argument("--output", type=Path, default=ROOT / "results/dual_home" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+    home.add_argument("--real", action="store_true")
+    home.add_argument("--confirm-real", action="store_true")
+    home.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args(argv)
     args.project_root = args.project_root.resolve()
     try:
@@ -572,6 +579,9 @@ def main(argv=None):
             return demo(args)
         elif args.command == "commission":
             return commission(args)
+        elif args.command == "home":
+            from .homing import run_home
+            return run_home(args)
         return 0
     except (
         DualArmError,

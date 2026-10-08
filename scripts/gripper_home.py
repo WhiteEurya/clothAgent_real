@@ -1,54 +1,43 @@
 #!/usr/bin/env python3
-"""Return the xArm to its configured home pose with the gripper open.
+"""Return BOTH arms to saved joint Home, then open both grippers.
 
-This is intentionally a recovery-only script: it performs no Cartesian moves,
-perception, or garment interaction.  The arm goes to the configured joint home
-pose and the gripper is commanded to its configured open position.
+Running this script executes real Home automatically using the saved config.
+Use --simulate for offline execution or --preflight-only for read-only planning.
 """
-
-from __future__ import annotations
-
-import argparse
 from pathlib import Path
 import sys
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from cloth_agent.config import RobotConfig
-from cloth_agent.robot_api import XArmBackend
+from cloth_agent.dual_arm.homing import gripper_home
+from cloth_agent.dual_arm.geometry import DualArmError
 
 
-def main() -> int:
+def main(argv=None):
+    import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("config/robot.example.json"),
-        help="robot configuration JSON (default: config/robot.example.json)",
-    )
-    args = parser.parse_args()
-
-    config_path = args.config if args.config.is_absolute() else PROJECT_ROOT / args.config
-    config = RobotConfig.load(PROJECT_ROOT, config_path)
-    config.validate_for_real()
-
-    backend = XArmBackend(config)
+    parser.add_argument('--config', type=Path)
+    parser.add_argument('--output', type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--simulate', action='store_true')
+    mode.add_argument('--real', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--confirm-real', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--preflight-only', action='store_true')
+    args = parser.parse_args(argv)
+    if args.simulate and args.confirm_real:
+        parser.error('--simulate cannot be combined with --confirm-real')
     try:
-        print(f"Connected to xArm at {config.robot_ip}")
-        print("Moving to configured home pose...")
-        home_pose, _ = backend.home(config)
-        print(f"Home pose: {home_pose}")
-        print("Opening gripper...")
-        gripper_result, _ = backend.open_gripper(config)
-        print(f"Gripper result: {gripper_result}")
-        print("Recovery complete.")
-        return 0
-    finally:
-        backend.close()
+        result = gripper_home(args.config, output=args.output, simulated=args.simulate,
+                              preflight_only=args.preflight_only)
+    except DualArmError as exc:
+        print(f'Home failed: {exc}', file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0 if result['status'] in {'COMPLETED', 'PREFLIGHT_ONLY'} else 1
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

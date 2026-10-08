@@ -31,7 +31,25 @@ class XArmConnection(XArmBackend):
         self.lock = threading.RLock()
         self.arm = sdk_factory(config.ip, is_radian=False)
         self.original_mode = None
+        self.position_command_active = False
         try:
+            # SDK cached TCP/mode fields may still contain defaults at connect.
+            # Wait for two reports before validating them; no controller writes.
+            if hasattr(self.arm, 'register_report_callback'):
+                ready = threading.Event()
+                count = [0]
+                def received(_report):
+                    count[0] += 1
+                    if count[0] >= 2:
+                        ready.set()
+                self.arm.register_report_callback(received)
+                try:
+                    deadline = time.monotonic() + 2.0
+                    while not ready.wait(.02):
+                        if cancel.is_set() or time.monotonic() >= deadline:
+                            raise DualArmError('controller initial reports unavailable')
+                finally:
+                    self.arm.release_report_callback(received)
             self._check("get_robot_sn", self.arm.get_robot_sn())
             if (
                 not self.arm.connected
@@ -72,7 +90,8 @@ class XArmConnection(XArmBackend):
                 raise DualArmError(f"{self.config.arm_id}: disconnected")
             state = self.checked_value(self.arm.get_state(), "state")
             errors = self.checked_value(self.arm.get_err_warn_code(), "errors")
-            if state not in (0, 2) or list(errors) != [0, 0]:
+            allowed_states = (0, 1, 2) if self.position_command_active else (0, 2)
+            if state not in allowed_states or list(errors) != [0, 0]:
                 raise DualArmError(
                     f"{self.config.arm_id}: controller fault/state {state}, {errors}"
                 )
@@ -147,6 +166,26 @@ class XArmConnection(XArmBackend):
                 self.arm.set_servo_angle_j(list(joints), is_radian=False),
             )
 
+    def prepare_position(self):
+        if self.cancel.is_set() or self.arm.mode != 0:
+            raise DualArmError('native Home requires ready position mode (0)')
+        self.snapshot()
+        if self.arm.get_is_moving() or self.checked_value(self.arm.get_cmdnum(), 'command queue') != 0:
+            raise DualArmError('native Home requires stationary arms with empty command queues')
+        self._check('set_gripper_mode', self.arm.set_gripper_mode(0))
+        self._check('set_gripper_enable', self.arm.set_gripper_enable(True))
+
+    def move_joint_position(self, joints, speed, acceleration, timeout):
+        if self.cancel.is_set() or self.arm.mode != 0:
+            raise DualArmError('native Home cancelled or controller mode changed')
+        self.position_command_active = True
+        try:
+            self._check('set_servo_angle(position)', self.arm.set_servo_angle(
+                angle=list(joints), speed=speed, mvacc=acceleration,
+                is_radian=False, wait=True, timeout=timeout, radius=-1))
+        finally:
+            self.position_command_active = False
+
     def check_gripper_wait(self, started):
         if self.cancel.is_set():
             raise DualArmError("paired gripper wait cancelled")
@@ -213,6 +252,15 @@ class SimulatedConnection:
     def prepare(self):
         if self.cancel.is_set():
             raise DualArmError("cancelled")
+
+    def prepare_position(self):
+        self.prepare()
+
+    def move_joint_position(self, joints, speed, acceleration, timeout):
+        if self.cancel.is_set() or self.stopped:
+            raise DualArmError('cancelled')
+        self.joints = np.array(joints).copy()
+        self.commands.append(('position', self.joints.tolist()))
 
     def servo(self, joints):
         if self.cancel.is_set() or self.stopped:
@@ -472,6 +520,7 @@ class DualArmCoordinator:
         *,
         confirmed=False,
         commissioning=False,
+        homing=False,
     ):
         result = {
             "schema_version": 1,
@@ -483,10 +532,15 @@ class DualArmCoordinator:
         }
         expected_joints = {k: np.array(q).copy() for k, q in initial_joints.items()}
         try:
+            if self.config.execution_mode != 'servo_stream':
+                raise DualArmError('streaming executor cannot use controller-sequential envelopes')
+            if homing:
+                from .homing import validate_home_program
+                validate_home_program(program, self.config)
             if not self.simulated:
                 if not confirmed:
                     raise DualArmError("--real requires --confirm-real")
-                self.config.require_real(commissioning=commissioning)
+                self.config.require_real(commissioning=commissioning, homing=homing)
                 if any(
                     (i.phase if isinstance(i, Motion) else i).pin_arm
                     or (i.phase if isinstance(i, Motion) else i).name == "pin_descend"
@@ -495,7 +549,7 @@ class DualArmCoordinator:
                     raise DualArmError(
                         "pin_pull physical execution requires a force-limited contact controller; currently simulation/preflight only"
                     )
-                if not commissioning:
+                if not commissioning and not homing:
                     observation.validate_for(self.config, live=True)
             expected_poses = validate_sample(
                 self.config, self.models, expected_joints, holding=False

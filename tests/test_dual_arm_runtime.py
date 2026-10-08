@@ -599,6 +599,16 @@ def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id):
         def get_robot_sn(self):
             return 0, "robot"
 
+        def register_report_callback(self, callback):
+            # Cache is available only after the full report initialization.
+            callback({})
+            self.tcp_offset = cfg.tcp_offset.tolist()
+            callback({})
+            return True
+
+        def release_report_callback(self, callback):
+            return True
+
         def get_state(self):
             return 0, 0
 
@@ -785,3 +795,41 @@ def test_actual_urdf_small_lift_ik_preserves_seed_branch(scene, arm_id, index):
     assert np.max(np.abs(solved - q)) < 3
     distance, angle = pose_error(model.forward(solved), target)
     assert distance < 0.5 and angle < 0.2
+
+
+@pytest.mark.parametrize('arm_id,index', [('left',0),('right',1)])
+def test_local_motion_bound_covers_independent_joint_rotations(scene,arm_id,index):
+    from cloth_agent.dual_arm.kinematics import ArmModel
+    records=json.loads((ROOT/'data/robot/dual_arm_home.json').read_text())['arms']
+    q=np.asarray(records[index]['joints'])
+    model=ArmModel(scene.config.arms[arm_id])
+    half=np.full(len(q),10.)
+    bounds=model.local_capsule_motion_bounds(q,half)
+    nominal=model.capsules(q)
+    rng=np.random.default_rng(2718)
+    for _ in range(100):
+        sample=np.clip(q+rng.uniform(-half,half),np.degrees(model.lower),np.degrees(model.upper))
+        for base,actual in zip(nominal,model.capsules(sample)):
+            displacement=max(np.linalg.norm(actual.start-base.start),np.linalg.norm(actual.end-base.end))
+            assert displacement<=bounds[base.name]+1e-8
+
+
+@pytest.mark.parametrize('arm_id,index', [('left',0),('right',1)])
+def test_directional_projection_covers_independent_rotations(scene,arm_id,index):
+    from cloth_agent.dual_arm.kinematics import ArmModel
+    arm=scene.config.arms[arm_id]
+    arm.capsules[-1]['start_mm']=[30.,20.,100.]
+    arm.capsules[-1]['end_mm']=[-40.,50.,180.]
+    q=np.asarray(json.loads((ROOT/'data/robot/dual_arm_home.json').read_text())['arms'][index]['joints'])
+    model=ArmModel(arm);half=np.full(arm.axis,10.)
+    cap=model.capsules(q)[-1];points=np.vstack([cap.start,cap.end])
+    rng=np.random.default_rng(812)
+    directions=rng.normal(size=(8,3));directions/=np.linalg.norm(directions,axis=1)[:,None]
+    bounds=[model.projection_motion_interval(q,half,cap.name,points,n) for n in directions]
+    for _ in range(100):
+        sample=np.clip(q+rng.uniform(-half,half),np.degrees(model.lower),np.degrees(model.upper))
+        actual=model.capsules(sample)[-1]
+        for n,(lo,hi) in zip(directions,bounds):
+            projection=np.vstack([actual.start,actual.end])@n
+            assert projection.min()>=lo-1e-8
+            assert projection.max()<=hi+1e-8

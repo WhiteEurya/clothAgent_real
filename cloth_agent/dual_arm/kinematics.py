@@ -323,12 +323,15 @@ class ArmModel:
             if capsule["frame"] not in self.urdf.link_map:
                 raise DualArmError(f"unknown capsule frame: {capsule['frame']}")
         self.capsule_reaches = {}
+        self.capsule_ancestors = {}
+        self._collision_hull_cache = {}
         parents = {j.child: j for j in self.urdf.robot.joints}
         for capsule in config.capsules:
             # Triangle inequality gives a configuration-independent upper bound
             # from each ancestor's axis to either capsule endpoint.
             reach = max(np.linalg.norm(capsule[key]) for key in ("start_mm", "end_mm"))
             weights = np.zeros(config.axis)
+            ancestors = []
             frame = capsule["frame"]
             while frame != "link_base":
                 joint = parents[frame]
@@ -340,10 +343,12 @@ class ArmModel:
                             "gripper envelopes must cover all openings from a fixed arm link"
                         )
                     weights[self.names.index(joint.name)] = reach
+                    ancestors.append(self.names.index(joint.name))
                 if joint.origin is not None:
                     reach += np.linalg.norm(joint.origin[:3, 3]) * 1000
                 frame = joint.parent
             self.capsule_reaches[capsule["name"]] = weights
+            self.capsule_ancestors[capsule['name']] = ancestors
 
     def capsule_motion_bounds(self, delta_deg):
         from .geometry import finite
@@ -355,6 +360,109 @@ class ArmModel:
             name: float(weights @ delta)
             for name, weights in self.capsule_reaches.items()
         }
+
+    @_model_locked
+    def local_capsule_motion_bounds(self, center_deg, half_deg):
+        """Endpoint displacement bound using joint axes at the cell center.
+
+        Relative FK is a product of rotations about these spatial axes. Apply
+        them distal to proximal: rotations preserve the displacement already
+        accumulated, so the nominal point's chord lengths add conservatively.
+        """
+        from .geometry import finite
+        half=np.radians(np.abs(finite(half_deg,(self.config.axis,),'joint half range')))
+        chord=2*np.sin(np.minimum(half,np.pi)/2)
+        self.update(center_deg)
+        axes=[]
+        for name in self.names:
+            joint=self.urdf.joint_map[name]
+            frame=self.config.world_from_base@self.frame(joint.child)
+            direction=frame[:3,:3]@np.asarray(joint.axis)
+            axes.append((frame[:3,3],direction/np.linalg.norm(direction)))
+        result={}
+        for cap in self.capsules(center_deg):
+            points=np.vstack([cap.start,cap.end])
+            displacement=np.zeros(2)
+            for j in self.capsule_ancestors[cap.name]:
+                origin,direction=axes[j]
+                radii=np.linalg.norm(np.cross(points-origin,direction),axis=1)
+                displacement += chord[j]*radii
+            result[cap.name]=float(displacement.max())
+        return result
+
+    @_model_locked
+    def projection_motion_interval(self, center_deg, half_deg, name, points, direction):
+        """Enclose all vertex projections over an independent joint box.
+
+        Expand the relative product of rotations about spatial center axes.
+        Each nominal rotation contributes its exact sine/cosine projection
+        bound. Earlier rotations can turn that displacement; bound this cross
+        term by their summed chord lengths times its full displacement norm.
+        """
+        from .geometry import finite
+        half=np.radians(np.abs(finite(half_deg,(self.config.axis,),'joint half range')))
+        direction=np.asarray(direction,dtype=float)
+        direction=direction/np.linalg.norm(direction)
+        points=np.asarray(points,dtype=float)
+        self.update(center_deg)
+        bound=np.zeros(len(points));prior_chords=0.
+        for j in sorted(self.capsule_ancestors[name]):
+            joint=self.urdf.joint_map[self.names[j]]
+            frame=self.config.world_from_base@self.frame(joint.child)
+            axis=frame[:3,:3]@np.asarray(joint.axis)
+            axis=axis/np.linalg.norm(axis)
+            relative=points-frame[:3,3]
+            perpendicular=relative-np.einsum('ij,j->i',relative,axis)[:,None]*axis
+            tangent=np.cross(axis,relative)
+            chord=2*np.sin(min(half[j],np.pi)/2)
+            bound += (np.abs(tangent@direction)*np.sin(min(half[j],np.pi/2))
+                      +np.abs(perpendicular@direction)*(1-np.cos(min(half[j],np.pi)))
+                      +min(2.,prior_chords)*chord*np.linalg.norm(perpendicular,axis=1))
+            prior_chords+=chord
+        projection=points@direction
+        return float(np.min(projection-bound)),float(np.max(projection+bound))
+
+    @_model_locked
+    def collision_hull(self, joints_deg, name):
+        """URDF link convex hull for narrow phase; attachments retain capsules.
+
+        Only use hulls when every mesh vertex is covered by the configured
+        capsule. Preserve the capsule's minimum extra shell thickness.
+        """
+        from scipy.spatial import ConvexHull
+        import trimesh
+        capsule = next((c for c in self.config.capsules if c['name']==name),None)
+        if capsule is None or name != capsule['frame'] or name not in self.urdf.link_map:
+            return None
+        if name not in self._collision_hull_cache:
+            clouds=[]
+            for collision in self.urdf.link_map[name].collisions:
+                mesh=collision.geometry.mesh
+                if mesh is None:
+                    return None
+                path=self.config.urdf.parent/mesh.filename
+                loaded=trimesh.load(path,force='mesh')
+                vertices=np.asarray(loaded.vertices,dtype=float).copy()
+                if mesh.scale is not None:
+                    vertices*=np.asarray(mesh.scale)
+                origin=collision.origin if collision.origin is not None else np.eye(4)
+                clouds.append((vertices@origin[:3,:3].T+origin[:3,3])*1000)
+            if not clouds:
+                return None
+            vertices=np.concatenate(clouds)
+            hull=ConvexHull(vertices)
+            self._collision_hull_cache[name]=(vertices,vertices[hull.vertices],hull.equations[:,:3])
+        vertices,points,normals=self._collision_hull_cache[name]
+        a,b=np.asarray(capsule['start_mm']),np.asarray(capsule['end_mm'])
+        axis=b-a;denom=float(axis@axis)
+        fraction=np.clip((vertices-a)@axis/denom,0,1) if denom else np.zeros(len(vertices))
+        distance=np.linalg.norm(vertices-a-fraction[:,None]*axis,axis=1)
+        shell=float(capsule['radius_mm']-distance.max())
+        if shell < -1e-6:
+            return None
+        self.update(joints_deg)
+        world=self.config.world_from_base@self.frame(capsule['frame'])
+        return (points@world[:3,:3].T+world[:3,3],normals@world[:3,:3].T,max(0.,shell))
 
     @_model_locked
     def update(self, joints_deg):

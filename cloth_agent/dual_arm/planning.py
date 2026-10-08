@@ -549,7 +549,10 @@ def compile_motion(phase, current_joints, config, models, inverse):
         raise DualArmError("unable to time-scale joint trajectory")
     from .safety import validate_sweep
 
-    for index in range(1, len(times)):
+    if config.execution_mode == 'controller_sequential':
+        from .stop_sweep import validate_native_path
+        validate_native_path(config, models, timed, tool_contact=phase.tool_contact)
+    for index in (range(1, len(times)) if config.execution_mode != 'controller_sequential' else ()):
         validate_sweep(
             config,
             models,

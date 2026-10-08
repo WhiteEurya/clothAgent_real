@@ -23,6 +23,17 @@ def number(value, name, low, high):
     return float(value)
 
 
+def workspace_bound(value, name, *, lower):
+    """A null coordinate explicitly leaves that side of an axis unrestricted."""
+    if not isinstance(value, list) or len(value) != 3:
+        raise DualArmError(f"{name} requires three coordinates")
+    bounded = finite([0 if v is None else v for v in value], (3,), name)
+    for axis, coordinate in enumerate(value):
+        if coordinate is None:
+            bounded[axis] = -np.inf if lower else np.inf
+    return bounded
+
+
 @dataclass
 class ArmConfig:
     arm_id: str
@@ -33,7 +44,7 @@ class ArmConfig:
     world_from_base: np.ndarray
     home_joints: np.ndarray
     tcp_offset: np.ndarray
-    grasp_rpy: np.ndarray
+    grasp_rpy: np.ndarray | None
     workspace: dict
     capsules: list[dict]
     gripper: SimpleNamespace
@@ -59,16 +70,17 @@ class DualConfig:
     limits: dict
     obstacles: list[dict]
     raw: dict
+    execution_mode: str = 'servo_stream'
 
     @classmethod
-    def load(cls, path, *, root=None):
+    def load(cls, path, *, root=None, homing_only=False):
         path = Path(path).resolve()
         return cls.parse(
-            json.loads(path.read_text()), Path(root or path.parent).resolve()
+            json.loads(path.read_text()), Path(root or path.parent).resolve(), homing_only=homing_only
         )
 
     @classmethod
-    def parse(cls, raw, root):
+    def parse(cls, raw, root, *, homing_only=False):
         if raw.get("schema_version") != 1 or raw.get("frame_id") != "world_mm":
             raise DualArmError("schema_version=1 and frame_id=world_mm required")
         if raw.get("calibration_status") not in {"measured", "synthetic"}:
@@ -86,8 +98,8 @@ class DualConfig:
             if type(axis) is not int or axis not in (6, 7):
                 raise DualArmError("axis must be 6 or 7")
             workspace = data["workspace"]
-            low = finite(workspace["min_mm"], (3,), "workspace min")
-            high = finite(workspace["max_mm"], (3,), "workspace max")
+            low = workspace_bound(workspace["min_mm"], "workspace min", lower=True)
+            high = workspace_bound(workspace["max_mm"], "workspace max", lower=False)
             if np.any(low >= high):
                 raise DualArmError("workspace min must be below max")
             capsules = data["collision_capsules"]
@@ -129,7 +141,8 @@ class DualConfig:
                 transform(data["world_from_base_mm"], f"{arm_id} base transform"),
                 finite(data["home_joints_deg"], (axis,), "home joints"),
                 finite(data["tcp_offset_mm_deg"], (6,), "TCP offset"),
-                finite(data["grasp_rpy_world_deg"], (3,), "grasp orientation"),
+                (None if homing_only and data.get("grasp_rpy_world_deg") is None
+                 else finite(data["grasp_rpy_world_deg"], (3,), "grasp orientation")),
                 {"min_mm": low, "max_mm": high},
                 capsules,
                 gripper,
@@ -151,12 +164,12 @@ class DualConfig:
             "joint_speed_deg_s": (1, 20),
             "joint_accel_deg_s2": (1, 60),
             "max_ik_step_deg": (0.1, 5),
-            "tracking_error_mm": (1, 15),
-            "tracking_error_deg": (0.1, 5),
+            "tracking_error_mm": (0, 15),
+            "tracking_error_deg": (0, 5),
             "arrival_error_mm": (0.1, 3),
             "dispatch_skew_s": (0.001, 0.05),
             "max_tick_lateness_s": (0.001, 0.1),
-            "clearance_mm": (1, 100),
+            "clearance_mm": (0, 100),
             "max_grasp_age_s": (1, 300),
             "max_span_mm": (20, 1500),
             "min_span_mm": (10, 500),
@@ -219,8 +232,11 @@ class DualConfig:
             )
         return cls(root, arms, limits, obstacles, raw)
 
-    def require_real(self, *, commissioning=False):
+    def require_real(self, *, commissioning=False, homing=False):
         from .safety import validate_safety
+
+        if not homing and any(a.grasp_rpy is None for a in self.arms.values()):
+            raise DualArmError("grasp orientation required outside joint Home")
 
         validate_safety(self.raw.get("safety"), self.arms, self.limits, real=True)
         if self.raw["calibration_status"] != "measured" or not self.raw.get(
@@ -240,14 +256,15 @@ class DualConfig:
             raise DualArmError(
                 "physical obstacle penetration allowances require a force-limited contact controller; unsupported"
             )
-        if self.raw.get("servo_commissioned") is not True and not commissioning:
+        if (self.raw.get("servo_commissioned") is not True and not commissioning
+                and not (homing and self.execution_mode == 'controller_sequential')):
             raise DualArmError(
                 "commission the shared-time servo path without cloth before enabling this runtime"
             )
         description = self.raw.get("arm_layout_description", "").strip()
         if not description or description.startswith("SET "):
             raise DualArmError("describe the actual physical left/right arm assignment")
-        if not commissioning:
+        if not commissioning and not homing:
             camera = self.raw["camera"]
             if not camera.get("serial") or camera.get("mount_arm") not in {
                 None,

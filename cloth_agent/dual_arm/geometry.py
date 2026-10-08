@@ -133,14 +133,21 @@ class Capsule:
     radius: float
 
 
-def check_collision(capsules, boxes, clearance_mm, *, allow_tool_contact=False):
+def check_collision(capsules, boxes, clearance_mm, *, allow_tool_contact=False,
+                    pair_separated=None, box_separated=None):
     ids = list(capsules)
     for left in capsules[ids[0]]:
         for right in capsules[ids[1]]:
+            reach=left.radius+right.radius+clearance_mm
+            if (np.any(np.minimum(left.start,left.end)-reach > np.maximum(right.start,right.end))
+                    or np.any(np.minimum(right.start,right.end)-reach > np.maximum(left.start,left.end))):
+                continue
             if (
                 segment_distance(left.start, left.end, right.start, right.end)
-                <= left.radius + right.radius + clearance_mm
+                <= reach
             ):
+                if pair_separated is not None and pair_separated(ids[0], left, ids[1], right, clearance_mm):
+                    continue
                 raise DualArmError(
                     f"inter-arm collision: {ids[0]}/{left.name}, {ids[1]}/{right.name}"
                 )
@@ -156,12 +163,17 @@ def check_collision(capsules, boxes, clearance_mm, *, allow_tool_contact=False):
                     and "tool_contact_allowance_mm" in box
                 ):
                     margin = -float(box["tool_contact_allowance_mm"])
+                if (np.any(np.minimum(shape.start,shape.end)-shape.radius-margin > box['max_mm'])
+                        or np.any(np.maximum(shape.start,shape.end)+shape.radius+margin < box['min_mm'])):
+                    continue
                 if (
                     segment_box_distance(
                         shape.start, shape.end, box["min_mm"], box["max_mm"]
                     )
                     < shape.radius + margin
                 ):
+                    if box_separated is not None and box_separated(arm_id, shape, box, margin):
+                        continue
                     raise DualArmError(
                         f"obstacle collision: {arm_id}/{shape.name}, {box['name']}"
                     )

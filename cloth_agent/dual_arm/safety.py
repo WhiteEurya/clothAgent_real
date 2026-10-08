@@ -69,7 +69,7 @@ def validate_safety(raw, arms, limits, *, real=False):
     for k, arm in arms.items():
         row = raw["arms"][k]
         for key in ("base_error_mm", "geometry_error_mm"):
-            number(row[key], key, 0 if not real else 0.01, 100)
+            number(row[key], key, 0 if not real or key == "geometry_error_mm" else 0.01, 100)
         number(
             row["max_joint_speed_deg_s"],
             "verified joint speed",
@@ -105,7 +105,8 @@ def padded_capsules(config, models, joints, half_ranges=None):
     Both ends of a capsule move by at most sum(reach_j * abs(delta_j)). A
     capsule inflated by that amount contains the entire swept segment. Arms
     may progress independently within an interval; synchronized arrival is not
-    assumed. The uncertainty padding is never removed for an inter-arm check.
+    assumed. This remains the streaming runtime bound and the legacy comparison
+    view. Native controller commands use stop_sweep's adaptive range proof.
     """
     safety = config.raw["safety"]
     reaction = (
@@ -116,6 +117,11 @@ def padded_capsules(config, models, joints, half_ranges=None):
         + config.limits["max_tick_lateness_s"]
         + config.limits["dispatch_skew_s"]
     )
+    if config.execution_mode == 'controller_sequential':
+        # A complete native command's joint box is certified before dispatch.
+        # Host delay only changes progress within that box; there are no streamed
+        # setpoints or simultaneous arm deadlines. Retain stop/tracking padding.
+        reaction = 0.0
     result = {}
     for k, model in models.items():
         row = safety["arms"][k]
@@ -144,6 +150,10 @@ def padded_capsules(config, models, joints, half_ranges=None):
 
 
 def check_state(config, models, joints, *, tool_contact=False, half_ranges=None):
+    if config.execution_mode == 'controller_sequential':
+        from .stop_sweep import validate_native_state
+        return validate_native_state(config, models, joints, half_ranges=half_ranges,
+                                     tool_contact=tool_contact)
     check_collision(
         padded_capsules(config, models, joints, half_ranges),
         config.obstacles,
@@ -154,6 +164,10 @@ def check_state(config, models, joints, *, tool_contact=False, half_ranges=None)
 
 def validate_sweep(config, models, start, end, *, tool_contact=False):
     """Certify the full joint-linear interval; reject when proof budget expires."""
+    if config.execution_mode == 'controller_sequential':
+        from .stop_sweep import validate_native_sweep
+        return validate_native_sweep(config, models, start, end,
+                                     tool_contact=tool_contact)['nodes']
     # Endpoints include tracking/stop padding as well as exact model geometry.
     check_state(config, models, start, tool_contact=tool_contact)
     check_state(config, models, end, tool_contact=tool_contact)
