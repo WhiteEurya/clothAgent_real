@@ -1,0 +1,51 @@
+{
+  "imported_at": "2026-10-08T05:17:36.719166+00:00",
+  "files": [
+    {
+      "file": "dual_arm_base.yaml",
+      "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/dual_arm_base.yaml",
+      "sha256": "f38f1eac3d9a95bde29b5e803e6edfbf1fbf31502443dbd4f79fc0bd98036444",
+      "updated_at": "2026-10-08T06:56:01.977331+00:00",
+      "status": "applied_coordinate_correction_pending_live_validation"
+    },
+    {
+      "file": "camA_intrinsics.yaml",
+      "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camA_intrinsics.yaml",
+      "sha256": "33fa31b61358ff702d288ca8364871debaa22931d8812cac2e6907beefc6f5bf"
+    },
+    {
+      "file": "camA_extrinsics.yaml",
+      "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camA_extrinsics.yaml",
+      "sha256": "4f0f418c31c0edda6473d28b79298ea0c31401c1f2108fa00f3ddc0358377f2d"
+    },
+    {
+      "file": "camB_intrinsics.yaml",
+      "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camB_intrinsics.yaml",
+      "sha256": "4c1a7cd0eff912b239c8cf5f835ce87395a9705a904c6e449a087eb9e2509174"
+    },
+    {
+      "file": "camB_extrinsics.yaml",
+      "source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/camB_extrinsics.yaml",
+      "sha256": "dae7ef11ed2f4cfae8d90074c840336af38934025a08d82789b433256dcaef42"
+    }
+  ],
+  "camera_assignment": {
+    "label": "B",
+    "robot": "xArm7",
+    "serial": "233622079809",
+    "source": "user-provided assignment; intrinsics serial checked"
+  },
+  "validation": "YAML parse, serial, finite proper rigid matrices, translation_units and byte-identical SHA256 verified; not a new physical calibration validation",
+  "runtime_config_updated": false,
+  "last_base_update": {
+    "source": "config/calibration/dual_arm_working_20261008/dual_arm_base.yaml",
+    "original_source": "/home/sja/RobotCamCalib/outputs/dual_arm_working_20261008/dual_arm_base.yaml",
+    "status": "applied_coordinate_correction_pending_live_validation",
+    "source_units": "m",
+    "runtime_units": "mm",
+    "sha256": "f38f1eac3d9a95bde29b5e803e6edfbf1fbf31502443dbd4f79fc0bd98036444",
+    "imported_at": "2026-10-08T06:56:01.977331+00:00",
+    "source_calibration": "outputs/coordinate_correction_20261008_145014/calibration/dual_arm_base.yaml"
+  },
+  "last_camera_update": "2026-10-08T07:05:52.970822+00:00"
+}

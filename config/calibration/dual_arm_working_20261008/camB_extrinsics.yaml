@@ -1,0 +1,40 @@
+X_CammountCam:
+- - 0.0017365241460240608
+  - 0.9999597828343619
+  - -0.008798704321957307
+  - 0.07437856358688474
+- - -0.9999762713913845
+  - 0.0017950743642663304
+  - 0.00665089183583648
+  - 0.03711145444169727
+- - 0.00666641868438461
+  - 0.008786946106680564
+  - 0.9999391723700213
+  - 0.02338532120812982
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+X_TagmountTag:
+- - -0.004179091748166525
+  - 0.9996552224878795
+  - 0.025922410089875673
+  - 0.5212420414364765
+- - 0.9999848972008026
+  - 0.004085131888279312
+  - 0.0036765565077631563
+  - -0.021809738200950994
+- - 0.0035693924496780372
+  - 0.025937383255884645
+  - -0.9996571970367526
+  - 0.04118856128573186
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+translation_units: m
+status: applied_coordinate_correction_pending_live_validation
+source_log: outputs/coordinate_correction_20261008_145014/input.jsonl
+note: X_TagmountTag is the fixed board pose during this experiment, not necessarily
+  the original calibration board pose.
+source_calibration: outputs/coordinate_correction_20261008_145014/calibration/extrinsics_wrist_233622079809.yaml

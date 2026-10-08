@@ -38,9 +38,3 @@ source_log: outputs/coordinate_correction_20261008_145014/input.jsonl
 note: X_TagmountTag is the fixed board pose during this experiment, not necessarily
   the original calibration board pose.
 source_calibration: outputs/coordinate_correction_20261008_145014/calibration/extrinsics_wrist.yaml
-camera_mount: link_eef
-robot_ip: 192.168.2.232
-robot_urdf: calibration_xarm6.urdf
-camera_serial: '317222073552'
-integration_note: Imported current user-specified calibration; retained wrist mount/FK
-  metadata required by perception loader.

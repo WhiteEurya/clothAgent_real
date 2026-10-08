@@ -1,0 +1,22 @@
+X_Base1Base2:
+- - -0.9986242086913215
+  - -0.0014657442315932025
+  - -0.052416995425922694
+  - 1.1260379512017846
+- - 0.0014298590879815712
+  - -0.9999987170345603
+  - 0.0007221026407705937
+  - -0.019482407939521527
+- - -0.052417986594509386
+  - 0.0006461602609590042
+  - 0.9986250232986837
+  - 0.016563068795618755
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+translation_units: m
+world_frame: xArm6 link_base
+status: applied_coordinate_correction_pending_live_validation
+source_log: outputs/coordinate_correction_20261008_145014/input.jsonl
+source_calibration: outputs/coordinate_correction_20261008_145014/calibration/dual_arm_base.yaml
