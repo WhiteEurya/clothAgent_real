@@ -581,7 +581,8 @@ def test_remote_model_adapter_preserves_original_image_contract(scene, monkeypat
 
 
 @pytest.mark.parametrize("arm_id", ["left", "right"])
-def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id):
+@pytest.mark.parametrize("fast_reports", [False, True])
+def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id, fast_reports, monkeypatch):
     cfg = scene.config.arms[arm_id]
 
     class SDK:
@@ -601,9 +602,11 @@ def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id):
 
         def register_report_callback(self, callback):
             # Cache is available only after the full report initialization.
-            callback({})
+            report={'joints':[*cfg.home_joints,*([0]*(7-cfg.axis))],
+                    'cartesian':cfg.home_joints[:6].tolist()}
+            callback(report)
             self.tcp_offset = cfg.tcp_offset.tolist()
-            callback({})
+            callback(report)
             return True
 
         def release_report_callback(self, callback):
@@ -661,7 +664,19 @@ def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id):
             self.connected = False
 
     sdk = SDK()
-    c = XArmConnection(cfg, scene.cancel, sdk_factory=lambda *a, **kw: sdk)
+    fast = SDK()
+    if fast_reports:
+        import sys
+        calls=[]
+        def factory(*args, **kwargs):
+            calls.append(kwargs)
+            return fast if kwargs.get('report_type') == 'real' else sdk
+        monkeypatch.setitem(sys.modules, 'xarm.wrapper', SimpleNamespace(XArmAPI=factory))
+        c = XArmConnection(cfg, scene.cancel)
+        assert calls == [{'is_radian':False}, {'is_radian':False, 'report_type':'real'}]
+        assert c._report_arm is fast
+    else:
+        c = XArmConnection(cfg, scene.cancel, sdk_factory=lambda *a, **kw: sdk)
     assert len(c.snapshot()["joints"]) == cfg.axis
     assert len(c.inverse(cfg.home_joints[:6], cfg.home_joints)) == cfg.axis
     assert sdk.commands == []
@@ -671,6 +686,9 @@ def test_real_adapter_axis_padding_identity_and_no_auto_enable(scene, arm_id):
     assert ("state", 0) not in sdk.commands
     assert sdk.commands[-1] == ("state", 4)
     c.disconnect()
+    if fast_reports:
+        assert fast.commands == []
+        assert not fast.connected and not sdk.connected
 
 
 def test_contact_allowance_is_scoped_to_tool_and_contact_phases():

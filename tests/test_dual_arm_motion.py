@@ -182,6 +182,8 @@ def test_full_grasp_lift_spread_return_shared_clock_and_analytic_limits(planned)
     assert plan["execution_order"]["grasp_lift_spread"] == "simultaneous"
     assert plan["minimum_clearance"] > planner.scene.clearance
     assert not plan["physical_execution_supported"]
+    assert plan['velocity_limits_rad_s'] == pytest.approx(np.full(13, np.deg2rad(5)))
+    assert plan['acceleration_limits_rad_s2'] == pytest.approx(np.full(13, np.deg2rad(10)))
     for segment in plan["segments"]:
         for u in (0, 0.5, (3 - np.sqrt(3)) / 6, (3 + np.sqrt(3)) / 6, 1):
             _, v, a = sample_segment(segment, u * segment["duration_s"])
@@ -189,9 +191,12 @@ def test_full_grasp_lift_spread_return_shared_clock_and_analytic_limits(planned)
             assert np.all(
                 np.abs(a) <= np.asarray(plan["acceleration_limits_rad_s2"]) + 1e-8
             )
-        for u in (0, 1):
-            _, v, a = sample_segment(segment, u * segment["duration_s"])
-            assert max(abs(v)) < 1e-9 and max(abs(a)) < 1e-9
+    for previous, following in zip(plan['segments'], plan['segments'][1:]):
+        before = sample_segment(previous, previous['duration_s'])
+        after = sample_segment(following, 0)
+        assert np.allclose(before, after, atol=1e-8)
+        if previous['phase'] != following['phase']:
+            assert np.max(np.abs(before[1])) < 1e-8
     assert any(e["kind"] == "require_release_confirmation" for e in plan["events"])
 
 
@@ -201,9 +206,9 @@ def test_cartesian_tcp_at_interior_time_stays_within_certified_corridor(planned)
         if "cartesian" not in segment:
             continue
         q, _, _ = sample_segment(segment, 0.37 * segment["duration_s"])
-        from cloth_agent.dual_arm.motion.trajectory import blend
-
-        progress = blend(0.37)[0]
+        start = np.asarray(segment['start_q_rad'])
+        delta = np.asarray(segment['end_q_rad']) - start
+        progress = float((q-start) @ delta / (delta @ delta)) if delta @ delta > 1e-24 else 0.
         frames = planner.scene.tcp_world(q[:6], q[6:])
         for key in frames:
             first = np.array(segment["cartesian"]["start"][key])[:3, 3]

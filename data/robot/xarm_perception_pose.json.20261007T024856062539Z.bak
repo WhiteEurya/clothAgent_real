@@ -1,0 +1,23 @@
+{
+  "name": "perception_position",
+  "recorded_at": "2026-09-14T13:14:06+08:00",
+  "robot_ip": "192.168.2.232",
+  "recording_note": "Pose read from the robot earlier in this session; TCP offset was not recorded.",
+  "joint_angles_deg": [
+    -5.865484,
+    -1.744943,
+    -118.388207,
+    1.785508,
+    114.943355,
+    -1.675214,
+    0.0
+  ],
+  "tcp_pose_mm_deg": [
+    400.848328,
+    -32.536102,
+    531.056213,
+    -178.602518,
+    -5.243137,
+    -3.427892
+  ]
+}

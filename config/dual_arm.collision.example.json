@@ -120,7 +120,7 @@
     "right": {
       "axis": 7,
       "serial": "AC130412A4001B",
-      "urdf": "assets/robots/xarm7/xarm7.urdf",
+      "urdf": "assets/robots/xarm7/xarm7_controller_fit.urdf",
       "world_from_base_m": [
         [
           -0.9986242086913215,

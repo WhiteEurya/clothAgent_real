@@ -75,7 +75,7 @@ def template(root=ROOT, *, synthetic=False):
             "axis": saved["axis"],
             "serial": saved["control_box_sn"],
             "urdf": f"assets/robots/xarm{saved['axis']}/"
-            + ("xarm6_wo_ee.urdf" if key == "left" else "xarm7.urdf"),
+            + ("xarm6_wo_ee.urdf" if key == "left" else "xarm7_controller_fit.urdf"),
             "world_from_base_m": base.tolist(),
             "flange_link": "link_eef",
             "native_gripper_root": "xarm_gripper_base_link" if key == "right" else None,

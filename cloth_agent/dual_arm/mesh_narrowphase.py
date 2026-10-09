@@ -77,6 +77,23 @@ def check_cell_collision(config,models,center,capsules,*,half_ranges=None,tool_c
         delta=pb.mean(0)-pa.mean(0)
         return [*np.eye(3),*([delta/np.linalg.norm(delta)] if np.linalg.norm(delta)>1e-12 else [])]
 
+    def support_directions(pa,na,pb,nb):
+        # Slanted link faces often separate where XYZ/center axes cannot.
+        # Ranking merely selects proof axes; acceptance still uses conservative
+        # independent-joint projection intervals on each chosen direction.
+        axes=np.vstack((na,nb))
+        if not len(axes):
+            return []
+        lengths=np.linalg.norm(axes,axis=1)
+        axes=axes[lengths>1e-12]/lengths[lengths>1e-12,None]
+        axes=np.unique(np.round(axes,8),axis=0)
+        if not len(axes):
+            return []
+        axes/=np.linalg.norm(axes,axis=1)[:,None]
+        a=pa@axes.T;b=pb@axes.T
+        gaps=np.maximum(a.min(0)-b.max(0),b.min(0)-a.max(0))
+        return axes[np.argsort(gaps)[-8:][::-1]]
+
     def pair_separated(ka,a,kb,b,clearance):
         pa,na,ma,ha=shape(ka,a);pb,nb,mb,hb=shape(kb,b)
         required=ma+mb+clearance+1e-6
@@ -84,6 +101,10 @@ def check_cell_collision(config,models,center,capsules,*,half_ranges=None,tool_c
             return True
         if directional_available(ka,kb):
             for direction in directions(pa,pb):
+                alo,ahi=projected(ka,a,pa,direction);blo,bhi=projected(kb,b,pb,direction)
+                if max(alo-bhi,blo-ahi)>clearance+1e-6:
+                    return True
+            for direction in support_directions(pa,na,pb,nb):
                 alo,ahi=projected(ka,a,pa,direction);blo,bhi=projected(kb,b,pb,direction)
                 if max(alo-bhi,blo-ahi)>clearance+1e-6:
                     return True

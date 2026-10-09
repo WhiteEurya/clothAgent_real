@@ -108,7 +108,7 @@ def connect(config, models, cancel, real):
     try:
         for k, a in config.arms.items():
             connections[k] = (
-                XArmConnection(a, cancel)
+                XArmConnection(a, cancel, recover_stopped=getattr(config, 'home_recover_stopped', False))
                 if real
                 else SimulatedConnection(a, models[k], cancel)
             )

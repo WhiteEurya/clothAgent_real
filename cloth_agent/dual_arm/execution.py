@@ -22,7 +22,8 @@ class XArmConnection(XArmBackend):
 
     simulated = False
 
-    def __init__(self, config, cancel, sdk_factory=None):
+    def __init__(self, config, cancel, sdk_factory=None, *, recover_stopped=False):
+        use_fast_reports = sdk_factory is None
         if sdk_factory is None:
             from xarm.wrapper import XArmAPI
 
@@ -32,25 +33,36 @@ class XArmConnection(XArmBackend):
         self.arm = sdk_factory(config.ip, is_radian=False)
         self.original_mode = None
         self.position_command_active = False
+        self.recover_stopped = recover_stopped
+        self._report_lock = threading.Lock()
+        self._report_received = threading.Event()
+        self._latest_report = None
+        self._report_callback = None
+        self._report_arm = self.arm
         try:
             # SDK cached TCP/mode fields may still contain defaults at connect.
             # Wait for two reports before validating them; no controller writes.
             if hasattr(self.arm, 'register_report_callback'):
                 ready = threading.Event()
                 count = [0]
-                def received(_report):
+                def received(report):
+                    if 'joints' not in report or 'cartesian' not in report:
+                        return
+                    with self._report_lock:
+                        self._latest_report = (list(report['joints']),
+                                               list(report['cartesian']), time.monotonic())
+                    self._report_received.set()
                     count[0] += 1
                     if count[0] >= 2:
                         ready.set()
+                self._report_callback = received
                 self.arm.register_report_callback(received)
-                try:
-                    deadline = time.monotonic() + 2.0
-                    while not ready.wait(.02):
-                        if cancel.is_set() or time.monotonic() >= deadline:
-                            raise DualArmError('controller initial reports unavailable')
-                finally:
-                    self.arm.release_report_callback(received)
+                deadline = time.monotonic() + 2.0
+                while not ready.wait(.02):
+                    if cancel.is_set() or time.monotonic() >= deadline:
+                        raise DualArmError('controller initial coherent reports unavailable')
             self._check("get_robot_sn", self.arm.get_robot_sn())
+            stopped = recover_stopped and self.checked_value(self.arm.get_state(), 'state') == 4
             if (
                 not self.arm.connected
                 or self.arm.axis != config.axis
@@ -66,7 +78,7 @@ class XArmConnection(XArmBackend):
             actual_tcp = finite(self.arm.tcp_offset, (6,), "live TCP")
             if np.max(np.abs(actual_tcp - config.tcp_offset)) > 0.5:
                 raise DualArmError(f"{config.arm_id}: TCP calibration changed")
-            if (
+            if not stopped and (
                 not all(self.arm.motor_enable_states[: config.axis])
                 or not all(self.arm.motor_brake_states[: config.axis])
                 or len(self.arm.motor_enable_states) < config.axis
@@ -75,8 +87,21 @@ class XArmConnection(XArmBackend):
                 raise DualArmError(
                     "motors must already be enabled with brakes released"
                 )
+            if use_fast_reports:
+                # Rich/normal reports on these controllers arrive at 5 Hz.
+                # Retain rich metadata for identity/TCP/brakes, and read paired
+                # joints/TCP from the independent real-time report connection.
+                fast = sdk_factory(config.ip, is_radian=False, report_type='real')
+                self.arm.release_report_callback(received)
+                self._report_arm = fast
+                ready.clear()
+                count[0] = 0
+                self._latest_report = None
+                fast.register_report_callback(received)
+                if not ready.wait(2.) or cancel.is_set():
+                    raise DualArmError('real-time controller reports unavailable')
         except BaseException:
-            self.arm.disconnect()
+            self.disconnect()
             raise
 
     def checked_value(self, result, name):
@@ -86,18 +111,41 @@ class XArmConnection(XArmBackend):
     def snapshot(self):
         with self.lock:
             sampled_started = time.monotonic()
+            report_received = getattr(self, '_report_received', None)
+            if report_received is not None:
+                report_received.clear()
             if not self.arm.connected:
                 raise DualArmError(f"{self.config.arm_id}: disconnected")
             state = self.checked_value(self.arm.get_state(), "state")
             errors = self.checked_value(self.arm.get_err_warn_code(), "errors")
             allowed_states = (0, 1, 2) if self.position_command_active else (0, 2)
+            if getattr(self, 'recover_stopped', False):
+                allowed_states += (4,)
             if state not in allowed_states or list(errors) != [0, 0]:
                 raise DualArmError(
                     f"{self.config.arm_id}: controller fault/state {state}, {errors}"
                 )
-            raw = self.checked_value(
-                self.arm.get_servo_angle(is_radian=False, is_real=True), "joints"
-            )
+            feedback = self._checked_gripper_feedback()
+            if not feedback["usable_for_completion"]:
+                raise DualArmError(f"{self.config.arm_id}: gripper feedback unavailable")
+            if getattr(self, '_report_callback', None) is not None:
+                # Planning can hold the GIL long enough to leave a cached frame
+                # old. Yield for a new report; never relabel an old timestamp.
+                if report_received is not None:
+                    report_received.wait(.06)
+                with self._report_lock:
+                    sample = self._latest_report
+                if sample is None:
+                    raise DualArmError('coherent controller report unavailable')
+                raw, raw_pose, report_time = sample
+                sampled_started = min(sampled_started, report_time)
+            else:
+                # Compatibility with adapters without a report channel. Real
+                # xArm SDK connections above always retain their report callback.
+                raw = self.checked_value(
+                    self.arm.get_servo_angle(is_radian=False, is_real=True), 'joints')
+                raw_pose = self.checked_value(self.arm.get_position(is_radian=False), 'pose')
+                report_time = time.monotonic()
             if (
                 not isinstance(raw, (list, tuple))
                 or not self.config.axis <= len(raw) <= 7
@@ -105,20 +153,15 @@ class XArmConnection(XArmBackend):
                 raise DualArmError("unexpected SDK joint vector")
             joints = finite(raw[: self.config.axis], (self.config.axis,), "live joints")
             pose = finite(
-                self.checked_value(self.arm.get_position(is_radian=False), "pose"),
+                raw_pose,
                 (6,),
                 "live pose",
             )
-            feedback = self._checked_gripper_feedback()
-            if not feedback["usable_for_completion"]:
-                raise DualArmError(
-                    f"{self.config.arm_id}: gripper feedback unavailable"
-                )
             return {
                 "joints": joints.tolist(),
                 "pose": pose.tolist(),
                 "gripper": feedback,
-                "sampled_monotonic_s": time.monotonic(),
+                "sampled_monotonic_s": report_time,
                 "sample_started_monotonic_s": sampled_started,
             }
 
@@ -172,6 +215,19 @@ class XArmConnection(XArmBackend):
         self.snapshot()
         if self.arm.get_is_moving() or self.checked_value(self.arm.get_cmdnum(), 'command queue') != 0:
             raise DualArmError('native Home requires stationary arms with empty command queues')
+        if getattr(self, 'recover_stopped', False):
+            state = self.checked_value(self.arm.get_state(), 'state before recovery')
+            if state == 4:
+                if self.cancel.is_set() or list(self.checked_value(self.arm.get_err_warn_code(), 'recovery faults')) != [0, 0]:
+                    raise DualArmError('cannot recover a cancelled or faulted controller')
+                self._check('motion_enable', self.arm.motion_enable(enable=True))
+                self._check('set_state(normal)', self.arm.set_state(0))
+                deadline = time.monotonic() + 2.
+                while self.checked_value(self.arm.get_state(), 'recovered state') not in (0, 2):
+                    if self.cancel.wait(.02) or time.monotonic() >= deadline:
+                        raise DualArmError('controller did not leave STOP')
+            self.recover_stopped = False
+            self.snapshot()
         self._check('set_gripper_mode', self.arm.set_gripper_mode(0))
         self._check('set_gripper_enable', self.arm.set_gripper_enable(True))
 
@@ -218,6 +274,13 @@ class XArmConnection(XArmBackend):
             self._check("set_mode(position)", self.arm.set_mode(0))
 
     def disconnect(self):
+        callback = getattr(self, '_report_callback', None)
+        if callback is not None:
+            getattr(self, '_report_arm', self.arm).release_report_callback(callback)
+            self._report_callback = None
+        report_arm = getattr(self, '_report_arm', self.arm)
+        if report_arm is not self.arm:
+            report_arm.disconnect()
         self.arm.disconnect()
 
 
@@ -397,7 +460,8 @@ class DualArmCoordinator:
                 <= now - timestamp
                 <= self.config.raw["safety"]["max_feedback_age_s"]
             ):
-                raise DualArmError(f"{k}: feedback is stale; refusing the next command")
+                raise DualArmError(f"{k}: feedback is stale ({now-timestamp:.3f}s > "
+                                   f"{self.config.raw['safety']['max_feedback_age_s']:.3f}s); refusing the next command")
 
     def stop_all(self):
         self.cancel.set()

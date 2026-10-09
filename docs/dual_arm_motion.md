@@ -1,8 +1,16 @@
 # 连续抓取姿态优化与双臂轨迹规划
 
-阶段 4 的连续 13DoF IK、阶段 5 的离线路径与时间参数化，以及阶段 7 的 `DualArmPlanner` 接口已实现。阶段 6 当前提供离线执行预检，**还没有接通新规划器的真实 SDK 执行**。450 mm 已由用户确认为错误计算并撤销，不再阻塞开发。
+阶段 4 的连续 13DoF IK、阶段 5 的离线路径与时间参数化，以及阶段 7 的 `DualArmPlanner` 接口已实现。抓布流程目前仍提供离线执行预检；Home 已通过 `motion/home.py` 接入现有位置模式执行器。450 mm 已由用户确认为错误计算并撤销，不再阻塞开发。
 
-所有新功能位于 `cloth_agent/dual_arm/motion/`，复用阶段 1～3 的 FK、官方 URDF、相机/夹爪碰撞模型。既有 `planning.py`、`execution.py` 和原有真机命令未改动。没有新的自动启电、Home、SDK 连接或运动入口。
+运动规划位于 `cloth_agent/dual_arm/motion/`。`gripper_home()` 通过 Home 专用适配器调用 `PathPlanner` 和时间参数化；抓布 API 不会连接硬件。Home 使用当前 `dual_arm.local.json` 中保存的模型、基座、附件包络、工作空间和停止界限，不加载演示 FCL 场景或重新要求配置附件尺寸。
+
+### Home 执行接入
+
+运行 `/home/sja/miniconda3/envs/cali/bin/python scripts/gripper_home.py` 会读取两臂当前关节位置，用新规划器搜索依次回位路径，再交给现有位置执行器。距离较近时先规划短分离前缀；直接路径不通过时用 OMPL 搜索；若两种顺序均失败，即使起始间距已超过近距离阈值，仍会补试短分离前缀。整条路线和所有下发指令通过检查后才开始移动，最后打开两个夹爪。`--simulate` 使用模拟连接，`--preflight-only` 仅读取状态和规划。
+
+Home 路径搜索使用当前运行时碰撞与停止包络适配器，而不是演示 FCL 盒体。平滑多项式的逐轴极值也会检查；实际下发仍是 `set_servo_angle(wait=True, radius=-1)`，每条指令独立验证整个关节区间。不会把每个时间采样点变成一次阻塞指令。控制器指令边界仍会停稳，因此参考曲线的连续速度不代表实际位置指令之间无停顿。
+
+`plan.json` 明确记录 `planner`、`collision_backend`、`reference_timing`、`controller_interpolation` 和 `controller_segments`。真实姿态能否回位取决于当次完整规划结果；Home 接入不等于任意抓布轨迹已支持真机执行。
 
 ## 文件与分阶段实现
 
@@ -77,9 +85,9 @@ pose = planner.solve_grasp_pose(
 
 连续碰撞检查以关节区间中心的 FCL 实体距离为基础，按运动学链的三角不等式估计每个几何体相对各祖先关节的最大位移。如果距离减去两物体可能位移仍大于所需间隙，整个区间才通过；否则递归细分。真实相交中点、节点/时间预算耗尽或无法证明的区间均拒绝。OMPL 的 `MotionValidator` 也使用同一检查，不接收近似终点解。
 
-时间参数化使用 `s(u)=10u³−15u⁴+6u⁵`，每个关节段都是单调进度，两臂共享相同的段起点和时长。每个连接点速度、加速度为零，比较保守但不会产生连接处速度跳变。利用 `max(s')=1.875`、`max(|s''|)=10/√3` 设置段时长，速度还受官方 URDF 上限约束。默认 `0.25 rad/s`、`0.5 rad/s²` 仅为离线演示值，真实加速度限值需另行验证。
+时间参数化使用共享节点速度的五次 Hermite 曲线：同一阶段内部通过 PCHIP 导数确定连续关节速度，节点加速度为零；阶段边界、静止段及活动机械臂切换处停稳。两臂共享时间轴，不再在每个 5 mm 细分点停车。解析求解多项式导数的极值后，对整个阶段统一缩放时间，满足关节速度和加速度上限。默认上限与当前 Home 配置一致，为 5°/s、10°/s²（API 仍使用弧度）。这不是笛卡尔恒速保证，也未接入真机执行。
 
-时间参数化后重新认证所有段。`minimum_clearance` 是全轨迹连续证明得到的保守距离下界，单位米，通常低于离散采样得到的最小值。它只约束名义机器人几何，不包含实际执行偏差、停止距离、衣物张力/形变或衣物与机器人的碰撞。
+时间参数化后重新认证所有段。用多项式极值计算曲线偏离原关节直线的逐轴上界，将它加入区间包络后重新检查碰撞和笛卡尔误差；无法证明时拒绝，不沿用原直线证书。`minimum_clearance` 是全轨迹连续证明得到的保守距离下界，单位米，通常低于离散采样得到的最小值。它只约束名义机器人几何，不包含实际执行偏差、停止距离、衣物张力/形变或衣物与机器人的碰撞。
 
 ```python
 result = planner.plan(
@@ -122,10 +130,10 @@ result = planner.plan(
 python -m pip install -r requirements-motion.txt
 ```
 
-本机验证使用隔离依赖，可把命令中的 `python` 替换为：
+当前依赖安装于 `cali` 环境，可把命令中的 `python` 替换为：
 
 ```bash
-env PYTHONPATH=/tmp/cloth_collision_deps:/tmp/cloth_planning_deps /home/CNS2026330003/miniconda3/envs/molmo/bin/python
+/home/sja/miniconda3/envs/cali/bin/python
 ```
 
 请求 JSON 包含 `units: "m_rad"` 及上述 API 的参数，可选 `ik_options`。`solve` 的参数名为 `point_a/point_b`，`plan` 为 `grasp_a/grasp_b`。输出文件不覆盖已有内容。真实 scene 不完整时直接报错，不会自动替换成演示几何。
@@ -150,3 +158,7 @@ python -m pytest -q tests/test_dual_arm_motion.py tests/test_dual_arm_collision_
 连同已有双臂 Home、停止包络、跟踪误差、工作空间、runtime 和安全模式检查，共 197 项回归通过。Ruff 检查通过，规划 CLI 完成实际场景求解，轨迹 Viser 启动且 HTTP 返回 200；尚未完成浏览器中的人工几何验收。预检中的反馈新鲜度是对输入记录的入口检查，离线轨迹复核可能超过反馈有效期；未来真实下发前必须重新采集双臂状态。
 
 尚未解决：真机执行、衣物抓取稳定性与张力约束、深碰撞初值的局部搜索失败、不同抓取解之间的后续路径可行性联合优化。当前采取显式失败，不强行执行。
+
+当前 xArm7 默认采用 `assets/robots/xarm7/xarm7_controller_fit.urdf`，与现有 Home 使用的控制器拟合运动学一致；碰撞网格仍来自原模型。
+
+Home 搜索边可以递归分成多个已校验的关节直线区间；这不代表整个端点盒已通过。平滑曲线另用多项式极值包络递归检查，实际控制器指令仍做完整关节盒校验。工作空间、高度和走廊的快速检查先于昂贵的停止包络证明。RRT 失败会记录状态/边检查次数及主要拒绝原因，预算耗尽不表示物理上无路可走。

@@ -159,7 +159,7 @@ class DualArmPlanner:
                 )
             phase = "time_parameterization"
             velocity = (
-                np.full(13, 0.25)
+                np.full(13, np.deg2rad(5.0))
                 if velocity_limits_rad_s is None
                 else finite(velocity_limits_rad_s, (13,), "velocity")
             )
@@ -174,7 +174,7 @@ class DualArmPlanner:
             )
             velocity = np.minimum(velocity, urdf_velocity)
             acceleration = (
-                np.full(13, 0.5)
+                np.full(13, np.deg2rad(10.0))
                 if acceleration_limits_rad_s2 is None
                 else acceleration_limits_rad_s2
             )

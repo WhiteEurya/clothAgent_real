@@ -269,6 +269,7 @@ def _run_home(args):
                                + '\n - '.join(missing))
     config = DualConfig.load(args.config, root=args.project_root, homing_only=True)
     config.execution_mode = 'controller_sequential'
+    config.home_recover_stopped = bool(args.real and not args.preflight_only)
     if args.real:
         config.require_real(homing=True)
     directory = args.output.resolve()
@@ -284,10 +285,15 @@ def _run_home(args):
         raise KeyboardInterrupt('SIGTERM')
     if install_signal_handler:
         signal.signal(signal.SIGTERM, terminate)
+    execution_started = False
     try:
         state = coordinator.snapshots()
         initial = {k: np.asarray(v['joints']) for k, v in state.items()}
-        program, attempts = plan_home(initial, config, models)
+        # Preserve the state that actually failed, even when no plan is produced.
+        write_json(directory/'config.json', config.raw)
+        write_json(directory/'initial_state.json', state)
+        from .motion.home import HomePlanner
+        program, attempts = HomePlanner(initial, config, models).plan()
         validate_home_program(program, config)
         from .sequential_home import prepare_segments, execute_sequential_home
         segments = prepare_segments(program, config, models)
@@ -296,6 +302,11 @@ def _run_home(args):
         write_json(directory/'config.json', config.raw)
         write_json(directory/'plan.json', {
             'kind': 'dual_joint_home', 'attempts': attempts,
+            'planner': 'motion.PathPlanner/OMPL',
+            'collision_backend': 'installed_runtime_envelopes_and_native_joint_boxes',
+            'reference_timing': 'shared_knot_velocity; not a controller interpolation claim',
+            'controller_interpolation': 'native_position_nonblended',
+            'controller_speed_policy': 'configured_joint_limits_with_verified_speed_ceiling',
             'execution_mode': config.execution_mode,
             'controller_segments': [s.to_dict() for s in segments],
             'path_metrics': path_metrics,
@@ -314,13 +325,20 @@ def _run_home(args):
             write_json(directory/'execution.json', result)
             print(f'PREFLIGHT_ONLY: {directory}')
             return result
+        execution_started = True
         result = execute_sequential_home(coordinator, program, initial, segments,
                                          confirmed=args.confirm_real)
         print(f"{result['status']}: {directory}")
         return {**result, 'output_directory': str(directory)}
     except BaseException as exc:
-        coordinator.stop_all()
-        write_json(directory/'failure.json', {'error': f'{type(exc).__name__}: {exc}'})
+        # Planning/preview errors have not dispatched a command. Sending state 4
+        # here needlessly latches both ready controllers in a stopped state.
+        if execution_started:
+            coordinator.stop_all()
+        write_json(directory/'failure.json', {
+            'error': f'{type(exc).__name__}: {exc}',
+            'execution_started': execution_started,
+            'diagnostics': getattr(exc, 'diagnostics', None)})
         raise
     finally:
         if install_signal_handler:

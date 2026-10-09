@@ -1,7 +1,6 @@
 """Prevalidated, non-blended controller position commands, one arm at a time."""
 from dataclasses import dataclass
 import json
-import math
 import time
 
 import numpy as np
@@ -41,9 +40,8 @@ def certify_segment(start, end, config, models, *, max_nodes=None, path_bounds=N
         raise DualArmError('controller segment must move at most one arm')
     midpoint = {k: (start[k]+end[k])/2 for k in start}
     half = {k: np.abs(end[k]-start[k])/2 for k in start}
-    validate_native_sweep(config, models, start, end, max_nodes=max_nodes)
-    for joints in (start, midpoint, end):
-        validate_sample(config, models, joints, holding=False)
+    # Cheap workspace/path-box rejection comes before the expensive stopping
+    # proof, especially when the search will immediately split a coarse edge.
     for k, arm in config.arms.items():
         weights = tcp_weights(models[k], arm)
         if weights is None:
@@ -63,21 +61,24 @@ def certify_segment(start, end, config, models, *, max_nodes=None, path_bounds=N
                 raise DualArmError(f'{k}: controller segment exceeds Home height limit')
             if float(deviation(world,bound))+radius>bound['radius']+1e-6:
                 raise DualArmError(f'{k}: controller segment exceeds Home corridor')
+    validate_native_sweep(config, models, start, end, max_nodes=max_nodes)
+    for joints in (start, midpoint, end):
+        validate_sample(config, models, joints, holding=False)
 
 
 def command_limits(config, model, arm, start, end):
+    """Native joint Home uses joint limits, as the original joint pipeline does.
+
+    Cartesian limits govern Cartesian/reference-path timing, not this SDK joint
+    command. The measured joint-speed ceiling remains tied to stopping bounds.
+    """
     speed = config.limits['joint_speed_deg_s']
     acceleration = config.limits['joint_accel_deg_s2']
-    weights = tcp_weights(model, arm)
-    if weights is not None:
-        active = np.abs(end-start) > 1e-9
-        reach = float(weights[active].sum())
-        if reach > 0:
-            axes = max(1, int(active.sum()))
-            # Bound sum(J*qdot), plus acceleration and rotational cross terms.
-            speed = min(speed, math.degrees(config.limits['cartesian_speed_mm_s']/reach),
-                        math.degrees(math.sqrt(config.limits['cartesian_accel_mm_s2']/(2*reach*axes))))
-            acceleration = min(acceleration, math.degrees(config.limits['cartesian_accel_mm_s2']/(2*reach)))
+    verified = config.raw['safety']['arms'][arm.arm_id]['max_joint_speed_deg_s']
+    if verified is not None:
+        speed = min(speed, verified)
+    if not np.isfinite(speed) or speed <= 0 or not np.isfinite(acceleration) or acceleration <= 0:
+        raise DualArmError('native Home requires positive finite joint dynamics')
     timeout = 30 + 4*(float(np.max(np.abs(end-start)))/speed + speed/acceleration)
     return speed, acceleration, timeout
 
@@ -139,12 +140,16 @@ def check_feedback(coordinator, segment):
                 raise DualArmError(f'{k}: controller left certified joint segment')
         distance, angle = pose_error(state[k]['pose'], models[k].forward(q))
         if distance > 2 or angle > 1:
-            raise DualArmError(f'{k}: live controller/model FK mismatch')
+            coordinator.event('native_fk_mismatch', arm=k, distance_mm=distance,
+                              angle_deg=angle, feedback=state[k],
+                              model_pose=models[k].forward(q).tolist())
+            raise DualArmError(f'{k}: live controller/model FK mismatch ({distance:.3f} mm, {angle:.3f} deg)')
     validate_sample(config, models, joints, holding=False)
 
 
 def wait_operation(coordinator, operation, timeout, monitor):
     future = coordinator.pool.submit(operation)
+    coordinator.native_operation_future = future
     began = time.monotonic()
     while not future.done():
         if coordinator.cancel.is_set():
@@ -154,6 +159,7 @@ def wait_operation(coordinator, operation, timeout, monitor):
         monitor()
         coordinator.cancel.wait(.05)
     future.result()
+    coordinator.native_operation_future = None
     if coordinator.cancel.is_set():
         raise DualArmError('native Home cancelled')
 
@@ -214,6 +220,13 @@ def execute_sequential_home(coordinator, program, initial, segments=None, *, con
         result['status'] = 'INTERRUPTED' if isinstance(exc,KeyboardInterrupt) else 'FAILED'
         result['error'] = f'{type(exc).__name__}: {exc}'
         result['stop_results'] = coordinator.stop_all()
+        # Let the blocking SDK wait observe the stop before disconnecting its
+        # transport. Otherwise it is still polling a socket we just closed.
+        pending = getattr(coordinator, 'native_operation_future', None)
+        if pending is not None:
+            from concurrent.futures import wait
+            done, _ = wait([pending], timeout=2.)
+            result['operation_settled_after_stop'] = bool(done)
         coordinator.event('native_home_failed',error=result['error'])
     finally:
         (coordinator.directory/'execution.json').write_text(json.dumps(result,indent=2)+'\n')

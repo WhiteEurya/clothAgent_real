@@ -1,0 +1,13 @@
+{
+  "candidate": "results/controller_model_diagnostic/xarm7_controller_fit.urdf",
+  "source": "read-only controller FK; not independent physical calibration",
+  "heldout_max_mm_deg": [
+    0.10414113591853554,
+    0.014347217404612318
+  ],
+  "prior_current_home_queries_max_mm_deg": [
+    0.022985560480797914,
+    0.008836225603684574
+  ],
+  "max_capsule_endpoint_change_mm": 9.385144641176705
+}

@@ -24,10 +24,10 @@
 python -m pip install -r requirements-collision.txt
 ```
 
-本次验证使用 `molmo` 环境，FCL 隔离安装于 `/tmp/cloth_collision_deps`，未修改原环境。复现本机结果时，以下命令中的 `python` 可替换为：
+当前使用 `cali` 环境，FCL 与 OMPL 直接安装到该环境。以下命令中的 `python` 可替换为：
 
 ```bash
-env PYTHONPATH=/tmp/cloth_collision_deps /home/CNS2026330003/miniconda3/envs/molmo/bin/python
+/home/sja/miniconda3/envs/cali/bin/python
 ```
 
 生成审计和明确标为 synthetic 的演示场景：
@@ -70,10 +70,10 @@ X_Base1Base2 的平移 = [1.1260379512, -0.0194824079, 0.0165630688] m
 | 证据 | 结果 | 含义 |
 | --- | --- | --- |
 | 基座原点距离 | 1.126328 m | 由导入的平移向量范数计算 |
-| 历史 Home 的 TCP 间距 | 0.242752 m | 使用官方 FK 和基座矩阵计算，不是实测 |
+| 历史 Home 的 TCP 间距 | 0.242668 m | 使用当前 FK 和基座矩阵计算，不是实测 |
 | xArm6 官方 FK 对历史 TCP | 约 0.000463 mm、0.000419° | 通过 2 mm / 1° 的单样本数值阈值 |
 | xArm7 官方 FK 对历史 TCP | 约 4.367 mm、1.909° | 未通过该阈值 |
-| xArm7 controller-fit 候选 | 约 0.0142 mm、0.00845° | 同一历史样本更吻合；未自动选用，仍需独立样本验证 |
+| xArm7 controller-fit 模型 | 约 0.0142 mm、0.00845° | 当前默认使用，与 Home 运行时一致；此行是历史 Home 样本的数值结果 |
 
 历史记录来自 `data/robot/dual_arm_home.json`，时间为 `2026-09-26T05:40:08.682481+00:00`，不是本次同步采集的真实状态。标定状态为 `applied_coordinate_correction_pending_live_validation`。用户已确认此前的 450 mm 来自错误计算，该项撤销，不再作为验收条件或后续开发阻塞项。
 
@@ -175,3 +175,5 @@ python -m pytest -q tests/test_dual_arm_collision_scene.py
 - 在 Viser 中用上述实测状态对照真实几何，完成人工检查。本模块未下发任何真实运动。
 
 阶段 4～5 已新增独立离线实现，见 [运动规划说明](dual_arm_motion.md)。优化权重仍可根据衣物抓取效果调整。
+
+当前 xArm7 默认采用 `assets/robots/xarm7/xarm7_controller_fit.urdf`，与现有 Home 使用的控制器拟合运动学一致；碰撞网格仍来自原模型。

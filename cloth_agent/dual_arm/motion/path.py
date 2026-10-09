@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from itertools import pairwise
 
 import numpy as np
@@ -41,11 +42,28 @@ class PathPlanner:
         return self._rrt(start, goal, slice(0, 13), deadline)
 
     def _rrt(self, start, goal, active, deadline):
+        rejected = Counter()
+        counts = Counter()
+        # Each sequential leg has its own target (one arm Home, the other
+        # parked). Checking only the final dual-Home target misses collisions
+        # at this intermediate state and leaves OMPL with an empty goal tree.
+        for label,q in (('start',start),('goal',goal)):
+            if time.monotonic() >= deadline:
+                raise DualArmError('path planning time budget exhausted before endpoint validation')
+            report = self.checker.check(q[:6],q[6:])
+            if not report['safe']:
+                raise DualArmError(f'path leg {label} is unsafe: '+report.get('reason','collision/clearance'))
+        # Reserve most of the remaining budget for a detour, rather than spend
+        # it all proving a failed direct edge and launch OMPL with 1 ms left.
+        now = time.monotonic()
+        if now >= deadline:
+            raise DualArmError('path planning time budget exhausted after endpoint validation')
+        direct_deadline = now + (deadline-now)*.25
         try:
-            self.validator.certify(start, goal, deadline=deadline)
+            self.validator.certify(start, goal, deadline=direct_deadline)
             return [start.copy(), goal.copy()]
-        except DualArmError:
-            pass
+        except DualArmError as exc:
+            rejected['direct: '+str(exc)] += 1
         try:
             from ompl import base as ob
             from ompl import geometric as og
@@ -68,19 +86,28 @@ class PathPlanner:
             return q
 
         def valid(state):
-            if time.monotonic() >= deadline:
-                return False
+            # State validity is geometry, not the wall clock. OMPL's solve
+            # termination and the edge validator enforce the time budget.
             q = unpack(state)
-            return self.checker.check(q[:6], q[6:])["safe"]
+            report = self.checker.check(q[:6], q[6:])
+            counts['state_checks'] += 1
+            if not report['safe']:
+                rejected['state: '+report.get('reason','collision/clearance')] += 1
+            return report['safe']
 
         validator = self.validator
+        edge_timeout = getattr(self, 'edge_timeout_s', None)
 
         class MotionCheck(ob.MotionValidator):
             def checkMotion(self, first, last):
+                counts['edge_checks'] += 1
                 try:
-                    validator.certify(unpack(first), unpack(last), deadline=deadline)
+                    edge_deadline = deadline if edge_timeout is None else min(deadline, time.monotonic()+edge_timeout)
+                    validator.certify(unpack(first), unpack(last), deadline=edge_deadline)
+                    counts['accepted_edges'] += 1
                     return True
-                except DualArmError:
+                except DualArmError as exc:
+                    rejected['edge: '+str(exc)] += 1
                     return False
 
         motion = MotionCheck(si)
@@ -96,10 +123,14 @@ class PathPlanner:
         planner.setRange(0.2)
         planner.setProblemDefinition(problem)
         planner.setup()
-        planner.solve(max(0.001, deadline - time.monotonic()))
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            raise DualArmError('path planning time budget exhausted before RRT search')
+        planner.solve(remaining)
         if not problem.hasExactSolution():
             raise DualArmError(
-                "OMPL found no exact collision-certified path in the time budget"
+                "OMPL found no exact collision-certified path in the time budget; "
+                f"search_counts={dict(counts)}, rejections={rejected.most_common(5)}"
             )
         result = [unpack(s) for s in problem.getSolutionPath().getStates()]
         if not np.allclose(result[0], start, atol=1e-8) or not np.allclose(
@@ -108,7 +139,7 @@ class PathPlanner:
             raise DualArmError("OMPL path endpoints do not match requested states")
         # Every extracted edge gets a fresh certificate; no approximate solution.
         for a, b in pairwise(result):
-            validator.certify(a, b)
+            validator.certify(a, b, deadline=deadline)
         return result
 
     def cartesian(self, start, targets, *, step_m=0.005, timeout_s=30):

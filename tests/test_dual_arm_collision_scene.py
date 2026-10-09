@@ -37,7 +37,8 @@ def test_actual_joint_order_core_meshes_and_historical_fk_are_audited():
     assert not report["arms"]["left"]["native_gripper_collision_present"]
     assert report["arms"]["right"]["native_gripper_collision_present"]
     assert report["arms"]["left"]["saved_fk_pass_2mm_1deg"]
-    assert not report["arms"]["right"]["saved_fk_pass_2mm_1deg"]
+    assert report["arms"]["right"]["saved_fk_pass_2mm_1deg"]
+    assert report["arms"]["right"]["urdf"].endswith('xarm7_controller_fit.urdf')
     assert report["base_transform"]["base_origin_distance_m"] == pytest.approx(
         1.1263282679
     )
