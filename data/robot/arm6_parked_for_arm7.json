@@ -1,0 +1,14 @@
+{
+  "arm": "left",
+  "joint_angles_deg": [
+    -1.0920575575193492,
+    -28.14500469975484,
+    -122.43139783271921,
+    1.8160470274466574,
+    107.68988131335729,
+    -1.6756150718600926
+  ],
+  "captured_at": "2026-10-10T08:06:23.159205+00:00",
+  "source_observation": "results/codex_astra/unfold_arm7_20261010T073929672619Z/round_008/before/observation.json",
+  "assumption": "Fixed obstacle for arm7-only runs; not live feedback. Update if arm6 is moved."
+}

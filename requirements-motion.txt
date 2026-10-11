@@ -1,3 +1,4 @@
 -r requirements-collision.txt
-# Existing scipy/yourdfpy/Viser are reused; no second FK model is installed.
+-r requirements-ik.txt
+# PyRoki supplies IK; existing yourdfpy FK still verifies accepted solutions.
 ompl==2.0.1

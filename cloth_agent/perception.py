@@ -95,6 +95,8 @@ class CameraSpec:
     extrinsics_file: Path
     color_exposure: float | None = None
     color_white_balance: float | None = None
+    depth_exposure_us: float | None = None
+    depth_gain: float | None = None
 
 
 @dataclass(frozen=True)
@@ -494,6 +496,26 @@ class RealSenseRGBD:
         self.depth_scale: float | None = None
         self.intrinsics: np.ndarray | None = None
         self.started = False
+        self._depth_restore = None
+
+    def _configure_depth(self, sensor):
+        if self.spec.depth_exposure_us is None:
+            return
+        rs = self.rs
+        settings = [(rs.option.enable_auto_exposure, 0.),
+                    (rs.option.exposure, self.spec.depth_exposure_us)]
+        if self.spec.depth_gain is not None:
+            settings.append((rs.option.gain, self.spec.depth_gain))
+        for option, value in settings:
+            if not sensor.supports(option):
+                raise PerceptionError(f'depth sensor does not support {option}')
+            bounds = sensor.get_option_range(option)
+            if not math.isfinite(value) or not bounds.min <= value <= bounds.max:
+                raise PerceptionError(f'invalid depth sensor {option}: {value}')
+        original = [(option, sensor.get_option(option)) for option, _ in settings]
+        self._depth_restore = (sensor, original)
+        for option, value in settings:
+            sensor.set_option(option, value)
 
     def start(self) -> None:
         numpy = _require_numpy()
@@ -505,6 +527,11 @@ class RealSenseRGBD:
         self.started = True
         device = profile.get_device()
         self.depth_scale = float(device.first_depth_sensor().get_depth_scale())
+        try:
+            self._configure_depth(device.first_depth_sensor())
+        except Exception:
+            self.stop()
+            raise
         if (
             self.spec.color_exposure is not None
             or self.spec.color_white_balance is not None
@@ -580,9 +607,17 @@ class RealSenseRGBD:
     def stop(self) -> None:
         if self.started:
             try:
-                self.pipeline.stop()
+                if self._depth_restore is not None:
+                    sensor, original = self._depth_restore
+                    # Restore manual values before re-enabling auto exposure.
+                    for option, value in reversed(original):
+                        sensor.set_option(option, value)
             finally:
-                self.started = False
+                self._depth_restore = None
+                try:
+                    self.pipeline.stop()
+                finally:
+                    self.started = False
 
 
 @timed_stage('perception.capture_two_view_rgbd')

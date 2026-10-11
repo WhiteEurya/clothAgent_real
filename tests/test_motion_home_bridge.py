@@ -32,7 +32,7 @@ def test_new_planner_reaches_native_executor_and_opens_both_grippers(scene):
         assert result['status'] == 'COMPLETED', result
         for key, connection in scene.connections.items():
             assert np.allclose(connection.joints, scene.config.arms[key].home_joints)
-            assert [row[0] for row in connection.commands] == ['position', 'gripper']
+            assert [row[0] for row in connection.commands] == ['gripper', 'position']
     finally:
         c.close()
 

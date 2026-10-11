@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Return BOTH arms to saved joint Home, then open both grippers.
+"""Open both grippers, then return BOTH arms to saved joint Home.
 
 Running this script executes real Home automatically using the saved config.
 Use --simulate for offline execution or --preflight-only for read-only planning.

@@ -1,0 +1,6 @@
+# Tested CPU environment: Python 3.10; keep JAX compatible with this Python.
+jax==0.6.2
+jaxlib==0.6.2
+jaxlie==1.5.0
+jax_dataclasses==1.6.3
+pyroki @ git+https://github.com/chungmin99/pyroki.git@388e43e1fc0d0ee382968d3dd72970fd62a0450c

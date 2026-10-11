@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from .validation_cache import cached_geometry, _current as _validation_cache, array_key
+
 
 class KinematicsError(RuntimeError):
     """Raised when the offline URDF cannot reproduce a requested TCP pose."""
@@ -362,6 +364,7 @@ class ArmModel:
         }
 
     @_model_locked
+    @cached_geometry
     def local_capsule_motion_bounds(self, center_deg, half_deg):
         """Endpoint displacement bound using joint axes at the cell center.
 
@@ -391,6 +394,7 @@ class ArmModel:
         return result
 
     @_model_locked
+    @cached_geometry
     def projection_motion_interval(self, center_deg, half_deg, name, points, direction):
         """Enclose all vertex projections over an independent joint box.
 
@@ -423,6 +427,7 @@ class ArmModel:
         return float(np.min(projection-bound)),float(np.max(projection+bound))
 
     @_model_locked
+    @cached_geometry
     def collision_hull(self, joints_deg, name):
         """URDF link convex hull for narrow phase; attachments retain capsules.
 
@@ -471,9 +476,15 @@ class ArmModel:
         joints = np.radians(finite(joints_deg, (self.config.axis,), "joints"))
         if np.any(joints < self.lower - 1e-6) or np.any(joints > self.upper + 1e-6):
             raise DualArmError(f"{self.config.arm_id}: joint limits exceeded")
+        cache=_validation_cache.get()
+        key=array_key(joints_deg)
+        if cache is not None and cache["pose"].get(id(self))==key:
+            return
         self.urdf.update_cfg(dict(zip(self.names, joints)))
+        if cache is not None:cache["pose"][id(self)]=key
 
     @_model_locked
+    @cached_geometry
     def frame(self, name):
         result = np.array(self.urdf.get_transform(name, "link_base"), dtype=float)
         result[:3, 3] *= 1000
@@ -495,43 +506,52 @@ class ArmModel:
 
     @_model_locked
     def inverse(self, pose_mm_deg, seed_deg):
-        from scipy.optimize import least_squares
-        from scipy.spatial.transform import Rotation
+        from .geometry import DualArmError, finite, pose_error
+        from .pyroki_ik import PyrokiIK
 
-        from .geometry import DualArmError, pose_error, pose_matrix
-
-        target = pose_matrix(pose_mm_deg)
-        seed = np.radians(seed_deg)
-
-        def residual(joints):
-            actual = pose_matrix(self.forward(np.degrees(joints)))
-            return np.r_[
-                (actual[:3, 3] - target[:3, 3]) / 1000,
-                Rotation.from_matrix(target[:3, :3].T @ actual[:3, :3]).as_rotvec(),
-                # Resolve the seventh joint's redundant freedom toward the
-                # preceding solution; otherwise tiny TCP steps can drift along
-                # the null space despite a good Cartesian residual.
-                1e-4 * (joints - seed),
-            ]
-
-        result = least_squares(
-            residual,
-            np.clip(seed, self.lower, self.upper),
-            bounds=(self.lower, self.upper),
-            max_nfev=100,
-            ftol=1e-9,
-            xtol=1e-9,
-            gtol=1e-9,
-        )
-        q = np.degrees(result.x)
-        distance, angle = pose_error(self.forward(q), pose_mm_deg)
-        if not result.success or distance > 0.5 or angle > 0.2:
-            raise DualArmError(
-                f"{self.config.arm_id}: offline IK rejected target ({distance:.3f} mm, {angle:.3f} deg)"
-            )
-        return q
+        target=finite(pose_mm_deg,(6,),'IK target')
+        seed=finite(seed_deg,(self.config.axis,),'IK seed')
+        lower,upper=np.degrees(self.lower),np.degrees(self.upper)
+        seed=np.clip(seed,lower,upper)
+        if not hasattr(self,'_pyroki_ik'):
+            print(f'{self.config.arm_id}: 初始化 PyRoki IK（首次调用需要 JIT 编译）',flush=True)
+            self._pyroki_ik=PyrokiIK(self)
+        seeds=[seed,np.clip(self.config.home_joints,lower,upper),(lower+upper)/2]
+        unique=[]
+        for initial in seeds:
+            if not any(np.array_equal(initial,other) for other in unique):unique.append(initial)
+        seeds=unique[:getattr(self,'ik_seed_limit',3)]
+        import time
+        started=time.perf_counter();attempts=[]
+        best=None
+        for initial in seeds:
+            q=np.asarray(self._pyroki_ik.solve(target,initial,seed))
+            if q.shape!=(self.config.axis,) or not np.isfinite(q).all():
+                attempts.append(dict(reason='INVALID_SOLVER_OUTPUT'));continue
+            # PyRoki's constraint solver is numerical; enforce actual limits
+            # independently and recheck any roundoff clipping through old FK.
+            if np.any(q<lower-1e-6) or np.any(q>upper+1e-6):
+                attempts.append(dict(reason='JOINT_LIMIT_VIOLATION'));continue
+            q=np.clip(q,lower,upper)
+            distance,angle=pose_error(self.forward(q),target)
+            if distance<=.5 and angle<=.2:return q
+            attempts.append(dict(reason='POSE_TOLERANCE_NOT_MET',distance_mm=float(distance),angle_deg=float(angle)))
+            score=max(distance/.5,angle/.2)
+            if best is None or score<best[0]:best=(score,distance,angle,q.copy())
+        detail=(f'{best[1]:.3f} mm, {best[2]:.3f} deg' if best is not None
+                else 'no finite joint-limit-compliant solution')
+        error=DualArmError(f'{self.config.arm_id}: PyRoki IK rejected target ({detail})')
+        error.ik_diagnostics=dict(attempts=attempts,seed_count=len(seeds),
+            max_iterations_per_seed=getattr(self._pyroki_ik,'max_iterations',100),
+            solve_elapsed_s=time.perf_counter()-started,
+            explanation='No accepted solution within the numerical search budget; this does not prove geometric unreachability.')
+        if best is not None:
+            # Diagnostic only: a rejected candidate is never returned as IK.
+            error.ik_candidate=dict(joints_deg=best[3].tolist(),distance_mm=best[1],angle_deg=best[2])
+        raise error
 
     @_model_locked
+    @cached_geometry
     def capsules(self, joints_deg):
         from .geometry import Capsule, apply
 

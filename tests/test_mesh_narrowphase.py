@@ -43,6 +43,29 @@ def test_projection_gap_never_reports_intersecting_boxes_separated():
     assert separating_gap(a,np.eye(3),b,np.eye(3))<=0
 
 
+@pytest.mark.parametrize('gap',[3.,1.])
+def test_skew_attachment_capsules_use_closest_point_axis(gap):
+    a=np.array([1.,1.,0.]);a/=np.linalg.norm(a)
+    b=np.array([0.,1.,1.]);b/=np.linalg.norm(b)
+    normal=np.cross(a,b);normal/=np.linalg.norm(normal)
+    points={'left':np.array([-10*a,10*a]),
+            'right':np.array([8*a+gap*normal-10*b,8*a+gap*normal+10*b])}
+    class Attachment:
+        config=SimpleNamespace(capsules=[{'name':'camera','radius_mm':1.}])
+        def projection_motion_interval(self,center,half,name,vertices,direction):
+            values=vertices@direction
+            return values.min(),values.max()
+    models={k:Attachment() for k in points}
+    caps={k:[Capsule('camera',p[0],p[1],10.)] for k,p in points.items()}
+    config=SimpleNamespace(obstacles=[],limits={'clearance_mm':0},raw={'safety':{'status':'synthetic'}})
+    centers={k:np.zeros(1) for k in points}
+    if gap>2:
+        check_cell_collision(config,models,centers,caps,half_ranges=centers)
+    else:
+        with pytest.raises(DualArmError):
+            check_cell_collision(config,models,centers,caps,half_ranges=centers)
+
+
 @pytest.mark.parametrize('gap',[.1,-.1])
 def test_directional_proof_does_not_inflate_horizontal_motion_vertically(scene,gap):
     import json

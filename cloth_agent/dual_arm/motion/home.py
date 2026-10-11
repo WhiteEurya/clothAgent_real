@@ -17,7 +17,7 @@ from ..geometry import DualArmError, finite
 from ..home_path import check_program_path, corridor, deviation, world_pose
 from ..planning import Motion, Phase, validate_sample
 from ..sequential_home import certify_segment, prepare_segments
-from ..stop_sweep import path_proof_budget, search_proof_budget
+from ..stop_sweep import path_proof_budget, search_proof_budget, complete_proof
 from .path import PathPlanner
 from .trajectory import parameterize, polynomial_peak
 
@@ -91,10 +91,15 @@ class HomeValidator:
 
     def certify_box(self, start, end, *, deadline=None, max_nodes=None):
         a, b = unpack(start), unpack(end)
-        remaining = 5. if deadline is None else deadline-time.monotonic()
-        if remaining <= 0:
-            raise DualArmError('Home path planning budget exhausted')
-        with search_proof_budget(min(5., remaining)):
+        if deadline is None:
+            context=complete_proof(cancel=getattr(self,'cancel',None),progress=getattr(self,'progress',None))
+        else:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                from ..stop_sweep import ProofIncompleteError
+                raise ProofIncompleteError('Home candidate planning time budget exhausted')
+            context=search_proof_budget(remaining)
+        with context:
             certify_segment(a, b, self.config, self.models,
                             max_nodes=max_nodes,
                             path_bounds=self.bounds)
@@ -106,7 +111,7 @@ class HomeValidator:
         Splitting a line does not certify its entire endpoint box. Polynomial
         enclosures must call certify_box separately, as must actual dispatch.
         """
-        deadline = min(time.monotonic()+5., deadline or float('inf'))
+        deadline = deadline if deadline is not None else float('inf')
         pending = [(np.asarray(start), np.asarray(end), 0)]
         nodes = 0
         while pending:
@@ -116,8 +121,8 @@ class HomeValidator:
             nodes += 1
             width = float(np.max(np.abs(np.degrees(b-a))))
             try:
-                self.certify_box(a,b,deadline=deadline,
-                                 max_nodes=64 if width>.25 else None)
+                self.certify_box(a,b,deadline=deadline if math.isfinite(deadline) else None,
+                                 max_nodes=64 if width>.25 and math.isfinite(deadline) else None)
             except DualArmError:
                 if depth >= 12 or width <= .25 or time.monotonic() >= deadline:
                     raise
@@ -127,7 +132,6 @@ class HomeValidator:
 
     def certify_polynomial(self, coefficients):
         """Cover a curved polynomial with exact-extremum boxes, never chords."""
-        deadline = time.monotonic()+5.
         pending = [(0.,1.,0)]
         while pending:
             lo,hi,depth = pending.pop()
@@ -139,10 +143,9 @@ class HomeValidator:
             residual = local.copy(); residual[0] -= center
             half = polynomial_peak(residual)
             try:
-                self.certify_box(center-half,center+half,deadline=deadline,
-                                 max_nodes=64 if np.max(np.degrees(2*half))>.25 else None)
+                self.certify_box(center-half,center+half)
             except DualArmError:
-                if depth>=12 or time.monotonic()>=deadline:
+                if depth>=12:
                     raise
                 mid=(lo+hi)/2
                 pending.extend([(mid,hi,depth+1),(lo,mid,depth+1)])

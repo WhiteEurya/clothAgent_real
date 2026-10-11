@@ -107,6 +107,11 @@ def connect(config, models, cancel, real):
     connections = {}
     try:
         for k, a in config.arms.items():
+            static=getattr(config,'static_arm_obstacles',{}).get(k)
+            if static is not None:
+                from .static_arm import StaticArmObstacle
+                connections[k]=StaticArmObstacle(a,models[k],static)
+                continue
             connections[k] = (
                 XArmConnection(a, cancel, recover_stopped=getattr(config, 'home_recover_stopped', False))
                 if real

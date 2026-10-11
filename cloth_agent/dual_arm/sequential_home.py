@@ -136,7 +136,7 @@ def check_feedback(coordinator, segment):
             if np.max(np.abs(q-segment.start[k])) > config.limits['stationary_tolerance_deg']:
                 raise DualArmError(f'{k}: inactive arm moved during native Home')
         else:
-            if np.any(q < lower[k]) or np.any(q > upper[k]):
+            if np.any(q < lower[k]-1e-9) or np.any(q > upper[k]+1e-9):
                 raise DualArmError(f'{k}: controller left certified joint segment')
         distance, angle = pose_error(state[k]['pose'], models[k].forward(q))
         if distance > 2 or angle > 1:
@@ -197,6 +197,11 @@ def execute_sequential_home(coordinator, program, initial, segments=None, *, con
         arrival(expected)
         for c in coordinator.connections.values():
             c.prepare_position()
+        for k,connection in coordinator.connections.items():
+            wait_operation(coordinator,lambda c=connection:c.gripper('open'),
+                           config.arms[k].gripper.gripper_completion_timeout_s+1,
+                           lambda:arrival(expected))
+            coordinator.event('home_gripper_opened',arm=k)
         for index, segment in enumerate(segments):
             arrival(segment.start)
             coordinator.event('position_command_start', index=index, **segment.to_dict())
@@ -209,11 +214,6 @@ def execute_sequential_home(coordinator, program, initial, segments=None, *, con
             result['completed_segments'] += 1
             coordinator.event('position_command_complete',index=index,arm=segment.arm)
         arrival({k:a.home_joints for k,a in config.arms.items()})
-        for k,connection in coordinator.connections.items():
-            wait_operation(coordinator,lambda c=connection:c.gripper('open'),
-                           config.arms[k].gripper.gripper_completion_timeout_s+1,
-                           lambda:arrival(expected))
-            coordinator.event('home_gripper_opened',arm=k)
         arrival(expected)
         result['status'] = 'COMPLETED'
     except BaseException as exc:

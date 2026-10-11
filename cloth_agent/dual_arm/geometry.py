@@ -68,8 +68,8 @@ def pose_error(a, b):
     )
 
 
-def segment_distance(a, b, c, d):
-    """Distance between finite segments, including zero-length/parallel ones."""
+def segment_separation_vector(a, b, c, d):
+    """Closest-point difference between finite segments, including degeneracies."""
     a, b, c, d = (np.asarray(p, dtype=float) for p in (a, b, c, d))
     u, v, w = b - a, d - c, a - c
     aa, bb, cc, dd, ee = u @ u, u @ v, v @ v, u @ w, v @ w
@@ -86,7 +86,12 @@ def segment_distance(a, b, c, d):
     candidates.extend(
         (float(np.clip((bb * t - dd) / aa, 0, 1)) if aa else 0.0, t) for t in (0.0, 1.0)
     )
-    return min(float(np.linalg.norm(w + s * u - t * v)) for s, t in candidates)
+    return min((w + s * u - t * v for s, t in candidates),key=lambda delta:float(delta@delta))
+
+
+def segment_distance(a, b, c, d):
+    """Distance between finite segments, including zero-length/parallel ones."""
+    return float(np.linalg.norm(segment_separation_vector(a,b,c,d)))
 
 
 def segment_box_distance(a, b, lower, upper):
@@ -136,21 +141,33 @@ class Capsule:
 def check_collision(capsules, boxes, clearance_mm, *, allow_tool_contact=False,
                     pair_separated=None, box_separated=None):
     ids = list(capsules)
-    for left in capsules[ids[0]]:
-        for right in capsules[ids[1]]:
-            reach=left.radius+right.radius+clearance_mm
-            if (np.any(np.minimum(left.start,left.end)-reach > np.maximum(right.start,right.end))
-                    or np.any(np.minimum(right.start,right.end)-reach > np.maximum(left.start,left.end))):
+    first,second=capsules[ids[0]],capsules[ids[1]]
+    if len(first)*len(second)>256:
+        # Same conservative AABB rejection, broadcast once for multi-capsule
+        # links. Preserve pair order and the exact narrow-phase checks below.
+        amin=np.minimum([c.start for c in first],[c.end for c in first])
+        amax=np.maximum([c.start for c in first],[c.end for c in first])
+        bmin=np.minimum([c.start for c in second],[c.end for c in second])
+        bmax=np.maximum([c.start for c in second],[c.end for c in second])
+        reach=np.array([c.radius for c in first])[:,None]+np.array([c.radius for c in second])[None,:]+clearance_mm
+        separated=np.any(amin[:,None,:]-reach[:,:,None]>bmax[None,:,:],axis=2)|np.any(bmin[None,:,:]-reach[:,:,None]>amax[:,None,:],axis=2)
+        pairs=((first[i],second[j]) for i,j in np.argwhere(~separated))
+    else:
+        pairs=((left,right) for left in first for right in second)
+    for left,right in pairs:
+        reach=left.radius+right.radius+clearance_mm
+        if (np.any(np.minimum(left.start,left.end)-reach > np.maximum(right.start,right.end))
+                or np.any(np.minimum(right.start,right.end)-reach > np.maximum(left.start,left.end))):
+            continue
+        if (
+            segment_distance(left.start, left.end, right.start, right.end)
+            <= reach
+        ):
+            if pair_separated is not None and pair_separated(ids[0], left, ids[1], right, clearance_mm):
                 continue
-            if (
-                segment_distance(left.start, left.end, right.start, right.end)
-                <= reach
-            ):
-                if pair_separated is not None and pair_separated(ids[0], left, ids[1], right, clearance_mm):
-                    continue
-                raise DualArmError(
-                    f"inter-arm collision: {ids[0]}/{left.name}, {ids[1]}/{right.name}"
-                )
+            raise DualArmError(
+                f"inter-arm collision: {ids[0]}/{left.name}, {ids[1]}/{right.name}"
+            )
     for arm_id, shapes in capsules.items():
         for shape in shapes:
             for box in boxes:

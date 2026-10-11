@@ -64,6 +64,36 @@ def test_stop_sweep_budget_exhaustion_never_passes():
         validate_native_sweep(config,models,{'left':[0],'right':[0]}, {'left':[.1],'right':[0]})
 
 
+def test_budget_remains_binding_in_final_and_timed_proofs():
+    from cloth_agent.dual_arm.stop_sweep import search_proof_budget, complete_proof, ProofIncompleteError
+    config,models=arc_scene()
+    config.raw['safety']['max_sweep_nodes']=1
+    for context in (search_proof_budget(5),complete_proof()):
+        with context,pytest.raises(ProofIncompleteError) as exc:
+            validate_native_sweep(config,models,{'left':[0],'right':[0]}, {'left':[.1],'right':[0]})
+        assert exc.value.result['status']=='UNKNOWN'
+
+
+def test_proof_progress_and_cancel(monkeypatch):
+    import threading
+    from cloth_agent.dual_arm import stop_sweep
+    config,models=arc_scene()
+    with stop_sweep.complete_proof():
+        assert validate_native_sweep(config,models,{'left':[0],'right':[0]}, {'left':[.1],'right':[0]})['nodes']>1
+    cancel=threading.Event();reports=[];clock=[0.]
+    def now():
+        clock[0]+=3.
+        return clock[0]
+    def progress(row):
+        reports.append(row);cancel.set()
+    monkeypatch.setattr(stop_sweep.time,'monotonic',now)
+    with stop_sweep.complete_proof(cancel=cancel,progress=progress),pytest.raises(KeyboardInterrupt):
+        lo,hi=native_joint_ranges(config,{'left':[0],'right':[0]},{'left':[.1],'right':[0]})
+        stop_sweep.verify_joint_box(config,models,lo,hi,timeout_s=1000,witness_search=False)
+    assert reports and reports[0]['pending']>0
+    assert stop_sweep._full_proof.get() is None
+
+
 def test_search_timeout_rejects_and_does_not_leak_into_later_proofs():
     from cloth_agent.dual_arm.stop_sweep import search_proof_budget
     config,models=arc_scene()

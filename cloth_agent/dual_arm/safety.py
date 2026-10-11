@@ -11,6 +11,10 @@ import numpy as np
 from .geometry import Capsule, DualArmError, check_collision, finite
 
 
+def collision_envelopes_enabled(config, key):
+    return key not in getattr(config, 'collision_envelopes_disabled_arms', ())
+
+
 def safety_template(arms):
     return {
         "status": "unmeasured",
@@ -128,7 +132,7 @@ def padded_capsules(config, models, joints, half_ranges=None):
         # Synthetic motion has exact feedback; physical runs may never use this.
         deviation = np.zeros(config.arms[k].axis)
         error_mm = 0.0
-        if safety["status"] == "measured":
+        if safety["status"] == "measured" and collision_envelopes_enabled(config, k):
             deviation = (
                 np.asarray(row["stop_excursion_deg"])
                 + config.limits["tracking_error_deg"]

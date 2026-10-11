@@ -45,7 +45,12 @@ class Observation:
                 raise DualArmError("RGB and geometry dimensions differ")
         return cls(directory, meta, xyz)
 
-    def validate_for(self, config, *, live=False):
+    def validate_for(self, config, *, live=False, check_age=True):
+        """Validate provenance; callers may disable the wall-clock age gate.
+
+        Astra plans from a stationary round snapshot and checks live joints
+        before dispatch. Its model/planner latency is not an expiry condition.
+        """
         if self.meta["calibration_id"] != config.raw["calibration_id"]:
             raise DualArmError("observation uses a different calibration")
         if live:
@@ -53,9 +58,10 @@ class Observation:
                 raise DualArmError(
                     "real execution requires a real captured observation"
                 )
-            age = time.time() - float(self.meta["captured_unix_s"])
-            if not 0 <= age <= config.limits["max_grasp_age_s"]:
-                raise DualArmError("grasp observation expired; capture and plan again")
+            if check_age:
+                age = time.time() - float(self.meta["captured_unix_s"])
+                if not 0 <= age <= config.limits["max_grasp_age_s"]:
+                    raise DualArmError("grasp observation expired; capture and plan again")
 
     def sample(self, pixel, max_spread):
         x, y = map(int, finite(pixel, (2,), "pixel"))
@@ -77,6 +83,22 @@ def save_observation(
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     Image.fromarray(np.asarray(rgb, dtype=np.uint8)).save(directory / "rgb.png")
+    extra = dict(extra or {})
+    correction = config.raw.get('camera', {}).get('world_tilt_correction')
+    if correction is not None:
+        from ..depth_level import rotate_cloud
+        if correction.get('mode') != 'world_y_rotation':
+            raise ValueError('unknown world tilt correction mode')
+        np.save(directory/'uncorrected_world_xyz_mm.npy', np.asarray(xyz,dtype=np.float32),allow_pickle=False)
+        xyz, rotation = rotate_cloud(xyz, correction['pivot_world_mm'], correction['angle_deg'])
+        pivot = np.asarray(correction['pivot_world_mm'])
+        correction_matrix = np.eye(4)
+        correction_matrix[:3,:3] = rotation
+        correction_matrix[:3,3] = pivot - rotation @ pivot
+        if 'world_from_camera_mm' in extra:
+            extra['uncorrected_world_from_camera_mm'] = extra['world_from_camera_mm']
+            extra['world_from_camera_mm'] = (correction_matrix @ np.asarray(extra['world_from_camera_mm'])).tolist()
+        extra['world_tilt_correction'] = {**correction, 'matrix_mm':correction_matrix.tolist()}
     np.save(
         directory / "world_xyz_mm.npy",
         np.asarray(xyz, dtype=np.float32),
@@ -94,15 +116,34 @@ def save_observation(
         "sha256": {n: sha(directory / n) for n in ("rgb.png", "world_xyz_mm.npy")},
         **(extra or {}),
     }
+    if correction is not None:
+        meta['sha256']['uncorrected_world_xyz_mm.npy'] = sha(directory/'uncorrected_world_xyz_mm.npy')
     (directory / "observation.json").write_text(
         json.dumps(meta, indent=2, allow_nan=False) + "\n"
     )
     return Observation.load(directory)
 
 
-def capture(directory, config, models, snapshot):
-    """Both arms must remain still for the entire temporal capture window."""
+def create_camera(config):
     from ..perception import CameraSpec, RealSenseRGBD
+
+    camera_config = config.raw["camera"]
+    spec = CameraSpec(
+        camera_config.get("label", "A"),
+        str(camera_config["serial"]),
+        Path("."),
+        camera_config.get("color_exposure"),
+        camera_config.get("color_white_balance"),
+        depth_exposure_us=camera_config.get('depth_exposure_us'),
+        depth_gain=camera_config.get('depth_gain'),
+    )
+    return RealSenseRGBD(
+        spec, camera_config["width"], camera_config["height"], camera_config["fps"]
+    )
+
+
+def capture(directory, config, models, snapshot, *, camera=None):
+    """Capture stationary frames; a supplied camera stays open for its owner."""
 
     camera_config = config.raw["camera"]
     owner = camera_config["mount_arm"]
@@ -111,17 +152,12 @@ def capture(directory, config, models, snapshot):
             "camera mount_arm must name an arm or be null for a fixed camera"
         )
     before = snapshot()
-    spec = CameraSpec(
-        "A",
-        str(camera_config["serial"]),
-        Path("."),
-        camera_config.get("color_exposure"),
-        camera_config.get("color_white_balance"),
-    )
-    camera = RealSenseRGBD(
-        spec, camera_config["width"], camera_config["height"], camera_config["fps"]
-    )
+    owns_camera = camera is None
+    if owns_camera:
+        camera = create_camera(config)
     rgb_frames, depths = [], []
+    stability = camera_config.get('depth_stability')
+    stability_report = None
 
     def stationary():
         current = snapshot()
@@ -136,18 +172,34 @@ def capture(directory, config, models, snapshot):
         return current
 
     try:
-        camera.start()
-        for _ in range(10):
+        if owns_camera or not camera.started:
+            camera.start()
+        for _ in range(stability['warmup_frames'] if stability else 10):
             camera.read()
             stationary()
-        for _ in range(5):
+        stable_windows = 0
+        for index in range(stability['max_frames'] if stability else 5):
             rgb, depth = camera.read()
             stationary()
             rgb_frames.append(rgb)
             depths.append(depth)
+            if stability:
+                from ..depth_stability import depth_window_report
+                window = stability['window_frames']
+                rgb_frames, depths = rgb_frames[-2*window:], depths[-2*window:]
+                if len(depths) == 2*window and (index+1) % window == 0:
+                    stability_report = depth_window_report(depths, stability['max_range_mm'])
+                    stable_windows = stable_windows + 1 if stability_report['stable'] else 0
+                    if stable_windows >= stability['stable_windows']:
+                        stability_report.update(frames_checked=index+1, consecutive_windows=stable_windows)
+                        rgb_frames, depths = rgb_frames[-window:], depths[-window:]
+                        break
+        if stability and stable_windows < stability['stable_windows']:
+            raise DualArmError(f'depth did not stabilize: {stability_report}')
         intrinsics = camera.intrinsics.copy()
     finally:
-        camera.stop()
+        if owns_camera:
+            camera.stop()
     after = stationary()
     if owner is None:
         world_camera = transform(
@@ -160,7 +212,13 @@ def capture(directory, config, models, snapshot):
             @ model.frame_at(before[owner]["joints"], camera_config["mount_link"])
             @ transform(camera_config["mount_from_camera_mm"], "hand-eye calibration")
         )
-    depth = np.median(np.asarray(depths), axis=0)
+    samples = np.asarray(depths)
+    if stability:
+        valid = np.isfinite(samples) & (samples > .1) & (samples <= 2.5)
+        depth = np.ma.median(np.ma.array(samples, mask=~valid), axis=0).filled(np.nan)
+        depth[valid.sum(axis=0) < 3] = np.nan
+    else:
+        depth = np.median(samples, axis=0)
     h, w = depth.shape
     y, x = np.mgrid[:h, :w]
     camera_xyz = (
@@ -185,6 +243,10 @@ def capture(directory, config, models, snapshot):
         extra={
             "world_from_camera_mm": world_camera.tolist(),
             "camera_serial": camera_config["serial"],
+            "depth_capture_policy": {k: camera_config[k] for k in
+                ('depth_exposure_us', 'depth_gain', 'depth_stability') if k in camera_config},
+            "depth_stability": stability_report,
+            "extrinsic_tilt_correction": camera_config.get("extrinsic_tilt_correction"),
             "snapshot_before": before,
             "snapshot_after": after,
         },

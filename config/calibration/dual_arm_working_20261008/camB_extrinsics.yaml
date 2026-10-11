@@ -1,16 +1,16 @@
 X_CammountCam:
-- - 0.0017365241460240608
-  - 0.9999597828343619
-  - -0.008798704321957307
-  - 0.07437856358688474
-- - -0.9999762713913845
-  - 0.0017950743642663304
-  - 0.00665089183583648
-  - 0.03711145444169727
-- - 0.00666641868438461
-  - 0.008786946106680564
-  - 0.9999391723700213
-  - 0.02338532120812982
+- - 0.0007712897772459947
+  - 0.9999522919457453
+  - -0.009737501965583102
+  - 0.058441926151022214
+- - -0.9999775846374275
+  - 0.0008359999742043906
+  - 0.006643141330776023
+  - 0.038678942017394705
+- - 0.006650964950820665
+  - 0.009732159908948726
+  - 0.9999305224508
+  - 0.01683396701563216
 - - 0.0
   - 0.0
   - 0.0
@@ -33,8 +33,15 @@ X_TagmountTag:
   - 0.0
   - 1.0
 translation_units: m
-status: applied_coordinate_correction_pending_live_validation
+status: applied_32p5mm_refit_two_side_hover_validated
 source_log: outputs/coordinate_correction_20261008_145014/input.jsonl
-note: X_TagmountTag is the fixed board pose during this experiment, not necessarily
-  the original calibration board pose.
+note: 'Camera B hand-eye transform refitted from the historical log using the confirmed
+  32.5 mm black tag edge. X_TagmountTag is retained from the OLD fit as historical
+  metadata only; it is not a corrected board pose. Physical validation: two tag centers
+  at approximately 50 mm open-fingertip clearance, one tool orientation, 4 ms depth
+  exposure. Cloth grasping still pending.'
 source_calibration: outputs/coordinate_correction_20261008_145014/calibration/extrinsics_wrist_233622079809.yaml
+board_tag_edge_mm: 32.5
+candidate_source: results/arm7_board_multiview_20261010T090553Z/execution_calibration_audit/arm7_camera_candidate_NOT_APPLIED.yaml
+physical_validation: results/arm7_candidate_right_hover_20261010T110708Z/two_side_validation.json
+backup_before_activation: results/arm7_extrinsics_activation_20261010T111037Z/camB_extrinsics.before.yaml

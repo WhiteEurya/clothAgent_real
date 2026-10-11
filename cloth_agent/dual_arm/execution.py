@@ -242,6 +242,24 @@ class XArmConnection(XArmBackend):
         finally:
             self.position_command_active = False
 
+    def move_joint_queue(self, segments):
+        """Buffer exact, non-blended moves; wait only for the final command."""
+        self.position_command_active = True
+        began = time.monotonic()
+        timeout = sum(s.timeout for s in segments)
+        try:
+            for index, segment in enumerate(segments):
+                if self.cancel.is_set() or self.arm.mode != 0:
+                    raise DualArmError('queued motion cancelled or controller mode changed')
+                remaining = timeout - (time.monotonic() - began)
+                if remaining <= 0:raise DualArmError('queued motion timeout')
+                self._check('set_servo_angle(queued position)', self.arm.set_servo_angle(
+                    angle=list(segment.end[segment.arm]), speed=segment.speed,
+                    mvacc=segment.acceleration, is_radian=False,
+                    wait=index == len(segments)-1, timeout=remaining, radius=-1))
+        finally:
+            self.position_command_active = False
+
     def check_gripper_wait(self, started):
         if self.cancel.is_set():
             raise DualArmError("paired gripper wait cancelled")
@@ -324,6 +342,11 @@ class SimulatedConnection:
             raise DualArmError('cancelled')
         self.joints = np.array(joints).copy()
         self.commands.append(('position', self.joints.tolist()))
+
+    def move_joint_queue(self, segments):
+        for segment in segments:
+            self.move_joint_position(segment.end[segment.arm],segment.speed,
+                                     segment.acceleration,segment.timeout)
 
     def servo(self, joints):
         if self.cancel.is_set() or self.stopped:

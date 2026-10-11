@@ -2,7 +2,8 @@
 import itertools
 import numpy as np
 
-from .geometry import check_collision
+from .geometry import check_collision, segment_separation_vector
+from .safety import collision_envelopes_enabled
 
 
 def separating_gap(points_a, normals_a, points_b, normals_b, required_gap=None):
@@ -64,7 +65,7 @@ def check_cell_collision(config,models,center,capsules,*,half_ranges=None,tool_c
     def projected(key,cap,points,direction):
         lo,hi=models[key].projection_motion_interval(center[key],half_ranges[key],cap.name,points,direction)
         error=0.
-        if config.raw['safety']['status']=='measured':
+        if config.raw['safety']['status']=='measured' and collision_envelopes_enabled(config,key):
             row=config.raw['safety']['arms'][key]
             error=row['base_error_mm']+row['geometry_error_mm']+config.limits['tracking_error_mm']
         margin=static_shells[(key,cap.name)]+error
@@ -100,7 +101,15 @@ def check_cell_collision(config,models,center,capsules,*,half_ranges=None,tool_c
         if (ha or hb) and separating_gap(pa,na,pb,nb,required_gap=required) > required:
             return True
         if directional_available(ka,kb):
-            for direction in directions(pa,pb):
+            axes=directions(pa,pb)
+            if not ha and not hb:
+                # Long/skew attachment capsules often separate along the
+                # closest-point axis, not XYZ or their center-to-center axis.
+                delta=segment_separation_vector(pa[0],pa[1],pb[0],pb[1])
+                length=np.linalg.norm(delta)
+                if length>1e-12:
+                    axes.insert(0,delta/length)
+            for direction in axes:
                 alo,ahi=projected(ka,a,pa,direction);blo,bhi=projected(kb,b,pb,direction)
                 if max(alo-bhi,blo-ahi)>clearance+1e-6:
                     return True

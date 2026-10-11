@@ -47,13 +47,13 @@ def test_native_home_sends_one_position_command_per_direct_arm_and_no_servo(scen
         assert result['status']=='COMPLETED', result
         assert order==['left_start','left_complete','right_start','right_complete']
         for k,connection in scene.connections.items():
-            assert [cmd[0] for cmd in connection.commands]==['position','gripper']
+            assert [cmd[0] for cmd in connection.commands]==['gripper','position']
             assert np.allclose(connection.joints,scene.config.arms[k].home_joints)
     finally:
         c.close()
 
 
-def test_native_failure_never_starts_second_arm_or_opens_grippers(scene,monkeypatch):
+def test_native_failure_never_starts_second_arm_after_initial_release(scene,monkeypatch):
     initial,program,_ = native_program(scene)
     def fail(*args):
         raise DualArmError('injected native command failure')
@@ -63,8 +63,8 @@ def test_native_failure_never_starts_second_arm_or_opens_grippers(scene,monkeypa
         result=execute_sequential_home(c,program,initial)
         assert result['status']=='FAILED'
         assert all(connection.stopped for connection in scene.connections.values())
-        assert scene.connections['right'].commands==[]
-        assert not any(cmd[0]=='gripper' for cmd in scene.connections['left'].commands)
+        assert [cmd[0] for cmd in scene.connections['right'].commands]==['gripper']
+        assert [cmd[0] for cmd in scene.connections['left'].commands]==['gripper']
     finally:
         c.close()
 
@@ -76,7 +76,7 @@ def test_native_requires_arrival_before_second_arm(scene,monkeypatch):
     try:
         result=execute_sequential_home(c,program,initial)
         assert result['status']=='FAILED'
-        assert scene.connections['right'].commands==[]
+        assert [cmd[0] for cmd in scene.connections['right'].commands]==['gripper']
     finally:
         c.close()
 
@@ -278,6 +278,36 @@ def test_native_checks_inactive_arm_during_blocking_motion(scene,monkeypatch):
         result=execute_sequential_home(c,program,initial)
         assert result['status']=='FAILED'
         assert 'inactive arm moved' in result['error']
-        assert scene.connections['right'].commands==[]
+        assert [cmd[0] for cmd in scene.connections['right'].commands]==['gripper']
     finally:
         c.close()
+
+
+def test_home_opens_both_before_any_arm_moves(scene,monkeypatch):
+    initial,program,_=native_program(scene)
+    order=[]
+    for k,connection in scene.connections.items():
+        grip=connection.gripper;move=connection.move_joint_position
+        def opening(action,key=k,fn=grip):
+            order.append((key,action));return fn(action)
+        def moving(*args,key=k,fn=move):
+            assert order[:2]==[('left','open'),('right','open')]
+            order.append((key,'move'));return fn(*args)
+        monkeypatch.setattr(connection,'gripper',opening)
+        monkeypatch.setattr(connection,'move_joint_position',moving)
+    c=coordinator(scene)
+    try:
+        assert execute_sequential_home(c,program,initial)['status']=='COMPLETED'
+    finally:c.close()
+
+
+def test_home_open_failure_prevents_all_motion(scene,monkeypatch):
+    initial,program,_=native_program(scene)
+    def fail(action):raise DualArmError('open failed')
+    monkeypatch.setattr(scene.connections['right'],'gripper',fail)
+    c=coordinator(scene)
+    try:
+        result=execute_sequential_home(c,program,initial)
+        assert result['status']=='FAILED'
+        assert all(not any(cmd[0]=='position' for cmd in c.commands) for c in scene.connections.values())
+    finally:c.close()

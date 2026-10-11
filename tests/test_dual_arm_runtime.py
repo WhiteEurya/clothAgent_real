@@ -851,3 +851,31 @@ def test_directional_projection_covers_independent_rotations(scene,arm_id,index)
             projection=np.vstack([actual.start,actual.end])@n
             assert projection.min()>=lo-1e-8
             assert projection.max()<=hi+1e-8
+
+
+def test_persistent_camera_stays_open_between_captures(scene, monkeypatch):
+    from cloth_agent.dual_arm import observation
+    class Camera:
+        started=False
+        starts=0
+        stops=0
+        reads=0
+        intrinsics=np.eye(3)
+        def start(self):
+            self.starts+=1
+            self.started=True
+        def stop(self):
+            self.stops+=1
+            self.started=False
+        def read(self):
+            self.reads+=1
+            return np.zeros((4,4,3),dtype=np.uint8),np.ones((4,4))
+    camera=Camera()
+    monkeypatch.setitem(scene.config.raw["camera"],"mount_arm",None)
+    monkeypatch.setitem(scene.config.raw["camera"],"world_from_camera_mm",np.eye(4).tolist())
+    monkeypatch.setattr(observation,'save_observation',lambda *a,**kw:None)
+    def snapshot():return {k:arm.snapshot() for k,arm in scene.connections.items()}
+    for index in range(2):
+        observation.capture(scene.directory/f'capture_{index}',scene.config,scene.models,snapshot,camera=camera)
+    assert camera.starts==1 and camera.stops==0 and camera.reads==30
+    assert camera.started

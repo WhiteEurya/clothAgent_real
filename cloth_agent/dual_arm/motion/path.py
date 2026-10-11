@@ -139,7 +139,7 @@ class PathPlanner:
             raise DualArmError("OMPL path endpoints do not match requested states")
         # Every extracted edge gets a fresh certificate; no approximate solution.
         for a, b in pairwise(result):
-            validator.certify(a, b, deadline=deadline)
+            validator.certify(a, b, deadline=None if getattr(self,'complete_final_proof',False) else deadline)
         return result
 
     def cartesian(self, start, targets, *, step_m=0.005, timeout_s=30):
