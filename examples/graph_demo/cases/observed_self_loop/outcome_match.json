@@ -1,0 +1,35 @@
+{
+  "local_match": {
+    "candidates": [
+      "P000003"
+    ],
+    "result": "MATCH",
+    "confidence": 0.87,
+    "response": {
+      "status": "MATCH",
+      "node_id": "P000003",
+      "candidate_nodes": [
+        "P000003"
+      ],
+      "matched_evidence": [
+        "Current and P000003 reference show diagonal inward bunching on the viewer-left torso side when mentally rotated collar-up, with overlapping sleeve fabric beside the collar.",
+        "Both show a long torso extending from the collar to the separate hem boundary; the hem is not folded toward the collar.",
+        "The current hem-side outline is narrower than the reference’s projecting flap, but the collar region remains spread with overlapping fabric rather than a compact folded shape."
+      ],
+      "violated_conditions": [],
+      "unresolved_conditions": [],
+      "confidence": 0.87
+    },
+    "representative_images": true,
+    "image_ids": [
+      "current",
+      "growth_0fb685b6f449_P000003"
+    ]
+  },
+  "global_reentry": {
+    "used": false,
+    "result": "NOT_USED",
+    "confidence": null
+  },
+  "new_node_created": false
+}

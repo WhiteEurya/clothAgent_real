@@ -1,5 +1,8 @@
 # ClothAgent
 
+[现成 Graph 与真实运行对照 Demo](examples/graph_demo/README.md)：可视化、原始观测、
+动作/执行反馈、无进展案例及自动核对脚本。
+
 当前 Arm7 / graph 实验的跨设备复现入口见
 [当前 Graph 精简复现说明](reproduction/README.md)：包括最新实验代码、流程文档、
 Release 数据包下载与校验、环境版本和离线验证命令。仅克隆仓库不包含实验轨迹及观测数据。

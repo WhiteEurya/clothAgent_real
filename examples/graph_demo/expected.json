@@ -1,0 +1,101 @@
+{
+  "source_snapshot": "runs/graph_recover_20261017_134332/episode_0001/growth_000096.json",
+  "source_sha256": "faa24e1e35830313ba9eab3c70dc6f5ae65d92c9b248094f338a5e37d6cbd460",
+  "nodes": 7,
+  "actions": 14,
+  "transitions": 11,
+  "metrics": {
+    "total_physical_actions": 13,
+    "graph_policy_actions": 0,
+    "gpt_frontier_actions": 13,
+    "recovery_actions": 0,
+    "local_outcome_matches": 5,
+    "global_reentries": 1,
+    "new_provisional_nodes": 7,
+    "no_progress_self_loops": 5,
+    "multi_outcome_actions": 0,
+    "additional_observed_outcomes": 0,
+    "current_nodes": 7,
+    "current_transitions": 11,
+    "graph_action_ratio": 0.0,
+    "new_node_rate": 0.38461538461538464,
+    "new_node_rate_definition": "post-action new nodes / all physical attempts; initial node discovery excluded",
+    "observed_outcome_counts": {
+      "F0000000": {
+        "P000001": 1
+      },
+      "F0000001": {},
+      "F0000002": {
+        "P000001": 1
+      },
+      "F0000003": {
+        "P000002": 1
+      },
+      "F0000004": {
+        "P000003": 1
+      },
+      "F0000005": {
+        "P000003": 1
+      },
+      "F0000006": {
+        "P000004": 1
+      },
+      "F0000007": {
+        "P000004": 1
+      },
+      "F0000008": {
+        "P000004": 1
+      },
+      "F0000009": {
+        "P000004": 1
+      },
+      "F0000010": {
+        "P000004": 1
+      },
+      "F0000011": {},
+      "F0000012": {
+        "P000006": 1
+      },
+      "F0000013": {}
+    },
+    "unmatched_physical_attempts": 2
+  },
+  "evidence": [
+    {
+      "node": "P000000",
+      "file": "images/P000000.png",
+      "sha256": "19f23384a58c4ee52a917e768658b631330adca1352bb5c133a87053efb8cfe8"
+    },
+    {
+      "node": "P000001",
+      "file": "images/P000001.png",
+      "sha256": "0aebc8927f545f7f8dc4b5b2a40c9b8c9958af8ea0c0c470134608d27f56a57c"
+    },
+    {
+      "node": "P000002",
+      "file": "images/P000002.png",
+      "sha256": "052ce9c5bcd5f51eca2eba3f686172c16d3a3405f623220c6a7163214e72ffc2"
+    },
+    {
+      "node": "P000003",
+      "file": "images/P000003.png",
+      "sha256": "098eb887c5d3343e2dac251ef76051253eee14891d5edcd70bf72178ec6306a3"
+    },
+    {
+      "node": "P000004",
+      "file": "images/P000004.png",
+      "sha256": "b9be07b7026bc00f652463c3aed6e81ac931e406eb3b6ed23a8a22aa4873433f"
+    },
+    {
+      "node": "P000005",
+      "file": "images/P000005.png",
+      "sha256": "c5c858b017a5052744022c2d85e0fffaf3e2d81e65858a0ac378fc42aec643b6"
+    },
+    {
+      "node": "P000006",
+      "file": "images/P000006.png",
+      "sha256": "f7d69c9d3921e47553af57fd96cf1d2bf62a8df5b8d63ae962e7af49e3811b3d"
+    }
+  ],
+  "result_scope": "Observed experience graph; not a verified completed folding task"
+}

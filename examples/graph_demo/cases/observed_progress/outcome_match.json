@@ -1,0 +1,56 @@
+{
+  "local_match": {
+    "candidates": [
+      "P000000"
+    ],
+    "result": "NO_MATCH",
+    "confidence": 0.99,
+    "response": {
+      "status": "NO_MATCH",
+      "node_id": "",
+      "candidate_nodes": [],
+      "matched_evidence": [
+        "Both images show the purple printed front and an exposed torso separating hem from collar.",
+        "Unlike P000000's outward-spread sleeves, the current image has the viewer-left sleeve (after rotating collar upward) folded inward over the torso, with a visible overlapping flap and doubled boundary."
+      ],
+      "violated_conditions": [
+        "P000000 requires both sleeves to extend outward and no visible inward fold containing either sleeve."
+      ],
+      "unresolved_conditions": [],
+      "confidence": 0.99
+    },
+    "representative_images": true,
+    "image_ids": [
+      "current",
+      "growth_5af64d718b1c_P000000"
+    ]
+  },
+  "global_reentry": {
+    "used": true,
+    "candidates": [
+      "P000000"
+    ],
+    "result": "NO_MATCH",
+    "confidence": 0.99,
+    "response": {
+      "status": "NO_MATCH",
+      "node_id": "",
+      "candidate_nodes": [],
+      "matched_evidence": [
+        "Both images show the purple printed front and an exposed torso separating hem from collar.",
+        "Unlike P000000's outward-spread sleeves, the current image has the viewer-left sleeve (after rotating collar upward) folded inward over the torso, with a visible overlapping flap and doubled boundary."
+      ],
+      "violated_conditions": [
+        "P000000 requires both sleeves to extend outward and no visible inward fold containing either sleeve."
+      ],
+      "unresolved_conditions": [],
+      "confidence": 0.99
+    },
+    "representative_images": true,
+    "image_ids": [
+      "current",
+      "growth_5af64d718b1c_P000000"
+    ]
+  },
+  "new_node_created": false
+}

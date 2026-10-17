@@ -1,0 +1,75 @@
+{
+  "arm": "right",
+  "action": "open",
+  "feedback": {
+    "command_result": 0,
+    "feedback": {
+      "sampled_at": "2026-10-17T03:46:23.956+00:00",
+      "status_code": 0,
+      "status_raw": 0,
+      "state_code": 0,
+      "state": "stop",
+      "position_pulse": 840,
+      "error_code": 0,
+      "read_errors": [],
+      "position_code": 0,
+      "mechanical_grasp_detected": false,
+      "available": true,
+      "usable_for_completion": true
+    },
+    "completion": {
+      "target": "open",
+      "target_position_pulse": 850.0,
+      "position_tolerance_pulse": 15.0,
+      "samples": [
+        {
+          "elapsed_s": 0.5363620910793543,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T03:46:23.956+00:00",
+            "status_code": 0,
+            "status_raw": 0,
+            "state_code": 0,
+            "state": "stop",
+            "position_pulse": 840,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 0,
+          "completion_reason": "measured_target_reached"
+        }
+      ],
+      "status": "COMPLETED",
+      "timeout_s": null,
+      "wait_policy": "feedback_until_complete_or_interrupt",
+      "warning_after_s": 60.0,
+      "sample_count": 1,
+      "dropped_sample_count": 0,
+      "before_command": {
+        "sampled_at": "2026-10-17T03:46:23.459+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 840,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "command_result": 0,
+      "debug_stationary_close_confirmation": false,
+      "close_stability_duration_s": 3.0,
+      "close_stability_samples": 20,
+      "close_stability_range_pulse": 3.0,
+      "reason": "measured_target_reached",
+      "duration_s": 0.5363620910793543
+    }
+  }
+}

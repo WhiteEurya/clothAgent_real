@@ -1,0 +1,22 @@
+{
+  "status": "EXECUTED",
+  "physical_execution": true,
+  "completed_commands": 6,
+  "recording": {
+    "path": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/execution.mp4",
+    "camera": "B",
+    "frames": 934,
+    "fps": 15.0,
+    "started_unix_s": 1792204246.9230607,
+    "elapsed_s": 62.29708341509104,
+    "status": "RECORDED",
+    "error": null
+  },
+  "timings_s": {
+    "trajectory_planning_s": 4.558300991542637,
+    "preview_s": 1.8808454433456063,
+    "preview_wait_s": 1.934356987476349e-06,
+    "pre_dispatch_check_s": 0.02157190628349781,
+    "execution_s": 62.31203799229115
+  }
+}

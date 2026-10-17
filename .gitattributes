@@ -1,0 +1,2 @@
+# Preserve original captured prompts byte-for-byte, including their final blank lines.
+examples/graph_demo/cases/** whitespace=-blank-at-eof

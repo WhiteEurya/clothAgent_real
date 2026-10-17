@@ -1,5 +1,11 @@
 # Graph 实验跨设备复现（2026-10-17 快照）
 
+现成结果与真实动作对照见 [Graph Demo](../examples/graph_demo/README.md)：
+包含可打开的图、节点原图、一次真实状态变化和一次真实无进展案例，以及自动比对脚本。
+只想查看结果时下载 [Demo ZIP](https://github.com/WhiteEurya/clothAgent_real/releases/download/graph-demo-20261017/graph-demo-20261017.zip)
+并打开 `graph_demo/index.html`。需要以下自动对比脚本时，使用 `graph-demo-20261017`
+标签的代码；409 MiB 原始数据包仍由 `manifest.json` 指向 `graph-repro-20261017` Release。
+
 本目录对应 GitHub Release **graph-repro-20261017**。代码、实验 Markdown、测试和
 依赖版本位于 Git；真实观测、图快照、轨迹、模型请求/响应和诊断产出位于 Release
 分卷数据包。仅 `git clone` 不包含这些实验数据。
@@ -29,7 +35,7 @@
 ```bash
 git clone https://github.com/WhiteEurya/clothAgent_real.git
 cd clothAgent_real
-git checkout graph-repro-20261017
+git checkout graph-demo-20261017
 python3 -m venv .venv-restore
 .venv-restore/bin/pip install zstandard==0.25.0
 .venv-restore/bin/python scripts/restore_reproduction.py \
@@ -62,6 +68,21 @@ docker run --rm --network none \
 
 每次使用新的输出目录。预期状态是 `DRY_RUN_OK`，`robot_calls=0`、`model_calls=0`。
 此检查加载图、校验冻结快照并生成静态图；不是重演物理轨迹，也不调用模型重新推理。
+接着在同一容器路径映射下比较结果：
+
+```bash
+docker run --rm --network none \
+  -v "$PWD:/home/sja/clothAgent_real" \
+  -v /your/data/cloth-ssd:/mnt/newssd \
+  cloth-repro:20261017 \
+  python scripts/compare_graph_demo.py --snapshot /mnt/newssd/reproduction/check_001/latest.json
+```
+
+预期 `PASS`，7 个状态、14 个动作、11 条已观测转移。还可在宿主仓库根目录执行
+`python scripts/verify_demo_evidence.py --demo-only` 核对 43 个小样例证据副本；
+恢复数据后执行 `python scripts/verify_demo_evidence.py` 核对全部 51 项原始证据。
+这两个核对脚本只使用 Python 标准库。完整比对范围和真实预期值见 Demo README。
+
 本机无 Docker，Dockerfile 尚未实测构建；本机相同 Python 环境的上述离线命令已通过。
 依赖锁定在 `requirements-cali.txt`；模型服务、SDK、驱动和硬件差异不属于位级确定性复现。
 

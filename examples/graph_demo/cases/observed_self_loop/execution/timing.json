@@ -1,0 +1,14 @@
+{
+  "status": "EXECUTED",
+  "seconds": {
+    "observation_s": 4.20399010181427e-06,
+    "gpt_planning_s": 90.59753996506333,
+    "motion_pipeline_s": 89.1280625462532,
+    "trajectory_planning_s": 3.655975273810327,
+    "preview_s": 1.7706887489184737,
+    "preview_wait_s": 1.7601996660232544e-06,
+    "pre_dispatch_check_s": 0.022542188875377178,
+    "execution_s": 83.6695006499067,
+    "round_total_s": 179.72756942082196
+  }
+}

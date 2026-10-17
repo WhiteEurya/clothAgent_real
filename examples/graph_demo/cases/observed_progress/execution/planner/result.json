@@ -1,0 +1,35 @@
+{
+  "status": "AGENT_FINISHED",
+  "output_directory": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/planner",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "high",
+  "returncode": 0,
+  "session_id": "01a147b1-18e1-7783-b141-cdd66bb253a3",
+  "usage": {
+    "input_tokens": 205400,
+    "cached_input_tokens": 179840,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 3170,
+    "reasoning_output_tokens": 289
+  },
+  "completed_turns": 1,
+  "final_turn_completed": true,
+  "errors": [],
+  "recovered_errors": [],
+  "task_success": null,
+  "planning_trace": {
+    "entries": 5,
+    "rejected": 0,
+    "phases": [
+      "ORIENT",
+      "LOCALIZE",
+      "REVISE",
+      "IMPLEMENT",
+      "DONE"
+    ],
+    "errors": [],
+    "complete": true,
+    "coverage_verified": false
+  },
+  "duration_s": 89.55806894600391
+}

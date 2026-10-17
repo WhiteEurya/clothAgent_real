@@ -1,0 +1,78 @@
+{
+  "event": "FALLBACK_FREE_PLAN",
+  "before": {
+    "path": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/rgb.png",
+    "sha256": "19f23384a58c4ee52a917e768658b631330adca1352bb5c133a87053efb8cfe8"
+  },
+  "command": {
+    "source": "motion.grasp(right=[0.468620,-0.171124,0.063651,3.141593,0.0,0.261799])\nmotion.move_tcp(right=[0.480000,-0.150000,0.108000,3.141593,0.0,0.261799])\nmotion.move_tcp(right=[0.482000,-0.104000,0.135000,3.141593,0.0,0.261799])\nmotion.move_tcp(right=[0.479000,-0.065000,0.095000,3.141593,0.0,0.261799])\nmotion.move_tcp(right=[0.478261,-0.062459,0.065282,3.141593,0.0,0.261799])",
+    "operations": [
+      {
+        "method": "grasp",
+        "arguments": {
+          "right": [
+            0.46862,
+            -0.171124,
+            0.063651,
+            3.141593,
+            0.0,
+            0.261799
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.48,
+            -0.15,
+            0.108,
+            3.141593,
+            0.0,
+            0.261799
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.482,
+            -0.104,
+            0.135,
+            3.141593,
+            0.0,
+            0.261799
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.479,
+            -0.065,
+            0.095,
+            3.141593,
+            0.0,
+            0.261799
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.478261,
+            -0.062459,
+            0.065282,
+            3.141593,
+            0.0,
+            0.261799
+          ]
+        }
+      }
+    ],
+    "units": "world_m_rad"
+  }
+}

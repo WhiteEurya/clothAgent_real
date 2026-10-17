@@ -1,0 +1,102 @@
+{
+  "transition_id": "T0000000",
+  "attempt_id": "A0000000",
+  "source_node": "P000000",
+  "selected_action": "F0000000",
+  "result_node": "P000001",
+  "transition_type": "NEW_NODE",
+  "planner_source": "GPT_FRONTIER",
+  "effect": {
+    "progress": "PROGRESS",
+    "task_progress": "One sleeve and adjacent torso edge have moved inward; the opposite sleeve remains extended and the hem is not folded toward the collar.",
+    "evidence": [
+      "The viewer-left sleeve, with the collar mentally rotated above the hem, is now folded onto the shirt body.",
+      "The opposite sleeve remains spread outward.",
+      "The torso remains long and the hem remains far from the collar, so the full fold is incomplete."
+    ]
+  },
+  "before": {
+    "path": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/rgb.png",
+    "sha256": "19f23384a58c4ee52a917e768658b631330adca1352bb5c133a87053efb8cfe8"
+  },
+  "after": {
+    "path": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/rgb.png",
+    "sha256": "0aebc8927f545f7f8dc4b5b2a40c9b8c9958af8ea0c0c470134608d27f56a57c"
+  },
+  "execution": {
+    "status": "EXECUTED",
+    "physical_execution": true,
+    "completed_commands": 6,
+    "recording": {
+      "path": "/home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/execution.mp4",
+      "camera": "B",
+      "frames": 934,
+      "fps": 15.0,
+      "started_unix_s": 1792204246.9230607,
+      "elapsed_s": 62.29708341509104,
+      "status": "RECORDED",
+      "error": null
+    },
+    "timings_s": {
+      "trajectory_planning_s": 4.558300991542637,
+      "preview_s": 1.8808454433456063,
+      "preview_wait_s": 1.934356987476349e-06,
+      "pre_dispatch_check_s": 0.02157190628349781,
+      "execution_s": 62.31203799229115
+    }
+  },
+  "local_match": {
+    "candidates": [
+      "P000000"
+    ],
+    "result": "NO_MATCH",
+    "confidence": 0.99,
+    "response": {
+      "status": "NO_MATCH",
+      "node_id": "",
+      "candidate_nodes": [],
+      "matched_evidence": [
+        "Both images show the purple printed front and an exposed torso separating hem from collar.",
+        "Unlike P000000's outward-spread sleeves, the current image has the viewer-left sleeve (after rotating collar upward) folded inward over the torso, with a visible overlapping flap and doubled boundary."
+      ],
+      "violated_conditions": [
+        "P000000 requires both sleeves to extend outward and no visible inward fold containing either sleeve."
+      ],
+      "unresolved_conditions": [],
+      "confidence": 0.99
+    },
+    "representative_images": true,
+    "image_ids": [
+      "current",
+      "growth_5af64d718b1c_P000000"
+    ]
+  },
+  "global_reentry": {
+    "used": true,
+    "candidates": [
+      "P000000"
+    ],
+    "result": "NO_MATCH",
+    "confidence": 0.99,
+    "response": {
+      "status": "NO_MATCH",
+      "node_id": "",
+      "candidate_nodes": [],
+      "matched_evidence": [
+        "Both images show the purple printed front and an exposed torso separating hem from collar.",
+        "Unlike P000000's outward-spread sleeves, the current image has the viewer-left sleeve (after rotating collar upward) folded inward over the torso, with a visible overlapping flap and doubled boundary."
+      ],
+      "violated_conditions": [
+        "P000000 requires both sleeves to extend outward and no visible inward fold containing either sleeve."
+      ],
+      "unresolved_conditions": [],
+      "confidence": 0.99
+    },
+    "representative_images": true,
+    "image_ids": [
+      "current",
+      "growth_5af64d718b1c_P000000"
+    ]
+  },
+  "new_node_created": true
+}

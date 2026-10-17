@@ -1,0 +1,91 @@
+{
+  "event": "COLLECT_FULL_PLAN",
+  "before": {
+    "path": "/home/sja/clothAgent_real/runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/rgb.png",
+    "sha256": "098eb887c5d3343e2dac251ef76051253eee14891d5edcd70bf72178ec6306a3"
+  },
+  "command": {
+    "source": "motion.grasp(right=[0.720558,-0.093932,0.056126,3.141593,0.0,1.1])\nmotion.move_tcp(right=[0.721700,-0.065000,0.112000,3.141593,0.0,1.1])\nmotion.move_tcp(right=[0.723700,-0.010000,0.145000,3.141593,0.0,1.1])\nmotion.move_tcp(right=[0.726000,0.048000,0.110000,3.141593,0.0,1.1])\nmotion.move_tcp(right=[0.727158,0.075052,0.075000,3.141593,0.0,1.1])\nmotion.move_tcp(right=[0.727158,0.075052,0.060470,3.141593,0.0,1.1])",
+    "operations": [
+      {
+        "method": "grasp",
+        "arguments": {
+          "right": [
+            0.720558,
+            -0.093932,
+            0.056126,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.7217,
+            -0.065,
+            0.112,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.7237,
+            -0.01,
+            0.145,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.726,
+            0.048,
+            0.11,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.727158,
+            0.075052,
+            0.075,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      },
+      {
+        "method": "move_tcp",
+        "arguments": {
+          "right": [
+            0.727158,
+            0.075052,
+            0.06047,
+            3.141593,
+            0.0,
+            1.1
+          ]
+        }
+      }
+    ],
+    "units": "world_m_rad"
+  }
+}

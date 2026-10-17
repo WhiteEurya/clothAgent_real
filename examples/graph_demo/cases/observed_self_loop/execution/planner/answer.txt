@@ -1,0 +1,7 @@
+# ACTION_ROBUSTNESS {"tags":["clear_edge","protruding_flap","supported_target"],"confidence":0.8,"reason":"右上外展侧角清晰，抓点位于布边内；弧线跨入中央衣身，接收区深度连续。"}
+motion.grasp(right=[0.720558,-0.093932,0.056126,3.141593,0.0,1.1])
+motion.move_tcp(right=[0.721700,-0.065000,0.112000,3.141593,0.0,1.1])
+motion.move_tcp(right=[0.723700,-0.010000,0.145000,3.141593,0.0,1.1])
+motion.move_tcp(right=[0.726000,0.048000,0.110000,3.141593,0.0,1.1])
+motion.move_tcp(right=[0.727158,0.075052,0.075000,3.141593,0.0,1.1])
+motion.move_tcp(right=[0.727158,0.075052,0.060470,3.141593,0.0,1.1])

@@ -1,0 +1,132 @@
+本次仅做只读分析，不连接或操作机器人，不修改项目文件。
+当前图策略未找到可用动作或执行后没有节点级进展。按正常arm7方式自由规划一个小步骤完成折叠目标；这一次不受某条图edge限制，不执行机器人，仅返回动作代码。仅当当前画面已经达到完整任务终态时才输出motion.complete()。
+{'subgoal': 'full_fold', 'objective': 'Fold the T-shirt: sleeves and both torso sides inward, then hem toward collar.', 'side_convention': 'Mentally rotate collar above hem without mirroring; left/right are viewer sides.', 'completion_criterion': 'Both sleeves and torso sides must be contained and the hem folded toward the collar into a compact folded garment. An intermediate sleeve or torso fold is not completion. These are task goals, not predefined nodes.'}
+上一动作与最新匹配反馈：{"reason": "PROVISIONAL_FRONTIER_WITHOUT_SUCCESSFUL_ACTION", "source_node": "P000000"}
+请结合当前新观测重新规划修正，不原样重复上一失败方案。状态不变不等于抓空；不得据此自动加深抓取或绕过Host安全检查。
+只规划本轮的一小步，不执行动作。观测和初始状态在 /home/sja/clothAgent_real/runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation。
+只使用 arm7（right）单臂整理并折叠衣服，按顺序参考图完成。arm6（left）保持当前位置，不参与抓取、固定或折叠。选择单夹爪可完成的抓取和折入动作。尽可能和human demonstration相似。平行夹爪绕工具轴相差180度等价；宿主会在等价姿态中优先选择逆时针对齐的一支，不绕整圈，并对后续持布位姿同步变换以保持相对旋转，不要主动添加半圈旋转。抓点使用 world_xyz_mm.npy 中的毫米坐标，不重复修正。宿主不额外下压抓取 TCP，直接使用已按配置补偿的观测表面高度，不要再减去抓取偏移。
+拍照前只打开 arm7 夹爪，让 arm7 回 Home，再到 arm7 保存的 perception 位姿。使用 arm7 上的 Camera B 拍照，arm6 全程保持原位。宿主负责最后松开与回 Home，GPT 只给抓点及持布期间的动作。
+第一张附件是当前 RGB。先查看 RGB 和 world_xyz_mm.npy，再决定抓点；所有坐标必须有观测依据。
+
+最终回答只输出 Python 动作代码，不加 Markdown。格式为：
+motion.grasp(right=[x,y,z,roll,pitch,yaw])
+motion.move_tcp(right=[x,y,z,roll,pitch,yaw])
+motion.move_tcp(...)
+第一条 grasp 只声明真实抓点和夹爪方向，不是抓点上方的接近点。
+后续 move_tcp / move_transfer 列表只描述抓住衣物后，从抓点到最终放置目标的必要动作；最后的位置应适合松开衣物。
+move_tcp 保持指定的笛卡尔路径，用于折叠关键段。
+motion.move_transfer(right=[x,y,z,roll,pitch,yaw])
+move_transfer 只约束终点位姿，中间允许关节路径绕行及改变姿态；仅用于衣物允许自由转移的段，不用于必须保持形状或双爪相对距离的段。两臂仍先后运动。
+工作区边缘不要强制竖直抬升或保持竖直姿态：可写向各自基座收回并抬升的可达转移点，必要时改变该点倾角。指定终点仍须通过 IK，宿主不会偷偷移动抓点或折叠关键点。
+TCP 使用 World 坐标的米/弧度。move_tcp 可省略保持不动的一侧。
+宿主负责开爪、接近、下降抓取、闭合，以及最后松开、撤离和回 Home。
+不要输出这些前后辅助动作，不输出 gripper、move_joints、import 或 SDK 指令。
+宿主不额外下压 grasp；直接使用已按配置补偿的观测表面 Z，不要再减去抓取偏移。
+缺少坐标依据时单独输出 motion.blocked(reason="具体原因")。
+已叠好时单独输出 motion.complete()。
+仅允许 right，不允许 left 或 arm6 动作。
+如果当前观测表明衣物已整齐叠好，只输出 motion.complete()。完成或 blocked 必须单独输出，不与移动混用。
+
+以下是当前模型生成的能力参考，选点或修改代码前请阅读：
+# 当前机械臂能力说明（由本机 URDF / 标定生成）
+
+配置指纹：`b86b1ebaa413f5b3`。本次允许动作的机械臂：right。
+
+这是选点和动作生成的参考，不新增硬性工作区限制。URDF 可达不等于两臂无碰撞，最终仍由宿主验证。
+
+## 坐标与姿态
+
+- motion.grasp / move_tcp 使用 World 米/弧度；下列说明使用毫米/度。目标是 TCP，不是相机或法兰。
+
+- T_base_tcp = inverse(T_world_base) @ T_world_tcp；必须同时转换位置和朝向。不能把 arm7 的 World X 当作它向前伸出的距离。
+
+- 当夹爪竖直朝下时，yaw 通常改变夹爪平面内方向；它不能补偿伸展距离。调整 roll/pitch 会改变 TCP 偏移对应的腕部位置。
+
+- grasp 给观测原始高度；宿主按本次动作契约额外下压（arm6/arm7 单臂 15 mm，双臂模式 10 mm）。检查抓点 IK 时要用这个实际高度，不能在输出里重复扣减。
+
+## 两臂模型
+
+### arm6 / left：6 轴
+
+- 基座 World 位置 mm：[0.0, 0.0, 0.0]；TCP 偏移 mm/deg：[0.0, 0.0, 172.0, 0.0, 0.0, 0.0]。
+
+- 基座旋转矩阵（base → World）：`[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]`。
+
+- 关节角范围 deg：joint1 [-179.91, 179.91], joint2 [-110.01, 120.00], joint3 [-225.00, 11.00], joint4 [-179.91, 179.91], joint5 [-97.00, 180.00], joint6 [-180.00, 180.00]。
+
+- 已有基座坐标工作区 min/max mm（null 表示该方向未设限，不代表机械臂无限长）：`{"min": [null, -250.578537, -0.542602], "max": [null, 246.447205, null]}`。
+
+夹爪沿本臂基座 −Z 竖直朝下时，水平半径 r = sqrt(x_base²+y_base²) 的近似几何外边界：
+
+`r_max ≈ 76.000 + sqrt(640.645² - (z_base + 2.000)²)`（mm）。
+
+| TCP 基座 Z（mm） | 水平半径外边界（mm） |
+|---:|---:|
+| 0 | 716.6 |
+| 30 | 715.8 |
+| 60 | 713.6 |
+| 100 | 708.5 |
+| 140 | 700.7 |
+| 180 | 690.2 |
+| 220 | 677.0 |
+
+这是外边界，不是保证可达的内工作区；以内仍受关节限位、IK 分支和碰撞影响。接近边界时优先选更近的真实衣物点，避免在边缘高抬；不要机械地添加固定 120 mm 接近点。
+
+### arm7 / right：7 轴
+
+- 基座 World 位置 mm：[1126.038, -19.482, 16.563]；TCP 偏移 mm/deg：[0.0, 0.0, 172.0, 0.0, 0.0, 0.0]。
+
+- 基座旋转矩阵（base → World）：`[[-0.998624, -0.001466, -0.052417], [0.00143, -0.999999, 0.000722], [-0.052418, 0.000646, 0.998625]]`。
+
+- 关节角范围 deg：joint1 [-360.00, 360.00], joint2 [-117.97, 120.00], joint3 [-360.00, 360.00], joint4 [-11.00, 225.00], joint5 [-360.00, 360.00], joint6 [-97.00, 180.00], joint7 [-360.00, 360.00]。
+
+- 已有基座坐标工作区 min/max mm（null 表示该方向未设限，不代表机械臂无限长）：`{"min": [null, -250.578537, -0.542602], "max": [null, 246.447205, null]}`。
+
+本臂不套用 arm6 的竖直抓取半径公式；尤其 arm7 有额外关节且基座方向不同，需要用自身模型求 IK。
+
+## 给动作生成的建议
+
+- 先依据衣物选择动作，再比较两臂到候选抓点的基座距离；不要默认某个画面方向一定由某一臂负责。按任务需要选择单臂或双臂，不强制两臂共同抓取。
+
+- GPT 只声明真实抓点和持布动作。接近、闭合、释放、撤离和 Home 由宿主生成，不输出空手辅助点。
+
+- 持布过程的每个动作目标也需要可达；不要认为抓点与终点可达，就可以任意抬高中间点。
+
+- IK 失败不是碰撞证明，也不等于 yaw 转不过去。先区分真实抓点、中间持布目标、宿主辅助点。
+
+- 代码修正保留任务意图和有效动作；真实抓点失败时，可以在同一保存观测上局部调整失败抓点、可接受姿态或双臂分配，不能凭空把坐标截到边界当作衣物点。无需重做整套任务规划。
+
+如需核实具体候选，可只读运行（参数使用 World mm/deg）：
+
+`/home/sja/miniconda3/envs/cali/bin/python scripts/robot_capabilities.py --arm left --pose-mm-deg X Y Z R P YAW --grasp`
+
+`--grasp` 表示输入原始观测抓点，检查前由工具默认扣除 10 mm；arm6/arm7 单臂需同时指定 `--grasp-offset-mm 15`；检查中间动作则不要带该参数。工具不连接机械臂、不做运动，成功仅代表 IK 通过，不代表路径无碰撞。
+
+这是同一次机器人任务的第 1 轮，沿用本会话历史，不需要输出或转交记忆摘要。最新观测优先；旧坐标不可直接用于新动作。
+
+动作目标是 folding execution robustness：可靠带动目标 cloth region，充分完成跨折线搬运，并容忍抓点和轨迹误差；不是让 planner 更保守或最小化位移。
+允许正常多层 folding：不要求知道夹到具体哪一层；局部 overlap / layer ambiguity、相邻折层或看不见下层边缘，不能单独导致 NO_ROBUST_ACTION。只要 grasp 能合理带动目标 cloth region，即使可能同时夹住相邻折层，也允许提出动作；不要把“只夹单层”作为隐含条件。
+Hard dispatch gate（仅以下拒绝条件）：① 无法确认抓点位于布料上；② 明显没有夹爪闭合空间；③ 候选点可能抓到与目标动作无关的结构；④ 当前 observation 中根本不存在可用于推进目标动作的 grasp handle；⑤ 已有 Host safety / workspace / IK / collision 检查结果不允许执行。
+候选有上述问题时先考虑其他可用候选；没有可用动作时才返回 NO_ROBUST_ACTION，不强行生成 Pa/Pb。相邻折层不自动等于无关结构，应判断其能否一起带动目标区域。Host 检查仍由宿主执行，RGB 无法证明其通过不等于其拒绝，不得据此自行阻断或声称安全已验证。不新增 confidence 硬阈值、评分或解释字段。
+现有 robustness 标签仅用于日志，不是执行条件；不要求静态 RGB 证明真实 safe_retreat，无证据时省略该标签，不据此拒绝动作。
+在最终确定 Pa/Pb、yaw 和 motion 前，对每个候选内部检查（不输出长篇推理）：
+1. Grasp：优先能带动整片目标区域的布边、突出 flap 或其他可用 handle；抓点稍入布边内，避免边界外、易滑脱或仅拉动局部的点。等效点优先视觉/几何证据清楚、闭合空间足够的位置，不因语义正确就随意选布片中部。局部重叠和多层抓取本身不是排除条件；关键是与目标区域的合理联系及带动能力。
+2. Transport：布不是刚体，不以最短或最保守 Pa→Pb 位移为目标。袖子/衣身 inward fold 及 folding/tucking 优先 lift-and-transfer / arc-like 持布路径，避免低高度直拖；让整片目标区域明确跨过 fold line，不能只把抓点带到折线附近就结束。在 receiving region 和宿主约束内允许适度 overshoot，以抵消布料垂落及 Pa/Pb 小量变化，仍形成相近 terminal fold；不盲目拉远或追求最大位移。折叠关键段用已有 move_tcp waypoint 表达，不能用仅约束终点的 move_transfer 冒充受控弧线。
+3. Placement：Pb 应位于有支撑的 receiving region 内部，与 fold line 和接收区边缘留有足够 margin，不能紧贴折线。规划持布跨线、转移及下降落放，使被搬运布片在 release 前已由接收区域支撑，避免仅抓点到位而布片形成 bridge / 悬空、释放后回弹。不把未知接触效果声称为已验证。落点、末端姿态和邻域应容纳开爪与宿主撤离的 swept area，避免把已放好的布推回或勾走；释放/撤离仍由宿主负责，不新增辅助动作或未提供的 release_direction。
+动作选择严格按：① 能可靠带动目标 cloth region；② 能把目标区域充分跨过 fold line 并落入 receiving region；③ 对 Pa/Pb 和轨迹小误差不敏感；④ 前三项满足后，再尽量减少不必要扰动。不要为了减少扰动而牺牲充分跨线和稳定落放。所有动作仍须通过原有 Host 安全检查。
+
+仅在上述拒绝条件使当前无可用动作时，单独输出 motion.blocked(reason="NO_ROBUST_ACTION: 具体拒绝原因")，不附带 Pa/Pb 或移动指令；不要仅因层数不明或局部重叠而 blocked。
+保持原 action schema；最终 Python 代码前仅加一行注释：
+# ACTION_ROBUSTNESS {"tags":["clear_edge","sufficient_clearance","supported_target"],"confidence":0.0,"reason":"简短可见依据或缺失项"}
+tags 只选当前观测支持的项（也可用 protruding_flap / reliable_geometry / low_sensitivity_transport），不得照抄示例或将推测写成事实。confidence 为 0..1 的执行稳健性估计，不是成功保证；无可靠 handle 时为低置信。complete 时 tags 为空。若外层要求 JSON，把这行注释放入原 code 字符串内，不增加顶层字段。标签仅供离线日志。
+
+本次同时记录可观察的规划事件摘要。仅输出简洁、可核验的决策摘要，禁止私有 chain-of-thought、逐 token 推理或冗长内心独白。
+在实际事件发生时，通过中间 commentary 消息单独输出一行 PLANNING_TRACE 后紧接一个 JSON 对象；不要用命令打印，不要写文件，不要等最终回答再回忆补写。
+事件包括：首次理解本轮任务；决定读取/搜索新图像、文件或符号；形成/修改假设；决定修改候选动作代码；运行离线 IK、测试或验证；验证失败；明显改变工作范围；决定本轮规划完成。
+每条结构为：{"step":1,"phase":"ORIENT","goal":"具体子目标","working_set":{"files":[],"symbols":[]},"known":[],"unknown":[],"hypothesis":[],"next_action":{"type":"READ","target":"对象","purpose":"目的"},"expected_result":"支持/否定假设的可观察结果","confidence":"MEDIUM"}。
+phase 取 ORIENT/LOCALIZE/HYPOTHESIZE/IMPLEMENT/VERIFY/REVISE/DONE；next_action.type 取 READ/SEARCH/EDIT/TEST/COMMAND/OTHER；confidence 取 LOW/MEDIUM/HIGH。step 本轮从1递增，宿主另加全局顺序。
+known 只能是已有代码、图像或工具结果支持的事实，推测只写 hypothesis。每条只保留与下一动作相关的摘要；复读同一对象须说明新的信息缺口。不要为了留痕额外调用工具。
+实施候选代码前说明当前原因假设、为何改这里、要保持的行为；验证前说明验证目标。工具结果改变理解时追加 REVISE，增加 observed_result 和 state_update，明确被否定假设，不能静默覆盖。
+DONE 表示本轮规划结束，不等于机器人已成功执行。DONE 增加 solution、validated_hypotheses、rejected_hypotheses、risks，并给出最终最小 working_set。没有验证就如实说明，不编造测试。
+每条字符串最多600字符，每个列表最多8项。记录不替代正常工作，不要求交接记忆。最终 answer 仍严格遵循原动作代码/JSON格式，不包含 PLANNING_TRACE 或整份过程记录。仅中间消息用于留痕，宿主负责按到达顺序落盘。
+

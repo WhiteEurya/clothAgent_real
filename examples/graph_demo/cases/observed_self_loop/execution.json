@@ -1,0 +1,22 @@
+{
+  "status": "EXECUTED",
+  "physical_execution": true,
+  "completed_commands": 8,
+  "recording": {
+    "path": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/execution.mp4",
+    "camera": "B",
+    "frames": 1254,
+    "fps": 15.0,
+    "started_unix_s": 1792208783.4041939,
+    "elapsed_s": 83.66866142023355,
+    "status": "RECORDED",
+    "error": null
+  },
+  "timings_s": {
+    "trajectory_planning_s": 3.655975273810327,
+    "preview_s": 1.7706887489184737,
+    "preview_wait_s": 1.7601996660232544e-06,
+    "pre_dispatch_check_s": 0.022542188875377178,
+    "execution_s": 83.6695006499067
+  }
+}

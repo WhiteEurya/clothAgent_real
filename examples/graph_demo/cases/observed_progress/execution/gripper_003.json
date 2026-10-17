@@ -1,0 +1,2940 @@
+{
+  "arm": "right",
+  "action": "close",
+  "feedback": {
+    "command_result": 0,
+    "feedback": {
+      "sampled_at": "2026-10-17T02:31:14.992+00:00",
+      "status_code": 0,
+      "status_raw": 2,
+      "state_code": 2,
+      "state": "grasp",
+      "position_pulse": 12,
+      "error_code": 0,
+      "read_errors": [],
+      "position_code": 0,
+      "mechanical_grasp_detected": true,
+      "available": true,
+      "usable_for_completion": true
+    },
+    "completion": {
+      "target": "close",
+      "target_position_pulse": 5.0,
+      "position_tolerance_pulse": 5.0,
+      "samples": [
+        {
+          "elapsed_s": 0.5329605033621192,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.374+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 840,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 0,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.5999625390395522,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.441+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 832,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 8,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.6709381425753236,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.512+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 829,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 11,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.744931916706264,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.587+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 822,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 18,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.8159629385918379,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.658+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 818,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 22,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.8900393033400178,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.732+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 811,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 29,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 0.9630184145644307,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.805+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 806,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 34,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.0349781168624759,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.878+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 803,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 37,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.105906500481069,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:04.948+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 794,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 46,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.1779329627752304,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.020+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 789,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 51,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.2489259354770184,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.091+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 781,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 59,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.3189282473176718,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.162+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 776,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 64,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.3934410875663161,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.232+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 769,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 71,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.4639379940927029,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.304+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 764,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 76,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.5309763746336102,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.374+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 756,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 84,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.6060605235397816,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.446+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 752,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 88,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.680962978862226,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.523+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 742,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 98,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.747113799676299,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.589+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 737,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 103,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.8141355868428946,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.656+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 730,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 110,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.8811191245913506,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.723+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 724,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 116,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 1.9481809185817838,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.790+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 715,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 125,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.0160416308790445,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.859+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 710,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 130,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.082036254927516,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:05.924+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 701,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 139,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.164062513038516,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.003+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 694,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 146,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.2450592052191496,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.086+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 683,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 157,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.3345099445432425,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.166+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 675,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 165,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.407941211014986,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.246+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 663,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 177,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.4929817924275994,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.334+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 652,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 188,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.574016336351633,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.416+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 643,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 197,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.652025930583477,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.494+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 633,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 207,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.7349348217248917,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.573+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 621,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 219,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.8189756413921714,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.663+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 608,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 232,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.905960300937295,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.735+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 597,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 243,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 2.986993675120175,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.819+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 586,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 254,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.07002763543278,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.896+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 575,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 265,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.154976438730955,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:06.979+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 562,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 278,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.23497031070292,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.078+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 550,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 290,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.3052238430827856,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.147+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 541,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 299,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.376043463125825,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.218+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 532,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 308,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.448980207554996,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.291+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 522,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 318,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.521050177514553,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.363+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 513,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 327,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.5941101536154747,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.433+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 504,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 336,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.6650705570355058,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.504+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 495,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 345,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.7360624223947525,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.578+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 485,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 355,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.813045117072761,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.655+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 475,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 365,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.886079801246524,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.724+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 466,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 374,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 3.964030910283327,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.806+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 457,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 383,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.036063218489289,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.878+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 449,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 391,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.107107789255679,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:07.949+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 441,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 399,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.17795480042696,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.021+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 433,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 407,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.249047130346298,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.091+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 425,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 415,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.321010551415384,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.163+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 417,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 423,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.394503113813698,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.235+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 409,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 431,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.465098200365901,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.307+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 402,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 438,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.536091192625463,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.376+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 395,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 445,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.607003739103675,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.449+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 388,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 452,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.679958038032055,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.522+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 380,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 460,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.751130945049226,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.593+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 373,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 467,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.823150089941919,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.666+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 365,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 475,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.8950406247749925,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.738+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 358,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 482,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 4.968079281970859,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.811+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 351,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 489,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.040028327144682,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.882+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 344,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 496,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.112129206769168,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:08.954+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 337,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 503,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.184174817055464,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.027+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 331,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 509,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.256079674698412,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.098+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 323,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 517,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.331533905118704,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.170+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 315,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 525,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.402142818085849,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.242+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 308,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 532,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.473057740367949,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.313+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 299,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 541,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.5470289895311,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.390+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 290,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 550,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.620050949975848,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.463+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 283,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 557,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.694193313829601,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.537+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 274,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 566,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.768109956756234,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.610+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 264,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 576,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.838030020706356,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.681+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 258,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 582,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.911978223361075,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.754+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 248,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 592,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 5.9830301981419325,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.826+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 239,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 601,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.056033744476736,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.899+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 233,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 607,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.129250470548868,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:09.970+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 223,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 617,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.200244319625199,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.041+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 213,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 627,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.271098969504237,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.112+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 206,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 634,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.343115055933595,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.184+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 195,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 645,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.4150255508720875,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.258+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 186,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 654,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.483093177899718,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.325+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 178,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 662,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.549026597291231,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.392+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 168,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 672,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.615066637285054,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.458+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 160,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 680,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.681073729880154,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.524+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 151,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 689,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.74699017778039,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.590+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 141,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 699,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.813008671626449,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.655+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 130,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 710,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.8800355065613985,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.722+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 121,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 719,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 6.946056897751987,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.788+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 111,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 729,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.015074343420565,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.857+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 100,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 740,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.088023311458528,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:10.931+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 89,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 751,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.161083680577576,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.003+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 78,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 762,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.240019895136356,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.082+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 66,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 774,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.310090897604823,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.153+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 57,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 783,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.383108934387565,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.226+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 47,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 793,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.455076588317752,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.297+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 37,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 803,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.5270806746557355,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.369+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 28,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 812,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.602095448412001,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.441+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 22,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 818,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.676234980113804,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.517+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 17,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 823,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.752285337075591,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.594+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 17,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 823,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.8271991508081555,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.670+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 16,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 824,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.901216865517199,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.744+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 16,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 824,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 7.978216044604778,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.820+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 13,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 827,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.056173573248088,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.898+00:00",
+            "status_code": 0,
+            "status_raw": 1,
+            "state_code": 1,
+            "state": "moving",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": false,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.145154963247478,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:11.979+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.229159673675895,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.071+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.313126081600785,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.154+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.392144408077002,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.235+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.48424220457673,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.315+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.563257494941354,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.405+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.647145274095237,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.489+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.727160883136094,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.569+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.817127498798072,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.649+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.901202713139355,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.739+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 8.979194838553667,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.821+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.051053082570434,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.893+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.121173749677837,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:12.964+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.193125955760479,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.035+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.266010820865631,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.108+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.33614500053227,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.179+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.410066456533968,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.250+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.482068032026291,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.324+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.553071185015142,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.395+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.623058756813407,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.466+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.69710776489228,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.540+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.767067280597985,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.610+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.839036203920841,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.681+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 9.91618224978447,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.758+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.005935593508184,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.837+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.08719920925796,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:13.918+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.170143377035856,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.008+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 11,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 829,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.24720489885658,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.080+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.32617908809334,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.160+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.415155028924346,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.251+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.49716078210622,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.338+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.576197859831154,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.410+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.661200137808919,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.503+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.740121041424572,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.572+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.831394805572927,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.674+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 10.918185892514884,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.759+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 11.007454507052898,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.841+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 11.075126701965928,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.918+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": null
+        },
+        {
+          "elapsed_s": 11.149213658645749,
+          "phase": "after_command",
+          "feedback": {
+            "sampled_at": "2026-10-17T02:31:14.992+00:00",
+            "status_code": 0,
+            "status_raw": 2,
+            "state_code": 2,
+            "state": "grasp",
+            "position_pulse": 12,
+            "error_code": 0,
+            "read_errors": [],
+            "position_code": 0,
+            "mechanical_grasp_detected": true,
+            "available": true,
+            "usable_for_completion": true
+          },
+          "progress_pulse": 828,
+          "completion_reason": "measured_close_stable"
+        }
+      ],
+      "status": "COMPLETED",
+      "timeout_s": null,
+      "wait_policy": "feedback_until_complete_or_interrupt",
+      "warning_after_s": 60.0,
+      "sample_count": 143,
+      "dropped_sample_count": 0,
+      "before_command": {
+        "sampled_at": "2026-10-17T02:31:03.860+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 840,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "command_result": 0,
+      "debug_stationary_close_confirmation": false,
+      "close_stability_duration_s": 3.0,
+      "close_stability_samples": 20,
+      "close_stability_range_pulse": 3.0,
+      "closing_started": true,
+      "close_stable_elapsed_s": 3.0040574949234724,
+      "close_recent_positions_pulse": [
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12
+      ],
+      "close_observed_range_pulse": 1,
+      "reason": "measured_close_stable",
+      "duration_s": 11.149213658645749
+    }
+  }
+}

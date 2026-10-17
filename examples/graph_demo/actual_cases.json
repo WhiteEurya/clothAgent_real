@@ -1,0 +1,326 @@
+{
+  "cases": [
+    {
+      "name": "observed_progress",
+      "transition_id": "T0000000",
+      "source_node": "P000000",
+      "action": "F0000000",
+      "result_node": "P000001",
+      "transition_type": "NEW_NODE",
+      "execution_status": "EXECUTED",
+      "physical_execution": true,
+      "completed_commands": 6
+    },
+    {
+      "name": "observed_self_loop",
+      "transition_id": "T0000004",
+      "source_node": "P000003",
+      "action": "F0000005",
+      "result_node": "P000003",
+      "transition_type": "NO_PROGRESS",
+      "execution_status": "EXECUTED",
+      "physical_execution": true,
+      "completed_commands": 8
+    }
+  ],
+  "files": [
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/rgb.png",
+      "sha256": "19f23384a58c4ee52a917e768658b631330adca1352bb5c133a87053efb8cfe8",
+      "bytes": 888950,
+      "demo_file": "cases/observed_progress/before/rgb.png"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/observation.json",
+      "sha256": "96fd97b9709021b6099b75132e740bdb5db80a4a2889a4a5b7f4228d0e2df100",
+      "bytes": 11251,
+      "demo_file": "cases/observed_progress/before/observation.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/state.json",
+      "sha256": "9cca4a6c87ca0e37ee8eb602b8cc4d03f2c79d3383dfb0212c803a3fe29cc40e",
+      "bytes": 793,
+      "demo_file": "cases/observed_progress/before/state.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/world_xyz_mm.npy",
+      "sha256": "f3630f9dcc467a42f6cc27e4226d36c948c6b2d1795082828af74ce90aefe0fe",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/initial_observation/uncorrected_world_xyz_mm.npy",
+      "sha256": "bf7099c8dd3fbb2632f22b3d8380279a8da9f86ad5777aa9ec61720e8e286ca2",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/rgb.png",
+      "sha256": "0aebc8927f545f7f8dc4b5b2a40c9b8c9958af8ea0c0c470134608d27f56a57c",
+      "bytes": 900089,
+      "demo_file": "cases/observed_progress/after/rgb.png"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/observation.json",
+      "sha256": "c69e343312ee8480d2535b5212e9eb97a918c0a4dd2d8ae602f936f2c6456048",
+      "bytes": 11251,
+      "demo_file": "cases/observed_progress/after/observation.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/state.json",
+      "sha256": "9cca4a6c87ca0e37ee8eb602b8cc4d03f2c79d3383dfb0212c803a3fe29cc40e",
+      "bytes": 793,
+      "demo_file": "cases/observed_progress/after/state.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/world_xyz_mm.npy",
+      "sha256": "91f5e7cd44926b173c7feca2468c26b29b266968b44dfc4aa38e66513c94cd72",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/after_observation/uncorrected_world_xyz_mm.npy",
+      "sha256": "145fc3b687859584514d4e13bb9b02b0d577400d3a1c412588d39004a166e9a7",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/execution.json",
+      "sha256": "9219c707f98f2fbc086409b3907be1ac34c51a637320af7e0a80bd9f89f3d0ab",
+      "bytes": 660,
+      "demo_file": "cases/observed_progress/execution.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/outcome_match.json",
+      "sha256": "d0071e00393d8e48c8959dfbb7a358eeba3ee1ea7187b8fa1732d34b001a3aa7",
+      "bytes": 1841,
+      "demo_file": "cases/observed_progress/outcome_match.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/motion.py",
+      "sha256": "9456762e5b73425a40796bdaf699d826e591bed15ce1a9e3b1f1003af21b44c5",
+      "bytes": 371,
+      "demo_file": "cases/observed_progress/execution/motion.py"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/effective_motion.py",
+      "sha256": "bfc4e9ae542c942e8687e1a488041b6a7eaf44c1d7398ab667a8a0cdbdca4875",
+      "bytes": 467,
+      "demo_file": "cases/observed_progress/execution/effective_motion.py"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/native_plan.json",
+      "sha256": "42ce335326b3ebab584465412c11f9110f8de54c9975b13e406be4a6aaa03af4",
+      "bytes": 50237,
+      "demo_file": "cases/observed_progress/execution/native_plan.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/dispatch_intent.json",
+      "sha256": "4f569ad8e13a95a2a055468071d78afceb5a06cb7cf9bf20f0ee1ba494647be5",
+      "bytes": 1893,
+      "demo_file": "cases/observed_progress/execution/dispatch_intent.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/outcome.json",
+      "sha256": "9219c707f98f2fbc086409b3907be1ac34c51a637320af7e0a80bd9f89f3d0ab",
+      "bytes": 660,
+      "demo_file": "cases/observed_progress/execution/outcome.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/execution_events.json",
+      "sha256": "251fc1daf27487ec607b4c495391de9fc30920e08e6e3386048e7b68d995cf06",
+      "bytes": 50357,
+      "demo_file": "cases/observed_progress/execution/execution_events.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/timing.json",
+      "sha256": "b62568615be4cca0c64e9c6138309adced6a68497643464f313ad30d707b1372",
+      "bytes": 433,
+      "demo_file": "cases/observed_progress/execution/timing.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/planner/prompt.txt",
+      "sha256": "2973523b1ad00d1ff980cac99635d3e1d078abcc0a58e64122691b1957b9c1f3",
+      "bytes": 15069,
+      "demo_file": "cases/observed_progress/execution/planner/prompt.txt"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/planner/answer.txt",
+      "sha256": "c75cf3e82b0456a02b7145bb527af0a37a5efcd2b90a19d860d7153f44981f72",
+      "bytes": 610,
+      "demo_file": "cases/observed_progress/execution/planner/answer.txt"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/planner/result.json",
+      "sha256": "8da3e399a26a62285992026b7d71b280cba86089424c8ed357a17c3803421009",
+      "bytes": 882,
+      "demo_file": "cases/observed_progress/execution/planner/result.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/gripper_001.json",
+      "sha256": "10ee20154751b089c089829c44b8c8d7a94cea4ea0e5c946773deaf4849eae18",
+      "bytes": 2164,
+      "demo_file": "cases/observed_progress/execution/gripper_001.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/gripper_003.json",
+      "sha256": "8313274c6e7d248397fe4d333a2e1ed11c52bd5fdd0b7e873ad087562d6d4cc8",
+      "bytes": 92059,
+      "demo_file": "cases/observed_progress/execution/gripper_003.json"
+    },
+    {
+      "source": "runs/policy_replay_20261017T022854003479Z/episode_0001/step_0000/frontier/round_001/gripper_005.json",
+      "sha256": "4df487ae03a8416a97bcebbbef7ac6c147eede6f30fd58f96d590b840b026778",
+      "bytes": 53268,
+      "demo_file": "cases/observed_progress/execution/gripper_005.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/rgb.png",
+      "sha256": "098eb887c5d3343e2dac251ef76051253eee14891d5edcd70bf72178ec6306a3",
+      "bytes": 962179,
+      "demo_file": "cases/observed_self_loop/before/rgb.png"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/observation.json",
+      "sha256": "ef1094ccff69d6ac12cc49a5a266f7c0c6ac4bf6c09a46e9a23c8741cde94f7f",
+      "bytes": 11251,
+      "demo_file": "cases/observed_self_loop/before/observation.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/state.json",
+      "sha256": "9cca4a6c87ca0e37ee8eb602b8cc4d03f2c79d3383dfb0212c803a3fe29cc40e",
+      "bytes": 793,
+      "demo_file": "cases/observed_self_loop/before/state.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/world_xyz_mm.npy",
+      "sha256": "03868b65fba1b0c189cf6685226c9bb27e32a5fa6298854d667c556638e45832",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0002/after_observation/uncorrected_world_xyz_mm.npy",
+      "sha256": "4ee662db15850a12ec2a9da93ac603dcdbd4fdb7410b18a35f1b4c2bad88b210",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/after_observation/rgb.png",
+      "sha256": "be9809169db70a65caf6d83ff48bc5e60d7ffa2c6321fbba8f3ebbec5ac8cf12",
+      "bytes": 958697,
+      "demo_file": "cases/observed_self_loop/after/rgb.png"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/after_observation/observation.json",
+      "sha256": "3894f86a55ff05e779691507c2f37383d1b985e5fb4d216a5bc5900d20c0629f",
+      "bytes": 11250,
+      "demo_file": "cases/observed_self_loop/after/observation.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/after_observation/state.json",
+      "sha256": "9cca4a6c87ca0e37ee8eb602b8cc4d03f2c79d3383dfb0212c803a3fe29cc40e",
+      "bytes": 793,
+      "demo_file": "cases/observed_self_loop/after/state.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/after_observation/world_xyz_mm.npy",
+      "sha256": "f7a83468c1cd2ee8f191178b01ae95bd63cd1d0c26c8331ae161ae92bd2ff01b",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/after_observation/uncorrected_world_xyz_mm.npy",
+      "sha256": "98725270e371e3742c8a347fa85e174718ec10e1f88cba3b9930efede93037ab",
+      "bytes": 11059328
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/execution.json",
+      "sha256": "809c567223007ed5af22710174a2bc0bf2b9088ca9061bc62815bc01d676577f",
+      "bytes": 629,
+      "demo_file": "cases/observed_self_loop/execution.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/outcome_match.json",
+      "sha256": "836bc7e172d33d48a872814b04542c6cd0b79e9acd28cc81a22c66b774538c1d",
+      "bytes": 1119,
+      "demo_file": "cases/observed_self_loop/outcome_match.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/motion.py",
+      "sha256": "f9613a9c93f43999f0fedef28bc6bfc2a28b54b1907c40351e63959ca5355307",
+      "bytes": 413,
+      "demo_file": "cases/observed_self_loop/execution/motion.py"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/effective_motion.py",
+      "sha256": "4808e2d3f7e95a7c7c445a0b833f8d0d2a9920b7bdaf2bad68a32194333d607c",
+      "bytes": 671,
+      "demo_file": "cases/observed_self_loop/execution/effective_motion.py"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/native_plan.json",
+      "sha256": "6e0eb8ace2504d7d5049f615206735f0aa1b7fcc4544442e403cfcd1688f462d",
+      "bytes": 60917,
+      "demo_file": "cases/observed_self_loop/execution/native_plan.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/dispatch_intent.json",
+      "sha256": "8309cc15b64d024343f1d78d7e38caf98b3e6404a92f6bd51a5c57acbf0c9f8a",
+      "bytes": 2142,
+      "demo_file": "cases/observed_self_loop/execution/dispatch_intent.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/outcome.json",
+      "sha256": "809c567223007ed5af22710174a2bc0bf2b9088ca9061bc62815bc01d676577f",
+      "bytes": 629,
+      "demo_file": "cases/observed_self_loop/execution/outcome.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/execution_events.json",
+      "sha256": "6548dfc573bf82d5edec857b41326ed2b5d4c637c47f93166286723e3c6f2fc8",
+      "bytes": 61163,
+      "demo_file": "cases/observed_self_loop/execution/execution_events.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/timing.json",
+      "sha256": "66c514a09c4a7819a3730f0252375be160d256cfb8e91378882c2781eb1eadfd",
+      "bytes": 432,
+      "demo_file": "cases/observed_self_loop/execution/timing.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/planner/prompt.txt",
+      "sha256": "e90818a1e65a88928fc32f05334f67c291e75a008aaf59a62d0bc95da731eb1a",
+      "bytes": 15046,
+      "demo_file": "cases/observed_self_loop/execution/planner/prompt.txt"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/planner/answer.txt",
+      "sha256": "0ab51fc38c3fdd08ac1ddd852fdeba40603d84fa0a3b825665565c42206e961e",
+      "bytes": 625,
+      "demo_file": "cases/observed_self_loop/execution/planner/answer.txt"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/planner/result.json",
+      "sha256": "86250e7a6ea1861fb177d76ac62ebf0e31fd4204dba056ca1d29a79bc4ddba5c",
+      "bytes": 877,
+      "demo_file": "cases/observed_self_loop/execution/planner/result.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/gripper_001.json",
+      "sha256": "9cf2653b90743bc0215778eb321a91604b93643f28860ffd4333af9243043255",
+      "bytes": 2164,
+      "demo_file": "cases/observed_self_loop/execution/gripper_001.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/gripper_003.json",
+      "sha256": "0eb753dd3ab9cee7031e591dd5614adfb7af9e573fd865a8b66932552ed71bda",
+      "bytes": 92051,
+      "demo_file": "cases/observed_self_loop/execution/gripper_003.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/gripper_005.json",
+      "sha256": "35644649812ab0793750c1a7aa18b38fabb178712203711323cfffffc167f4e4",
+      "bytes": 16140,
+      "demo_file": "cases/observed_self_loop/execution/gripper_005.json"
+    },
+    {
+      "source": "runs/graph_collect_20261017_112855/episode_0001/step_0003/frontier/round_001/gripper_007.json",
+      "sha256": "83034e6dd4344f331336d73647a0a379879f3f19395eb5a68714c3370acdc897",
+      "bytes": 47608,
+      "demo_file": "cases/observed_self_loop/execution/gripper_007.json"
+    }
+  ]
+}

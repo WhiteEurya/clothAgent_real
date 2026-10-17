@@ -1,0 +1,399 @@
+{
+  "schema_version": 1,
+  "observation_id": "a8fb96a7be054be98d4d46155b215835",
+  "frame_id": "world_mm",
+  "calibration_id": "coordinate_correction_20261008_145014_arm6_camera_tilt1_20261009_arm7_cameraB_023a832aa778_supportZ_4355585c3c6e",
+  "captured_unix_s": 1792204141.7472937,
+  "captured_at": "2026-10-17T02:29:01.747295+00:00",
+  "synthetic": false,
+  "joints_deg": {
+    "left": [
+      -1.0920575575193492,
+      -28.14500469975484,
+      -122.43139783271921,
+      1.8160470274466574,
+      107.68988131335729,
+      -1.6756150718600926
+    ],
+    "right": [
+      -1.7553707969423031,
+      -3.490573479496001,
+      0.1879874525824231,
+      112.8044463673721,
+      1.0378557500999732,
+      108.20422552604623,
+      0.3241795204850198
+    ]
+  },
+  "sha256": {
+    "rgb.png": "19f23384a58c4ee52a917e768658b631330adca1352bb5c133a87053efb8cfe8",
+    "world_xyz_mm.npy": "f3630f9dcc467a42f6cc27e4226d36c948c6b2d1795082828af74ce90aefe0fe",
+    "uncorrected_world_xyz_mm.npy": "bf7099c8dd3fbb2632f22b3d8380279a8da9f86ad5777aa9ec61720e8e286ca2"
+  },
+  "world_from_camera_mm": [
+    [
+      -0.03902671601370364,
+      -0.9964518096422093,
+      -0.07457014481649486,
+      634.0879523254144
+    ],
+    [
+      -0.9992337213578427,
+      0.038695095154659125,
+      0.0058872499804280215,
+      32.878155545970706
+    ],
+    [
+      -0.0029808620474422423,
+      0.07474276334026715,
+      -0.9971983923922644,
+      677.8892943711495
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "camera_serial": "233622079809",
+  "depth_capture_policy": {
+    "depth_exposure_us": 4000.0,
+    "depth_gain": 16.0,
+    "depth_stability": {
+      "warmup_frames": 30,
+      "max_frames": 150,
+      "window_frames": 15,
+      "stable_windows": 2,
+      "max_range_mm": 2.0
+    }
+  },
+  "depth_stability": {
+    "stable": true,
+    "worst_tile_range_mm": 0.9999871253967285,
+    "max_range_mm": 2.0,
+    "tiles": 36,
+    "frames_checked": 45,
+    "consecutive_windows": 2
+  },
+  "extrinsic_tilt_correction": null,
+  "snapshot_before": {
+    "left": {
+      "joints": [
+        -1.0920575575193492,
+        -28.14500469975484,
+        -122.43139783271921,
+        1.8160470274466574,
+        107.68988131335729,
+        -1.6756150718600926
+      ],
+      "pose": [
+        252.48174580180608,
+        4.04336730258372,
+        734.1837575293291,
+        179.66000291916728,
+        -42.90521638300901,
+        1.9486057610011778
+      ],
+      "gripper": {
+        "state": "unobserved",
+        "available": false,
+        "usable_for_completion": false
+      },
+      "sampled_monotonic_s": 5777910.018522745,
+      "state_source": "assumed_static_obstacle",
+      "live_feedback": false,
+      "static_obstacle_reference": {
+        "arm": "left",
+        "joint_angles_deg": [
+          -1.0920575575193492,
+          -28.14500469975484,
+          -122.43139783271921,
+          1.8160470274466574,
+          107.68988131335729,
+          -1.6756150718600926
+        ],
+        "captured_at": "2026-10-10T08:06:23.159205+00:00",
+        "source_observation": "results/codex_astra/unfold_arm7_20261010T073929672619Z/round_008/before/observation.json",
+        "assumption": "Fixed obstacle for arm7-only runs; not live feedback. Update if arm6 is moved.",
+        "reference_file": "/home/sja/clothAgent_real/data/robot/arm6_parked_for_arm7.json"
+      }
+    },
+    "right": {
+      "joints": [
+        -1.7553707969423031,
+        -3.490573479496001,
+        0.1879874525824231,
+        112.8044463673721,
+        1.0378557500999732,
+        108.20422552604623,
+        0.3241795204850198
+      ],
+      "pose": [
+        421.305,
+        -12.05,
+        524.461,
+        178.82241969151045,
+        -8.125458267427282,
+        -0.8799485817619184
+      ],
+      "gripper": {
+        "sampled_at": "2026-10-17T02:28:54.893+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 840,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "sampled_monotonic_s": 5777910.029810567,
+      "sample_started_monotonic_s": 5777910.018366306
+    }
+  },
+  "snapshot_after": {
+    "left": {
+      "joints": [
+        -1.0920575575193492,
+        -28.14500469975484,
+        -122.43139783271921,
+        1.8160470274466574,
+        107.68988131335729,
+        -1.6756150718600926
+      ],
+      "pose": [
+        252.48174580180608,
+        4.04336730258372,
+        734.1837575293291,
+        179.66000291916728,
+        -42.90521638300901,
+        1.9486057610011778
+      ],
+      "gripper": {
+        "state": "unobserved",
+        "available": false,
+        "usable_for_completion": false
+      },
+      "sampled_monotonic_s": 5777916.022445648,
+      "state_source": "assumed_static_obstacle",
+      "live_feedback": false,
+      "static_obstacle_reference": {
+        "arm": "left",
+        "joint_angles_deg": [
+          -1.0920575575193492,
+          -28.14500469975484,
+          -122.43139783271921,
+          1.8160470274466574,
+          107.68988131335729,
+          -1.6756150718600926
+        ],
+        "captured_at": "2026-10-10T08:06:23.159205+00:00",
+        "source_observation": "results/codex_astra/unfold_arm7_20261010T073929672619Z/round_008/before/observation.json",
+        "assumption": "Fixed obstacle for arm7-only runs; not live feedback. Update if arm6 is moved.",
+        "reference_file": "/home/sja/clothAgent_real/data/robot/arm6_parked_for_arm7.json"
+      }
+    },
+    "right": {
+      "joints": [
+        -1.7553707969423031,
+        -3.490573479496001,
+        0.1879874525824231,
+        112.8044463673721,
+        1.0378557500999732,
+        108.20422552604623,
+        0.3241795204850198
+      ],
+      "pose": [
+        421.305,
+        -12.05,
+        524.461,
+        178.82241969151045,
+        -8.125458267427282,
+        -0.8799485817619184
+      ],
+      "gripper": {
+        "sampled_at": "2026-10-17T02:29:00.895+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 840,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "sampled_monotonic_s": 5777916.033724736,
+      "sample_started_monotonic_s": 5777916.022390181
+    }
+  },
+  "support_height_patch": {
+    "enabled": true,
+    "mode": "support_plane_z",
+    "plane_z_ax_by_c": [
+      -0.03402499587429761,
+      -0.0036439536924375297,
+      80.95387816602235
+    ],
+    "anchor_xy_mm": [
+      594.025742602651,
+      -171.2098752564162
+    ],
+    "reference_joints_deg": [
+      -1.755371,
+      -3.490573,
+      0.187987,
+      112.804446,
+      1.037856,
+      108.204226,
+      0.32418
+    ],
+    "max_joint_delta_deg": 0.2,
+    "reference_world_from_camera_mm": [
+      [
+        -0.03902673401731841,
+        -0.9964518106389877,
+        -0.07457012207462795,
+        634.0879500643404
+      ],
+      [
+        -0.9992337206674542,
+        0.03869511356213978,
+        0.005887246172261253,
+        32.87816094153168
+      ],
+      [
+        -0.0029808577660064917,
+        0.07474274052171595,
+        -0.9971983941153757,
+        677.8892862488013
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "max_camera_translation_delta_mm": 2.0,
+    "max_camera_rotation_delta_deg": 0.2,
+    "source": "diagnostics/table_z_chain_audit_20261014/report.json",
+    "reference_note": "User-confirmed OPEN-gripper approximate contact TCP Z used as trial grasp-height baseline, replacing the earlier closed-contact baseline. Not optical sponge surface Z. Preserve raw-plane leveling and observed height residuals; residuals are not independently verified cloth thickness. No additional global 13.5 mm lowering. Measured orientation differs from vertical grasp; no unmeasured orientation compensation applied.",
+    "z_policy": "raw_plane_to_reference_height",
+    "reference_height_mm": 45.92204371217245,
+    "input_coordinate_policy": "uncorrected_world_xyz_only",
+    "contact_reference": {
+      "source": "diagnostics/extrinsics_audit_20261014/open_closed_contact_result.json",
+      "world_tcp_mm_deg": [
+        486.91385762006496,
+        169.4495975100455,
+        45.92204371217245,
+        -176.49867057172276,
+        -2.3926176862795003,
+        51.77134500330006
+      ],
+      "gripper_position_pulse": 840,
+      "semantics": "empirical_open_gripper_contact_tcp_height",
+      "user_confirmed": true,
+      "contact_quality": "approximate visual contact, slight sponge compression",
+      "orientation_compensation_applied": false,
+      "validation_status": "trial_baseline_pending_grasp_validation",
+      "paired_closed_contact_world_z_mm": 59.415713126554216,
+      "paired_closed_minus_open_z_mm": 13.493669414381763,
+      "previous_reference_height_mm": 52.5038183117912,
+      "previous_reference_backup": "diagnostics/open_contact_height_activation_20261014/arm7_support_height_patch.before.json"
+    },
+    "calibration_migration": {
+      "method": "Transform previously measured raw support plane by T_new @ inverse(T_old) at its original reference joints; retain physical TCP contact height.",
+      "previous_policy": "diagnostics/camb_consistent_fk_activation_20261016T121115Z/arm7_support_height_patch.before.json",
+      "extrinsics_source": "config/calibration/dual_arm_working_20261008/camB_extrinsics.yaml",
+      "runtime_urdf": "assets/robots/xarm7/xarm7_controller_fit.urdf",
+      "runtime_urdf_sha256": "edee030ff0d4805a921ee78ca5e7aaecfdde1117e8558249152f5d6a49d7b252",
+      "new_world_from_old_world_mm": [
+        [
+          0.9998096076284351,
+          0.01913327389087554,
+          -0.0038296637047022498,
+          2.1068724894125808
+        ],
+        [
+          -0.019034102426438798,
+          0.9995199885752141,
+          0.024443718690565046,
+          -1.351498272633762
+        ],
+        [
+          0.0042955137869890156,
+          -0.024366170581779523,
+          0.999693872289155,
+          -2.6350124693309454
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "new_surface_measurement": false
+    },
+    "matrix_mm": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.03402499587429761,
+        0.0036439536924375297,
+        1.0,
+        -35.031834453849896
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "corrected_world_from_camera_affine_mm": [
+    [
+      -0.03902671601370364,
+      -0.9964518096422093,
+      -0.07457014481649486,
+      634.0879523254144
+    ],
+    [
+      -0.9992337213578427,
+      0.038695095154659125,
+      0.0058872499804280215,
+      32.878155545970706
+    ],
+    [
+      -0.007949907307345898,
+      0.04097949776312264,
+      -0.9997141883956869,
+      664.552106355416
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
+}

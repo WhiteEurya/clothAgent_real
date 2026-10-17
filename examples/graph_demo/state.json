@@ -1,0 +1,313 @@
+{
+  "nodes": [
+    {
+      "id": "P000000",
+      "label": "One observed initial configuration for folding the T-shirt with both sleeves and torso sides inward and the hem toward the collar; sides follow the collar-above-hem viewer convention.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000000 · 原始观测",
+          "src": "images/P000000.png"
+        }
+      ]
+    },
+    {
+      "id": "P000001",
+      "label": "Observed intermediate configuration for folding both sleeves and torso sides inward, then folding the hem toward the collar; full-fold completion is not visible.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000001 · 原始观测",
+          "src": "images/P000001.png"
+        }
+      ]
+    },
+    {
+      "id": "P000002",
+      "label": "Fold the T-shirt with both sleeves and torso sides inward, then the hem toward the collar. Left/right use the collar-above-hem orientation without mirroring. This observation shows an incomplete fold.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000002 · 原始观测",
+          "src": "images/P000002.png"
+        }
+      ]
+    },
+    {
+      "id": "P000003",
+      "label": "Fold the T-shirt with both sleeves and torso sides inward, then the hem toward the collar. This observation shows an incomplete fold.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000003 · 原始观测",
+          "src": "images/P000003.png"
+        }
+      ]
+    },
+    {
+      "id": "P000004",
+      "label": "One observed intermediate configuration for folding the T-shirt inward at the sleeves and torso sides, then folding the hem toward the collar.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000004 · 原始观测",
+          "src": "images/P000004.png"
+        }
+      ]
+    },
+    {
+      "id": "P000005",
+      "label": "Observed T-shirt configuration for folding both sleeves and torso sides inward, then folding the hem toward the collar.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000005 · 原始观测",
+          "src": "images/P000005.png"
+        }
+      ]
+    },
+    {
+      "id": "P000006",
+      "label": "One observed intermediate configuration for folding the T-shirt with sleeves and torso sides inward, then hem toward collar; full_fold remains incomplete.",
+      "status": "PROVISIONAL",
+      "images": [
+        {
+          "label": "P000006 · 原始观测",
+          "src": "images/P000006.png"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "F0000000",
+      "source": "P000000",
+      "targets": [
+        "P000001"
+      ],
+      "target": "P000001",
+      "preferred": true,
+      "outcomes": {
+        "P000001": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000000"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000001",
+      "source": "P000001",
+      "targets": [],
+      "target": null,
+      "preferred": false,
+      "outcomes": {}
+    },
+    {
+      "id": "F0000002",
+      "source": "P000000",
+      "targets": [
+        "P000001"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000001": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000001"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000003",
+      "source": "P000001",
+      "targets": [
+        "P000002"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000002": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000002"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000004",
+      "source": "P000002",
+      "targets": [
+        "P000003"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000003": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000003"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000005",
+      "source": "P000003",
+      "targets": [
+        "P000003"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000003": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000004"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000006",
+      "source": "P000003",
+      "targets": [
+        "P000004"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000004": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000005"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000007",
+      "source": "P000004",
+      "targets": [
+        "P000004"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000004": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000006"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000008",
+      "source": "P000004",
+      "targets": [
+        "P000004"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000004": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000007"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000009",
+      "source": "P000004",
+      "targets": [
+        "P000004"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000004": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000008"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000010",
+      "source": "P000004",
+      "targets": [
+        "P000004"
+      ],
+      "target": null,
+      "preferred": false,
+      "outcomes": {
+        "P000004": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000009"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000011",
+      "source": "P000004",
+      "targets": [],
+      "target": null,
+      "preferred": false,
+      "outcomes": {}
+    },
+    {
+      "id": "F0000012",
+      "source": "P000005",
+      "targets": [
+        "P000006"
+      ],
+      "target": "P000006",
+      "preferred": true,
+      "outcomes": {
+        "P000006": {
+          "seed_evidence": false,
+          "observed_count": 1,
+          "history": [
+            "T0000010"
+          ]
+        }
+      }
+    },
+    {
+      "id": "F0000013",
+      "source": "P000006",
+      "targets": [],
+      "target": null,
+      "preferred": false,
+      "outcomes": {}
+    }
+  ],
+  "current": null,
+  "action": null,
+  "target": null,
+  "phase": "STOPPED",
+  "new_nodes": [],
+  "events": [],
+  "recoveries": [],
+  "result": "REFERENCE_SNAPSHOT"
+}
