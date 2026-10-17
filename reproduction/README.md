@@ -1,6 +1,6 @@
 # Graph 实验跨设备复现（2026-10-17 快照）
 
-本目录对应 GitHub Release **experiments-20261017**。代码、实验 Markdown、测试和
+本目录对应 GitHub Release **graph-repro-20261017**。代码、实验 Markdown、测试和
 依赖版本位于 Git；真实观测、图快照、轨迹、模型请求/响应和诊断产出位于 Release
 分卷数据包。仅 `git clone` 不包含这些实验数据。
 
@@ -8,18 +8,19 @@
 
 - 当前 `cloth_agent/experiments/` 的全部实验实现、相关 runtime 修改及测试。
 - `docs/experiments/` 的全部流程说明，以及更新后的 pipeline 文档。
-- 全部本地 `runs/`、`reports/`、`diagnostics/`、`data/fold_experience/`。
-- SSD runs 中非日期命名的实验目录，包括 graph、在线扩图、seed、Codex pipeline、
-  gravity-unfold、手柄控制和回 Home 记录。
-- 本次实机的 `config/dual_arm.local.json` 数据包快照；标定、参考图、机器人记录在 Git。
+- 当前 graph 的 5 个 run：空图起点、采集过程和三次恢复尝试，具体清单见 manifest。
+- 本次实机的 `config/dual_arm.local.json`；标定、参考图、机器人记录在 Git。
+- 原始 RGB/深度/点云、图快照、动作代码、模型请求与响应、匹配及执行反馈。
+- 不包含无关实验、完整录像、生成的 SVG/DOT/HTML 和 live_graph 展示副本。
+  `manifest.json` 的 `omitted_files` 列出明确省略的录像/可视化；历史 JSON 仍保留录像
+  路径作为审计信息，但数据包不包含这些可选录像。RGB 等核心证据的哈希不变。
 - `manifest.json` 列出分卷大小和 SHA256；Release 的 `files.jsonl` 给出逐文件路径、
-  大小和 SHA256。数据未改写，冻结图及其证据哈希保持原样。
+  大小和 SHA256。数据未改写，冻结图及核心证据哈希保持原样。
 
-共 32,078 个数据文件，37,126,587,117 字节未压缩数据。下载缓存与解压数据同时保留
-需约 75 GB 空间。该包是当前实验集合，不是整块 SSD 备份：5 个旧日期目录
-（2026-09-22、09-23、09-24、10-03、10-05）未打包，完整路径见 manifest。
-当前实验 JSON 中未发现指向这些 SSD 旧日期目录的绝对路径引用。
-认证令牌、个人 Codex 登录配置、Python 缓存不包含在归档中。
+共 **1,235 个文件，548,122,673 字节原始数据，428,714,320 字节下载包**，
+约 409 MiB 下载量。预留 2 GB 用于缓存与解压即可（容器镜像另需空间）。
+其他 graph 历史和其他实验仍保留代码、测试、流程文档，但未包含它们的数据；本包
+只承诺恢复下列当前 graph 复现链，不是全部历史实验备份。不包含账号凭据或缓存。
 
 ## 2. 下载、校验与恢复
 
@@ -28,7 +29,7 @@
 ```bash
 git clone https://github.com/WhiteEurya/clothAgent_real.git
 cd clothAgent_real
-git checkout experiments-20261017
+git checkout graph-repro-20261017
 python3 -m venv .venv-restore
 .venv-restore/bin/pip install zstandard==0.25.0
 .venv-restore/bin/python scripts/restore_reproduction.py \
@@ -68,7 +69,7 @@ docker run --rm --network none \
 
 | 阶段 | 入口/说明 | 本次保留的证据 |
 |---|---|---|
-| 原始 seed → 编译 graph → 合并/策略化 | [graph_policy.md](../docs/experiments/graph_policy.md) | `runs/graph_policy_full02/`，含旧图及 seed |
+| 原始 seed → 编译 graph → 合并/策略化 | [graph_policy.md](../docs/experiments/graph_policy.md) | 历史路径 `runs/graph_policy_full02/`；本精简包不含该旧实验数据 |
 | 从空图开始 | [graph_policy_replay.md](../docs/experiments/graph_policy_replay.md) 的 `--from-scratch --online-growth` | `runs/policy_replay_20261017T022854003479Z/empty_policy.json` |
 | 采集实际动作与转移 | 同文档的 `--collect-only --grounding-mode full` | `runs/graph_collect_20261017_112855/episode_0001/latest.json` → `growth_000084.json` |
 | 已采集图重放及无进展恢复 | `--online-growth --recover-no-progress --grounding-mode full` | `runs/graph_recover_20261017_130922/`、`133136/`、`134332/` |
@@ -79,7 +80,7 @@ docker run --rm --network none \
 11 个转移、13 次 physical actions，graph-policy actions 为 0，不能宣称 graph-only success。
 此前完成退出的恢复运行也保留，不能仅按 growth 文件序号跨不同 run 判断新旧。
 
-运行时证据包括 graph/snapshot/sha256、before/after 观测、RGB/深度与点云、模型输入
+本包证据包括 graph/snapshot/sha256、before/after 观测、RGB/深度与点云、模型输入
 及响应、动作程序、执行反馈、匹配结果、recovery audit、统计与画布。以每个 run 中
 实际存在的文件为准；中断或失败实验不会补造缺失的结果。
 
@@ -114,6 +115,7 @@ Docker 示例只提供离线复现，不把 `--execute` 偷加到启动命令。
 
 核心 graph 测试 151 项通过，手柄相关测试 47 项通过，最新快照离线加载通过。
 独立代码目录恢复数据后，graph、手柄及归档工具合计 203 项测试通过；
-32,078 个文件已在独立目录完整解压并通过逐文件 SHA256 校验。
+精简包 1,235 个文件已在独立目录解压并通过 SHA256 校验，最新图引用的
+62 条带哈希的核心证据全部包含；详情见 `validation.json`。
 完整测试套件另有历史失败/错误，不能据此声称全库测试通过；详见 `validation.json`。
 容器构建及另一台设备的实际运动尚未验证。

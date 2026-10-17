@@ -1,5 +1,8 @@
 {
   "snapshot": "runs/graph_recover_20261017_134332/episode_0001/growth_000096.json",
   "paths_checked": 18,
-  "missing_paths": []
+  "missing_paths": [],
+  "audit_scope": "original filesystem; archive omits optional recordings listed in manifest.omitted_files",
+  "core_archive_evidence_missing": [],
+  "core_archive_hashed_records_checked": 62
 }

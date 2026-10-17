@@ -1,7 +1,7 @@
 # ClothAgent
 
 当前 Arm7 / graph 实验的跨设备复现入口见
-[2026-10-17 复现说明](reproduction/README.md)：包括最新实验代码、流程文档、
+[当前 Graph 精简复现说明](reproduction/README.md)：包括最新实验代码、流程文档、
 Release 数据包下载与校验、环境版本和离线验证命令。仅克隆仓库不包含实验轨迹及观测数据。
 下文保留早期基础框架说明；当前 graph 流程以复现说明及 `docs/experiments/` 为准。
 

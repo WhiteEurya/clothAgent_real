@@ -4,10 +4,18 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 import tarfile
 
 import zstandard
+
+CURRENT_GRAPH_RUNS = (
+    'policy_replay_20261017T022854003479Z',
+    'graph_collect_20261017_112855',
+    'graph_recover_20261017_130922',
+    'graph_recover_20261017_133136',
+    'graph_recover_20261017_134332',
+)
+OMITTED_SUFFIXES = {'.mp4', '.avi', '.webm', '.svg', '.dot', '.html'}
 
 
 class Parts:
@@ -59,24 +67,22 @@ class HashReader:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument('--ssd-runs', type=Path, default=Path('/mnt/newssd/sja/clothAgent_real/runs'))
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    sources = [(args.root / name, 'workspace/' + name) for name in
-               ('runs', 'reports', 'diagnostics', 'data/fold_experience', 'config/dual_arm.local.json')]
+    sources = [(args.root/'runs'/name, 'workspace/runs/'+name) for name in CURRENT_GRAPH_RUNS]
+    sources.append((args.root/'config/dual_arm.local.json', 'workspace/config/dual_arm.local.json'))
     excluded = []
-    for path in sorted(args.ssd_runs.iterdir()):
-        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', path.name):
-            excluded.append(str(path))
-        else:
-            sources.append((path, 'ssd_runs/' + path.name))
     files = []
     for source, prefix in sources:
         if not source.exists():
             continue
         for path in sorted(source.rglob('*')) if source.is_dir() else [source]:
             if path.is_file() and not any(p in ('__pycache__', '.pytest_cache', '.git') for p in path.parts):
+                if path.suffix in OMITTED_SUFFIXES or 'live_graph' in path.parts:
+                    excluded.append(dict(path=str(path.relative_to(args.root)), size=path.stat().st_size,
+                                         reason='optional video or regenerable visualization'))
+                    continue
                 if path.is_symlink():
                     raise ValueError(f'symlink requires explicit review: {path}')
                 name = prefix + ('/' + str(path.relative_to(source)) if source.is_dir() else '')
@@ -100,8 +106,9 @@ def main():
                         print('FILES', count, '/', len(files), flush=True)
     parts.finish()
     manifest = dict(schema_version=1, files=count, uncompressed_bytes=total,
-                    archive_parts=parts.rows, excluded_historical_run_roots=excluded,
-                    original_workspace=str(args.root), original_ssd_runs=str(args.ssd_runs))
+                    archive_parts=parts.rows, included_runs=list(CURRENT_GRAPH_RUNS),
+                    omitted_files=excluded, scope='current graph reproduction chain only',
+                    original_workspace=str(args.root))
     (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
     print('COMPLETE', args.output, flush=True)
 

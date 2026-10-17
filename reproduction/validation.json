@@ -28,14 +28,17 @@
     "scanned_files": 26494,
     "flagged_paths": []
   },
-  "full_archive_restore": {
-    "files_verified": 32078,
-    "result": "PASS",
-    "isolated_destination": true
-  },
   "pip_check": "No broken requirements found",
   "isolated_checkout_with_restored_data_tests": {
     "passed": 203,
     "skipped": 0
-  }
+  },
+  "previous_full_archive_draft": "Cancelled and deleted before publication; replaced by current-graph-only bundle",
+  "curated_archive_restore": {
+    "files_verified": 1235,
+    "result": "PASS",
+    "isolated_destination": true
+  },
+  "curated_hashed_evidence_records_checked": 62,
+  "missing_core_hashed_evidence": []
 }
