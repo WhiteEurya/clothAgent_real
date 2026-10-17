@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv-restore/
 runs/
 data/fold_experience/
 config/*.local.json

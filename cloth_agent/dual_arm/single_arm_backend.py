@@ -18,6 +18,23 @@ class RobotExecutionError(RuntimeError):
     """Raised when the xArm SDK reports a command failure."""
 
 
+def validate_release_delta(config, delta):
+    if (isinstance(delta,bool) or not isinstance(delta,(int,float)) or not math.isfinite(delta)
+            or not 2*config.gripper_open_tolerance_pulse < delta < config.gripper_open-config.gripper_close):
+        raise RobotExecutionError('partial release delta must be finite, exceed twice opening tolerance, and remain below full travel')
+
+
+def partial_release_target(config, initial, delta):
+    """Open relative to measured holding width, leaving a distinct full-open stage."""
+    validate_release_delta(config,delta)
+    if not math.isfinite(initial) or not config.gripper_close-config.gripper_open_tolerance_pulse<=initial<=config.gripper_open:
+        raise RobotExecutionError('invalid measured gripper position for partial release')
+    step=min(delta,(config.gripper_open-initial)/2)
+    if step<=2*config.gripper_open_tolerance_pulse:
+        raise RobotExecutionError('insufficient remaining travel for a verified partial release; lift blocked')
+    return initial+step
+
+
 @dataclass(frozen=True)
 class ControllerTrajectoryValidation:
     """Read-only controller IK result used for validation and URDF animation."""
@@ -643,9 +660,15 @@ class XArmBackend:
         )
         return feedback
 
-    def _command_gripper(self, config: RobotConfig, *, target: str):
+    def _command_gripper(self, config: RobotConfig, *, target: str, opening_delta_pulse=None):
         """Poll until measured completion or operator interrupt; never time out into motion."""
-        target_position = (
+        if target not in {'open','close','release_partial'}:
+            raise RobotExecutionError('unsupported gripper action')
+        partial=target=='release_partial'
+        if partial:validate_release_delta(config,opening_delta_pulse)
+        elif opening_delta_pulse is not None:
+            raise RobotExecutionError('opening delta is only valid for partial release')
+        target_position = None if partial else (
             config.gripper_open if target == "open" else config.gripper_close
         )
         started = time.monotonic()
@@ -653,7 +676,7 @@ class XArmBackend:
             "target": target,
             "target_position_pulse": target_position,
             "position_tolerance_pulse": config.gripper_open_tolerance_pulse
-            if target == "open"
+            if target in {"open","release_partial"}
             else 5.0,
             "samples": [],
             "status": "WAITING",
@@ -718,6 +741,11 @@ class XArmBackend:
                 time.sleep(0.05)
             trace["before_command"] = before
             initial = before["position_pulse"]
+            if partial:
+                target_position=partial_release_target(config,initial,opening_delta_pulse)
+                trace.update(target_position_pulse=target_position,
+                             requested_opening_delta_pulse=opening_delta_pulse,
+                             actual_opening_delta_pulse=target_position-initial)
             direction = 1 if target_position > initial else -1
             _gripper_log(
                 f"[gripper] {target}: before={initial}, target={target_position}; waiting for measured completion"
@@ -735,6 +763,7 @@ class XArmBackend:
             stable_positions = []
             stable_since = None
             stable_min = stable_max = None
+            trace["debug_stationary_close_confirmation"] = bool(getattr(self, "debug_reclose_confirmation", False))
             trace["close_stability_duration_s"] = 3.0
             trace["close_stability_samples"] = 20
             trace["close_stability_range_pulse"] = 3.0
@@ -756,7 +785,7 @@ class XArmBackend:
                     abs(position - target_position) <= trace["position_tolerance_pulse"]
                 )
                 reason = None
-                if target == "open" and state in {"stop", "grasp"} and at_target:
+                if target in {"open","release_partial"} and state in {"stop", "grasp"} and at_target:
                     reason = "measured_target_reached"
                 if target == "close":
                     # Require a stopped position band <=3 pulses for three seconds
@@ -765,7 +794,7 @@ class XArmBackend:
                     if progress > 2:
                         closing_started = True
                     trace["closing_started"] = closing_started
-                    if closing_started and progress > 2 and state in {"stop", "grasp"}:
+                    if (closing_started and progress > 2 or getattr(self, "debug_reclose_confirmation", False)) and state in {"stop", "grasp"}:
                         now = time.monotonic()
                         if (
                             stable_since is None

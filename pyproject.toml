@@ -33,3 +33,6 @@ exclude = [
     "artifacts*",
     "tests*",
 ]
+
+[tool.setuptools.package-data]
+"cloth_agent.experiments" = ["replay_live_graph.html"]

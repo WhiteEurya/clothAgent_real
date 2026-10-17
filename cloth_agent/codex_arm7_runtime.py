@@ -15,29 +15,38 @@ def wrist_equivalent(angle, seed, lower, upper, *, prefer_ccw=False):
     candidates=[angle+360*n for n in turns]
     if not candidates:raise DualArmError('no joint7 equivalent within limits')
     nearest=min(candidates,key=lambda value:abs(value-seed))
-    # Only large approach rotations get a direction preference. Small Cartesian
-    # continuation steps must never acquire an extra revolution.
-    if prefer_ccw and nearest-seed>90.:
-        ccw=[value for value in candidates if value<seed]
-        if ccw:return max(ccw)
+    # A direction preference must never create a near-full wrist revolution.
+    # The 180-degree jaw symmetry is selected for the WHOLE task before IK.
+    if prefer_ccw:
+        bounded=[value for value in candidates if abs(value-seed)<=180.+1e-6]
+        if not bounded:raise DualArmError('initial wrist alignment exceeds 180 degrees within limits')
+        ccw=[value for value in bounded if value-seed<=1e-6]
+        return min(ccw or bounded,key=lambda value:abs(value-seed))
     return nearest
 
 
 class Arm7Runtime(NativeRuntime):
-    grasp_offset_mm=15.
+    # Parallel-jaw symmetry applies to folding and graph replay as well as unfold.
+    parallel_jaw_grasp_symmetry=True
+    grasp_offset_mm=0.
     active_arms=('right',)
+    staged_release=True
+    release_open_delta_pulse=120.
     planning_policy=(
         '只使用 arm7（right）单臂整理并折叠衣服，按顺序参考图完成。'
         'arm6（left）保持当前位置，不参与抓取、固定或折叠。'
         '选择单夹爪可完成的抓取和折入动作。'
         '尽可能和human demonstration相似。'
-        '抓点使用 world_xyz_mm.npy 中的毫米坐标，不重复修正。'
-        '宿主会将闭合前的抓取 TCP 目标额外降低 15 mm，输出观测原始抓取高度，不要重复减去该偏移。\n')
+        '平行夹爪绕工具轴相差180度等价；宿主会在等价姿态中优先选择逆时针对齐的一支，不绕整圈，'
+        '并对后续持布位姿同步变换以保持相对旋转，不要主动添加半圈旋转。'
+        'world_xyz_mm.npy 提供观测的 World 毫米坐标；根据当前观察和动作需要，自主选择抓取及后续动作的 TCP 高度。\n')
     preparation_description=(
         '拍照前只打开 arm7 夹爪，让 arm7 回 Home，再到 arm7 保存的 perception 位姿。'
         '使用 arm7 上的 Camera B 拍照，arm6 全程保持原位。'
-        '宿主负责最后松开与回 Home，GPT 只给抓点及持布期间的动作。\n')
-    motion_contract=TASK_CONTRACT.replace('10 mm','15 mm').replace(
+        '最终放置点应先让布料受到接收区支撑；宿主先少量开爪放布，再竖直抬升后完全开爪并回 Home。'
+        'GPT 只给抓点及持布期间的动作，不添加开爪或撤离指令。\n')
+    motion_contract=TASK_CONTRACT.replace('宿主对 grasp 的原始观测 Z 额外降低 10 mm；不要自己重复减去偏移，中间动作目标不加此偏移。',
+        '').replace(
         'left=[x,y,z,roll,pitch,yaw], right=[x,y,z,roll,pitch,yaw]',
         'right=[x,y,z,roll,pitch,yaw]')+'\n仅允许 right，不允许 left 或 arm6 动作。'
 
@@ -57,11 +66,29 @@ class Arm7Runtime(NativeRuntime):
         distance,angle=pose_error(model.forward(selected),target_base)
         if distance>.5 or angle>.2:
             raise DualArmError('arm7 wrist equivalent failed TCP verification')
-        if abs(selected[-1]-q[-1])>1e-6:
+        if phase in ('grasp_goal_ik','host_approach_ik') or abs(selected[-1]-q[-1])>1e-6:
             self.planning_context['wrist_winding']=dict(
                 phase=phase,original_deg=float(q[-1]),selected_deg=float(selected[-1]),
-                seed_deg=float(seed[-1]),view='arm_toward_gripper',ccw_sign=-1)
+                seed_deg=float(seed[-1]),view='arm_toward_gripper',ccw_sign=-1,
+                prefer_ccw=phase in ('grasp_goal_ik','host_approach_ik'),
+                selected_delta_deg=float(selected[-1]-seed[-1]),
+                clockwise_selected=bool(phase in ('grasp_goal_ik','host_approach_ik')
+                    and selected[-1]-seed[-1]>1e-6))
         return selected
+
+    def execute(self,source,observation,folder):
+        calls=parse_code(source,allow_grasp=True)
+        symmetry=(getattr(self,'parallel_jaw_grasp_symmetry',False)
+                  or getattr(self,'unfold_grasp_symmetry',False))
+        if symmetry and calls[0][0]=='grasp' and set(calls[0][1])=={'right'}:
+            from .dual_arm.geometry import pose_matrix
+            from .grasp_orientation import nearest_grasp_orientation
+            joints=observation.meta['joints_deg']['right']
+            world=self.config.arms['right'].world_from_base@pose_matrix(self.models['right'].forward(joints))
+            source,report=nearest_grasp_orientation(source,world[:3,:3],prefer_ccw=True)
+            if report is not None:
+                (Path(folder)/'grasp_orientation_policy.json').write_text(json.dumps(report,indent=2)+'\n')
+        return super().execute(source,observation,folder)
 
     def adjust_motion(self,source,folder):
         task=lower_task_grasps(source,folder,offset_mm=self.grasp_offset_mm)

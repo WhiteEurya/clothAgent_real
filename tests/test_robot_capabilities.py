@@ -35,6 +35,9 @@ def test_generated_limits_and_coordinates_match_models(report):
     text=render_capabilities(data)
     assert '|---:|---:|\n| 0 |' in text
     assert '外边界，不是保证可达的内工作区' in text
+    assert 'grasp 给观测原始高度' not in text
+    assert 'arm6/arm7 单臂 15 mm' not in text
+    assert '直接检查输入的 TCP 目标' in text
 
 
 def test_formula_not_reused_after_tcp_geometry_change(report):

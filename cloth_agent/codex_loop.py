@@ -15,6 +15,7 @@ from .run_storage import runs_root
 
 from .codex_astra_pipeline import ROOT, DEFAULT_TASK, run
 from .codex_motion import CONTRACT, parse_code
+from .action_robustness import CODE_PROMPT, strip_code_evidence
 
 DEFAULT_REFERENCES = (
     (ROOT/'data/reference/fold_states/active/state_01_left_sleeve.png', '步骤 1：左袖向内折后的状态'),
@@ -62,6 +63,7 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
                        '\n参考图可能来自不同衣物、相机和桌面，只借鉴结构与折叠形状，不照搬像素、位置、尺寸或动作坐标。') if reference_rows else ''
     policy=getattr(runtime,'planning_policy',COOPERATION_POLICY)
     contract=getattr(runtime,'motion_contract',CONTRACT)
+    runtime.unfold_grasp_symmetry=bool(unfold)
     completion='如果当前观测表明衣物已整齐叠好，只输出 motion.complete()。'
     if unfold:
         if len(reference_rows)!=1:
@@ -69,19 +71,19 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
         active=getattr(runtime,'active_arms',())
         if active not in (('right',),('left',)):
             raise ValueError('unfold requires a single-arm runtime')
-        initial_offset_mm=15. if active==('right',) else 5.
+        initial_offset_mm=17. if active==('right',) else 5.
         runtime.grasp_offset_mm=initial_offset_mm
         contract=contract.replace('15 mm',f'{initial_offset_mm:g} mm')
         policy=(f'只使用 {active[0]} 单臂将揉乱的衣服逐步展开复原，另一臂保持原位。'
                 '辨认衣领、两袖、衣身和下摆，逐步解开堆叠与翻折，恢复参考图的展开轮廓和相对结构。'
                 '选择单夹爪可完成的动作，尽可能和human demonstration最开始的样子相似。'
                 '参考图只提供目标形状，不能直接拿它的像素或坐标指挥机器人。'
-                '抓点从当前 world_xyz_mm.npy 读取毫米坐标，使用观测原始抓取高度，不要自行添加下降偏移。\n')
+                '抓点从当前 world_xyz_mm.npy 读取毫米坐标，使用观测原始抓取高度，不要自行添加下降偏移。平行夹爪的夹取方向相差180度时等价；宿主会选择更接近当前姿态的一支，并同步变换持布姿态，避免多余半圈旋转。\n')
         reference_context=('\n目标附件是 human demonstration 最开始的展开状态：'+json.dumps(reference_rows,ensure_ascii=False)+
                            '\n这是展开复原的唯一目标，不是折叠动作序列。允许衣物、视角与尺寸不同，比较衣物本身的结构。')
         contract=contract.replace('已叠好时','已恢复参考图的展开状态时').replace('折叠关键','展开关键')
         completion='只有当前图像显示两袖、衣身和下摆已展开，且整体形状接近目标参考图时，才输出 motion.complete()。'
-    # Legacy memory argument is accepted but deliberately never read or written.
+    # Legacy memory options are accepted but no longer used; each run owns one session.
     session_started=time.perf_counter()
     result={'status':'ROUND_LIMIT','physical_execution':runtime.physical,'rounds':0}
     try:
@@ -95,7 +97,7 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
             write(output/'robot_capabilities.json',capabilities)
             (output/'robot_capabilities.md').write_text(capability_text)
         previous_outcome=None;before=None;previous_source=None
-        memory_record=None;previous_image=None
+        session_id=None;previous_image=None
         for index in count(1):
             if max_rounds is not None and index>max_rounds:break
             folder=output/f'round_{index:03d}';folder.mkdir()
@@ -104,7 +106,7 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
             if unfold:
                 offset=runtime.grasp_offset_mm
                 round_contract=contract.replace(f'{initial_offset_mm:g} mm',f'{offset:g} mm')
-                round_contract+=f'\n本轮宿主额外下降 {offset:g} mm。闭合完成后继续原定搬运动作，不根据夹爪位置或机械抓取信号判空、中断或自动加深；效果由后续图像判断。输出原始高度，不重复扣减。'
+                round_contract+=f'\n本轮宿主额外下降 {offset:g} mm。闭合完成后继续原定搬运动作，不单凭夹爪位置或机械信号判空或中断；下一轮结合前后图像与可靠闭合反馈确认抓空后增加3 mm，上限30 mm。输出原始高度，不重复扣减。'
                 round_capabilities=capability_text.replace(f'{initial_offset_mm:g} mm',f'{offset:g} mm').replace(f'--grasp-offset-mm {initial_offset_mm:g}',f'--grasp-offset-mm {offset:g}')
             with RoundTiming(folder,index) as timing:
                 retry_ik=(previous_outcome is not None and before is not None
@@ -154,28 +156,56 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
                 images=[] if retry_ik else [before.image,*reference_images]
                 if unfold and retry_ik:
                     prompt=prompt.replace('折叠顺序','展开顺序').replace('折叠策略','展开策略')
-                if remember_iterations:
-                    from .codex_iteration_memory import memory_prompt,parse_answer
-                    write(folder/'memory_input.json',memory_record)
+                prompt+=f'\n这是同一次机器人任务的第 {index} 轮，沿用本会话历史，不需要输出或转交记忆摘要。最新观测优先；旧坐标不可直接用于新动作。'
+                if unfold:
+                    from .codex_grasp_assessment import assessment_prompt, parse_assessment_answer
                     if previous_image is not None and not retry_ik:
                         images.append(previous_image)
                         prompt+='\n最后一张附件是上一轮动作前的 RGB，只用于与当前第一张图比较效果，不是目标参考图。'
-                    prompt+=memory_prompt(memory_record)
+                    prompt+=assessment_prompt()
+                prompt+='\n'+CODE_PROMPT
+                if retry_ik:
+                    prompt+='\n本次只对失败点及必要关联修改重查上述稳健性，保留其余既有动作意图。'
                 with timing.measure('gpt_code_repair_s' if retry_ik else 'gpt_planning_s'):
                     call=model_call(prompt,output=folder/'planner',read_only=True,raw_prompt=True,
-                                    images=images,timeout_s=timeout_s)
+                                    images=images,timeout_s=timeout_s,session_id=session_id,
+                                    trace_output=output/'planning_trace.jsonl',trace_iteration=index)
                 if call['status']!='AGENT_FINISHED':
                     timing.status='MODEL_FAILED'
                     result.update(status='MODEL_FAILED',model_result=call);break
+                returned_session=call.get('session_id')
+                if (not isinstance(returned_session,str) or not returned_session.strip()
+                        or (session_id is not None and returned_session!=session_id)):
+                    timing.status='MODEL_FAILED'
+                    result.update(status='MODEL_FAILED',error='Missing or changed Codex session ID; no motion dispatched')
+                    break
+                session_id=returned_session
+                write(output/'session.json',dict(session_id=session_id,last_round=index))
+                write(folder/'session.json',dict(session_id=session_id,continued=index>1))
                 source=(folder/'planner/answer.txt').read_text()
-                if remember_iterations:
-                    source,model_memory=parse_answer(source)
+                assessment=None
+                if unfold:
+                    source,assessment=parse_assessment_answer(source)
+                    write(folder/'grasp_assessment.json',assessment)
+                source=strip_code_evidence(source,folder)
                 (folder/'motion.py').write_text(source)
                 calls=parse_code(source,allow_complete=True,allow_grasp=True)
-                if remember_iterations:
-                    write(folder/'model_memory.json',model_memory)
                 terminal=calls[0][0]
-                if terminal in ('complete','blocked'):
+                depth_limit=False
+                if unfold and previous_outcome is not None and not retry_ik:
+                    from .unfold_grasp_retry import visual_retry_policy
+                    depth_report=visual_retry_policy(output/f'round_{index-1:03d}',active[0],
+                        previous_outcome,runtime.grasp_offset_mm,assessment)
+                    write(folder/'grasp_retry_policy.json',depth_report)
+                    if terminal not in ('complete','blocked'):
+                        runtime.grasp_offset_mm=depth_report['next_offset_mm']
+                        depth_limit=depth_report['limit_reached']
+                        if depth_report['assessment']=='corroborated_miss':
+                            print(f'Round {index}: 图像与闭合反馈共同支持抓空，额外下降 {runtime.grasp_offset_mm:g} mm。',flush=True)
+                if depth_limit:
+                    outcome=dict(status='GRASP_RETRY_LIMIT',physical_execution=False,
+                                 error='视觉与闭合反馈仍支持抓空，额外下降已达到30 mm上限，停止执行。')
+                elif terminal in ('complete','blocked'):
                     outcome=dict(status='MODEL_REPORTED_COMPLETE' if terminal=='complete' else 'BLOCKED',
                                  physical_execution=False,**calls[0][1])
                 else:
@@ -184,13 +214,11 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
                     timing.seconds.update(outcome.get('timings_s',{}))
                 timing.status=outcome['status']
                 write(folder/'outcome.json',outcome)
-                if remember_iterations:
-                    memory_record=dict(iteration=index,memory=model_memory,code=source,outcome=outcome,
-                                       observation=str(before.directory.resolve()))
-                    write(output/'iteration_memory.json',memory_record)
-                    with (output/'iteration_history.jsonl').open('a') as history:
-                        history.write(json.dumps(memory_record,ensure_ascii=False)+'\n')
-                    previous_image=before.image
+                with (output/'iteration_history.jsonl').open('a') as history:
+                    history.write(json.dumps(dict(iteration=index,session_id=session_id,code=source,
+                        outcome=outcome,grasp_assessment=assessment,
+                        observation=str(before.directory.resolve())),ensure_ascii=False)+'\n')
+                previous_image=before.image
                 print(f'Round {index}: {outcome["status"]}',flush=True)
                 if outcome.get('error'):
                     print(f'失败原因：{outcome["error"]}',flush=True)
@@ -206,7 +234,7 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
                     print(f'详细记录：{(folder/"outcome.json").resolve()}',flush=True)
                 previous_outcome=outcome;previous_source=source
                 result['rounds']=index
-                if outcome['status'] in ('EXECUTION_FAILED','MODEL_REPORTED_COMPLETE'):
+                if outcome['status'] in ('EXECUTION_FAILED','MODEL_REPORTED_COMPLETE','GRASP_RETRY_LIMIT'):
                     result.update(status=outcome['status'],outcome=outcome);break
                 # IK-only rejection reuses the stationary observation; after
                 # execution or other outcomes the next attempt captures anew.
@@ -221,11 +249,12 @@ def loop(task, runtime, output, *, max_rounds=None, memory=None, model_call=run,
     return result
 
 
-def main(argv=None):
+def main(argv=None, *, reasoning_effort='high'):
+    from functools import partial
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task')
     parser.add_argument('--unfold',action='store_true',help='单臂将揉乱衣物恢复到 demonstration 初始展开图')
-    parser.add_argument('--remember-iterations',action='store_true',help='保存 GPT 记忆并提供给下一轮；每次 run 独立')
+    parser.add_argument('--remember-iterations',action='store_true',help='兼容旧命令；所有轮次已默认沿用同一模型会话，不再转交记忆摘要')
     arms=parser.add_mutually_exclusive_group()
     arms.add_argument('--arm7-only',action='store_true',help='仅连接 arm7/right；arm6 使用保存的固定位置参与碰撞检查')
     arms.add_argument('--arm6-only',action='store_true',help='仅 arm6/left 运动；arm7 保持原位并参与碰撞检查')
@@ -273,7 +302,8 @@ def main(argv=None):
         task=args.task or ('只使用 arm6 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm6_only else '只使用 arm7 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm7_only else DEFAULT_TASK)
         if args.unfold and args.task is None:task='将被揉乱的衣服展开，恢复到 human demonstration 最开始图片的样子。'
         result=loop(task,runtime,output,max_rounds=args.max_rounds,memory=args.memory,timeout_s=args.timeout_s,
-                    references=references,unfold=args.unfold,remember_iterations=args.remember_iterations)
+                    references=references,unfold=args.unfold,remember_iterations=args.remember_iterations,
+                    model_call=partial(run,reasoning_effort=reasoning_effort))
         print(json.dumps(result,ensure_ascii=False,indent=2))
         return 0 if result['status'] in ('ROUND_LIMIT','MODEL_REPORTED_COMPLETE') else 1
     finally:

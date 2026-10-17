@@ -1,0 +1,182 @@
+{
+  "ssd_runs/arm7_home_20261017T080719167829Z": {
+    "files": 1,
+    "bytes": 66
+  },
+  "ssd_runs/arm7_home_20261017T080804109873Z": {
+    "files": 5,
+    "bytes": 14381
+  },
+  "ssd_runs/codex_astra": {
+    "files": 8200,
+    "bytes": 15782589014
+  },
+  "ssd_runs/gamepad_20261017T071859129250Z": {
+    "files": 33,
+    "bytes": 18462
+  },
+  "ssd_runs/gamepad_20261017T073802428868Z": {
+    "files": 183,
+    "bytes": 226812
+  },
+  "ssd_runs/gamepad_20261017T075236636364Z": {
+    "files": 2,
+    "bytes": 22577
+  },
+  "ssd_runs/gamepad_20261017T075950475754Z": {
+    "files": 2,
+    "bytes": 2565
+  },
+  "ssd_runs/gamepad_20261017T080457287281Z": {
+    "files": 2,
+    "bytes": 86469
+  },
+  "ssd_runs/graph_from_scratch_20261013_213352": {
+    "files": 66,
+    "bytes": 36382726
+  },
+  "ssd_runs/graph_from_scratch_20261013_214409": {
+    "files": 71,
+    "bytes": 74912996
+  },
+  "ssd_runs/graph_from_scratch_20261013_220038": {
+    "files": 219,
+    "bytes": 189055722
+  },
+  "ssd_runs/gravity_unfold_experience_v0": {
+    "files": 407,
+    "bytes": 167627259
+  },
+  "ssd_runs/gravity_unfold_v1": {
+    "files": 5,
+    "bytes": 314030
+  },
+  "ssd_runs/gravity_unfold_v1_20261013_183843": {
+    "files": 19,
+    "bytes": 23483079
+  },
+  "ssd_runs/gravity_unfold_v1_20261013_184824": {
+    "files": 46,
+    "bytes": 55546834
+  },
+  "ssd_runs/gravity_unfold_v1_20261013_184824_v0_review": {
+    "files": 411,
+    "bytes": 167438016
+  },
+  "ssd_runs/gravity_unfold_v1_20261013_185527": {
+    "files": 46,
+    "bytes": 52901216
+  },
+  "ssd_runs/gravity_unfold_v1_20261013_185527_v0_review": {
+    "files": 412,
+    "bytes": 167442126
+  },
+  "ssd_runs/gravity_unfold_v1_v0_review": {
+    "files": 423,
+    "bytes": 167459302
+  },
+  "ssd_runs/minimal_pa_pb_20261014_193437": {
+    "files": 9,
+    "bytes": 87817
+  },
+  "ssd_runs/minimal_pa_pb_20261014_193524": {
+    "files": 9,
+    "bytes": 87817
+  },
+  "ssd_runs/minimal_pa_pb_20261014_193535": {
+    "files": 43,
+    "bytes": 45386279
+  },
+  "ssd_runs/minimal_pa_pb_20261014_194120": {
+    "files": 43,
+    "bytes": 52116044
+  },
+  "ssd_runs/minimal_pa_pb_20261014_194723": {
+    "files": 43,
+    "bytes": 46069151
+  },
+  "ssd_runs/minimal_pa_pb_20261014_195330": {
+    "files": 46,
+    "bytes": 45947504
+  },
+  "ssd_runs/online_graph_growth_20261013_194251": {
+    "files": 96,
+    "bytes": 82465799
+  },
+  "ssd_runs/online_graph_growth_20261013_195243": {
+    "files": 91,
+    "bytes": 72622232
+  },
+  "ssd_runs/online_graph_growth_20261013_195850": {
+    "files": 872,
+    "bytes": 886188318
+  },
+  "ssd_runs/online_graph_growth_resume_20261013_210643": {
+    "files": 302,
+    "bytes": 372810974
+  },
+  "ssd_runs/seed_minimal_20261014_201119": {
+    "files": 48,
+    "bytes": 53208607
+  },
+  "ssd_runs/seed_minimal_20261014_202646": {
+    "files": 48,
+    "bytes": 46669431
+  },
+  "ssd_runs/seed_minimal_20261014_204131": {
+    "files": 117,
+    "bytes": 134208786
+  },
+  "ssd_runs/seed_minimal_20261014_210920": {
+    "files": 43,
+    "bytes": 42208201
+  },
+  "ssd_runs/seed_minimal_20261014_213236": {
+    "files": 185,
+    "bytes": 217814251
+  },
+  "ssd_runs/seed_minimal_20261014_215326": {
+    "files": 33,
+    "bytes": 29112207
+  },
+  "ssd_runs/seed_minimal_20261014_215445": {
+    "files": 146,
+    "bytes": 194651722
+  },
+  "ssd_runs/seed_minimal_20261014_225011": {
+    "files": 49,
+    "bytes": 91728719
+  },
+  "ssd_runs/seed_minimal_20261014_225645": {
+    "files": 48,
+    "bytes": 42237096
+  },
+  "ssd_runs/seed_minimal_20261014_230100": {
+    "files": 148,
+    "bytes": 188033777
+  },
+  "ssd_runs/seed_minimal_20261014_231601": {
+    "files": 359,
+    "bytes": 610788492
+  },
+  "workspace/config": {
+    "files": 1,
+    "bytes": 81869
+  },
+  "workspace/data": {
+    "files": 2,
+    "bytes": 28819
+  },
+  "workspace/diagnostics": {
+    "files": 330,
+    "bytes": 330141061
+  },
+  "workspace/reports": {
+    "files": 7342,
+    "bytes": 4513825259
+  },
+  "workspace/runs": {
+    "files": 11072,
+    "bytes": 12142543233
+  }
+}

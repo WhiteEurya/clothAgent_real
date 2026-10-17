@@ -7,7 +7,8 @@ from cloth_agent.perception import CameraSpec, RealSenseRGBD
 
 
 @pytest.mark.parametrize('unstable', [False, True])
-def test_capture_waits_for_depth_or_rejects_observation(tmp_path, monkeypatch, unstable):
+@pytest.mark.parametrize('camera_b', [False, True])
+def test_capture_waits_for_depth_or_rejects_observation(tmp_path, monkeypatch, unstable, camera_b):
     from cloth_agent.dual_arm import observation
     from cloth_agent.dual_arm.geometry import DualArmError
     class Camera:
@@ -26,6 +27,13 @@ def test_capture_waits_for_depth_or_rejects_observation(tmp_path, monkeypatch, u
         'depth_exposure_us':4000., 'depth_stability':{
             'warmup_frames':30,'max_frames':30,'window_frames':5,
             'stable_windows':3,'max_range_mm':3.}}})
+    if camera_b:
+        from pathlib import Path
+        from cloth_agent.codex_camera_b import with_arm7_camera
+        from cloth_agent.dual_arm.config import DualConfig
+        root = Path(__file__).resolve().parents[1]
+        real_config = with_arm7_camera(DualConfig.load(root/'config/dual_arm.local.json', root=root, homing_only=True))
+        config.raw['camera']['depth_stability'] = real_config.raw['camera']['depth_stability']
     monkeypatch.setattr(observation,'create_camera',lambda config:camera)
     if unstable:
         with pytest.raises(DualArmError,match='did not stabilize'):
@@ -35,7 +43,7 @@ def test_capture_waits_for_depth_or_rejects_observation(tmp_path, monkeypatch, u
         obs=observation.capture(tmp_path/'obs',config,{},lambda:{})
         assert obs.meta['depth_stability']['stable']
         assert obs.meta['depth_capture_policy']['depth_exposure_us']==4000.
-        assert camera.reads==50
+        assert camera.reads==(75 if camera_b else 50)
     assert not camera.started
 
 

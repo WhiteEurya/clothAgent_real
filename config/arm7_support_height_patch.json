@@ -1,0 +1,111 @@
+{
+  "enabled": true,
+  "mode": "support_plane_z",
+  "plane_z_ax_by_c": [
+    -0.03402499587429761,
+    -0.0036439536924375297,
+    80.95387816602235
+  ],
+  "anchor_xy_mm": [
+    594.025742602651,
+    -171.2098752564162
+  ],
+  "reference_joints_deg": [
+    -1.755371,
+    -3.490573,
+    0.187987,
+    112.804446,
+    1.037856,
+    108.204226,
+    0.32418
+  ],
+  "max_joint_delta_deg": 0.2,
+  "reference_world_from_camera_mm": [
+    [
+      -0.03902673401731841,
+      -0.9964518106389877,
+      -0.07457012207462795,
+      634.0879500643404
+    ],
+    [
+      -0.9992337206674542,
+      0.03869511356213978,
+      0.005887246172261253,
+      32.87816094153168
+    ],
+    [
+      -0.0029808577660064917,
+      0.07474274052171595,
+      -0.9971983941153757,
+      677.8892862488013
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "max_camera_translation_delta_mm": 2.0,
+  "max_camera_rotation_delta_deg": 0.2,
+  "source": "diagnostics/table_z_chain_audit_20261014/report.json",
+  "reference_note": "User-confirmed OPEN-gripper approximate contact TCP Z used as trial grasp-height baseline, replacing the earlier closed-contact baseline. Not optical sponge surface Z. Preserve raw-plane leveling and observed height residuals; residuals are not independently verified cloth thickness. No additional global 13.5 mm lowering. Measured orientation differs from vertical grasp; no unmeasured orientation compensation applied.",
+  "z_policy": "raw_plane_to_reference_height",
+  "reference_height_mm": 45.92204371217245,
+  "input_coordinate_policy": "uncorrected_world_xyz_only",
+  "contact_reference": {
+    "source": "diagnostics/extrinsics_audit_20261014/open_closed_contact_result.json",
+    "world_tcp_mm_deg": [
+      486.91385762006496,
+      169.4495975100455,
+      45.92204371217245,
+      -176.49867057172276,
+      -2.3926176862795003,
+      51.77134500330006
+    ],
+    "gripper_position_pulse": 840,
+    "semantics": "empirical_open_gripper_contact_tcp_height",
+    "user_confirmed": true,
+    "contact_quality": "approximate visual contact, slight sponge compression",
+    "orientation_compensation_applied": false,
+    "validation_status": "trial_baseline_pending_grasp_validation",
+    "paired_closed_contact_world_z_mm": 59.415713126554216,
+    "paired_closed_minus_open_z_mm": 13.493669414381763,
+    "previous_reference_height_mm": 52.5038183117912,
+    "previous_reference_backup": "diagnostics/open_contact_height_activation_20261014/arm7_support_height_patch.before.json"
+  },
+  "calibration_migration": {
+    "method": "Transform previously measured raw support plane by T_new @ inverse(T_old) at its original reference joints; retain physical TCP contact height.",
+    "previous_policy": "diagnostics/camb_consistent_fk_activation_20261016T121115Z/arm7_support_height_patch.before.json",
+    "extrinsics_source": "config/calibration/dual_arm_working_20261008/camB_extrinsics.yaml",
+    "runtime_urdf": "assets/robots/xarm7/xarm7_controller_fit.urdf",
+    "runtime_urdf_sha256": "edee030ff0d4805a921ee78ca5e7aaecfdde1117e8558249152f5d6a49d7b252",
+    "new_world_from_old_world_mm": [
+      [
+        0.9998096076284351,
+        0.01913327389087554,
+        -0.0038296637047022498,
+        2.1068724894125808
+      ],
+      [
+        -0.019034102426438798,
+        0.9995199885752141,
+        0.024443718690565046,
+        -1.351498272633762
+      ],
+      [
+        0.0042955137869890156,
+        -0.024366170581779523,
+        0.999693872289155,
+        -2.6350124693309454
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "new_surface_measurement": false
+  }
+}

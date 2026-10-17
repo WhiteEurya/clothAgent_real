@@ -55,10 +55,10 @@ def _context(runtime,index,phase,arm=None,**details):
     if arm is not None:runtime.planning_context['arm']=arm
 
 
-def _grippers(runtime,q,arms,action):
+def _grippers(runtime,q,arms,action,**details):
     with complete_proof(cancel=runtime.cancel,progress=runtime._proof_progress):
         certify_segment(q,q,runtime.config,runtime.models)
-    return [('gripper',dict(arm=k,action=action,joints={a:v.tolist() for a,v in q.items()})) for k in arms]
+    return [('gripper',dict(arm=k,action=action,joints={a:v.tolist() for a,v in q.items()},**details)) for k in arms]
 
 
 def _joint_goal(runtime,arm,goal,q):
@@ -116,20 +116,31 @@ def _approach(runtime,arm,pose,q):
     raise last
 
 
-def _retreat(runtime,arm,q,index):
+def _retreat(runtime,arm,q,index,*,complete_release=False):
     world=runtime.config.arms[arm].world_from_base@pose_matrix(runtime.models[arm].forward(q[arm]))
     pose=matrix_pose(world);pose=np.r_[pose[:3]/1000,np.radians(pose[3:])]
     failures=[]
     for height_mm,inward_mm,hover in _clearance_targets(runtime,arm,pose):
+        # Before full opening, lift vertically with useful clearance; do not
+        # substitute a sideways retreat while cloth may still touch the jaws.
+        if complete_release and (inward_mm or height_mm<20.):continue
         if runtime.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
         _context(runtime,index,'host_retreat',arm,retreat_height_mm=height_mm,
                  inward_mm=inward_mm,generated_target_world_m_rad=hover)
         try:
             segments,raised=runtime._tcp_segments(arm,hover, q,allow_detour=False)
+            release=[]
+            if complete_release:
+                _context(runtime,index,'host_full_release',arm,retreat_height_mm=height_mm)
+                release=_grippers(runtime,raised,(arm,),'open')
             goal=_copy(raised);goal[arm]=runtime.config.arms[arm].home_joints.copy()
             _context(runtime,index,'host_return_home',arm,retreat_height_mm=height_mm)
             moves,home=_joint_goal(runtime,arm,goal,raised)
-            return [('move',s) for s in segments]+moves,home
+            if complete_release:
+                runtime.plan_stats.setdefault('staged_release',{})[arm]=dict(
+                    opening_delta_pulse=runtime.release_open_delta_pulse,
+                    lift_height_mm=height_mm,full_open_after_lift=True)
+            return [('move',s) for s in segments]+release+moves,home
         except DualArmError as exc:
             failures.append(dict(height_mm=height_mm,inward_mm=inward_mm,error=str(exc),context=dict(runtime.planning_context)))
             last=exc
@@ -182,9 +193,16 @@ def plan_grasp_task(runtime,calls,initial):
                 segments,q=runtime._tcp_segments(arm,pose,q,allow_detour=False)
                 operations.extend(('move',s) for s in segments)
             if len(operations)>8192:raise DualArmError('round exceeds planning segment budget')
-    _context(runtime,len(calls),'host_release')
-    operations.extend(_grippers(runtime,q,arms,'open'))
-    moves,q=_ordered_phase(runtime,q,arms,lambda k,state:_retreat(runtime,k,state,len(calls)))
+    staged=getattr(runtime,'staged_release',False)
+    _context(runtime,len(calls),'host_partial_release' if staged else 'host_release')
+    if staged:
+        from .dual_arm.single_arm_backend import validate_release_delta
+        delta=runtime.release_open_delta_pulse
+        for arm in arms:validate_release_delta(runtime.config.arms[arm].gripper,delta)
+        operations.extend(_grippers(runtime,q,arms,'release_partial',opening_delta_pulse=delta))
+    else:
+        operations.extend(_grippers(runtime,q,arms,'open'))
+    moves,q=_ordered_phase(runtime,q,arms,lambda k,state:_retreat(runtime,k,state,len(calls),complete_release=staged))
     operations.extend(moves)
     operations=runtime._join_moves(operations,set())
     if len(operations)>512:raise DualArmError('round exceeds command budget')

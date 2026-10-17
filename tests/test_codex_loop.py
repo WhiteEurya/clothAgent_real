@@ -30,7 +30,7 @@ def model(runtime,prompts,answers=None):
         runtime.events.append('planning');prompts.append(prompt);output.mkdir()
         answer=answers.pop(0) if answers else 'motion.gripper(arm="left",action="open")'
         (output/'answer.txt').write_text(answer)
-        return {'status':'AGENT_FINISHED'}
+        return {'status':'AGENT_FINISHED','session_id':'test-session'}
     return call
 
 
@@ -78,6 +78,7 @@ def test_ik_failure_returns_full_feedback_and_reuses_observation_until_execution
     second='motion.move_tcp(left=[.7,-.085,.11,3.14,0,-1.3])'
     inner=model(runtime,prompts,[first,second,'motion.complete()'])
     def repair_model(prompt,**kwargs):
+        assert kwargs['session_id']==(None if not attached else 'test-session')
         attached.append(kwargs['images'])
         return inner(prompt,**kwargs)
     result=loop('fold',runtime,tmp_path/'run',model_call=repair_model)
@@ -121,7 +122,7 @@ def test_ordered_references_reach_only_planning(tmp_path):
         calls.append((prompt,list(images)));output.mkdir()
         assert output.name=='planner'
         (output/'answer.txt').write_text('motion.complete()')
-        return {'status':'AGENT_FINISHED'}
+        return {'status':'AGENT_FINISHED','session_id':'test-session'}
     result=loop('fold',runtime,tmp_path/'run',model_call=call,references=references)
     assert result['status']=='MODEL_REPORTED_COMPLETE' and len(calls)==1
     assert len(calls[0][1])==6
@@ -190,3 +191,36 @@ def test_default_loop_continues_past_twenty_and_blocked_until_complete(tmp_path)
     assert len(runtime.captures)==22 and not runtime.executions
     assert 'no usable depth' in prompts[1]
     assert runtime.closed
+
+
+@pytest.mark.parametrize('returned',[None,'other-session'])
+def test_missing_or_changed_session_never_dispatches_next_motion(tmp_path,returned):
+    runtime=FakeRuntime();ids=[]
+    def call(prompt,output,session_id,**kwargs):
+        ids.append(session_id);output.mkdir()
+        (output/'answer.txt').write_text('motion.gripper(arm="left",action="open")')
+        return dict(status='AGENT_FINISHED',session_id='original-session' if len(ids)==1 else returned)
+    result=loop('fold',runtime,tmp_path/'run',max_rounds=3,model_call=call)
+    assert result['status']=='MODEL_FAILED'
+    assert ids==[None,'original-session'] and len(runtime.executions)==1
+
+
+def test_runs_start_separate_sessions_and_reuse_within_run(tmp_path):
+    for n in range(2):
+        runtime=FakeRuntime();ids=[]
+        def call(prompt,output,session_id,**kwargs):
+            ids.append(session_id);output.mkdir()
+            (output/'answer.txt').write_text('motion.gripper(arm="left",action="open")')
+            return dict(status='AGENT_FINISHED',session_id=f'session-{n}')
+        result=loop('fold',runtime,tmp_path/f'run{n}',max_rounds=3,model_call=call)
+        assert result['status']=='ROUND_LIMIT' and ids==[None,f'session-{n}',f'session-{n}']
+
+
+
+def test_first_session_missing_never_dispatches(tmp_path):
+    runtime=FakeRuntime()
+    def call(prompt,output,**kwargs):
+        output.mkdir();(output/'answer.txt').write_text('motion.gripper(arm="left",action="open")')
+        return dict(status='AGENT_FINISHED')
+    result=loop('fold',runtime,tmp_path/'run',max_rounds=1,model_call=call)
+    assert result['status']=='MODEL_FAILED' and not runtime.executions

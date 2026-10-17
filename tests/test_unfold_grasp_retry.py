@@ -27,17 +27,17 @@ def test_unfold_empty_feedback_does_not_retry_or_deepen(tmp_path,remember):
     def call(prompt,output,**kwargs):
         prompts.append(prompt);output.mkdir()
         code='motion.grasp(right=[.5,0,.05,3.14,0,0])\nmotion.move_tcp(right=[.5,.1,.1,3.14,0,0])'
-        if remember:
-            from cloth_agent.codex_iteration_memory import FIELDS
-            code=json.dumps(dict(code=code,memory={k:'preserved memory' for k in FIELDS}))
+        code=json.dumps(dict(code=code,grasp_assessment=dict(result='uncertain',cloth_motion='uncertain',evidence='insufficient evidence')))
         (output/'answer.txt').write_text(code)
-        return dict(status='AGENT_FINISHED')
+        return dict(status='AGENT_FINISHED',session_id='test-session')
     result=loop('unfold',runtime,tmp_path/'run',unfold=True,remember_iterations=remember,
                 max_rounds=3,references=reference(tmp_path),model_call=call)
     assert result['status']=='ROUND_LIMIT'
-    assert runtime.heights==pytest.approx([.035]*3)
+    assert runtime.heights==pytest.approx([.033]*3)
     assert len(prompts)==3
-    assert not list((tmp_path/'run').glob('round_*/grasp_retry*.json'))
+    reports=list((tmp_path/'run').glob('round_*/grasp_retry_policy.json'))
+    assert len(reports)==2
+    assert all(json.loads(p.read_text())['assessment']=='unconfirmed' for p in reports)
 
 
 @pytest.mark.parametrize('state,position,extra,expected',[
@@ -88,3 +88,54 @@ def test_dispatch_continues_after_completed_close(tmp_path,monkeypatch,state,pos
     assert result['completed_commands']==(2 if expected=='EXECUTED' else 1 if expected=='GRASP_EMPTY' else 0)
 
 
+
+
+@pytest.mark.parametrize('visual,mechanical,expected',[
+    ('missed','stop',18), ('held','stop',15), ('uncertain','stop',15), ('missed','grasp',15),
+])
+def test_visual_and_mechanical_evidence_both_required(tmp_path,visual,mechanical,expected):
+    from cloth_agent.unfold_grasp_retry import visual_retry_policy
+    telemetry(tmp_path,mechanical,5 if mechanical=='stop' else 30)
+    assessment=dict(result=visual,cloth_motion='unchanged',evidence='布边和预期落点均未移动')
+    r=visual_retry_policy(tmp_path,'right',dict(status='EXECUTED',physical_execution=True),15,assessment)
+    assert r['next_offset_mm']==expected
+    assessment['cloth_motion']='moved'
+    assert visual_retry_policy(tmp_path,'right',dict(status='EXECUTED',physical_execution=True),15,assessment)['next_offset_mm']==15
+
+
+def test_confirmed_misses_deepen_actual_grasp_and_stop_at_limit(tmp_path):
+    from cloth_agent.codex_arm7_runtime import Arm7Runtime
+    from cloth_agent.codex_motion import parse_code
+    class Runtime(Arm7Fake):
+        def __init__(self):super().__init__();self.heights=[]
+        def execute(self,source,before,folder):
+            effective=Arm7Runtime.adjust_motion(self,source,folder)
+            self.heights.append(parse_code(effective,allow_grasp=True)[0][1]['right'][2])
+            telemetry(folder)
+            return dict(status='EXECUTED',physical_execution=True)
+    runtime=Runtime();images_seen=[]
+    def call(prompt,output,images,**kwargs):
+        images_seen.append(images)
+        output.mkdir()
+        assessment=dict(result='missed',cloth_motion='unchanged',evidence='抓点邻域与预期落点均未改变')
+        code='motion.grasp(right=[.5,0,.05,3.14,0,0])\nmotion.move_tcp(right=[.5,.1,.1,3.14,0,0])'
+        (output/'answer.txt').write_text(json.dumps(dict(code=code,grasp_assessment=assessment)))
+        return dict(status='AGENT_FINISHED',session_id='test-session')
+    result=loop('unfold',runtime,tmp_path/'run',unfold=True,max_rounds=8,
+                references=reference(tmp_path),model_call=call)
+    assert result['status']=='GRASP_RETRY_LIMIT'
+    assert runtime.heights==pytest.approx([.033,.030,.027,.024,.021,.020])
+    assert len(images_seen)==7 and len(images_seen[1])==3
+    assert not (tmp_path/'run/round_007/grasp_height_policy.json').exists()
+
+
+@pytest.mark.parametrize('status,physical,extra',[
+    ('PLANNING_FAILED',False,{}), ('BLOCKED',False,{}), ('EXECUTION_FAILED',True,{}),
+    ('EXECUTED',True,{'read_errors':['read failed']}),
+])
+def test_visual_miss_cannot_override_failed_execution_or_bad_feedback(tmp_path,status,physical,extra):
+    from cloth_agent.unfold_grasp_retry import visual_retry_policy
+    telemetry(tmp_path,**extra)
+    assessment=dict(result='missed',cloth_motion='unchanged',evidence='no movement')
+    report=visual_retry_policy(tmp_path,'right',dict(status=status,physical_execution=physical),20,assessment)
+    assert report['next_offset_mm']==20

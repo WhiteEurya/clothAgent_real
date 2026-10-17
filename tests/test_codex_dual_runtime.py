@@ -47,6 +47,7 @@ def test_dual_observation_uses_camera_b_without_single_arm_restrictions(monkeypa
         camera=r.config.raw['camera']
         assert camera['serial']=='233622079809' and camera['mount_arm']=='right'
         assert camera['depth_exposure_us']==4000 and camera['depth_gain']==16
+        assert camera['support_height_patch']['enabled'] is True
         assert not getattr(r.config,'static_arm_obstacles',{})
         assert not getattr(r.config,'collision_envelopes_disabled_arms',set())
         from cloth_agent.codex_arm7_runtime import Arm7Runtime

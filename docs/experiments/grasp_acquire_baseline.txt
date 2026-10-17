@@ -1,0 +1,205 @@
+grasp_acquire_baseline — independent manual-Pa acquisition experiment
+
+Run ONE physical trial from the workstation desktop terminal:
+
+  /home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.experiments.grasp_acquire_baseline run --execute
+
+The command opens arm7 and goes to its existing perception pose, captures the
+current B RGB, then opens a point-selection window. Click Pa, press Enter to
+accept, or Esc to cancel. Enter accepts this trial's grasp location. The command
+does not call any model. It never loads a graph or a replay template.
+
+Sequence:
+  existing Host pregrasp/descend -> close once -> vertical lift exactly 25 mm
+  -> hold 2 seconds and save RGB -> descend to the original commanded grasp
+  -> existing release/retreat/Home -> operator enters HELD/MISS/UNCERTAIN.
+
+Arm7 staged release is supported: after placement, partially open, lift vertically
+by a prevalidated 60/40/20 mm clearance, then fully open and return Home. Nothing
+is released at the 25 mm acquisition checkpoint. All phases, including placement
+and staged release, are planned before the first grasp dispatch. Single-trial
+and batch entrypoints share this behavior; partial-release or lift failure stops
+before later commands through the existing executor.
+
+Re-running the same command creates trial_000002, trial_000003, etc. It does NOT
+automatically start the next trial. Default root: runs/grasp_acquire_baseline.
+--output selects another numbered root; prior trials are never overwritten.
+--yaw-deg defaults to 0, with vertical tool roll pi and pitch 0. The existing
+parallel-jaw symmetry selection remains active. --hold-s defaults to 2 (0..5).
+There is no Z adjustment, retry, folding or model-planning option in this CLI.
+
+Speed: acquisition, put-back and clearance retreat cap joint speed at 2 deg/s
+and acceleration at 4 deg/s2;
+Cartesian config caps are 5 mm/s and 10 mm/s2. Lower existing limits stay lower.
+After release and clearance retreat, empty-hand Home uses the original configured
+joint speed/acceleration (currently 5 deg/s and 10 deg/s2). This Home trajectory
+is planned and validated at those dynamics before grasp dispatch; configured
+safety ceilings still apply. Low-speed limits are restored even if Home fails.
+No config file, gripper setting, safety check or production runtime is edited.
+All acquisition and put-back motion phases must pass the existing planner before
+initial grasp dispatch. A failed motion stops; no blind release/return or retry.
+A camera-only error at the successful lift checkpoint records the error and
+still runs the already-certified put-back. Ctrl+C stops instead of continuing.
+
+Data in each trial:
+  trial.json: status, Pa, human label (initially null), stage timings/snapshots,
+              actual gripper feedback file paths, safe-return flag, failures.
+  measurement.json: A/B raw optical camera-depth Z and raw world Z, 5x5 depth
+                    min/p25/median/p75/max/valid ratio, actual runtime surface Z,
+                    command grasp Z, configured table/support reference at Pa.
+  before.png, before_pa.png, lift.png: before, manual-Pa overlay, held observation.
+  before/: existing native RGB/world clouds/provenance plus camera intrinsics.
+  camera_A/: auxiliary RGB/cloud/intrinsics, when acquisition succeeds.
+  lift_observation/: raw RGB/depth, live stationary snapshots and intrinsics.
+  certified_phases.json, acquire_motion.py, runtime_config.json, orientation.json,
+  grasp_height_policy.json, and per-phase native_plan/gripper logs.
+  labels.csv in the numbered root: operator labels only, no automatic prediction.
+
+Important measurement semantics:
+* Current Arm7Runtime uses Camera B temporal median + the configured B height
+  correction, sampled by Observation.sample (5x5 median and existing rejection
+  limits). It does not use the legacy A/B fused perception pipeline. Therefore
+  fused_surface_z_mm is explicitly null, surface_fusion_mode is
+  B_ONLY_NO_AB_FUSION, and current_surface_z_mm is the exact authoritative input.
+  This experiment does not add fusion or switch perception pipelines.
+* Camera A is diagnostic only. Pa is in B pixels. Its uncorrected world point is
+  projected into A using the existing calibration, NOT copied as the same pixel.
+  A registration depends on the saved/current arm6 pose used by the coordinator;
+  the arm6 static-obstacle pose is not an independent live-pose verification.
+  Occlusion/correspondence is not semantically verified; projection discrepancy
+  is logged. A errors/out-of-view are explicit nulls with reasons. A never changes
+  the grasp coordinates or Z. Arm6 never moves for this experiment.
+* "Raw" means the stabilized depth aggregate before support-height/world-tilt
+  correction, with current extrinsic calibration retained. Optical camera Z and
+  world Z are different quantities and both are saved with units.
+* The active support-height patch may use an empirical OPEN-gripper contact TCP
+  reference. table_z_mm records that configured support-plane value and its
+  semantics; it is not relabelled as a measured physical hard tabletop height.
+  physical_table_z_mm remains null without such independent measurement.
+* The lift camera is on the wrist and its viewpoint changes. This is a direct RGB
+  read, not observe(): no gripper opening, Home, perception move, or application
+  of the perception-pose height patch at the lift pose.
+* Human HELD/MISS/UNCERTAIN is entered only after safe placement. If the terminal
+  closes before a label is entered, null remains null, never converted to MISS.
+
+Offline label completion (no robot/camera initialization):
+  python -m cloth_agent.experiments.grasp_acquire_baseline label \
+    --trial runs/grasp_acquire_baseline/trial_000001 --value HELD
+
+Existing labels cannot be overwritten with this command.
+
+Offline smoke check (no --execute, no hardware initialization):
+  python -m cloth_agent.experiments.grasp_acquire_baseline run
+
+Offline tests:
+  python -m pytest tests/test_grasp_acquire_baseline.py -q
+
+Fixed-world-XY batch with manual reset between trials (arm7 only)
+-----------------------------------------
+Default: compare 0, -2 and -4 mm, three trials each (nine total):
+
+  /home/sja/miniconda3/envs/cali/bin/python -m cloth_agent.experiments.grasp_acquire_baseline batch --execute
+
+This selects --schedule compare9. With default --random-seed 0 the frozen order
+is [-2, -2, 0, -4, -2, -4, -4, 0, 0] mm. No -6 mm trials are included. The complete
+sequence is saved before motion and never changed based on results. Each pair
+of trials is separated by manual restoration and an Enter confirmation. This
+comparison does not require a PASS from the earlier four-offset shakedown.
+
+The initial native perception preparation may move arm7. Click Pa once and press
+Enter. The terminal prints the fixed world XY and the full offset sequence; type
+YES once after checking that the whole sequence is safe and hands are clear.
+Every trial now pauses AFTER the 25 mm test lift, 2-second hold and photo,
+BEFORE vertical replacement/opening. Inspect the grasp visually, without
+touching the arm or garment, then press Enter to permit replacement, release
+and retreat. trial.json records release_confirmation and the waiting duration.
+q/Ctrl+C/EOF stops at this checkpoint without automatic replacement/release.
+After each completed trial except the last, the program pauses with the arm
+already withdrawn and stationary at its perception pose. Restore the garment
+manually, then remove your hands and press Enter to start the next trial.
+Do not restore the garment during the arm's return movement. The hands-clear
+confirmation after retreat is separate from the grasp-inspection confirmation.
+Input q, Ctrl+C or EOF stops the batch without starting another trial. No motion
+is dispatched while waiting. Video continues recording the manual reset.
+There are no online HELD/MISS decisions. Offsets are fixed before execution,
+not adaptive retries.
+
+Each trial captures NEW stabilized B depth at the original perception pose.
+The nearest measured point in the corrected B world cloud must lie within 2 mm
+of the selected fixed XY; the existing 5x5 sampler must also accept its patch,
+and the patch median XY must remain within 2 mm. Otherwise the batch stops.
+The command XY stays EXACTLY fixed, not the nearest point's XY. The command Z
+is the current sampled surface Z + the scheduled offset. Existing support-height
+corrections remain in effect. If the existing grasp policy would change this
+requested command height again, stop rather than bypass or stack policies.
+The 2 mm mapping tolerance is an experiment sampling check, not a safety change.
+
+Each trial preplans/certifies the native approach, close, vertical 25 mm test
+lift, vertical replacement to the SAME XY and command Z, open, clearance and
+Home before dispatch. Close is photographed before lift. Lift holds 2 seconds
+and is photographed without observation/preparation moves. It then waits for
+the operator's release confirmation. After release/retreat/
+Home, wait 2 seconds and use native perception preparation to capture after_reset
+at the comparable original viewpoint. This after_reset image records the robot's
+reset BEFORE manual garment restoration. After the operator restores the garment
+and presses Enter, the next trial captures fresh before/depth data; it never
+reuses depth from before the manual intervention. Fixed world XY stays unchanged.
+session.json records each manual-reset confirmation and waiting duration.
+Native planner/IK/collision/workspace checks are unchanged. A rejected plan or
+execution/checkpoint failure aborts the entire batch; no subsequent offset,
+automatic retry, blind recovery or automatic resume. Ctrl+C also stops.
+Camera A diagnostic errors are recorded and do not block B-only trials.
+
+Per batch output:
+  runs/grasp_acquire_baseline/batch_<UTC timestamp>/
+    session.json                 frozen schedule, XY, confirmation, status, timings
+    selection_observation/       RGB, corrected/raw depth clouds, calibration
+    selection_measurement.json   original Pa and world XY provenance
+    runtime_config.json
+    session.mp4                  continuous raw Camera B RGB video
+    frame_times.jsonl            actual video frame wall times and trial/phase
+    recording.json               camera/encoder status
+    review.mp4                   labelled four-checkpoint slideshow, 2 s per image
+    labels_to_fill.csv            blank offline human annotation table
+    trial_000001/ ...
+      trial.json, measurement.json, certified_phases.json, acquire_motion.py
+      before.png, before_pa.png, close.png, lift.png, after_reset.png
+      before/                    fresh RGB and corrected/raw world depth clouds
+      close_observation/         direct RGB, raw depth, gripper/joint snapshots
+      lift_observation/          direct RGB, raw depth, gripper/joint snapshots
+      after_reset_observation/   RGB and corrected/raw world depth clouds
+      camera_A/                  if available, diagnostic only
+      <phase>/gripper_*.json     existing gripper command/completion feedback
+
+One reader owns Camera B throughout recording and capture. Consumers wait for
+fresh RGB-D frames, so video cannot steal observation frames or reuse a stale
+frame repeatedly. session.mp4 uses configured constant FPS; frame_times.jsonl
+is the authority for actual elapsed time. review.mp4 is a checkpoint slideshow,
+not real-time footage. Missing checkpoints are marked NOT CAPTURED. Labels stay
+null until entered by the operator; safe return does not imply HELD.
+
+To label after the experiment, the existing offline label command accepts a
+batch trial path. labels_to_fill.csv is also supplied as a convenient worksheet.
+Filling that worksheet alone does not modify trial.json.
+
+Legacy modes (not the current comparison): --schedule shakedown explicitly
+selects [0, -2, -4, -6] mm. Historical data and review commands remain available;
+neither this mode nor balanced12 is started by the default command above.
+Only after reviewing a completed legacy shakedown, record the operator's verdict:
+
+  python -m cloth_agent.experiments.grasp_acquire_baseline review-shakedown --session /path/to/batch_<timestamp> --result PASS
+
+Then explicitly launch the balanced extension (three repeats of each offset,
+12 total, deterministic shuffle saved before motion):
+
+  python -m cloth_agent.experiments.grasp_acquire_baseline batch --execute --schedule balanced12 --random-seed 0 --shakedown /path/to/batch_<timestamp>
+
+A failed, incomplete, unreviewed, changed or FAIL-reviewed shakedown cannot
+unlock balanced12. PASS is a human protocol review, not inferred grasp success.
+The extension again selects Pa once, asks for initial safety confirmation, and
+waits for manual restoration plus Enter between every pair of trials;
+it never starts automatically at the end of shakedown. No arbitrary offset
+sequence or resumption from an interrupted batch is offered.
+
+Offline batch tests:
+  python -m pytest tests/test_grasp_acquire_batch.py tests/test_grasp_acquire_baseline.py -q

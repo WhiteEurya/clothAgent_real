@@ -16,8 +16,11 @@ def single(scene):
 
 @pytest.mark.parametrize('angle,seed,prefer,expected',[
     (185.9,.3,True,-174.1),
-    (120.,0.,True,-240.),
+    (120.,0.,True,120.),
     (20.,0.,True,20.),
+    (20.,0.,False,20.),
+    (0.,0.,True,0.),
+    (-20.,0.,True,-20.),
     (185.9,-174.,False,-174.1),
     (-179.,179.,False,181.),
     (0.,-174.,False,0.),
@@ -28,6 +31,7 @@ def test_wrist_winding_direction_and_continuity(angle,seed,prefer,expected):
 
 def test_wrist_preference_respects_limits():
     assert wrist_equivalent(120.,0.,-180.,180.,prefer_ccw=True)==120.
+    assert wrist_equivalent(20.,0.,-180.,180.,prefer_ccw=True)==20.
 
 
 def test_arm7_queues_fold_moves_but_preserves_preparation_boundaries(scene,monkeypatch):
@@ -67,19 +71,20 @@ def test_arm7_rejects_hidden_arm6_motion_inside_queue(scene,tmp_path):
     finally:runtime.close()
 
 
-def test_wrist_equivalent_preserves_real_arm7_tcp(monkeypatch):
+@pytest.mark.parametrize('angle,expected',[(185.9,-174.1),(20.,20.)])
+def test_wrist_equivalent_preserves_real_arm7_tcp(monkeypatch,angle,expected):
     from cloth_agent.codex_native_runtime import NativeRuntime
     from cloth_agent.dual_arm.geometry import pose_error
     runtime=Arm7Runtime('config/dual_arm.local.json')
     runtime.planning_context={}
     model=runtime.models['right']
     seed=model.config.home_joints.copy();seed[-1]=.3
-    q=seed.copy();q[-1]=185.9
+    q=seed.copy();q[-1]=angle
     target=model.forward(q)
     monkeypatch.setattr(NativeRuntime,'_inverse_target',lambda *args:q.copy())
     try:
         selected=runtime._inverse_target('right',target,seed,'host_approach_ik')
-        assert selected[-1]==pytest.approx(-174.1)
+        assert selected[-1]==pytest.approx(expected)
         position,rotation=pose_error(model.forward(selected),target)
         assert position<1e-6 and rotation<1e-6
         continuation=runtime._inverse_target('right',target,selected,'tcp_direct_ik')
@@ -236,21 +241,71 @@ def test_grasp_lowering_reaches_planner_and_saved_effective_code(scene,tmp_path,
     try:
         result=r.execute('motion.move_tcp(right=[.4,0,.043,0,0,0])\nmotion.gripper(arm="right",action="close")',scene.obs,tmp_path)
         assert result['status']=='PLANNING_FAILED'
-        assert np.isclose(seen[0][0][1]['right'][2],.028)
+        assert np.isclose(seen[0][0][1]['right'][2],.043)
         assert parse_code((tmp_path/'effective_motion.py').read_text())==seen[0]
         assert not any(c.commands for c in scene.connections.values())
     finally:r.close()
 
 
-def test_declared_arm7_grasp_lowered_15mm_without_changing_transport(tmp_path):
+def test_declared_arm7_grasp_has_no_extra_lowering(tmp_path):
     import json
     from cloth_agent.codex_motion import parse_code
     runtime=object.__new__(Arm7Runtime)
     source='motion.grasp(right=[.4,0,.043,0,0,0])\nmotion.move_tcp(right=[.4,0,.08,0,0,0])'
     effective=runtime.adjust_motion(source,tmp_path)
     calls=parse_code(effective,allow_grasp=True)
-    assert calls[0][1]['right'][2]==pytest.approx(.028)
+    assert calls[0][1]['right'][2]==pytest.approx(.043)
     assert calls[1][1]['right'][2]==.08
-    assert json.loads((tmp_path/'grasp_height_policy.json').read_text())['offset_mm']==15.
-    assert '额外降低 15 mm' in runtime.motion_contract
-    assert '额外降低 15 mm' in runtime.planning_policy
+    assert json.loads((tmp_path/'grasp_height_policy.json').read_text())['offset_mm']==0.
+    assert '自主选择抓取及后续动作的 TCP 高度' in runtime.planning_policy
+    prompt=runtime.planning_policy+runtime.motion_contract
+    assert '观测表面' not in prompt
+    assert '原始观测 Z' not in prompt
+
+
+@pytest.mark.parametrize('unfold', [False, True])
+def test_fold_and_unfold_share_parallel_jaw_symmetry(tmp_path, monkeypatch, unfold):
+    import json
+    from scipy.spatial.transform import Rotation as R
+    from cloth_agent.codex_native_runtime import NativeRuntime
+    from cloth_agent.codex_motion import parse_code
+    runtime=object.__new__(Arm7Runtime)
+    runtime.unfold_grasp_symmetry=unfold
+    runtime.config=SimpleNamespace(arms={'right':SimpleNamespace(world_from_base=np.eye(4))})
+    runtime.models={'right':SimpleNamespace(forward=lambda q: np.array([400,200,100,180,0,180]))}
+    observation=SimpleNamespace(meta={'joints_deg':{'right':[0]*7}})
+    captured=[]
+    def execute(self,source,obs,folder):
+        captured.append(self.adjust_motion(source,folder))
+        return {'status':'EXECUTED','physical_execution':False}
+    monkeypatch.setattr(NativeRuntime,'execute',execute)
+    source=('motion.grasp(right=[.4,.2,.07,3.141592653589793,0,0])\n'
+            'motion.move_transfer(right=[.5,.1,.12,2.8,.2,.4])\n'
+            'motion.move_tcp(right=[.5,0,.08,2.9,.1,.3])')
+    runtime.execute(source,observation,tmp_path)
+    report=json.loads((tmp_path/'grasp_orientation_policy.json').read_text())
+    assert report['applied'] and report['equivalent_rotation_deg']<1e-6
+    old=parse_code(source,allow_grasp=True); new=parse_code(captured[0],allow_grasp=True)
+    assert [n for n,_ in old]==[n for n,_ in new]
+    for i,((_,a),(_,b)) in enumerate(zip(old,new)):
+        expected=np.array(a['right'][:3])
+        assert np.allclose(b['right'][:3],expected)
+    original=[R.from_euler('xyz',kw['right'][3:]) for _,kw in old]
+    actual=[R.from_euler('xyz',kw['right'][3:]) for _,kw in new]
+    for a,b in zip(original,actual):
+        assert np.allclose((a*original[0].inv()).as_matrix(),(b*actual[0].inv()).as_matrix())
+
+
+def test_non_grasp_program_does_not_require_orientation_observation(tmp_path,monkeypatch):
+    from cloth_agent.codex_native_runtime import NativeRuntime
+    runtime=object.__new__(Arm7Runtime)
+    source='motion.move_joints(right=[0,0,0,0,0,0,0])'
+    monkeypatch.setattr(NativeRuntime,'execute',lambda self,code,*args: code)
+    assert runtime.execute(source,SimpleNamespace(),tmp_path)==source
+    assert not (tmp_path/'grasp_orientation_policy.json').exists()
+
+
+def test_initial_wrist_never_forces_full_turn_at_limits():
+    with pytest.raises(DualArmError,match='180 degrees'):
+        wrist_equivalent(170.,-170.,-180.,180.,prefer_ccw=True)
+    assert wrist_equivalent(180.,0.,-360.,360.,prefer_ccw=True)==-180.

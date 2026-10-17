@@ -74,7 +74,7 @@ def render_capabilities(report):
         '- motion.grasp / move_tcp 使用 World 米/弧度；下列说明使用毫米/度。目标是 TCP，不是相机或法兰。',
         '- T_base_tcp = inverse(T_world_base) @ T_world_tcp；必须同时转换位置和朝向。不能把 arm7 的 World X 当作它向前伸出的距离。',
         '- 当夹爪竖直朝下时，yaw 通常改变夹爪平面内方向；它不能补偿伸展距离。调整 roll/pitch 会改变 TCP 偏移对应的腕部位置。',
-        '- grasp 给观测原始高度；宿主按本次动作契约额外下压（arm6/arm7 单臂 15 mm，双臂模式 10 mm）。检查抓点 IK 时要用这个实际高度，不能在输出里重复扣减。',
+        '- 检查 IK 时使用本次动作契约对应的实际 TCP 目标。',
         '## 两臂模型']
     for key,arm in report['arms'].items():
         base=np.array(arm['world_from_base_mm'])
@@ -99,6 +99,6 @@ def render_capabilities(report):
         '- IK 失败不是碰撞证明，也不等于 yaw 转不过去。先区分真实抓点、中间持布目标、宿主辅助点。',
         '- 代码修正保留任务意图和有效动作；真实抓点失败时，可以在同一保存观测上局部调整失败抓点、可接受姿态或双臂分配，不能凭空把坐标截到边界当作衣物点。无需重做整套任务规划。',
         '如需核实具体候选，可只读运行（参数使用 World mm/deg）：',
-        '`/home/sja/miniconda3/envs/cali/bin/python scripts/robot_capabilities.py --arm left --pose-mm-deg X Y Z R P YAW --grasp`',
-        '`--grasp` 表示输入原始观测抓点，检查前由工具默认扣除 10 mm；arm6/arm7 单臂需同时指定 `--grasp-offset-mm 15`；检查中间动作则不要带该参数。工具不连接机械臂、不做运动，成功仅代表 IK 通过，不代表路径无碰撞。']
+        '`/home/sja/miniconda3/envs/cali/bin/python scripts/robot_capabilities.py --arm left --pose-mm-deg X Y Z R P YAW`',
+        '上述命令直接检查输入的 TCP 目标。仅当本次动作契约规定宿主额外下压时，使用 `--grasp --grasp-offset-mm N` 明确传入该偏移；已是实际 TCP 目标时不添加这些参数。工具不连接机械臂、不做运动，成功仅代表 IK 通过，不代表路径无碰撞。']
     return '\n\n'.join(lines)+'\n'

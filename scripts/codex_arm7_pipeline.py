@@ -6,4 +6,4 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from cloth_agent.codex_loop import main
 
 if __name__=='__main__':
-    raise SystemExit(main(['--arm7-only',*sys.argv[1:]]))
+    raise SystemExit(main(['--arm7-only',*sys.argv[1:]],reasoning_effort='low'))

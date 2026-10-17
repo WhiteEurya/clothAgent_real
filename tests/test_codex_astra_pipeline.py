@@ -17,6 +17,7 @@ assert prompt
 assert sys.argv[sys.argv.index('--model')+1]=='gpt-6-astra'
 assert 'model_reasoning_effort="high"' in sys.argv
 Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('motion.move_joints(left=[0,0,0,0,0,0])')
+print(json.dumps({'type':'thread.started','thread_id':'test-session'}))
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'output_tokens':20}}))
 ''')
     p.chmod(0o755)
@@ -78,3 +79,53 @@ def test_pipeline_hands_generated_code_to_planner(tmp_path,fake_codex,monkeypatc
     result=run('Fold',workspace=tmp_path,output=tmp_path/'planned',binary=fake_codex,scene=scene,state=state)
     assert result['status']=='PLANNED' and result['physical_execution'] is False
     assert captured==[('motion.move_joints(left=[0,0,0,0,0,0])',scene,state)]
+
+
+def test_resume_uses_explicit_id_and_preserves_read_only_and_images(tmp_path,fake_codex):
+    from cloth_agent.codex_astra_pipeline import build_command
+    image=tmp_path/'image.png';image.write_bytes(b'image')
+    first=run('first',workspace=tmp_path,output=tmp_path/'first',binary=fake_codex,read_only=True)
+    assert first['session_id']=='test-session'
+    second=run('next',workspace=tmp_path,output=tmp_path/'next',binary=fake_codex,
+               read_only=True,session_id=first['session_id'],images=[image])
+    assert second['status']=='AGENT_FINISHED' and second['session_id']==first['session_id']
+    command=json.loads((tmp_path/'next/request.json').read_text())['command']
+    assert command[command.index('resume')+1]=='test-session'
+    assert '--last' not in command and '--image' in command
+    assert command.index('--sandbox')<command.index('resume')
+    assert command[command.index('--sandbox')+1]=='read-only'
+    assert command[-1]=='-'
+
+
+def test_resumed_thread_mismatch_is_failure(tmp_path,fake_codex):
+    result=run('next',workspace=tmp_path,output=tmp_path/'bad',binary=fake_codex,
+               read_only=True,session_id='other-thread')
+    assert result['status']=='FAILED' and 'mismatch' in result['error']
+
+
+@pytest.mark.parametrize('case,expected', [
+    ('recovered', 'AGENT_FINISHED'), ('unrecovered', 'FAILED'),
+    ('explicit_failure', 'FAILED'), ('unknown_error', 'FAILED'),
+    ('error_after_complete', 'FAILED'), ('new_incomplete_turn', 'FAILED'),
+    ('empty_answer', 'FAILED'), ('no_completion', 'FAILED'),
+])
+def test_stream_recovery_requires_final_completion_and_answer(tmp_path, fake_codex, case, expected):
+    p=Path(fake_codex); source=p.read_text()
+    completion="print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'output_tokens':20}}))"
+    reconnect="print(json.dumps({'type':'error','message':'Reconnecting... 5/5 (stream disconnected before completion: websocket closed by server before response.completed)'}))"
+    if case=='recovered': replacement=reconnect+'\n'+completion
+    elif case=='unrecovered': replacement=reconnect
+    elif case=='explicit_failure': replacement="print(json.dumps({'type':'turn.failed','error':{'message':'failed'}}))\n"+completion
+    elif case=='unknown_error': replacement="print(json.dumps({'type':'error','message':'authentication failed'}))\n"+completion
+    elif case=='error_after_complete': replacement=completion+'\n'+reconnect
+    elif case=='new_incomplete_turn': replacement=completion+"\nprint(json.dumps({'type':'turn.started'}))"
+    elif case=='no_completion': replacement=''
+    else:
+        source=source.replace(".write_text('motion.move_joints(left=[0,0,0,0,0,0])')", ".write_text('   ')")
+        replacement=completion
+    p.write_text(source.replace(completion,replacement))
+    result=run('fold',workspace=tmp_path,output=tmp_path/'out',binary=fake_codex,read_only=True)
+    assert result['status']==expected
+    if case=='recovered':
+        assert result['errors']==[] and len(result['recovered_errors'])==1
+        assert result['final_turn_completed'] and result['completed_turns']==1

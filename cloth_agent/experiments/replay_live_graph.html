@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Cloth · Graph</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,"SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC",sans-serif;background:#0c1118;color:#dae5f0}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}
+#canvas{display:block;width:100vw;height:100dvh;outline:none;touch-action:none;user-select:none;cursor:grab;background:radial-gradient(ellipse at 48% 40%,#141e2a 0%,#0c1118 75%)}
+#canvas.dragging,#canvas.dragging .node{cursor:grabbing}.node{cursor:pointer}.node text,.edge text{pointer-events:none}
+.card{fill:#151f2b;stroke:#334355;stroke-width:1.2;transition:fill .3s,stroke .3s}.node:hover .card{stroke:#899eb3;fill:#1a2736}
+.node.current .card{fill:#132b2b;stroke:#70e4bf;stroke-width:1.6;filter:drop-shadow(0 0 16px #68dcb31c)}
+.node.target .card{stroke:#819cf0;stroke-dasharray:5 5}.node.new .card{stroke:#b59bea}
+.node.recovery .card{fill:#282319;stroke:#b99859;stroke-dasharray:5 4}.node.recovery.active .card{stroke:#f2c77e;filter:drop-shadow(0 0 18px #e7b45726)}
+.node.recovery.failed .card{fill:#2c1e23;stroke:#e38b96}.node.recovery.resolved .card{stroke:#b7a173}
+.eyebrow{font-size:10px;font-weight:600;letter-spacing:1.7px;fill:#8a9caf}.name{font-size:24px;letter-spacing:-.7px;font-weight:600;fill:#edf4fb}.description{font-size:11px;fill:#91a3b6}.badge{font-size:10px;font-weight:600;fill:#a1b3c5}.phase{font-size:10px;fill:#6fd9b7}
+.edge path{fill:none;stroke-linecap:round;stroke-linejoin:round}.edge text{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#8fa3b8}.edge.selected text{fill:#8af1d2}.edge.recovery text{fill:#d4b477}.edge.selected .route{stroke-dasharray:7 6;animation:flow 1.4s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-26}}@keyframes arrive{from{opacity:0}to{opacity:1}}.fresh{animation:arrive .6s ease-out}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+#viewer{width:min(1200px,94vw);max-height:90dvh;padding:0;border:1px solid #40516a;border-radius:20px;background:#121c28;color:#e5edf6;box-shadow:0 32px 100px #0009}
+#viewer::backdrop{background:#050b14bb;backdrop-filter:blur(9px)}
+#viewer header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 24px;border-bottom:1px solid #2b394c}
+#viewer h2{font-size:17px;font-weight:500;margin:0}#viewer button{width:34px;height:34px;border:1px solid #3b4b60;border-radius:50%;background:#1c293a;color:#c4d4e6;font-size:23px;cursor:pointer}
+#viewer button:hover{background:#2f4055}#viewer button:focus-visible{outline:2px solid #79e8c5;outline-offset:3px}
+#photos{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:18px;padding:22px;overflow:auto;max-height:calc(90dvh - 80px)}
+#photos figure{margin:0;min-width:0;border:1px solid #2d3e52;border-radius:12px;overflow:hidden;background:#0c141f}
+#photos figcaption{padding:12px 15px;font-size:12px;color:#a9bdd0;border-bottom:1px solid #28384a}
+#photos img{display:block;width:100%;height:auto;max-height:64dvh;object-fit:contain;background:#080f17}
+.missing{display:grid;place-items:center;min-height:200px;margin:0;color:#8295ab;font-size:13px}
+@media(max-width:600px){#viewer header{padding:14px 16px}#photos{padding:12px;gap:12px}}
+</style>
+</head>
+<body>
+<svg id="canvas" tabindex="0" role="img" aria-label="实时 Graph。点击节点查看图片，拖动空白平移，滚轮缩放，拖动节点调整位置，双击空白或按 F 查看全图。" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#6e859a" stroke-width="1.4"/></marker>
+  <marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#70dfbd" stroke-width="1.4"/></marker>
+  <marker id="arrow-recovery" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#c7a76b" stroke-width="1.4"/></marker>
+  <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M 28 0 H 0 V 28" fill="none" stroke="#344456" stroke-opacity=".24" stroke-width=".6"/></pattern>
+  <pattern id="major" width="140" height="140" patternUnits="userSpaceOnUse"><rect width="140" height="140" fill="url(#grid)"/><path d="M 140 0 H 0 V 140" fill="none" stroke="#40546b" stroke-opacity=".22" stroke-width=".8"/></pattern>
+</defs>
+<rect id="background" width="100%" height="100%" fill="url(#major)"/>
+<g id="world"><g id="edges"></g><g id="nodes"></g></g>
+</svg>
+<dialog id="viewer" aria-labelledby="viewer-title">
+  <header><h2 id="viewer-title"></h2><button id="close-viewer" aria-label="关闭图片">×</button></header>
+  <div id="photos"></div>
+</dialog>
+<script>
+'use strict';
+let state=__SNAPSHOT__;
+const svg=document.getElementById('canvas'),world=document.getElementById('world'),edgeLayer=document.getElementById('edges'),nodeLayer=document.getElementById('nodes');
+const ns='http://www.w3.org/2000/svg',positions=new Map(),recoveryPositions=new Map(),seen=new Set();
+const W=236,H=116,RW=222,RH=98,DX=344,DY=312,COLS=4;
+let camera={x:0,y:0,k:1},initialized=false,gesture=null,lastSignature='';
+const pointers=new Map();
+const viewer=document.getElementById('viewer'),photos=document.getElementById('photos');
+let viewing=null,photoSignature='';
+function updateViewer(){
+  if(!viewing)return;
+  const item=(viewing.kind==='node'?state.nodes:state.recoveries)?.find(row=>row.id===viewing.id);
+  const images=item?.images||[],signature=JSON.stringify(images);if(signature===photoSignature)return;photoSignature=signature;
+  photos.replaceChildren();
+  if(!images.length){const empty=document.createElement('p');empty.className='missing';empty.textContent='这个节点暂无观测图片';photos.append(empty);return}
+  for(const image of images){
+    const figure=document.createElement('figure'),caption=document.createElement('figcaption');caption.textContent=image.label;figure.append(caption);
+    const missing=()=>{const p=document.createElement('p');p.className='missing';p.textContent=image.src?'图片暂时无法读取':'尚无可用观测图片';figure.append(p)};
+    if(image.src){const img=document.createElement('img');img.alt=image.label;img.addEventListener('error',()=>{img.remove();missing()},{once:true});img.src=image.src;figure.append(img)}else missing();
+    photos.append(figure);
+  }
+}
+function openViewer(kind,id){viewing={kind,id};photoSignature='';document.getElementById('viewer-title').textContent=kind==='node'?`${id} · 观测图片`:'Recovery · 恢复前后';updateViewer();if(!viewer.open)viewer.showModal()}
+document.getElementById('close-viewer').addEventListener('click',()=>viewer.close());
+viewer.addEventListener('click',e=>{if(e.target===viewer){const b=viewer.getBoundingClientRect();if(e.clientX<b.left||e.clientX>b.right||e.clientY<b.top||e.clientY>b.bottom)viewer.close()}});
+viewer.addEventListener('close',()=>{viewing=null;photoSignature='';photos.replaceChildren();svg.focus()});
+const phases={STARTING:'启动中',MATCHING:'重新匹配中',MATCHED:'已确认',GROUNDING:'抓点规划',EXECUTING:'验证 / 执行中',AFTER_MATCHING:'等待重新匹配',HANDLE_RECOVERY:'恢复处理中',FRONTIER:'新状态规划',REPAIR:'动作修复',APPLICABILITY:'检查适用性',STOPPED:'已停止'};
+const recoveryPhases={PLANNING:'恢复规划 / 验证执行',AWAITING_OBSERVATION:'重新观测中',AWAITING_REMATCH:'重新匹配中',REMATCHED:'已重新匹配',RECOVERY_UNRESOLVED:'未解决 · 已停止'};
+function el(tag,attrs={},text){const e=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));if(text!==undefined)e.textContent=String(text);return e}
+function applyCamera(){world.setAttribute('transform',`translate(${camera.x} ${camera.y}) scale(${camera.k})`);document.getElementById('major').setAttribute('patternTransform',`translate(${camera.x} ${camera.y}) scale(${camera.k})`)}
+function worldPoint(x,y){return{x:(x-camera.x)/camera.k,y:(y-camera.y)/camera.k}}
+function zoomAt(x,y,factor){const p=worldPoint(x,y);camera.k=Math.max(.18,Math.min(2.5,camera.k*factor));camera.x=x-p.x*camera.k;camera.y=y-p.y*camera.k;applyCamera()}
+function slot(index){const row=Math.floor(index/COLS),col=index%COLS;return{x:80+(row%2?COLS-1-col:col)*DX,y:110+row*DY}}
+function occupied(p,width=W,height=H){
+  const boxes=[...[...positions.values()].map(q=>({...q,w:W,h:H})),...[...recoveryPositions.values()].map(q=>({...q,w:RW,h:RH}))];
+  return boxes.some(q=>p.x<q.x+q.w+18&&p.x+width+18>q.x&&p.y<q.y+q.h+18&&p.y+height+18>q.y);
+}
+function layout(s){
+  const nodes=s.nodes||[],ids=new Set(nodes.map(n=>n.id)),order=[],queued=new Set(),actions=s.actions||[];
+  for(const n of nodes){if(queued.has(n.id))continue;let queue=[n.id];queued.add(n.id);while(queue.length){const id=queue.shift();order.push(id);for(const a of actions.filter(a=>a.source===id).sort((a,b)=>Number(b.preferred)-Number(a.preferred)))for(const t of a.targets||[]){if(ids.has(t)&&!queued.has(t)){queued.add(t);queue.push(t)}}}}
+  for(const id of order){if(positions.has(id))continue;let i=positions.size,p=slot(i);while(occupied(p))p=slot(++i);positions.set(id,p)}
+  for(const r of s.recoveries||[]){if(recoveryPositions.has(r.id))continue;const origin=positions.get(r.origin_node)||slot(0);let p={x:origin.x+14,y:origin.y+H+46};while(occupied(p,RW,RH))p.y+=DY;recoveryPositions.set(r.id,p)}
+}
+function bounds(){const all=[...(state.nodes||[]).map(n=>positions.get(n.id)),...(state.recoveries||[]).map(r=>recoveryPositions.get(r.id))].filter(Boolean);if(!all.length)return null;return{x:Math.min(...all.map(p=>p.x))-55,y:Math.min(...all.map(p=>p.y))-105,right:Math.max(...all.map(p=>p.x+W))+55,bottom:Math.max(...all.map(p=>p.y+H))+65}}
+function fit(){const b=bounds();if(!b)return;camera.k=Math.max(.18,Math.min(1.15,svg.clientWidth/(b.right-b.x),svg.clientHeight/(b.bottom-b.y)));camera.x=(svg.clientWidth-(b.right-b.x)*camera.k)/2-b.x*camera.k;camera.y=(svg.clientHeight-(b.bottom-b.y)*camera.k)/2-b.y*camera.k;applyCamera()}
+function label(g,x,y,text,color){const width=[...text].length*6.5+20;g.append(el('rect',{x:x-width/2,y:y-10,width,height:20,rx:6,fill:'#101923',stroke:color||'#293849','stroke-width':.7}),el('text',{x,y:y+3.3,'text-anchor':'middle'},text))}
+function route(p,q,{self=false,index=0,recovery=false,returning=false}={}){
+  if(self){const top=p.y-38-index*27;return{d:`M ${p.x+W-42} ${p.y} C ${p.x+W+24} ${top-26},${p.x-24} ${top-26},${p.x+42} ${p.y}`,x:p.x+W/2,y:top-17}}
+  if(recovery){const x=p.x+(returning?RW:W)/2+(returning?48:-48),x2=q.x+(returning?W:RW)/2+(returning?48:-48);const fromY=returning?p.y:p.y+H,toY=returning?q.y+H:q.y;return{d:`M ${x} ${fromY} C ${x} ${(fromY+toY)/2},${x2} ${(fromY+toY)/2},${x2} ${toY}`,x:(x+x2)/2+(returning?45:-40),y:(fromY+toY)/2}}
+  if(Math.abs(p.y-q.y)<H){const forward=q.x>p.x,ax=p.x+(forward?W:0),bx=q.x+(forward?0:W),y=p.y+H/2,ty=q.y+H/2;return{d:`M ${ax} ${y} C ${(ax+bx)/2} ${y},${(ax+bx)/2} ${ty},${bx} ${ty}`,x:(ax+bx)/2,y:(y+ty)/2}}
+  const down=q.y>p.y,ax=p.x+W/2,bx=q.x+W/2,ay=p.y+(down?H:0),by=q.y+(down?0:H);return{d:`M ${ax} ${ay} C ${ax} ${(ay+by)/2},${bx} ${(ay+by)/2},${bx} ${by}`,x:(ax+bx)/2,y:(ay+by)/2};
+}
+function edge(path,text,color,classes,dashed){const g=el('g',{class:'edge '+classes});g.append(el('path',{class:'route',d:path.d,stroke:color,'stroke-width':classes.includes('selected')?2:1.3,'stroke-dasharray':dashed?'4 6':'none','marker-end':`url(#arrow${classes.includes('selected')?'-active':classes.includes('recovery')?'-recovery':''})`}));label(g,path.x,path.y,text,classes.includes('selected')?color:undefined);edgeLayer.append(g)}
+const textMeasure=document.createElement('canvas').getContext('2d');
+textMeasure.font='11px '+getComputedStyle(document.documentElement).fontFamily;
+function lines(text){
+  const tokens=String(text||'').match(/[a-zA-Z0-9]+(?:['’-][a-zA-Z0-9]+)*|[^a-zA-Z0-9]/gu)||[],rows=[''];
+  for(const token of tokens){const i=rows.length-1;if(textMeasure.measureText(rows[i]+token).width>W-34&&rows[i]){if(i===1){rows[i]=rows[i].trimEnd();while(textMeasure.measureText(rows[i]+'…').width>W-34)rows[i]=rows[i].slice(0,-1);rows[i]+='…';break}rows.push(token.trimStart())}else rows[i]+=token}
+  return rows;
+}
+function render(){
+  const s=state;layout(s);edgeLayer.replaceChildren();nodeLayer.replaceChildren();
+  const recoveries=s.recoveries||[],activeRecovery=recoveries.find(r=>['PLANNING','AWAITING_OBSERVATION','AWAITING_REMATCH'].includes(r.status));
+  const loops=new Map();
+  for(const a of s.actions||[]){const p=positions.get(a.source);if(!p)continue;for(const id of a.targets||[]){const q=positions.get(id);if(!q)continue;const selected=a.id===s.action,self=id===a.source;let index=0;if(self){index=loops.get(id)||0;loops.set(id,index+1)}edge(route(p,q,{self,index}),a.id,selected?'#70dfbd':a.preferred?'#536b82':'#35465b',selected&&s.phase!=='STOPPED'?'selected':'',!a.preferred)}}
+  for(const r of recoveries){const p=positions.get(r.origin_node),q=recoveryPositions.get(r.id);if(p&&q)edge(route(p,q,{recovery:true}),r.origin_edge+' · reject','#a68a54','recovery',true);const t=positions.get(r.matched_node);if(q&&t)edge(route(q,t,{recovery:true,returning:true}),'rematch','#a68a54','recovery',true)}
+  for(const n of s.nodes||[]){const p=positions.get(n.id),current=n.id===s.current,isNew=(s.new_nodes||[]).includes(n.id),target=n.id===s.target&&!current;const fresh=initialized&&!seen.has(n.id);seen.add(n.id);const g=el('g',{class:`node ${current?'current':target?'target':isNew?'new':''} ${fresh?'fresh':''}`,'data-node':n.id,transform:`translate(${p.x} ${p.y})`});
+    const confirmed=current&&!activeRecovery&&!['MATCHING','AFTER_MATCHING'].includes(s.phase);
+    const badge=current?(s.phase==='STOPPED'?'最后位置':confirmed?'当前位置':'上次确认'):target?'预计目标':isNew?'新节点':n.status==='PROVISIONAL'?'待确认':'';
+    g.append(el('rect',{class:'card',width:W,height:H,rx:15}),el('circle',{cx:17,cy:20,r:3,fill:current?'#79e8c5':isNew?'#b79ee9':'#6b839b'}),el('text',{class:'eyebrow',x:28,y:24},'STATE'),el('text',{class:'badge',x:W-16,y:24,'text-anchor':'end',style:current?'fill:#8ae8ca':isNew?'fill:#c5b0ef':''},badge),el('text',{class:'name',x:17,y:56},n.id));
+    const description=lines(n.label);for(let i=0;i<description.length;i++)g.append(el('text',{class:'description',x:17,y:76+i*16},description[i]));
+    if(current)g.append(el('text',{class:'phase',x:W-16,y:56,'text-anchor':'end'},phases[s.phase]||s.phase));
+    g.setAttribute('tabindex','0');g.setAttribute('role','button');g.setAttribute('aria-label',`${n.id}，点击查看观测图片`);
+    g.append(el('title',{},`${n.id}\n${n.label||''}${current?'\n'+(s.result||phases[s.phase]||s.phase):''}\n点击查看观测图片`));nodeLayer.append(g);
+  }
+  for(const [i,r] of recoveries.entries()){const p=recoveryPositions.get(r.id),active=r===activeRecovery&&s.phase!=='STOPPED',failed=r.status==='RECOVERY_UNRESOLVED';const g=el('g',{class:`node recovery ${active?'active':''} ${failed?'failed':''} ${r.status==='REMATCHED'?'resolved':''}`,'data-recovery':r.id,transform:`translate(${p.x} ${p.y})`});
+    g.setAttribute('tabindex','0');g.setAttribute('role','button');g.setAttribute('aria-label','Recovery，点击查看恢复前后图片');
+    g.append(el('rect',{class:'card',width:RW,height:RH,rx:15}),el('path',{d:'M 18 14 L 23 19 L 18 24 L 13 19 Z',fill:failed?'#e38b96':'#e9c587'}),el('text',{class:'eyebrow',x:31,y:23,style:'fill:#c7ae80'},'RECOVERY '+String(i+1).padStart(2,'0')),el('text',{class:'badge',x:RW-15,y:23,'text-anchor':'end',style:'fill:#e5c58e'},active?'进行中':''),el('text',{x:16,y:51,fill:failed?'#eea1ab':'#e8d6b3','font-size':15,'font-weight':500},recoveryPhases[r.status]||r.status),el('text',{class:'description',x:16,y:77,style:'fill:#b09b7a'},r.matched_node?`${r.origin_node} → ${r.matched_node}${r.redispatched?' · 目标动作已派发':''}`:`${r.origin_node} / ${r.origin_edge} · 寻找可靠抓点`),el('title',{},(r.reasons||[]).join('\n')));nodeLayer.append(g);
+  }
+  if(!initialized&&(s.nodes||[]).length){fit();initialized=true}applyCamera();
+}
+function receive(s){const signature=JSON.stringify([s.nodes,s.actions,s.current,s.target,s.action,s.phase,s.result,s.new_nodes,s.recoveries]);state=s;if(signature===lastSignature)return;lastSignature=signature;render();updateViewer()}
+svg.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.clientX,e.clientY,Math.exp(-Math.max(-100,Math.min(100,e.deltaY))*.0025))},{passive:false});
+svg.addEventListener('pointerdown',e=>{if(e.button!==0)return;svg.focus();svg.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});svg.classList.add('dragging');const n=e.target.closest('[data-node],[data-recovery]');gesture={x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,moved:false,node:n?.getAttribute('data-node'),recovery:n?.getAttribute('data-recovery')};if(pointers.size>1)gesture={pinch:true,moved:true}});
+svg.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;const old=[...pointers.values()];pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2){const next=[...pointers.values()],center=pts=>({x:(pts[0].x+pts[1].x)/2,y:(pts[0].y+pts[1].y)/2}),distance=pts=>Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y);const a=center(old),b=center(next);camera.x+=b.x-a.x;camera.y+=b.y-a.y;zoomAt(b.x,b.y,distance(next)/Math.max(1,distance(old)));return}if(!gesture||gesture.pinch)return;if(!gesture.moved&&Math.hypot(e.clientX-gesture.startX,e.clientY-gesture.startY)<5)return;gesture.moved=true;const dx=e.clientX-gesture.x,dy=e.clientY-gesture.y;gesture.x=e.clientX;gesture.y=e.clientY;const p=gesture.node?positions.get(gesture.node):gesture.recovery?recoveryPositions.get(gesture.recovery):null;if(p){p.x+=dx/camera.k;p.y+=dy/camera.k;render()}else{camera.x+=dx;camera.y+=dy;applyCamera()}});
+function release(e){const clicked=e.type==='pointerup'&&pointers.size===1&&gesture&&!gesture.moved?gesture:null;pointers.delete(e.pointerId);if(!pointers.size){gesture=null;svg.classList.remove('dragging')}else{const p=[...pointers.values()][0];gesture={x:p.x,y:p.y,moved:true}}if(clicked?.node)openViewer('node',clicked.node);else if(clicked?.recovery)openViewer('recovery',clicked.recovery)}
+svg.addEventListener('pointerup',release);svg.addEventListener('pointercancel',release);svg.addEventListener('lostpointercapture',e=>{if(pointers.has(e.pointerId))release(e)});
+svg.addEventListener('dblclick',e=>{if(!e.target.closest('.node'))fit()});
+svg.addEventListener('keydown',e=>{const n=e.target.closest('[data-node],[data-recovery]');if(n&&['Enter',' '].includes(e.key)){e.preventDefault();openViewer(n.hasAttribute('data-node')?'node':'recovery',n.getAttribute('data-node')||n.getAttribute('data-recovery'));return}const steps={ArrowLeft:[70,0],ArrowRight:[-70,0],ArrowUp:[0,70],ArrowDown:[0,-70]};if(steps[e.key]){e.preventDefault();camera.x+=steps[e.key][0];camera.y+=steps[e.key][1];applyCamera()}else if(e.key.toLowerCase()==='f')fit();else if(['+','=','-'].includes(e.key)){e.preventDefault();zoomAt(svg.clientWidth/2,svg.clientHeight/2,e.key==='-'?.85:1.18)}});
+let size={w:innerWidth,h:innerHeight};addEventListener('resize',()=>{camera.x+=(innerWidth-size.w)/2;camera.y+=(innerHeight-size.h)/2;size={w:innerWidth,h:innerHeight};applyCamera()});
+receive(state);
+async function poll(){if(location.protocol==='file:')return;try{const response=await fetch('state.json?t='+Date.now(),{cache:'no-store'});if(!response.ok)throw Error(response.status);const next=await response.json();if(next.nodes)receive(next)}catch(e){/* Keep the last received graph and user viewport. */}setTimeout(poll,1000)}poll();
+</script>
+</body>
+</html>

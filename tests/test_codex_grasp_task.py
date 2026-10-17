@@ -56,13 +56,23 @@ def test_host_pick_fold_release_home_and_adaptive_approach(scene,tmp_path,monkey
         active=['right'] if single else ['left','right']
         for arm in active:
             events=[c for c in scene.connections[arm].commands if c[0]=='gripper']
-            assert events==[('gripper','open'),('gripper','close'),('gripper','open')]
+            expected=['open','close','release_partial','open'] if single else ['open','close','open']
+            assert events==[('gripper',action) for action in expected]
             assert np.allclose(scene.connections[arm].joints,initial[arm])
         if single:assert scene.connections['left'].commands==[]
         rows=json.loads((tmp_path/'native_plan.json').read_text())
         closing=[i for i,row in enumerate(rows) if row['kind']=='gripper' and row['data']['action']=='close']
         for index in closing:
-            assert all(rows[index]['data']['joints'][k][2]==pytest.approx(165 if single else 170) for k in active)
+            assert all(rows[index]['data']['joints'][k][2]==pytest.approx(180-r.grasp_offset_mm if single else 170) for k in active)
+        if single:
+            partial=next(i for i,row in enumerate(rows) if row['kind']=='gripper' and row['data']['action']=='release_partial')
+            opened=next(i for i in range(partial+1,len(rows)) if rows[i]['kind']=='gripper')
+            a=rows[partial]['data'];b=rows[opened]['data']
+            assert a['opening_delta_pulse']==120
+            assert b['action']=='open' and opened>partial+1
+            np.testing.assert_allclose(a['joints']['right'][:2],b['joints']['right'][:2])
+            assert b['joints']['right'][2]-a['joints']['right'][2]==pytest.approx(40.)
+            assert rows[opened+1]['kind']=='move'  # Home only after full opening.
     finally:r.close()
 
 
@@ -182,4 +192,68 @@ def test_transfer_failure_does_not_dispatch_grasp(scene,tmp_path,monkeypatch):
         assert all(not c.commands for c in scene.connections.values())
         preview=json.loads((tmp_path/'trajectory_preview.json').read_text())
         assert any(t['command_index']==2 for t in preview['targets'])
+    finally:r.close()
+
+
+def test_partial_release_failure_prevents_lift_and_full_open(scene,tmp_path,monkeypatch):
+    r=runtime_for(scene);r.__class__=Arm7Runtime
+    monkeypatch.setattr(r.paths,'joint_path',lambda a,b,**kw:[a,b])
+    connection=scene.connections['right'];original=connection.gripper;at_failure=[]
+    def fail(action,**kwargs):
+        if action=='release_partial':
+            at_failure.extend(connection.commands)
+            raise DualArmError('partial opening did not reach measured target')
+        return original(action,**kwargs)
+    monkeypatch.setattr(connection,'gripper',fail)
+    source='motion.grasp(right=[.25,.12,.18,0,0,0])\nmotion.move_tcp(right=[.26,.12,.185,0,0,0])'
+    obs=SimpleNamespace(meta={'joints_deg':{k:a.home_joints.copy() for k,a in scene.config.arms.items()}},validate_for=lambda *a,**kw:None)
+    try:
+        result=r.execute(source,obs,tmp_path)
+        assert result['status']=='EXECUTION_FAILED'
+        assert connection.commands==at_failure
+        assert [x for x in connection.commands if x[0]=='gripper']==[('gripper','open'),('gripper','close')]
+        assert any('partial opening' in p.read_text() for p in tmp_path.glob('gripper_*.json'))
+    finally:r.close()
+
+
+def test_staged_release_requires_validated_vertical_lift_before_any_dispatch(scene,tmp_path,monkeypatch):
+    r=runtime_for(scene);r.__class__=Arm7Runtime
+    monkeypatch.setattr(r.paths,'joint_path',lambda a,b,**kw:[a,b])
+    original=r._tcp_segments;tried=[]
+    def reject_lift(*args,**kwargs):
+        if r.planning_context.get('task_phase')=='host_retreat':
+            tried.append(dict(r.planning_context))
+            raise DualArmError('vertical release lift unavailable')
+        return original(*args,**kwargs)
+    monkeypatch.setattr(r,'_tcp_segments',reject_lift)
+    source='motion.grasp(right=[.25,.12,.18,0,0,0])\nmotion.move_tcp(right=[.26,.12,.185,0,0,0])'
+    obs=SimpleNamespace(meta={'joints_deg':{k:a.home_joints.copy() for k,a in scene.config.arms.items()}},validate_for=lambda *a,**kw:None)
+    try:
+        result=r.execute(source,obs,tmp_path)
+        assert result['status']=='PLANNING_FAILED' and result['physical_execution'] is False
+        assert [x['retreat_height_mm'] for x in tried]==[60.,40.,20.]
+        assert all(x['inward_mm']==0 for x in tried)
+        assert all(not c.commands for c in scene.connections.values())
+    finally:r.close()
+
+
+def test_release_lift_execution_failure_never_fully_opens_or_returns_home(scene,tmp_path,monkeypatch):
+    r=runtime_for(scene);r.__class__=Arm7Runtime
+    monkeypatch.setattr(r.paths,'joint_path',lambda a,b,**kw:[a,b])
+    connection=scene.connections['right'];original=connection.move_joint_position;stopped_at=[]
+    def move(*args,**kwargs):
+        if ('gripper','release_partial') in connection.commands:
+            stopped_at.extend(connection.commands)
+            raise DualArmError('injected lift execution failure')
+        return original(*args,**kwargs)
+    monkeypatch.setattr(connection,'move_joint_position',move)
+    source='motion.grasp(right=[.25,.12,.18,0,0,0])\nmotion.move_tcp(right=[.26,.12,.185,0,0,0])'
+    obs=SimpleNamespace(meta={'joints_deg':{k:a.home_joints.copy() for k,a in scene.config.arms.items()}},validate_for=lambda *a,**kw:None)
+    try:
+        result=r.execute(source,obs,tmp_path)
+        assert result['status']=='EXECUTION_FAILED'
+        assert connection.commands==stopped_at
+        assert [x for x in connection.commands if x[0]=='gripper']==[
+            ('gripper','open'),('gripper','close'),('gripper','release_partial')]
+        assert scene.connections['left'].commands==[]
     finally:r.close()

@@ -230,6 +230,8 @@ class DualConfig:
             raise DualArmError(
                 "measured configuration cannot use synthetic safety bounds"
             )
+        from ..depth_level import bind_support_height_patch
+        raw = bind_support_height_patch(raw, root)
         return cls(root, arms, limits, obstacles, raw)
 
     def require_real(self, *, commissioning=False, homing=False):

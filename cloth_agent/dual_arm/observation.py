@@ -85,6 +85,18 @@ def save_observation(
     Image.fromarray(np.asarray(rgb, dtype=np.uint8)).save(directory / "rgb.png")
     extra = dict(extra or {})
     correction = config.raw.get('camera', {}).get('world_tilt_correction')
+    height_patch = config.raw.get('camera', {}).get('support_height_patch')
+    if height_patch is not None:
+        if correction is not None:
+            raise ValueError('cannot combine world rotation and support-height patch')
+        from ..depth_level import level_support_cloud
+        owner = config.raw['camera']['mount_arm']
+        original_xyz = np.asarray(xyz, dtype=np.float32)
+        xyz, affine = level_support_cloud(xyz, height_patch, joints[owner], extra['world_from_camera_mm'])
+        np.save(directory/'uncorrected_world_xyz_mm.npy', original_xyz, allow_pickle=False)
+        extra['support_height_patch'] = {**height_patch, 'matrix_mm': affine.tolist()}
+        # Keep the physical rigid extrinsic distinct from the compensated cloud.
+        extra['corrected_world_from_camera_affine_mm'] = (affine @ np.asarray(extra['world_from_camera_mm'])).tolist()
     if correction is not None:
         from ..depth_level import rotate_cloud
         if correction.get('mode') != 'world_y_rotation':
@@ -116,7 +128,7 @@ def save_observation(
         "sha256": {n: sha(directory / n) for n in ("rgb.png", "world_xyz_mm.npy")},
         **(extra or {}),
     }
-    if correction is not None:
+    if correction is not None or height_patch is not None:
         meta['sha256']['uncorrected_world_xyz_mm.npy'] = sha(directory/'uncorrected_world_xyz_mm.npy')
     (directory / "observation.json").write_text(
         json.dumps(meta, indent=2, allow_nan=False) + "\n"

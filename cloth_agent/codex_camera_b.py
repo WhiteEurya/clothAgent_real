@@ -21,7 +21,9 @@ def with_arm7_camera(config):
     camera={k:raw['camera'][k] for k in ('width','height','fps')}
     camera.update(label='B',serial=str(pose['camera_serial']),mount_arm='right',mount_link='link_eef',
         mount_from_camera_mm=matrix.tolist(),perception_pose_file=str(pose_file),
-        extrinsics_source=str(extrinsic_file),depth_exposure_us=4000.,depth_gain=16.)
+        extrinsics_source=str(extrinsic_file),depth_exposure_us=4000.,depth_gain=16.,
+        depth_stability={'warmup_frames':30, 'max_frames':150,
+                         'window_frames':15, 'stable_windows':2, 'max_range_mm':2.})
     raw['camera']=camera # Do not inherit arm6's empirical 1-degree correction.
     suffix=hashlib.sha256(json.dumps(camera,sort_keys=True).encode()).hexdigest()[:12]
     raw['calibration_id']+=f'_arm7_cameraB_{suffix}'

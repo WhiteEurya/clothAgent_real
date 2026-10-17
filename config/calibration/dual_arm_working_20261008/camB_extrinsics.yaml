@@ -1,47 +1,52 @@
 X_CammountCam:
-- - 0.0007712897772459947
-  - 0.9999522919457453
-  - -0.009737501965583102
-  - 0.058441926151022214
-- - -0.9999775846374275
-  - 0.0008359999742043906
-  - 0.006643141330776023
-  - 0.038678942017394705
-- - 0.006650964950820665
-  - 0.009732159908948726
-  - 0.9999305224508
-  - 0.01683396701563216
+- - 0.021874611263380323
+  - 0.9996548535127068
+  - -0.014549062875795181
+  - 0.05846385128224985
+- - -0.9996353998512993
+  - 0.021639140479498414
+  - -0.016149766668350225
+  - 0.04181426987496445
+- - -0.01582936341770003
+  - 0.01489702815317164
+  - 0.9997637269905296
+  - 0.017747774669558614
 - - 0.0
   - 0.0
   - 0.0
   - 1.0
 X_TagmountTag:
-- - -0.004179091748166525
-  - 0.9996552224878795
-  - 0.025922410089875673
-  - 0.5212420414364765
-- - 0.9999848972008026
-  - 0.004085131888279312
-  - 0.0036765565077631563
-  - -0.021809738200950994
-- - 0.0035693924496780372
-  - 0.025937383255884645
-  - -0.9996571970367526
-  - 0.04118856128573186
+- - -0.0019139440754268931
+  - 0.9997119654979892
+  - 0.02392327022427903
+  - 0.5030682115598986
+- - 0.9999953765045543
+  - 0.0018568599672999298
+  - 0.0024081197182135943
+  - -0.022783639053292812
+- - 0.002363003933883411
+  - 0.023927768621615685
+  - -0.9997108972604026
+  - 0.06141414130055651
 - - 0.0
   - 0.0
   - 0.0
   - 1.0
 translation_units: m
-status: applied_32p5mm_refit_two_side_hover_validated
-source_log: outputs/coordinate_correction_20261008_145014/input.jsonl
-note: 'Camera B hand-eye transform refitted from the historical log using the confirmed
-  32.5 mm black tag edge. X_TagmountTag is retained from the OLD fit as historical
-  metadata only; it is not a corrected board pose. Physical validation: two tag centers
-  at approximately 50 mm open-fingertip clearance, one tool orientation, 4 ms depth
-  exposure. Cloth grasping still pending.'
-source_calibration: outputs/coordinate_correction_20261008_145014/calibration/extrinsics_wrist_233622079809.yaml
+status: applied_controller_fit_consistent_refit_absolute_alignment_pending
+source_log: /home/sja/RobotCamCalib/outputs/coordinate_correction_20261008_145014/input.jsonl
+note: 'Refitted using the runtime xarm7_controller_fit.urdf, original 32.5 mm tag
+  edge, RGB observations and original fit priors. X_TagmountTag is the corresponding
+  fitted board pose in arm7 base coordinates. Historical physical A/B comparison showed
+  partial improvement only (operator estimate: 20 to 15 mm right offset); absolute
+  alignment remains unverified. RGB intrinsics and internal depth-to-RGB calibration
+  unchanged.'
+source_calibration: reports/camera_offset_cause_audit/cameraB_consistent_fk_candidate_NOT_APPLIED.yaml
 board_tag_edge_mm: 32.5
-candidate_source: results/arm7_board_multiview_20261010T090553Z/execution_calibration_audit/arm7_camera_candidate_NOT_APPLIED.yaml
-physical_validation: results/arm7_candidate_right_hover_20261010T110708Z/two_side_validation.json
-backup_before_activation: results/arm7_extrinsics_activation_20261010T111037Z/camB_extrinsics.before.yaml
+candidate_source: reports/camera_offset_cause_audit/cameraB_consistent_fk_candidate_NOT_APPLIED.yaml
+physical_validation: reports/camera_offset_cause_audit/executed_ab_comparison.json
+backup_before_activation: diagnostics/camb_consistent_fk_activation_20261016T121115Z/camB_extrinsics.before.yaml
+runtime_urdf: assets/robots/xarm7/xarm7_controller_fit.urdf
+runtime_urdf_sha256: edee030ff0d4805a921ee78ca5e7aaecfdde1117e8558249152f5d6a49d7b252
+source_log_sha256: c50e01247d87f2084f70bd3682f8d64a960cfb82fc95ea994f47d53e62e15882
+activation_record: diagnostics/camb_consistent_fk_activation_20261016T121115Z/verification.json

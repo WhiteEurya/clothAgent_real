@@ -19,12 +19,12 @@ def reference(tmp_path):
 
 def answer(output, code, state='辨认衣领，动作效果待下一轮验证'):
     output.mkdir()
-    memory={k:state for k in FIELDS}
-    (output/'answer.txt').write_text(json.dumps(dict(code=code,memory=memory),ensure_ascii=False))
-    return {'status':'AGENT_FINISHED'}
+    assessment=dict(result='uncertain',cloth_motion='uncertain',evidence=state)
+    (output/'answer.txt').write_text(json.dumps(dict(code=code,grasp_assessment=assessment),ensure_ascii=False))
+    return {'status':'AGENT_FINISHED','session_id':'test-session'}
 
 
-def test_unfold_memory_and_comparison_reach_next_iteration(tmp_path):
+def test_unfold_session_and_comparison_reach_next_iteration(tmp_path):
     runtime=Arm7Fake();seen=[]
     code='motion.grasp(right=[.5,0,.05,3.14,0,0])\nmotion.move_tcp(right=[.5,.1,.1,3.14,0,0])'
     def call(prompt,output,images,**kwargs):
@@ -38,15 +38,16 @@ def test_unfold_memory_and_comparison_reach_next_iteration(tmp_path):
     assert len(seen[0][1])==2 and len(seen[1][1])==3
     assert seen[1][1][-1]==seen[0][1][0]
     assert '上一轮动作前的 RGB' in seen[1][0]
-    assert '辨认衣领' in seen[1][0] and 'EXECUTED' in seen[1][0]
+    assert 'EXECUTED' in seen[1][0]
+    assert '此前记忆' not in seen[1][0] and 'next_step' not in seen[1][0]
     for prompt,_ in seen:
         assert '按顺序参考图完成' not in prompt
         assert '衣物已整齐叠好' not in prompt and '已叠好时' not in prompt
         assert '恢复参考图的展开状态' in prompt
     history=[json.loads(l) for l in (tmp_path/'run/iteration_history.jsonl').read_text().splitlines()]
     assert len(history)==2 and history[-1]['outcome']['status']=='MODEL_REPORTED_COMPLETE'
-    assert json.loads((tmp_path/'run/round_002/memory_input.json').read_text())==history[0]
-    assert json.loads((tmp_path/'run/iteration_memory.json').read_text())==history[-1]
+    assert all(h['session_id']=='test-session' for h in history)
+    assert not list((tmp_path/'run').rglob('*memory*.json'))
 
 
 @pytest.mark.parametrize('bad',[
@@ -58,7 +59,7 @@ def test_unfold_memory_and_comparison_reach_next_iteration(tmp_path):
 def test_invalid_memory_or_motion_never_dispatches(tmp_path,bad):
     runtime=Arm7Fake()
     def call(prompt,output,**kwargs):
-        output.mkdir();(output/'answer.txt').write_text(bad);return {'status':'AGENT_FINISHED'}
+        output.mkdir();(output/'answer.txt').write_text(bad);return {'status':'AGENT_FINISHED','session_id':'test-session'}
     result=loop('unfold',runtime,tmp_path/'run',unfold=True,remember_iterations=True,
                 references=reference(tmp_path),model_call=call)
     assert result['status']=='FAILED' and not runtime.executions
@@ -79,11 +80,12 @@ def test_memory_survives_ik_repair_without_fabricating_new_observation(tmp_path)
                 references=reference(tmp_path),model_call=call)
     assert result['status']=='ROUND_LIMIT' and len(runtime.captures)==1
     assert seen[1][1]==[]
-    assert '辨认衣领' in seen[1][0] and '未执行' in seen[1][0]
+    assert '未执行' in seen[1][0]
+    assert not (tmp_path/'run/round_002/grasp_retry_policy.json').exists()
     assert '展开顺序' in seen[1][0] and '折叠顺序' not in seen[1][0]
 
 
-def test_arm7_unfold_starts_at_15mm_and_folding_keeps_offset(tmp_path):
+def test_arm7_unfold_starts_at_17mm_and_folding_keeps_offset(tmp_path):
     from cloth_agent.codex_arm7_runtime import Arm7Runtime
     from cloth_agent.codex_motion import parse_code
     class HeightRuntime(Arm7Fake):
@@ -93,18 +95,36 @@ def test_arm7_unfold_starts_at_15mm_and_folding_keeps_offset(tmp_path):
             self.grasp_z=parse_code(effective,allow_grasp=True)[0][1]['right'][2]
             return super().execute(source,before,folder)
     code='motion.grasp(right=[.5,0,.05,3.14,0,0])\nmotion.move_tcp(right=[.5,.1,.1,3.14,0,0])'
-    for unfold,z in [(True,.035),(False,.035)]:
+    for unfold,z in [(True,.033),(False,.035)]:
         runtime=HeightRuntime();prompts=[]
         def call(prompt,output,**kwargs):
-            prompts.append(prompt);output.mkdir();(output/'answer.txt').write_text(code)
-            return {'status':'AGENT_FINISHED'}
+            prompts.append(prompt)
+            if unfold:return answer(output,code)
+            output.mkdir();(output/'answer.txt').write_text(code)
+            return {'status':'AGENT_FINISHED','session_id':'test-session'}
         dest=tmp_path/str(unfold)
         result=loop('test',runtime,dest,unfold=unfold,max_rounds=1,
                     references=reference(tmp_path),model_call=call)
         assert result['status']=='ROUND_LIMIT'
         assert runtime.grasp_z==pytest.approx(z)
         if unfold:
-            assert '本轮宿主额外下降 15 mm' in prompts[0]
-            assert '额外降低 15 mm' in prompts[0]
+            assert '本轮宿主额外下降 17 mm' in prompts[0]
+            assert '额外降低 17 mm' in prompts[0]
             policy=json.loads((dest/'round_001/grasp_height_policy.json').read_text())
-            assert policy['offset_mm']==15
+            assert policy['offset_mm']==17
+
+
+@pytest.mark.parametrize('assessment',[
+    None, {}, {'result':'missed','cloth_motion':'unchanged','evidence':''},
+    {'result':'bad','cloth_motion':'unchanged','evidence':'test'},
+])
+def test_bad_assessment_never_dispatches(tmp_path,assessment):
+    runtime=Arm7Fake()
+    def call(prompt,output,**kwargs):
+        output.mkdir()
+        code='motion.grasp(right=[.5,0,.05,3.14,0,0])'
+        (output/'answer.txt').write_text(json.dumps(dict(code=code,grasp_assessment=assessment)))
+        return dict(status='AGENT_FINISHED',session_id='test-session')
+    result=loop('unfold',runtime,tmp_path/'run',unfold=True,max_rounds=1,
+                references=reference(tmp_path),model_call=call)
+    assert result['status']=='FAILED' and not runtime.executions

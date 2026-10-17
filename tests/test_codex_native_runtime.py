@@ -457,3 +457,34 @@ def test_joint_search_stops_after_two_timeout_rounds(scene,tmp_path,monkeypatch)
         assert attempts==['right_first','right_first']
         assert all(not c.commands for c in scene.connections.values())
     finally:r.close()
+
+
+def test_post_close_cloth_settling_does_not_gate_transport(scene,tmp_path,monkeypatch):
+    """Regression: the recorded 529 -> 520 moving feedback is not a hold veto."""
+    r=runtime_for(scene)
+    initial={k:a.home_joints.copy() for k,a in scene.config.arms.items()}
+    target=np.radians(initial['left']);target[0]+=.001
+    obs=SimpleNamespace(meta={'joints_deg':initial},validate_for=lambda *a,**kw:None)
+    connection=scene.connections['left'];original=connection.snapshot
+    def snapshot():
+        value=original()
+        if any(n=='position' for n,_ in connection.commands):
+            value['gripper'].update(state='moving',position_pulse=520)
+        return value
+    monkeypatch.setattr(connection,'snapshot',snapshot)
+    close=connection.gripper
+    def gripper(action):
+        result=close(action)
+        if action=='close':
+            connection.position=529
+            result['feedback']['position_pulse']=529
+        return result
+    monkeypatch.setattr(connection,'gripper',gripper)
+    def wait(c,operation,timeout,monitor):
+        operation();monitor()
+    monkeypatch.setattr('cloth_agent.codex_native_runtime.wait_operation',wait)
+    try:
+        result=r.execute(f'motion.gripper(arm="left",action="close")\nmotion.move_joints(left={target.tolist()})',obs,tmp_path)
+        assert result['status']=='EXECUTED',result
+        assert result['completed_commands']==2
+    finally:r.close()

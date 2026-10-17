@@ -1,0 +1,7 @@
+{
+  "python": "3.10.21",
+  "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.31",
+  "machine": "x86_64",
+  "codex": "codex-cli 0.162.1",
+  "graphviz": "dot - graphviz version 2.43.0 (0)"
+}

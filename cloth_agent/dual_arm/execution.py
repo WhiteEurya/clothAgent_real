@@ -277,11 +277,12 @@ class XArmConnection(XArmBackend):
         if state not in (0, 2) or list(errors) != [0, 0]:
             raise DualArmError("controller fault during gripper wait")
 
-    def gripper(self, target):
+    def gripper(self, target, *, opening_delta_pulse=None):
         # SDK requests have their own transport lock. Do not hold the arm lock
         # for the entire feedback wait: the coordinator must keep reading both
         # arms and stop if a supposedly stationary holder drifts.
-        return self._command_gripper(self.config.gripper, target=target)[0]
+        return self._command_gripper(self.config.gripper, target=target,
+                                     opening_delta_pulse=opening_delta_pulse)[0]
 
     def stop(self):
         # Do not wait on a possibly blocked motion/gripper call's lock.
@@ -354,14 +355,20 @@ class SimulatedConnection:
         self.joints = np.array(joints).copy()
         self.commands.append(("servo", self.joints.tolist()))
 
-    def gripper(self, target):
+    def gripper(self, target, *, opening_delta_pulse=None):
         if self.cancel.is_set():
             raise DualArmError("cancelled")
-        self.position = (
-            self.config.gripper.gripper_open
-            if target == "open"
-            else self.config.gripper.gripper_close + 20
-        )
+        if target=='release_partial':
+            from .single_arm_backend import partial_release_target
+            self.position=partial_release_target(self.config.gripper,self.position,opening_delta_pulse)
+        elif target in {'open','close'}:
+            if opening_delta_pulse is not None:raise DualArmError('opening delta is only valid for partial release')
+            self.position = (
+                self.config.gripper.gripper_open
+                if target == "open"
+                else self.config.gripper.gripper_close + 20
+            )
+        else:raise DualArmError('unsupported gripper action')
         self.commands.append(("gripper", target))
         return {
             "feedback": self.snapshot()["gripper"],

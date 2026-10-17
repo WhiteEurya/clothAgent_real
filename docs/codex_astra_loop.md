@@ -109,3 +109,17 @@ Viser 新增“当前位置 → 所选目标（示意）”：在“选择目标
 IK 失败通过 outcome.ik_failure 返回机械臂、指令序号、任务阶段、World/基座目标、关节初值、候选解误差、尝试次数、迭代预算、耗时和拒绝原因。代码修正分支将报告及原始代码交回 Codex，复用未执行动作的原观测，不执行失败候选。数值预算内未收敛不会被报告为“已证明不可达”。
 
 关节路径搜索最多尝试两轮；只有一臂移动时只搜索该臂顺序，不重复搜索等价顺序。每次 RRT 搜索预算 30 秒，失败返回 PATH_SEARCH_BUDGET_EXHAUSTED 和碰撞/工作空间原因。拍照准备失败在模型调用前终止 run；这不是 IK 失败。最终路径认证另计，不将搜索预算视为整个规划的硬超时。
+
+同一次 run 的规划和 IK 修正调用使用同一个 Codex 会话，首轮创建，后续以 `session.json` 中的明确 ID 续接。会话 ID 丢失或改变时停止，避免静默丢失上下文。每个新 run 独立创建会话；不再通过 `memory` JSON 摘要交接轮次。
+
+
+### GPT 每轮规划事件记录
+
+新启动的循环默认开启可观察规划事件记录。GPT 在实际读取、搜索、形成假设、修改候选代码、验证、修正和结束本轮规划时，用中间消息发送带 `PLANNING_TRACE` 标记的简短 JSON；宿主旁路读取事件流，实时追加，不等待最终回答再回忆补写。最终动作格式、只读权限和机器人执行流程保持不变。
+
+- `<run>/planning_trace.jsonl`：跨轮按实际接收顺序追加，`step` 全局递增。
+- `<run>/round_NNN/planning_trace.jsonl`：该轮同一组事件。
+- `<run>/round_NNN/planner/result.json` 的 `planning_trace`：接收数量、拒收数量、阶段和记录错误；初始化失败另有 `planning_trace_error`。
+- `iteration`、`session_id`、`recorded_at`、`model_step`、`source_event_line`、`source_item_id` 用于对应轮次及 `planner/events.jsonl` 中的真实事件。`known` 和 `hypothesis` 是模型显式声明，事实是否正确仍须核对引用的工具/图像证据。
+
+只收集模型主动输出的公共摘要，不从 reasoning 事件、工具输出或最终动作反推出思维过程。`complete` 仅表示收到合法 ORIENT/DONE 边界且无记录错误，不保证每个该记录的事件都被模型报告；`coverage_verified=false` 明确表示未验证完整覆盖。缺失记录不会补造，trace 错误不替代正常任务结果。DONE 只表示本轮规划结束，不表示物理任务完成。额外摘要会增加少量 token 与时间开销，不保证零开销。

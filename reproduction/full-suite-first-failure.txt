@@ -1,0 +1,49 @@
+.ss..................................................................... [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 13%]
+....................................F
+=================================== FAILURES ===================================
+___________ test_arm7_unfold_starts_at_17mm_and_folding_keeps_offset ___________
+
+tmp_path = PosixPath('/tmp/pytest-of-sja/pytest-657/test_arm7_unfold_starts_at_17m0')
+
+    def test_arm7_unfold_starts_at_17mm_and_folding_keeps_offset(tmp_path):
+        from cloth_agent.codex_arm7_runtime import Arm7Runtime
+        from cloth_agent.codex_motion import parse_code
+        class HeightRuntime(Arm7Fake):
+            grasp_offset_mm=Arm7Runtime.grasp_offset_mm
+            def execute(self,source,before,folder):
+                effective=Arm7Runtime.adjust_motion(self,source,folder)
+                self.grasp_z=parse_code(effective,allow_grasp=True)[0][1]['right'][2]
+                return super().execute(source,before,folder)
+        code='motion.grasp(right=[.5,0,.05,3.14,0,0])\nmotion.move_tcp(right=[.5,.1,.1,3.14,0,0])'
+        for unfold,z in [(True,.033),(False,.035)]:
+            runtime=HeightRuntime();prompts=[]
+            def call(prompt,output,**kwargs):
+                prompts.append(prompt)
+                if unfold:return answer(output,code)
+                output.mkdir();(output/'answer.txt').write_text(code)
+                return {'status':'AGENT_FINISHED','session_id':'test-session'}
+            dest=tmp_path/str(unfold)
+            result=loop('test',runtime,dest,unfold=unfold,max_rounds=1,
+                        references=reference(tmp_path),model_call=call)
+            assert result['status']=='ROUND_LIMIT'
+>           assert runtime.grasp_z==pytest.approx(z)
+E           assert 0.05 == 0.035 ± 3.5e-08
+E
+E             comparison failed
+E             Obtained: 0.05
+E             Expected: 0.035 ± 3.5e-08
+
+tests/test_codex_unfold_memory.py:109: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Round 1: EXECUTED
+Round 1 耗时：准备与采集 0.00s；GPT 规划 0.00s；本轮总计 0.00s
+Round 1: EXECUTED
+Round 1 耗时：准备与采集 0.00s；GPT 规划 0.00s；本轮总计 0.00s
+=========================== short test summary info ============================
+FAILED tests/test_codex_unfold_memory.py::test_arm7_unfold_starts_at_17mm_and_folding_keeps_offset
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 394 passed, 2 skipped in 14.67s

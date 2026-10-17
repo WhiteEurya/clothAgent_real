@@ -418,6 +418,10 @@ class NativeRuntime:
                     dict(mode='shared_arm7_target_z',changes=changes),indent=2)+'\n')
             observation.validate_for(self.config,live=True,check_age=False)
             operations=self.plan(source,initial)
+            self.auto_grasp_branch=None
+            if getattr(self,'auto_grasp_debug',False):
+                from .auto_grasp_debug import prepare_branch
+                self.auto_grasp_branch=prepare_branch(self,source,operations,folder)
             timings[stage]=time.perf_counter()-began
             stage='preview_s';began=time.perf_counter()
             record_preview(self,source,initial,operations,None,folder)
@@ -475,7 +479,9 @@ class NativeRuntime:
                 for key in getattr(self,'active_arms',tuple(c.connections)):
                     c.connections[key].prepare_position()
                 self.prepared=True
-            for kind,data in operations:
+            queue=list(operations); unstick_used=False
+            while queue:
+                kind,data=queue.pop(0)
                 if kind=='move':
                     self.arrival(data.start)
                     c.event('astra_move_start',**data.to_dict())
@@ -491,10 +497,22 @@ class NativeRuntime:
                     target={k:np.asarray(v) for k,v in data['joints'].items()}
                     self.arrival(target)
                     c.event('astra_gripper_start',index=completed+1,arm=data['arm'],action=data['action'],
+                            opening_delta_pulse=data.get('opening_delta_pulse'),
                             speed=self.config.arms[data['arm']].gripper.gripper_speed)
+                    feedback_box={}
                     def command_gripper(d=data,index=completed+1):
                         try:
-                            feedback=c.connections[d['arm']].gripper(d['action'])
+                            connection=c.connections[d['arm']]
+                            old_confirmation=getattr(connection,'debug_reclose_confirmation',False)
+                            connection.debug_reclose_confirmation=bool(getattr(self,'auto_grasp_branch',None) and d['action']=='close')
+                            try:
+                                if d['action']=='release_partial':
+                                    feedback=connection.gripper(d['action'],opening_delta_pulse=d['opening_delta_pulse'])
+                                else:
+                                    feedback=connection.gripper(d['action'])
+                            finally:
+                                connection.debug_reclose_confirmation=old_confirmation
+                            feedback_box['value']=feedback
                         except BaseException as error:
                             record=dict(arm=d['arm'],action=d['action'],error=f'{type(error).__name__}: {error}',
                                         completion=getattr(error,'gripper_completion',None))
@@ -506,6 +524,23 @@ class NativeRuntime:
                     wait_operation(c,command_gripper,
                                    self.config.arms[data['arm']].gripper.gripper_completion_timeout_s+1,
                                    lambda:self.arrival(target))
+                    branch=getattr(self,'auto_grasp_branch',None)
+                    if branch and data['action']=='close':
+                        from .auto_grasp_debug import close_evidence
+                        decision=close_evidence(feedback_box.get('value',{}))
+                        (folder/f'auto_close_{completed+1:03d}.json').write_text(json.dumps(
+                            dict(decision=decision,unstick_used=unstick_used),indent=2))
+                        if unstick_used:
+                            if decision in {'WIDE_STALLED','UNKNOWN'}:
+                                raise DualArmError('automatic unstick unresolved; transport blocked')
+                        elif completed==branch['close_index'] and decision=='WIDE_STALLED':
+                            # Already stopped and measured stable; no early return from closing wait.
+                            # All alternate moves were planned/certified before initial dispatch.
+                            if getattr(self,'debug_unstick_attempts',0)>=1:
+                                raise DualArmError('automatic unstick budget exhausted; transport blocked')
+                            self.debug_unstick_attempts=getattr(self,'debug_unstick_attempts',0)+1
+                            queue=list(branch['operations']);unstick_used=True
+                            c.event('astra_auto_unstick',lift_mm=2,reason=decision)
                 completed+=1;c.event('astra_command_complete',index=completed,kind=kind)
             return dict(status='EXECUTED',physical_execution=True,completed_commands=completed)
         except BaseException as exc:

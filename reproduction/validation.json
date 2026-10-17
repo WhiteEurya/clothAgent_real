@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-17",
+  "core_graph_tests": {
+    "passed": 151
+  },
+  "gamepad_tests": {
+    "passed": 47
+  },
+  "archive_tests": {
+    "passed": 5
+  },
+  "full_suite_fail_fast": {
+    "passed": 394,
+    "skipped": 2,
+    "failed": 1,
+    "failure": "tests/test_codex_unfold_memory.py::test_arm7_unfold_starts_at_17mm_and_folding_keeps_offset",
+    "detail": "Expected grasp_z 0.035; actual 0.05. Unrelated existing unfold expectation mismatch; not changed for publication."
+  },
+  "latest_graph_dry_run": {
+    "status": "DRY_RUN_OK",
+    "robot_calls": 0,
+    "model_calls": 0,
+    "snapshot": "runs/graph_recover_20261017_134332/episode_0001/growth_000096.json"
+  },
+  "docker_build_tested": false,
+  "physical_reproduction_tested": false,
+  "secret_pattern_scan": {
+    "scanned_files": 26494,
+    "flagged_paths": []
+  },
+  "full_archive_restore": {
+    "files_verified": 32078,
+    "result": "PASS",
+    "isolated_destination": true
+  },
+  "pip_check": "No broken requirements found",
+  "isolated_checkout_with_restored_data_tests": {
+    "passed": 203,
+    "skipped": 0
+  }
+}

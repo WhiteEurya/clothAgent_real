@@ -25,18 +25,25 @@ def build_prompt(task: str) -> str:
     return task.strip() + '\n使用项目现有标定和观测找抓点；本轮只生成运动代码，不执行机器人动作。'
 
 
-def build_command(binary: str, workspace: Path, output: Path, *, read_only: bool) -> list[str]:
-    command = [binary, 'exec', '--model', MODEL, '-c', f'model_reasoning_effort="{EFFORT}"',
+def build_command(binary: str, workspace: Path, output: Path, *, read_only: bool, session_id: str | None = None,
+                  reasoning_effort: str = EFFORT) -> list[str]:
+    command = [binary, 'exec', '--model', MODEL, '-c', f'model_reasoning_effort="{reasoning_effort}"',
                '--cd', str(workspace), '--json', '--color', 'never',
                '--output-last-message', str(output / 'answer.txt')]
     command += ['--sandbox', 'read-only'] if read_only else ['--approve-for-me']
+    if session_id is not None:
+        if not isinstance(session_id, str) or not session_id.strip() or session_id.startswith('-'):
+            raise ValueError('invalid Codex session id')
+        command += ['resume', session_id]
     return command + ['-']
 
 
 def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
         binary: str = 'codex', timeout_s: float = 1800, read_only: bool = False,
         dry_run: bool = False, scene: Path | None = None, state: Path | None = None,
-        images=(), raw_prompt: bool = False) -> dict:
+        images=(), raw_prompt: bool = False, session_id: str | None = None,
+        trace_output: Path | None = None, trace_iteration: int | None = None,
+        reasoning_effort: str = EFFORT) -> dict:
     if timeout_s <= 0:
         raise ValueError('timeout_s must be positive')
     prompt = task if raw_prompt else build_prompt(task)
@@ -52,6 +59,9 @@ def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
         if not scene.is_file() or not state.is_file():
             raise ValueError('scene/state input file is missing')
         prompt += f'\n规划场景：{scene}\n初始关节状态：{state}'
+    if trace_output is not None:
+        from .planning_trace import trace_prompt
+        prompt += trace_prompt()
     workspace = workspace.resolve()
     if not workspace.is_dir():
         raise ValueError(f'工作目录不存在: {workspace}')
@@ -61,26 +71,36 @@ def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
     output = (output or runs_root(ROOT) / 'codex_astra' /
               datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')).resolve()
     output.mkdir(parents=True, exist_ok=False)
-    command = build_command(executable, workspace, output, read_only=read_only)
+    command = build_command(executable, workspace, output, read_only=read_only, session_id=session_id,
+                            reasoning_effort=reasoning_effort)
     for image in images:
         image = Path(image).resolve()
         if not image.is_file():
             raise ValueError(f'image is missing: {image}')
         command[-1:-1] = ['--image', str(image)]
-    request = dict(model=MODEL, reasoning_effort=EFFORT, task=task, prompt=prompt,
+    request = dict(model=MODEL, reasoning_effort=reasoning_effort, task=task, prompt=prompt,
                    workspace=str(workspace), command=command, timeout_s=timeout_s,
-                   read_only=read_only, dry_run=dry_run)
+                   read_only=read_only, dry_run=dry_run, requested_session_id=session_id)
     (output / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=2)+'\n')
     (output / 'prompt.txt').write_text(prompt+'\n')
     result = dict(status='DRY_RUN' if dry_run else 'RUNNING', output_directory=str(output),
-                  model=MODEL, reasoning_effort=EFFORT)
+                  model=MODEL, reasoning_effort=reasoning_effort)
     if dry_run:
         (output / 'result.json').write_text(json.dumps(result, indent=2)+'\n')
         return result
     started = time.monotonic()
     process = None
+    trace = None
     try:
         with (output / 'events.jsonl').open('w') as events, (output / 'stderr.txt').open('w') as errors:
+            if trace_output is not None:
+                from .planning_trace import TraceCollector
+                try:
+                    trace=TraceCollector(output/'events.jsonl',trace_output,output.parent/'planning_trace.jsonl',
+                                         trace_iteration,session_id)
+                    trace.start()
+                except Exception as exc:
+                    result['planning_trace_error']=f'{type(exc).__name__}: {exc}'
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=events, stderr=errors,
                                        text=True, cwd=workspace, start_new_session=True)
             try:
@@ -100,25 +120,31 @@ def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
             result['returncode'] = process.returncode
         usage = {}
         turns = 0
-        errors = []
+        events_parsed = []
         for line in (output / 'events.jsonl').read_text().splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            events_parsed.append(event)
+            if event.get('type') == 'thread.started':
+                result['session_id'] = event.get('thread_id')
             if event.get('type') == 'turn.completed':
                 turns += 1
                 for key, value in (event.get('usage') or {}).items():
                     if isinstance(value, (int, float)):
                         usage[key] = usage.get(key, 0) + value
-            if event.get('type') in ('error', 'turn.failed'):
-                errors.append(event)
-        result.update(usage=usage, completed_turns=turns, errors=errors)
-        if errors and result['status'] == 'AGENT_FINISHED':
+        from .codex_event_status import completion_status
+        completion = completion_status(events_parsed)
+        result.update(usage=usage, completed_turns=turns, **completion)
+        if (completion['errors'] or not completion['final_turn_completed']) and result['status'] == 'AGENT_FINISHED':
             result['status'] = 'FAILED'
+        if session_id is not None and result.get('session_id') != session_id:
+            result.update(status='FAILED', error='Codex resumed session ID mismatch or missing')
         # Agent process success is not a physical task success verdict.
         result['task_success'] = None
-        if result['status'] == 'AGENT_FINISHED' and not (output / 'answer.txt').is_file():
+        if result['status'] == 'AGENT_FINISHED' and (not (output / 'answer.txt').is_file()
+                or not (output / 'answer.txt').read_text().strip()):
             result.update(status='FAILED', error='Codex did not write a final answer')
         if result['status'] == 'AGENT_FINISHED' and not read_only:
             from .codex_motion import parse_code, handoff
@@ -136,6 +162,8 @@ def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
     except Exception as exc:
         result.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
     finally:
+        if trace is not None:
+            result['planning_trace']=trace.close()
         result['duration_s'] = time.monotonic()-started
         (output / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')
     return result

@@ -39,3 +39,19 @@ def retry_policy(folder, arm, outcome, applied_offset_mm, *, initial_offset_mm=5
                           reason='mechanical contact after closure; visual cloth confirmation still needed')
         else:report['reason']='ambiguous closure; keep offset unchanged'
     return report
+
+
+def visual_retry_policy(folder, arm, outcome, applied_offset_mm, assessment, *, max_offset_mm=30.):
+    """Require both visual miss and reliable empty closure; never interrupt a grasp."""
+    mechanical = retry_policy(folder, arm, outcome, applied_offset_mm)
+    report = dict(assessment='unconfirmed', applied_offset_mm=applied_offset_mm,
+                  next_offset_mm=applied_offset_mm, limit_reached=False,
+                  visual=assessment, mechanical=mechanical, max_offset_mm=max_offset_mm)
+    if (isinstance(assessment, dict) and assessment.get('result') == 'missed'
+            and assessment.get('cloth_motion') == 'unchanged'
+            and isinstance(assessment.get('evidence'), str) and assessment['evidence'].strip()
+            and mechanical['assessment'] == 'empty'):
+        report.update(assessment='corroborated_miss',
+                      next_offset_mm=min(applied_offset_mm + 3., max_offset_mm),
+                      limit_reached=applied_offset_mm >= max_offset_mm)
+    return report
