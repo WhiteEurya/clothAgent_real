@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "device": {
+    "bustype": 3,
+    "vendor": 2064,
+    "product": 1,
+    "version": 272
+  },
+  "name": " USB Gamepad          ",
+  "axes": [
+    {
+      "code": 0,
+      "sign": -1
+    },
+    {
+      "code": 1,
+      "sign": -1
+    },
+    {
+      "code": 5,
+      "sign": 1
+    }
+  ],
+  "buttons": {
+    "A": 290,
+    "B": 289,
+    "X": 291,
+    "Y": 288,
+    "LB": 292,
+    "START": 297
+  }
+}
