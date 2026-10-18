@@ -38,7 +38,12 @@ class JogRuntime(NativeRuntime):
 
 
 class Arm7Jogger:
-    def __init__(self, config, output, guard, step_mm=1., yaw_step_deg=DEFAULT_YAW_STEP_DEG):
+    recover_stopped_on_start = False
+
+    def _create_runtime(self, config):
+        return JogRuntime(config)
+
+    def __init__(self, config, output, guard, step_mm=1., yaw_step_deg=DEFAULT_YAW_STEP_DEG, *, runtime=None):
         from .dual_arm.cli import connect
         from .dual_arm.execution import DualArmCoordinator
         from .run_storage import runs_root
@@ -46,14 +51,20 @@ class Arm7Jogger:
         self.guard, self.step_mm, self.yaw_step_deg = guard, step_mm, yaw_step_deg
         self.output = Path(output) if output else runs_root(ROOT) / datetime.now(timezone.utc).strftime('gamepad_%Y%m%dT%H%M%S%fZ')
         self.output.mkdir(parents=True, exist_ok=False)
-        self.runtime = JogRuntime(config)
+        self.owns_runtime = runtime is None
+        self.runtime = self._create_runtime(config) if runtime is None else runtime
         # No automatic controller STOP recovery, Home, perception, or camera use.
-        self.runtime.config.home_recover_stopped = False
+        if self.owns_runtime:
+            self.runtime.config.home_recover_stopped = self.recover_stopped_on_start
         self.executing = threading.Event()
         self.execution_generation = None
         self.closed = threading.Event()
         self.index = 0
         self.watchdog = None
+        if not self.owns_runtime:
+            if self.runtime.coordinator is None or self.runtime.cancel.is_set():
+                raise DualArmError('shared runtime must be connected and ready')
+            return
         try:
             r = self.runtime
             r._lease = open('/tmp/clothagent_codex_dual_arm.lock', 'a')
@@ -136,4 +147,5 @@ class Arm7Jogger:
         self.closed.set()
         if self.watchdog is not None:
             self.watchdog.join(timeout=3)
-        self.runtime.close()
+        if self.owns_runtime:
+            self.runtime.close()

@@ -17,6 +17,19 @@ class QueuedPositionSegment(PositionSegment):
                     interpolation='unblended_controller_positions')
 
 
+@dataclass
+class CartesianPositionSegment(QueuedPositionSegment):
+    target_pose: list
+    cartesian_speed: float
+    cartesian_acceleration: float
+
+    def to_dict(self):
+        return dict(super().to_dict(), interpolation='controller_linear_tcp',
+                    target_pose_mm_deg=self.target_pose,
+                    cartesian_speed_mm_s=self.cartesian_speed,
+                    cartesian_acceleration_mm_s2=self.cartesian_acceleration)
+
+
 def queue_moves(operations,limit=32):
     """Preserve all waypoints and gripper boundaries; no geometric smoothing."""
     result=[];pending=[]

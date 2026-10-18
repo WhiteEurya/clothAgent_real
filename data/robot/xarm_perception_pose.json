@@ -1,6 +1,6 @@
 {
   "name": "perception_position",
-  "recorded_at": "2026-10-07T02:48:56.575070+00:00",
+  "recorded_at": "2026-10-17T12:09:13.176348+00:00",
   "camera_label": "A",
   "camera_serial": "317222073552",
   "robot_ip": "192.168.2.232",
@@ -8,21 +8,21 @@
   "robot_sn": "XI130312B22L0F",
   "control_box_sn": "AC130308A40050",
   "joint_angles_deg": [
-    -1.05006,
-    6.437754,
-    -122.434606,
-    1.816162,
-    107.690053,
-    -1.675329,
+    -2.423153,
+    3.4684,
+    -122.42372,
+    1.815589,
+    115.431572,
+    -1.67573,
     0.0
   ],
   "tcp_pose_mm_deg": [
-    473.024475,
-    0.185345,
-    508.419159,
-    -178.595758,
-    -8.35934,
-    1.200175
+    425.09201,
+    -9.249968,
+    517.669067,
+    -178.512507,
+    -3.579611,
+    0.036268
   ],
   "tcp_offset_mm_deg": [
     0.0,
@@ -32,7 +32,7 @@
     0.0,
     0.0
   ],
-  "recording_note": "User designated live pose as camera perception position. Read-only capture; no robot motion. Joint vector retains SDK padding for compatibility.",
+  "recording_note": "User designated current Arm6 pose as Camera A perception position. Read-only capture; no robot motion.",
   "stationary_check": {
     "interval_s": 0.5,
     "max_joint_delta_deg": 0.0

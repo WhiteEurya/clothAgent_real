@@ -1,0 +1,1490 @@
+{
+  "protocol": "arm6-demonstration-experience-v1",
+  "goal": "用户指定 o007 / n007 作为本次 replay 的视觉目标。匹配该参考状态即结束，不代表通用折叠质量标准。",
+  "observations": {
+    "o000": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/observation/rgb.png",
+        "sha256": "e87870d1c25712e9674ce7fc072a3416fd5bb029f7d7130f5315428e0c02e869"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/observation/observation.json",
+        "sha256": "c2bf46c440377242db60b6181af311babfd0510bc6ae7f186675569ce0d66b1b"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/observation/world_xyz_mm.npy",
+        "sha256": "bffa8db51ab30ea1529cabe7b290cad1e4e0a2778de6af363fdce6c0af44a0ab"
+      },
+      "captured_at": "2026-10-17T12:58:03.735946+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o001": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/observation/rgb.png",
+        "sha256": "efbac833cc0a5d862b606591d8eb60d96d9e34bedd24e58522e5361a1b02998e"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/observation/observation.json",
+        "sha256": "5198ad4b8b86763c0584a244e886f796378075c0d238035e3e2a6f8097cf59b7"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/observation/world_xyz_mm.npy",
+        "sha256": "bb9a47af3ee4f230f3ef42f32d3a9571f6fa59fa8f3962a6e9407ebc0a522a41"
+      },
+      "captured_at": "2026-10-17T12:59:55.860570+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o002": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/observation/rgb.png",
+        "sha256": "2367574d8e5d70969b13d9b1e54ec73cb7e266c22ca13e8b1fc93f9ec10fadf1"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/observation/observation.json",
+        "sha256": "793b19c21251ec7f3831ceca67587abb13254ba1e408d557206a383102615e39"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/observation/world_xyz_mm.npy",
+        "sha256": "50d3ac67c47b6bc45b2c934c43647c43d58f7f1bfd14669af0c1f62f3f0c64e3"
+      },
+      "captured_at": "2026-10-17T13:01:34.391500+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o003": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/observation/rgb.png",
+        "sha256": "bc16ea59b9898579dc0318d8e149745378030d0a092f22f116753a55b6046d14"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/observation/observation.json",
+        "sha256": "38579a19e9d899df1d81bf1d131700948ba17dc1d0c56359d7a0ae6d983b1f36"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/observation/world_xyz_mm.npy",
+        "sha256": "8e84aa6774be13d726f9d960d361dae6e919edb5dc9471d9a4e5d677ea363630"
+      },
+      "captured_at": "2026-10-17T13:03:02.679640+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o004": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/observation/rgb.png",
+        "sha256": "9e21a06af6f75430acfeae895a69858c7e31bb26e63f7bff0a54d97686a9a18a"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/observation/observation.json",
+        "sha256": "22bd3a477610c1cfd737803f10684fe095c9167959b0ed708a8f00ff03592f83"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/observation/world_xyz_mm.npy",
+        "sha256": "16a806851923a971e077f6a6e348af054560b54c9451d26ebaf0faaba6474e49"
+      },
+      "captured_at": "2026-10-17T13:04:40.044046+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o005": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/observation/rgb.png",
+        "sha256": "1d31ec73794cddce4e06ca75490bbb0965638f1b453d0c9487e272aa54131402"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/observation/observation.json",
+        "sha256": "1ddfcb7b5bd433eee1182d9ef17883e4449dee9e5ad9046f14502504ed780221"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/observation/world_xyz_mm.npy",
+        "sha256": "f094060b7ec1b57118e19d552e760b7c5393e5204b1c45716e38b5a1ab536766"
+      },
+      "captured_at": "2026-10-17T13:06:33.490953+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o006": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/observation/rgb.png",
+        "sha256": "bc7fd2837d4321c2272c219d86dc220abc147c05dbdd9da7337363a3099c7c5c"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/observation/observation.json",
+        "sha256": "e63defa203e450d79c4aedb4fff0fc39ab6a4d0ca4a2236919f572d53d779f3f"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/observation/world_xyz_mm.npy",
+        "sha256": "4583d4edfed3ac5290153715e824d55172ea725c974b05e6c16c3480d36aadc9"
+      },
+      "captured_at": "2026-10-17T13:07:56.075183+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o_initial_unfolded": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/observation/rgb.png",
+        "sha256": "f5f27f25bdf2294f1a03d9cb4238336b0260b3f451d4d633da0d8e63e53f41e2"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/observation/observation.json",
+        "sha256": "cd0fa7a17b244a0f7fc514b77ca39ec6d39e95d84b1dd22161b894a22262b7ee"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/observation/world_xyz_mm.npy",
+        "sha256": "3f002b800ccc80d97516d8e3512b71eafe94996472f911d4224d8809121ea922"
+      },
+      "captured_at": "2026-10-17T12:52:15.393471+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o_initial_left_folded": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/pending/iter_0001/observation/rgb.png",
+        "sha256": "ea8741d234a826818e7f3909bbd0eb1bde6c2700c2bf781e60b24dd66debef94"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/pending/iter_0001/observation/observation.json",
+        "sha256": "99b2e34280025764cb5b4e8183ecb90610c2e97eef753ea92f877282a401deb4"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/pending/iter_0001/observation/world_xyz_mm.npy",
+        "sha256": "6e2021c2e9bcf0d8a74fbd27aeaf627106b28ed6276fc6c234f67b41dacc0f9d"
+      },
+      "captured_at": "2026-10-17T12:53:42.176609+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o_replay_e001_n004": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/step_0000/after/rgb.png",
+        "sha256": "6b2e38cefe97056c107be35ed49d1bbb87385628ef0277e1c4b44f1c0b527011"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/step_0000/after/observation.json",
+        "sha256": "8548f0ffaac2aac5c3e09b75db355ce8f2a0c0c4d03cc4c7e878e9acc62d1a52"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/step_0000/after/world_xyz_mm.npy",
+        "sha256": "9df220a6a4639c574a9f5d3b680b2907627ccf25f8cc45d467d1729d8c882e4e"
+      },
+      "captured_at": "2026-10-18T07:20:57.489384+00:00",
+      "arm": "left",
+      "camera": "A"
+    },
+    "o007": {
+      "rgb": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0007/observation/rgb.png",
+        "sha256": "3de1f3f04b3930ff63eebb381ab9bc1686c1057d533a3ce3a47382321545848f"
+      },
+      "observation": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0007/observation/observation.json",
+        "sha256": "d31e772e39eb2f4dcc68179057ad1e518cd0236536dc77eecc902ee1a253a903"
+      },
+      "surface": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0007/observation/world_xyz_mm.npy",
+        "sha256": "c8e1c5e949e8450f5d0f88355c400b9239ce0763ca21b8cb9d728e10c3a00ac0"
+      },
+      "captured_at": "2026-10-17T13:09:59.117057+00:00",
+      "arm": "left",
+      "camera": "A"
+    }
+  },
+  "steps": [
+    {
+      "step_id": "s_initial_left_sleeve",
+      "before_observation": "o_initial_unfolded",
+      "after_observation": "o_initial_left_folded",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              384,
+              163
+            ],
+            "world_xyz_mm": [
+              634.0941162109375,
+              181.01148986816406,
+              24.629261016845703
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              559,
+              171
+            ],
+            "world_xyz_mm": [
+              626.3496704101562,
+              58.40629959106445,
+              24.288612365722656
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/approach/native_plan.json",
+              "sha256": "1f3fa648810a147e6b2dea51c7c61152a9727f4490a4fe7e1c0dcc306546863c"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/approach/motion.py",
+              "sha256": "db6d31639acc1f722bac28b20d5bbd066d9aad96e73b85dbf1046c30165ba548"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/transfer_place/native_plan.json",
+              "sha256": "ab98581f20cb2a2746fab5eddf1d6f1a34b60ecea15cff78c0ff692c45d81dcb"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/transfer_place/motion.py",
+              "sha256": "1d1ec9f7cb8a1b5fea9615bb88aa2fa392ffeadb40a66a9c37da4ffe06c629f2"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/return_perception/native_plan.json",
+              "sha256": "3d975c29bcc932d49ee45b2fce3babe68e1d584281ade870657c388107a81f8b"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/events.jsonl",
+          "sha256": "59bc8b8c3b1687503fdcb9f4a4830ac12c74b8ed7f3c963cbd27e288f37dac82"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/states.jsonl",
+          "sha256": "9bb944defc60dfdfd911f2e215108f6cf05fbf3ed2af06874aa7d681c6cb1754"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/controller/events.jsonl",
+          "sha256": "b75f6cab410df80f8ac946df65741994840971eef7e6e37be1396504caf3b7bb"
+        },
+        "handoff": {
+          "t_s": 64.92227476462722,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            634.0922887421824,
+            181.0203178873402,
+            58.76973985460174,
+            -178.17822181971167,
+            -0.4035893083454445,
+            0.17322250836153458
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 56.1697850683704,
+            "sample_time_s": 56.134000797756016,
+            "measured_tcp_mm_deg": [
+              634.1115335204454,
+              181.02620317658702,
+              9.404249225941868,
+              -178.18108894319863,
+              -0.39304533790750407,
+              0.17316144654302754
+            ],
+            "gripper_pulse": 839.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/traj.json",
+          "sha256": "d0b941844e0be8bc247bec073e7607ab3eb856a0c71cafb624a66ea7bcbdc847"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 777,
+        "phases": {
+          "select_points": 181,
+          "approach": 119,
+          "manual": 176,
+          "transfer_place": 154,
+          "return_perception": 147
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s000",
+      "before_observation": "o000",
+      "after_observation": "o001",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              883,
+              181
+            ],
+            "world_xyz_mm": [
+              614.7831420898438,
+              -169.8328857421875,
+              26.324947357177734
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              706,
+              178
+            ],
+            "world_xyz_mm": [
+              619.1143188476562,
+              -44.85999298095703,
+              26.665468215942383
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/approach/native_plan.json",
+              "sha256": "f3e4c30d8fa486c0123b267626f529458596d8a634c55c70fb03e32ef3f239fe"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/approach/motion.py",
+              "sha256": "0eb10d77f970f4e15593ff8e90207478f8e48745179ae2e919341a9ad9f453cd"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/transfer_place/native_plan.json",
+              "sha256": "fb1003524eea906420e1759bbf13b5d7f5e12945ba911bf1ae61e045ab56840b"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/transfer_place/motion.py",
+              "sha256": "096ea96334341a92d6e2f3d5d2b581acf1422b4654a482c35bfd5920ef68df1d"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/return_perception/native_plan.json",
+              "sha256": "2f6cf99ec0327a5dc202681812a934e3a9e8a285bb1058b66d61dc59b50f45f1"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/events.jsonl",
+          "sha256": "495fcd04a94aa39d843d67264a33ac39c253771148ffb990f8dfedffa5afe7ad"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/states.jsonl",
+          "sha256": "27d7ad2b37902d9e3f29a9d8fd99d5f932374a562c498936e7c5cf5c795e8d8d"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/controller/events.jsonl",
+          "sha256": "13a50a1bc330135dbbe43bd08db54edb4622fc0fbdebf9125469c527c3a7ecd1"
+        },
+        "handoff": {
+          "t_s": 67.15721292700619,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            614.7698154610673,
+            -169.83084245678697,
+            49.31040268864001,
+            -178.18287630290547,
+            -0.4055201642167026,
+            0.17043588028982076
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 59.38315396383405,
+            "sample_time_s": 59.352698266506195,
+            "measured_tcp_mm_deg": [
+              614.7025776187731,
+              -169.81152804739475,
+              11.745548622308718,
+              -178.17895197230038,
+              -0.39139268068373495,
+              0.1704432231255143
+            ],
+            "gripper_pulse": 840.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/traj.json",
+          "sha256": "5535acc44f6b705726860eebd797ca828bb1c1e353c16a2487a7ed742c9099a9"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 697,
+        "phases": {
+          "select_points": 64,
+          "approach": 121,
+          "manual": 216,
+          "transfer_place": 147,
+          "return_perception": 149
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s001",
+      "before_observation": "o001",
+      "after_observation": "o_replay_e001_n004",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              433,
+              606
+            ],
+            "world_xyz_mm": [
+              324.1084899902344,
+              151.47869873046875,
+              38.11309051513672
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              595,
+              592
+            ],
+            "world_xyz_mm": [
+              329.1882629394531,
+              39.23265075683594,
+              30.403440475463867
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/approach/native_plan.json",
+              "sha256": "451769ca476be104c00186d2e7aa3d27b87a072a6bba409d380ac9adabbd90a4"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/approach/motion.py",
+              "sha256": "0270d346f2b0c11eaf47f5b1161c3c7ae164a48eb3acc71456bc185023b8ef3e"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/transfer_place/native_plan.json",
+              "sha256": "ca6a9b394b66431258ea795133450f6dc335d267f59cf0a7e75a0c33cc46c72a"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/transfer_place/motion.py",
+              "sha256": "451cef71e4c065ddbc7974c3503d16bdb95cf13d7d17e82e41629d1c67436fec"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/return_perception/native_plan.json",
+              "sha256": "e021d2d2adb89dae33c640fe937fd11f191c02f4e6d7e892c610bed3118658c9"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/events.jsonl",
+          "sha256": "a017fbe08f099ac36c5c9909da243ee14f6f937afe6c87e3c6da3f35cc84a8fe"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/states.jsonl",
+          "sha256": "6696bc556ab9c13dacc02615f11689edb08b1cb919057809ece1094db9a4896f"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/controller/events.jsonl",
+          "sha256": "dd51e027ee941276747cb99a9503b4b5c2878163a71c3a5fe0e6566efccd95c6"
+        },
+        "handoff": {
+          "t_s": 58.30266029108316,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            324.1663018883494,
+            151.5012998954443,
+            44.37455791302014,
+            -178.18127888075796,
+            -0.4012912534448697,
+            0.16931487663393344
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 50.09658781532198,
+            "sample_time_s": 50.05312682874501,
+            "measured_tcp_mm_deg": [
+              324.1804359303649,
+              151.5210548369806,
+              13.244972621264196,
+              -178.18210050552312,
+              -0.3973445676462217,
+              0.1700852141080023
+            ],
+            "gripper_pulse": 840.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/traj.json",
+          "sha256": "eeee917309d37ec2b3fd0c25819d15ec5f70309cfb2857f6ecca7debb7201099"
+        },
+        "replay_authorization": {
+          "kind": "USER_REQUESTED_REJECTED_DEMONSTRATION",
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/traj.json",
+            "sha256": "eeee917309d37ec2b3fd0c25819d15ec5f70309cfb2857f6ecca7debb7201099"
+          },
+          "reason": "用户明确要求：你把iter0001接上去看一下, 如果有问题我再重新采集"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": false
+      },
+      "telemetry": {
+        "samples": 901,
+        "phases": {
+          "select_points": 132,
+          "approach": 198,
+          "manual": 213,
+          "transfer_place": 135,
+          "return_perception": 223
+        }
+      },
+      "outcome": {
+        "after_provenance": "User-reviewed outcome from later physical replay of e001; NOT the original demonstration after image",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "Observed n004 in this replay; repeatability unverified",
+        "original_demonstration_after_observation": "o002",
+        "replay_result": {
+          "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/result.json",
+          "sha256": "e821d10bc7284afd8bd78dd83b64ba94a7bf1767f0d16d7ed3a76b537d55a479"
+        },
+        "replay_match": {
+          "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/step_0001/node_match.json",
+          "sha256": "68fd4f053f83b08ee6f95e60ae48be8d6ff0dc02d17a87dc845736e369880b2e"
+        }
+      },
+      "original_after_observation": "o002"
+    },
+    {
+      "step_id": "s002",
+      "before_observation": "o002",
+      "after_observation": "o003",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              439,
+              438
+            ],
+            "world_xyz_mm": [
+              440.3097839355469,
+              145.66452026367188,
+              32.27730941772461
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              573,
+              432
+            ],
+            "world_xyz_mm": [
+              442.5751647949219,
+              52.122535705566406,
+              33.396141052246094
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/approach/native_plan.json",
+              "sha256": "78258d5f0b6b359bc20047bc5ae542097e7af42650e16ecc03fb9ffaa9c6785c"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/approach/motion.py",
+              "sha256": "86ce8930b4716c61ef332fde9094179f6f2ad60612dc664b873066b4f66a21e2"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/transfer_place/native_plan.json",
+              "sha256": "cd56fad957d6fb8675ce4cb5155c1fc961738b2fca22c47efbd2ce097a28f523"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/transfer_place/motion.py",
+              "sha256": "bcbd0f1cca7d432a59e8ff31b51e7c865ca619a74605740964f9fc35bfc07652"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/return_perception/native_plan.json",
+              "sha256": "33fe24f26f16cceb66638da9f3c471690b704ad08d1678b97e289a144b02b489"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/events.jsonl",
+          "sha256": "3b63268fd2888fed14f57b84fc4ece9a2d5a78d2da5819602b75604bb73fb688"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/states.jsonl",
+          "sha256": "00a1dc00db07ca5d234af64f428bb648cfb04a83f6a89a67f38d4b9b1c102b71"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/controller/events.jsonl",
+          "sha256": "3c4be223062602b0fd0aee0debd4e4ee6d7778f5c5f46dca760d3c0768fb49a0"
+        },
+        "handoff": {
+          "t_s": 54.769326308742166,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            440.5887278007412,
+            145.7631247848673,
+            45.82223331655754,
+            -178.17664048506967,
+            -0.40691224215888744,
+            0.17013704488079118
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 41.72698545921594,
+            "sample_time_s": 41.68608687631786,
+            "measured_tcp_mm_deg": [
+              440.51800572970245,
+              145.7349040364495,
+              11.419587452105787,
+              -178.18131655194543,
+              -0.398016723236385,
+              0.1698110333939467
+            ],
+            "gripper_pulse": 841.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/traj.json",
+          "sha256": "c511d6433cd2dac98889217902926e89fad80f085a32bc8cb00507ff8874d82b"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 795,
+        "phases": {
+          "select_points": 89,
+          "approach": 157,
+          "manual": 252,
+          "transfer_place": 120,
+          "return_perception": 177
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s003",
+      "before_observation": "o003",
+      "after_observation": "o004",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              443,
+              542
+            ],
+            "world_xyz_mm": [
+              367.5672302246094,
+              144.41661071777344,
+              32.47712326049805
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              603,
+              580
+            ],
+            "world_xyz_mm": [
+              336.78582763671875,
+              33.48047637939453,
+              28.327863693237305
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/approach/native_plan.json",
+              "sha256": "be4115438bcda7da3f3f86431294a84b2ffc035d3d4feb79c7600f75baba77b0"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/approach/motion.py",
+              "sha256": "29133e9c498b010a54db52a474965cfc177d27d817304c89223b96544c5120fa"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/transfer_place/native_plan.json",
+              "sha256": "9cecc78b01244ce54509a24f3d4d3bd7b0f718b2ad7e1753933d5224d3176c11"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/transfer_place/motion.py",
+              "sha256": "30c1880c608f27087434726c37dc9b474c903293fe478bcf0c033377e4c7b283"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/return_perception/native_plan.json",
+              "sha256": "a9b10006f99fc256a773c5c42fdfce6669b146631ad96784666a4d04f5432dbb"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/events.jsonl",
+          "sha256": "2c7c4c7b03b78df42f5c3a140ec4f8b3a7a1982b4baab137e83a7183a74c2902"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/states.jsonl",
+          "sha256": "e5e19df7d3eda428d465c9f5076a691fe89205650972af583e8d12bf2ac60ad4"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/controller/events.jsonl",
+          "sha256": "fc37fc21f4474e91918ba2dd5a9f8bef66f0c163107e9953bc16c302fd34ca4c"
+        },
+        "handoff": {
+          "t_s": 57.053787731565535,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            367.4983070258237,
+            144.37016840792973,
+            77.90172131994723,
+            -178.18436192958993,
+            -0.4004396878072457,
+            0.17037557149127244
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 46.74462285730988,
+            "sample_time_s": 46.70394335966557,
+            "measured_tcp_mm_deg": [
+              367.4077092193827,
+              144.33151957983284,
+              15.782035054504604,
+              -178.1882560649975,
+              -0.39719859367451515,
+              0.17006754462488882
+            ],
+            "gripper_pulse": 841.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/traj.json",
+          "sha256": "cc67ffeae35314ba0474ba9f628f5402dead55b22a20f250dd3954874335a09a"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 910,
+        "phases": {
+          "select_points": 103,
+          "approach": 184,
+          "manual": 244,
+          "transfer_place": 158,
+          "return_perception": 221
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s004",
+      "before_observation": "o004",
+      "after_observation": "o005",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              795,
+              605
+            ],
+            "world_xyz_mm": [
+              319.3543701171875,
+              -99.60671997070312,
+              40.29982376098633
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              681,
+              601
+            ],
+            "world_xyz_mm": [
+              321.8753356933594,
+              -21.01706886291504,
+              32.28727722167969
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/approach/native_plan.json",
+              "sha256": "ec09150c508a84f013f0f0e33ac6ed739ce939ae0f587e3865f19f534bf8640a"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/approach/motion.py",
+              "sha256": "4046f1c3bb6431c7d6d2b1586cb2c8dfd47b9bbcf9ea34f56571c53fa73dcb3a"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/transfer_place/native_plan.json",
+              "sha256": "40814ef80c8c12eb345c5da3097eb4e5f9698201e95331eaba654deb16a0ae88"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/transfer_place/motion.py",
+              "sha256": "e1ee3f84edabe0a612424217137d903e835ac1d041e0495c4f4ec9e9a8531578"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/return_perception/native_plan.json",
+              "sha256": "007c1c2afedf74ae31ad1ef831df5e85db7d8a00fe7044177b700216122e227d"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/events.jsonl",
+          "sha256": "8bc2a4e53dd53eca061960e66ca19b0527de54a3bbf255ba863bdf5e925cc9a4"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/states.jsonl",
+          "sha256": "aabcd4929566ccbd61147cc98643d297d974b4829b68e092f628dd190b411c9f"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/controller/events.jsonl",
+          "sha256": "0350bb8d28db7204ecea0b4d677803341ae83ddbadcdcb80327e9b78b61882c8"
+        },
+        "handoff": {
+          "t_s": 76.64636350609362,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            318.6434170082607,
+            -99.89399591186364,
+            54.97076374325334,
+            -178.2735845797228,
+            -0.35846267637227064,
+            0.1070375099507563
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 69.97615237906575,
+            "sample_time_s": 69.95938823837787,
+            "measured_tcp_mm_deg": [
+              318.66030532697005,
+              -99.8974689590466,
+              18.666020488589368,
+              -178.27384372911447,
+              -0.35570535862737906,
+              0.106867909406964
+            ],
+            "gripper_pulse": 840.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/traj.json",
+          "sha256": "ad6abffccda245df55ca12ae998901fa433367bbbd2129dbbe469778469b0f7d"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 1069,
+        "phases": {
+          "select_points": 201,
+          "approach": 203,
+          "manual": 322,
+          "transfer_place": 119,
+          "return_perception": 224
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s005",
+      "before_observation": "o005",
+      "after_observation": "o006",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              738,
+              353
+            ],
+            "world_xyz_mm": [
+              495.377685546875,
+              -62.45384216308594,
+              45.93994140625
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              652,
+              347
+            ],
+            "world_xyz_mm": [
+              500.86236572265625,
+              -4.540473937988281,
+              27.16716766357422
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/approach/native_plan.json",
+              "sha256": "713e5f72cb5b20e4ec4b665b24d5e5e911e30cab121bf9b1b44576b2d75b2920"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/approach/motion.py",
+              "sha256": "6b974f934ae81a3679fe9036166b22a5de1840ac0da6f1612ec66d05197370c5"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/transfer_place/native_plan.json",
+              "sha256": "eed1a1dce0608459b80af59ec39b85302878c5e9b391793f2bda98cd411be7c4"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/transfer_place/motion.py",
+              "sha256": "73fba485792fb3f31550f69a7131cd9bb6bdf7682e49a9fd0fedbe368d88943b"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/return_perception/native_plan.json",
+              "sha256": "bced88a78b5fdc626a018041da80b97ddda28500c5436c08c0a1425ddb8ae138"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/events.jsonl",
+          "sha256": "94ee926e205ff3f56825427d4d2eb45beee10a87ca358cde8312754246674c48"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/states.jsonl",
+          "sha256": "eda099e479ac7817b57b03d77cbf7a00751a606a6e85d8477b9a51b4f08dbfa5"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/controller/events.jsonl",
+          "sha256": "935bd8d8a6dbadc6613701ab1e0062a3af6aa9793771475fc8962af2b694a220"
+        },
+        "handoff": {
+          "t_s": 51.926855583675206,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            495.67571903838814,
+            -62.48313205725872,
+            59.81078465220634,
+            -178.18079181097508,
+            -0.4149670425967581,
+            0.17109731493963282
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 46.481320581398904,
+            "sample_time_s": 46.489855075255036,
+            "measured_tcp_mm_deg": [
+              495.57550654179227,
+              -62.472899185434045,
+              30.76900534654544,
+              -178.17999773480796,
+              -0.4018393413930629,
+              0.1709515164350951
+            ],
+            "gripper_pulse": 841.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/traj.json",
+          "sha256": "5336352f0f5d2468c76afc1ab3ae74c6d065082ec39d0e5ac231e3cc23e98be7"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 760,
+        "phases": {
+          "select_points": 202,
+          "approach": 145,
+          "manual": 133,
+          "transfer_place": 109,
+          "return_perception": 171
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    },
+    {
+      "step_id": "s006",
+      "before_observation": "o006",
+      "after_observation": "o007",
+      "commanded_action": {
+        "type": "ARM6_ASSISTED_DEMONSTRATION",
+        "arm": "left",
+        "axis": 6,
+        "units": "world_mm_deg_and_gripper_pulse",
+        "selected_points": [
+          {
+            "name": "start",
+            "pixel_xy": [
+              629,
+              596
+            ],
+            "world_xyz_mm": [
+              330.8859558105469,
+              15.620402336120605,
+              49.683319091796875
+            ]
+          },
+          {
+            "name": "target",
+            "pixel_xy": [
+              637,
+              95
+            ],
+            "world_xyz_mm": [
+              678.239501953125,
+              2.4566378593444824,
+              26.1247501373291
+            ]
+          }
+        ],
+        "automated_phases": [
+          {
+            "phase": "approach",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 2
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/approach/native_plan.json",
+              "sha256": "537bfc5ab565de0581178cb4c939e6266ec51eb5184ff3d4c0d44589e0d1db23"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/approach/motion.py",
+              "sha256": "6b356c28c47aec8643f8bfb34e8c78e08a24fe83429cce9598951ad102035b73"
+            }
+          },
+          {
+            "phase": "transfer_place",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 4
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/transfer_place/native_plan.json",
+              "sha256": "811b30a7055eaeba5fb7e6f84c9e6ce467e2a67403837a28f19595473885e7da"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/transfer_place/motion.py",
+              "sha256": "0e6b9087675c48a58dc896ab774e448d856a8e4fba9c3581ff3955c2cfd706c7"
+            }
+          },
+          {
+            "phase": "return_perception",
+            "result": {
+              "status": "EXECUTED",
+              "physical_execution": true,
+              "completed_commands": 3
+            },
+            "actual_native_plan": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/return_perception/native_plan.json",
+              "sha256": "235b134f7fb327b83f7852c2bf43231aa67659e870ff584089d573cf8be583d5"
+            },
+            "motion_source": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/return_perception/motion.py",
+              "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+            }
+          }
+        ],
+        "manual_input_trace": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/events.jsonl",
+          "sha256": "b5971451f356f7f0fd3303b172aab92d7b5ff212b92421ccd2a943f000ff15f3"
+        },
+        "measured_trajectory": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/states.jsonl",
+          "sha256": "8dc99f6a6437e7d830ebddea6fa4627e22286b86ccf9ed4825b97f13851471a2"
+        },
+        "controller_events": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/controller/events.jsonl",
+          "sha256": "90c1a64bda53591781a681c377b7d9d2c049c90c020f766418f5ae471c594a31"
+        },
+        "handoff": {
+          "t_s": 57.91157790739089,
+          "phase": "manual",
+          "kind": "manual_confirmed",
+          "world_tcp_mm_deg": [
+            330.8949473145854,
+            15.592752947861822,
+            67.4023575183482,
+            -178.1868778571849,
+            -0.3859883090307102,
+            0.16791663492646555
+          ]
+        },
+        "sampled_close_poses": [
+          {
+            "button_time_s": 48.24396004527807,
+            "sample_time_s": 48.22000801656395,
+            "measured_tcp_mm_deg": [
+              330.85589691044663,
+              15.594609369691945,
+              12.42673124367792,
+              -178.18887623268785,
+              -0.38238843385708915,
+              0.16739858442841732
+            ],
+            "gripper_pulse": 841.0
+          }
+        ],
+        "manifest": {
+          "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0006/traj.json",
+          "sha256": "1b8ec5c44fa58a87fad11c3690628e166a3def1e81d96376130ea736f5c571d3"
+        }
+      },
+      "actual_execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "operator_accepted": true
+      },
+      "telemetry": {
+        "samples": 1144,
+        "phases": {
+          "select_points": 65,
+          "approach": 205,
+          "manual": 269,
+          "transfer_place": 438,
+          "return_perception": 167
+        }
+      },
+      "outcome": {
+        "after_provenance": "next iteration initial RGB, not a dedicated post-action capture",
+        "continuity_verified": false,
+        "physical_cloth_outcome": "UNKNOWN until visual assessment; intervening manual changes cannot be excluded"
+      }
+    }
+  ],
+  "excluded_iterations": [
+    {
+      "iteration": 7,
+      "status": "ABORTED"
+    },
+    {
+      "iteration": 6,
+      "status": "EXCLUDED_BY_USER",
+      "reason": "Remove last accepted action; retain its before image as previous action after."
+    }
+  ],
+  "limitations": [
+    "Next-iteration images are temporally subsequent evidence, not verified immediate outcomes.",
+    "Human confirmation approves retaining the demonstration, not task success or universal action validity.",
+    "Measured manual trajectories are evidence, not exact planned grasp primitives. No automatic replay enabled."
+  ],
+  "revision_history": [
+    {
+      "operation": "exclude_last_accepted_trajectory",
+      "removed_step_id": "s006",
+      "removed_edge_ids": [
+        "e006"
+      ],
+      "retained_observation": "o006",
+      "original_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261017/graph.json",
+        "sha256": "b3f467089e80560545d7184078a8b6077ff783ffe2336efaef1952f18e40401a"
+      },
+      "original_trajectory": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261017/trajectory.json",
+        "sha256": "3af64dff8c81c3755d7e974d9e81ae879c0c74002e1b6747691d183448f60f8a"
+      },
+      "new_model_calls": 0,
+      "raw_trajectories_modified": false
+    },
+    {
+      "operation": "prepend_missing_first_demonstration",
+      "created_at": "2026-10-18T06:41:10.589287+00:00",
+      "source_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261018_without_last/graph.json",
+        "sha256": "a52a64c5cb8d6bcaad3d3933b67d52f42c1955529acd225faa1a42a8de084b5a"
+      },
+      "added_step": "s_initial_left_sleeve",
+      "added_edge": "e_initial_left_sleeve",
+      "source_manifest": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/traj.json",
+        "sha256": "d0b941844e0be8bc247bec073e7607ab3eb856a0c71cafb624a66ea7bcbdc847"
+      },
+      "after_source": "same earlier session pending/iter_0001/observation captured before its failed approach",
+      "node_merge": {
+        "target": "n000",
+        "basis": "assistant visual comparison of actual after RGB and existing o000; left sleeve in, right sleeve out",
+        "identical_images": false
+      },
+      "annotation_provenance": "assistant visual/evidence review; no additional compiler model call",
+      "retained_exclusion": "s006 remains excluded by user",
+      "raw_files_modified": false
+    }
+  ],
+  "replay_authorizations": [
+    {
+      "kind": "USER_REQUESTED_REJECTED_DEMONSTRATION",
+      "manifest": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/traj.json",
+        "sha256": "eeee917309d37ec2b3fd0c25819d15ec5f70309cfb2857f6ecca7debb7201099"
+      },
+      "reason": "用户明确要求：你把iter0001接上去看一下, 如果有问题我再重新采集"
+    }
+  ]
+}

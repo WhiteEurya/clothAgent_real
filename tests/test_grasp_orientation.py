@@ -43,3 +43,14 @@ def test_ccw_uses_jaw_half_turn_not_full_revolution(yaw,expected):
     b=[R.from_euler('xyz',kw['right'][3:]) for _,kw in new]
     np.testing.assert_allclose((a[1]*a[0].inv()).as_matrix(),(b[1]*b[0].inv()).as_matrix(),atol=1e-8)
     for (_,x),(_,y) in zip(old,new):assert x['right'][:3]==y['right'][:3]
+
+
+def test_left_arm_uses_same_half_turn_policy():
+    source='motion.grasp(left=[.4,0,.06,0,0,0.3490658504])\nmotion.move_tcp(left=[.5,.1,.1,.2,.1,.4])'
+    result, report = nearest_grasp_orientation(source, np.eye(3), prefer_ccw=True, arm='left')
+    assert report['applied']
+    assert report['selected_local_twist_deg'] == pytest.approx(-160)
+    before=parse_code(source,allow_grasp=True); after=parse_code(result,allow_grasp=True)
+    for (_,old),(_,new) in zip(before,after):
+        assert set(new) == {'left'}
+        assert new['left'][:3] == old['left'][:3]

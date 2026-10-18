@@ -72,7 +72,7 @@ class XArmConnection(XArmBackend):
                     f"{config.arm_id}: controller identity/axis mismatch"
                 )
             self.original_mode = int(self.arm.mode)
-            if self.original_mode != 0:
+            if self.original_mode != 0 and not (stopped and self.original_mode == 4):
                 raise DualArmError("start both arms in stationary position mode (0)")
             self.snapshot()
             actual_tcp = finite(self.arm.tcp_offset, (6,), "live TCP")
@@ -210,8 +210,18 @@ class XArmConnection(XArmBackend):
             )
 
     def prepare_position(self):
-        if self.cancel.is_set() or self.arm.mode != 0:
+        if self.cancel.is_set():
             raise DualArmError('native Home requires ready position mode (0)')
+        if self.arm.mode != 0:
+            if (not getattr(self, 'recover_stopped', False) or self.arm.mode != 4
+                    or self.checked_value(self.arm.get_state(), 'state before mode recovery') != 4
+                    or list(self.checked_value(self.arm.get_err_warn_code(), 'mode recovery faults')) != [0, 0]):
+                raise DualArmError('native Home requires ready position mode (0)')
+            self._check('set_mode(position recovery)', self.arm.set_mode(0))
+            deadline = time.monotonic() + 2.
+            while self.arm.mode != 0:
+                if self.cancel.wait(.02) or time.monotonic() >= deadline:
+                    raise DualArmError('position mode recovery not confirmed')
         self.snapshot()
         if self.arm.get_is_moving() or self.checked_value(self.arm.get_cmdnum(), 'command queue') != 0:
             raise DualArmError('native Home requires stationary arms with empty command queues')
@@ -238,6 +248,18 @@ class XArmConnection(XArmBackend):
         try:
             self._check('set_servo_angle(position)', self.arm.set_servo_angle(
                 angle=list(joints), speed=speed, mvacc=acceleration,
+                is_radian=False, wait=True, timeout=timeout, radius=-1))
+        finally:
+            self.position_command_active = False
+
+    def move_tcp_position(self, pose, speed, acceleration, timeout):
+        """One controller-interpolated straight line, with no waypoint stops."""
+        if self.cancel.is_set() or self.arm.mode != 0:
+            raise DualArmError('linear motion cancelled or controller mode changed')
+        self.position_command_active = True
+        try:
+            self._check('set_position(linear)', self.arm.set_position(
+                *list(pose), speed=speed, mvacc=acceleration,
                 is_radian=False, wait=True, timeout=timeout, radius=-1))
         finally:
             self.position_command_active = False

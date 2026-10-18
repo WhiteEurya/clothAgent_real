@@ -1,0 +1,17 @@
+{"t_s": 3.881870288401842, "phase": "select_points", "kind": "stage"}
+{"t_s": 10.358370431698859, "phase": "approach", "kind": "stage"}
+{"t_s": 30.892420871183276, "phase": "manual", "kind": "stage"}
+{"t_s": 30.892483724281192, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": 0.0, "up": 0.0, "yaw": 0.0, "gripper": null, "enabled": false, "stop": false}}
+{"t_s": 38.592267331667244, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 38.89458128903061, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": -1.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 47.858700040727854, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 48.24396004527807, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": "close", "enabled": true, "stop": false}}
+{"t_s": 49.47281604539603, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 49.73509895708412, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 1.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 53.876853469759226, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 54.50176721159369, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 1.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 56.316174833104014, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 56.6588249783963, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": 0.0, "up": 0.0, "yaw": 0.0, "gripper": null, "enabled": false, "stop": false}}
+{"t_s": 57.91157790739089, "phase": "manual", "kind": "manual_confirmed", "world_tcp_mm_deg": [330.8949473145854, 15.592752947861822, 67.4023575183482, -178.1868778571849, -0.3859883090307102, 0.16791663492646555]}
+{"t_s": 57.91840049996972, "phase": "transfer_place", "kind": "stage"}
+{"t_s": 101.81233814079314, "phase": "return_perception", "kind": "stage"}

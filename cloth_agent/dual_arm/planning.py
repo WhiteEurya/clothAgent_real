@@ -415,11 +415,18 @@ def build_pin_phases(proposal, targets, initial_world, config):
 def validate_sample(config, models, joints, *, holding, tool_contact=False):
     from .safety import check_state
 
-    check_state(config, models, joints, tool_contact=tool_contact)
+    geometry_enabled = getattr(config, 'path_validation_enabled', True)
+    if geometry_enabled:
+        check_state(config, models, joints, tool_contact=tool_contact)
     poses = {}
     for k, arm in config.arms.items():
+        if not geometry_enabled:
+            q = finite(joints[k], (arm.axis,), 'joint feedback')
+            if np.any(np.radians(q) < models[k].lower) or np.any(np.radians(q) > models[k].upper):
+                raise DualArmError('joint feedback exceeds URDF limits')
         base_pose = models[k].forward(joints[k])
-        arm.validate_point(base_pose[:3])
+        if geometry_enabled:
+            arm.validate_point(base_pose[:3])
         poses[k] = matrix_pose(arm.world_from_base @ pose_matrix(base_pose))
     if holding:
         span = np.linalg.norm(poses["left"][:3] - poses["right"][:3])

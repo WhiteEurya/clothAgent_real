@@ -1,133 +1,72 @@
-# Arm7 手柄连续遥操
+# 手柄连续遥操（默认 Arm6）
 
-入口 `python -m cloth_agent.gamepad_teleop`。默认只读取并打印手柄输入；
-`--real` 才连接机器人并执行。使用 Linux evdev 标准 Xbox 布局，适配暴露对应
-按键和轴的北通阿修罗 USB PC 模式。阿修罗有多个型号，具体切换模式按对应
-[北通官方说明书](https://community.betop-cn.com/)操作，不能把某一型号组合键通用到整个系列。
-
-| 操作 | 功能 |
-|---|---|
-| 左摇杆上下 | World +X / -X 平移 |
-| 左摇杆左右 | World +Y / -Y 平移（右推为 -Y） |
-| 右摇杆左右 | 绕 World Z 旋转 yaw，右推为负方向 |
-| Y / A | +Z 上升 / -Z 下降 |
-| 按住 X / B | 逐渐开爪 / 合爪，松开请求保持当前开度 |
-| 按住 LB | 允许上述操作 |
-| START | 停止并退出 |
-
-启动后先松开所有按键、摇杆回中，再按 LB。前后左右以上表 World 轴定义，
-当前 USB Gamepad（0810:0001）按现场反馈在设备配置中反转了左摇杆的两个轴，
-因此该手柄前推为 World -X、右推为 World +Y；右摇杆和按键映射不变。
-不随夹爪朝向旋转，也不保证与操作者站位或相机画面的方向相同。
-只调 yaw，roll/pitch 没有手柄控制。右摇杆上下未映射。
-同时按 Y/A 不升降，同时按 X/B 保持当前开度。
-松开 LB 停止移动与开合，再按住 LB 可继续，无需重启程序。
-若 X/B 在 LB 按下前已经按住，需要先松开该键再按，防止重新使能时意外开合。
-
-## 安装和预览
+独立入口 `python -m cloth_agent.gamepad_teleop` 默认只打印输入，不连接机器人。
+`--real` 默认控制 Arm6（left、6 轴、`192.168.2.232`）；只有显式指定
+`--arm arm7 --real` 才控制 Arm7。采集入口 `gamepad_collect` 固定使用 Arm6。
 
 ```bash
-python -m pip install -r requirements-gamepad.txt
+conda activate cali
 python -m cloth_agent.gamepad_teleop --list
-python -m cloth_agent.gamepad_teleop --device /dev/input/eventN
+python -m cloth_agent.gamepad_teleop                 # 输入预览
+python -m cloth_agent.gamepad_teleop --real          # Arm6 独立遥操
+python -m cloth_agent.gamepad_collect --real --iterations 10
 ```
 
-预览输出 JSON，包含标准化摇杆、按键和映射结果，可由其他程序读取；也可以
-直接导入 `Gamepad`、`Mapper` 和 `Intent`。输出的是输入意图，不能绕过检查
-直接把它当作已经验证的运动命令。多个设备时必须明确 `--device`；优先使用
-`/dev/input/by-id/*-event-joystick` 稳定路径。需要当前用户具备该设备的读取权限。
-未检测到设备时先检查数据线和 USB PC 模式；没有设备不能验证映射。
+多个设备时用 `--device /dev/input/eventN` 指定，优先使用稳定的
+`/dev/input/by-id/*-event-joystick` 路径。`--real --connect-only` 只检查连接，
+不切换模式、不恢复 STOP、不发送运动或夹爪指令。
 
-默认右摇杆为 `ABS_RX`，仅当预览确认设备右摇杆使用 `ABS_Z` 时使用
-`--yaw-axis ABS_Z`。必须先在预览中逐一核对实际 A/B/X/Y、LB 与三根轴。
+## 当前 USB Gamepad 的定义
 
-## 一次性输入核定
+配置文件：`config/gamepads/0003_0810_0001_0110.json`。
+左摇杆轴为 ABS_X / ABS_Y，两个轴 sign 都为 -1；右摇杆左右轴为代码 5
+（ABS_RZ），sign 为 +1。实体键映射 A=290、B=289、X=291、Y=288、LB=292、START=297。
 
-新手柄使用不同的轴/按键编号时，先运行一次映射学习与核定：
+| 操作 | 当前已核定手柄的动作 |
+|---|---|
+| 按住 LB | 允许移动和夹爪操作 |
+| 左摇杆前推 / 后拉 | World −X / +X |
+| 左摇杆右推 / 左推 | World +Y / −Y |
+| 右摇杆右推 / 左推 | 绕 World Z 负向 / 正向 yaw |
+| Y / A | World +Z 上升 / −Z 下降 |
+| 按住 X / B | 逐渐开爪 / 合爪，松开保持 |
+| 右摇杆上下 | 未映射 |
 
-```bash
-bash scripts/calibrate_gamepad.sh
-```
+这是固定 World 坐标系，不随夹爪朝向或相机画面旋转。Arm6 使用自己的
+`world_from_base` 和六轴 FK/Jacobian 转换速度；换机械臂不自动翻转手柄轴。
+无设备配置的标准 Xbox 默认方向是前推 World +X、右推 World −Y，
+与本机已保存的 USB 手柄反向配置不同。
 
-程序提示左右摇杆的六个方向，以及实体 A/B/X/Y、LB（或 L1）、START 键，
-自动识别编号和轴方向。随后自动运行下面的 16 项功能核定。全部通过后才把
-映射保存到 `config/gamepads/`，按 USB 总线/厂商/产品/版本匹配；预览、核定
-和遥操会自动加载。失败或中止不会覆盖已有映射，整个流程不连接机器人。
-同 USB 标识的多个型号无法仅凭编号区分；更换此类手柄或切换输入模式后应重新核定。
-学习阶段要求双摇杆处于模拟模式并回中，不要同时触动其他控件。
+启动先松开全部按键、摇杆回中，再按 LB。松开 LB 立即请求零速度和夹爪保持，
+重新按住可继续。Y/A 同按不升降，X/B 同按保持夹爪。先于 LB 按住的夹爪键
+需要松开再按。新手柄可运行 `bash scripts/calibrate_gamepad.sh`，已有映射可运行
+`bash scripts/check_gamepad.sh`；二者只读输入，不连接机械臂。
 
-在实机之前，可以一次性运行完整输入核定：
+## START 与退出
 
-```bash
-bash scripts/check_gamepad.sh
-```
+- 独立 `gamepad_teleop`：START 停止并退出。
+- `gamepad_collect`：松开全部控件后单独按 START，确认抓取抬升完成并交回自动搬运；Ctrl+C 中止。
 
-程序自动识别唯一的手柄，在终端连续引导 16 项检查；按提示拨动摇杆或按键，
-保持约半秒，成功后自动进入下一项，无需回车或逐项运行命令。内容包括：
-摇杆六个方向、ABXY、无 LB 时禁止输出、松开 LB 使输入归零、冲突按键和 START。
-每项默认 45 秒超时，错误/未操作不会被记为通过。先回中再进入下一项；
-回中超时、断连或 Ctrl+C 会保存未完成/错误报告。
+Arm6 正常软件 STOP 后，重新启动实机控制可自动恢复位置模式和使能。
+恢复要求控制器无错误/警告、无排队运动；不会自动清除实体急停或真实故障。
+独立遥操不自动 Home、拍照或移动到 perception。
 
-核定过程只读手柄，不连接机器人。结果保存到 `reports/gamepad_check/<时间>/`
-下的 `report.json` 和 `samples.jsonl`。PASS 仅代表手柄输入及软件映射核定，
-不代表机械臂实际方向、运动和停止行为已经验证。`--probe-seconds 2` 只做
-连接读取检查，结果标为 CONNECTION_ONLY，不会冒充完整核定。
+## 控制实现
 
-## 实机执行
+默认平移 10 mm/s、yaw 5°/s、Arm6 夹爪 SDK 速度 2000，可以分别通过
+`--speed-mm-s`、`--yaw-speed-deg-s`、`--gripper-speed` 调整。
+`--gripper-rate` 保留为别名；Arm6 中它现在表示 SDK 速度，范围 (0,5000]。
+Arm6 夹爪配置为开 850 pulse、合 5 pulse。按住 X/B 时只在按下或换向时发送一次开/合终点目标，持续按住不反复改写位置，避免 12 pulse 小步引起的反复启停。松开 X/B 或 LB 后发送实测开度保持；换向立即发送另一端目标。输入超时会请求夹爪保持，START 交接和退出也会保持。
+若夹爪内部因受阻停止，不会持续重发闭合目标；需松键后重新操作。
+完整夹爪位置目标没有机械臂速度指令的 150 ms 到期机制，主机或通信完全失效时无法保证撤回已下发目标。
+控制使用同一连续速度实现、20 ms 目标周期、150 ms 命令有效期，以及各自的关节数和限位。
+Arm6 松开移动控件（包括只操作夹爪）后先发零速度，等待命令有效期及通信余量，再切回位置保持模式；恢复移动时重新进入速度模式。位置保持期间持续比较实测关节和 TCP，偏移超过 0.1° 关节角、1 mm 位置或 0.2° 姿态即请求 STOP。零速度指令返回成功不再单独作为已停稳的依据。
 
-使用具有 xArm SDK、IK 和碰撞依赖的项目环境：
+按当前用户要求，Arm6 采集及独立 Arm6 遥操不运行路径/几何碰撞验证，也不连接 Arm7。
+保留 IK、关节限位、速度限制、输入超时、反馈新鲜度、控制器故障和模式检查。
+显式选择 Arm7 的原入口保持原有验证策略。
 
-```bash
-python -m cloth_agent.gamepad_teleop --device /dev/input/eventN --real
-```
+`continuous_config.json` 记录控制机械臂、IP、轴数、World 坐标系、速度和验证开关；
+`controller/events.jsonl` 记录速度、夹爪与失败事件。现场运动方向与停止行为需实机验证。
 
-只向 Arm7 发送运动和夹爪命令。沿用 `config/dual_arm.local.json` 和原生
-运行时，只连接 Arm7 控制器，不读取或要求 Arm6 控制器就绪。Arm6 使用现有
-`data/robot/arm6_parked_for_arm7.json` 保存的静止姿态参与碰撞检查；此姿态
-不是实时反馈，若移动了 Arm6，需更新记录。启动不会自动 Home、
-拍照或恢复 STOP；控制器必须已经处于可用的位置模式。不经过模型规划。
-
-默认平移速度 10 mm/s、yaw 5°/s，摇杆偏转按比例缩放速度。全体关节速度
-同时受配置中的 5°/s 上限约束，所以部分姿态下实际 TCP 速度更低。
-夹爪目标推进默认 100 pulse/s，可调整：
-
-```bash
-python -m cloth_agent.gamepad_teleop --real --speed-mm-s 10 --yaw-speed-deg-s 3 --gripper-rate 100
-```
-
-不再使用 `--step-mm` / `--yaw-step-deg`。新入口采用控制器模式 4 的关节速度
-控制，目标周期 20 ms，以微分 IK 把 World 平移/yaw 转为关节速度，不逐点
-等待停稳。每个速度命令带 150 ms 到期时间，发布中断后控制器将速度置零。
-软件同时监测输入、反馈、工作线程和控制器错误；断连/超时/START 会停止会话。
-松开摇杆或 LB 正常下发零速度，不把正常松键当作故障。启动保持只读，首次
-有效移动才从已就绪的位置模式切到速度模式；退出恢复模式 0，但不自动使能
-或解除 STOP。仅检查连接可运行 `python -m cloth_agent.gamepad_teleop --real --connect-only`。
-
-碰撞验证在独立线程中对当前关节附近的整块范围做区间证明，包含保存的停止
-余量。工作空间沿用 Arm7 pipeline 同一配置及 `certify_segment` 验证函数。
-优先验证 ±2°，失败时依次尝试 ±1°、±0.5°、±0.25°、±0.125°，
-同时根据验证范围降低关节速度，不修改工作空间数值。较早的高速指令在
-有效期、通信延迟和反馈年龄覆盖时间内仍计入可达范围，不能因缩小范围而忽略。
-每次速度下发前，检查反馈年龄、指令有效期和通信延迟覆盖的可达范围
-是否仍包含在已验证范围中。没有有效证明时只发零速度，不绕过验证、不自动绕行。
-接近工作空间边界或其他障碍时，可能停止等待可验证范围。
-终端此时显示验证失败原因或“运动暂停”，不会仅凭手柄输入显示“连续控制中”。
-最小范围仍验证失败时会暂停，实际边界处仍可能阻止回退方向；这不代表手柄断连。
-`controller/events.jsonl` 保存 `teleop_bounds_blocked` 的原因和关节位置、
-`teleop_bounds_restored` 恢复事件及 `teleop_failure` 停止原因。
-
-夹爪通过独立 SDK 通道更新小幅位置目标，使用 `wait=False, wait_motion=False`，
-不会等待完整开合，也不会等待机械臂运动结束。默认目标最多领先实测位置
-12 pulse；松键发送当前实测开度以保持，实际停止存在采样、通信和机构延迟。
-若输入或连接丢失，最后一个目标仍只是有限的小幅增量，不会继续走完整行程。
-不通过关闭夹爪电机实现停止，以免释放持物。运动与夹爪可同时操作。
-
-日志保存 `continuous_config.json` 与 `controller/events.jsonl`，包括速度、循环
-耗时和夹爪目标；支持 `--output`。这是主机软件控制及条件性的几何检查，
-记录的停止余量沿用现有配置，新速度模式的实机停止距离和手感尚待验证，
-软件停止不替代实体急停。退出不会自动松爪或回 Home。
-
-实现依据：[python-evdev 输入读取接口](https://python-evdev.readthedocs.io/en/latest/tutorial.html)。
-新手柄映射已通过现场输入核定；连续控制仍需现场运动、松键及断连验证。
-控制器接口依据：[UFACTORY SDK](https://github.com/xArm-Developer/xArm-Python-SDK)，
-本机安装版本同时确认了速度命令的 `duration` 和夹爪的 `wait_motion` 参数。
+Arm6 手柄下降增益为 1.5：默认下降目标速度 15 mm/s，上升仍为 10 mm/s。组合平移速度不超过 15 mm/s，实际运动仍受关节速度和加速度限制。

@@ -1,0 +1,1426 @@
+{
+  "graph_id": "arm6_camera_a_20261017_observation_action_graph_with_iter0001_n001_to_n004",
+  "nodes": [
+    {
+      "node_id": "n_initial",
+      "task_context": "紫色短袖上衣基本展开，左右袖片均朝外，准备先内收画面左袖。",
+      "observation_condition": {
+        "positive_evidence": [
+          "领口在画面上方、下摆在下方；胸前印花可见。",
+          "画面左袖和右袖均向衣身外侧展开，尚未叠在胸前。",
+          "衣身下半部保持纵向展开，下摆未上折。"
+        ],
+        "negative_evidence": [
+          "左袖已经纵向叠在左上胸时不属于此状态。",
+          "衣身已明显侧折或下摆上折时不属于此状态。"
+        ],
+        "uncertainty_conditions": [
+          "单张图不能确定布层厚度和实际可夹持状态。"
+        ]
+      },
+      "representative_observations": [
+        "o_initial_unfolded"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "node_id": "n000",
+      "task_context": "整理已演示的衣物操作；最终衣物目标未记录，本节点不表示终点。",
+      "observation_condition": {
+        "positive_evidence": [
+          "领口位于画面上方，下摆位于下方，紫色短袖衣物正面图案可见。",
+          "画面左侧袖片已向胸前收拢，右侧袖片仍向右伸出。",
+          "下半部衣身展开，下摆横向延伸。"
+        ],
+        "negative_evidence": [
+          "右袖尚未呈现与左袖相似的胸前内收状态。",
+          "下摆未覆盖上部衣身。"
+        ],
+        "uncertainty_conditions": [
+          "袖片和衣身遮挡处的层数、接触关系及背面状态未知。",
+          "图像不能确定可抓取布层的厚度与实际夹持状态。"
+        ]
+      },
+      "representative_observations": [
+        "o000",
+        "o_initial_left_folded"
+      ],
+      "confidence": 0.96
+    },
+    {
+      "node_id": "n001",
+      "task_context": "右袖内收后的观测；后续 e001 为用户指定补回的原拒绝轨迹。",
+      "observation_condition": {
+        "positive_evidence": [
+          "两侧袖片均位于领口下方、上胸区域，袖口形成两条近竖直的可见开口。",
+          "右侧外伸袖片消失，衣物上部轮廓收窄。",
+          "下半部仍展开，中央图案及较宽下摆可见。"
+        ],
+        "negative_evidence": [
+          "左上袖片尚未呈现o002中的宽幅斜向覆盖形态。",
+          "下摆未向领口区域翻起。"
+        ],
+        "uncertainty_conditions": [
+          "这是下一迭代的初始图像，无法排除此前发生未观测的人为整理。",
+          "两袖内部层叠与抓取可达性未知。",
+          "连接动作 e001 已按用户要求补回；原始记录拒绝保存，视觉结果归因和复现能力未验证。"
+        ]
+      },
+      "representative_observations": [
+        "o001"
+      ],
+      "confidence": 0.94
+    },
+    {
+      "node_id": "n002",
+      "task_context": "左侧衣身操作前的观测；与o001相比，上胸袖片覆盖关系已经改变。",
+      "observation_condition": {
+        "positive_evidence": [
+          "画面左上袖片呈宽幅斜向覆盖，延伸到上胸中央。",
+          "画面右上仍可见竖向袖口开口。",
+          "左侧衣身向左下展开，下摆较宽，中央文字与图案可见。"
+        ],
+        "negative_evidence": [
+          "左侧衣身未形成贯穿下半部的平直内折长条。",
+          "下摆左角没有o003中的明显向左突出的卷翘布片。"
+        ],
+        "uncertainty_conditions": [
+          "斜向袖片下方的布层、褶皱深度和真实抓取层未知。",
+          "连接动作 e001 已按用户要求补回；原始记录拒绝保存，视觉结果归因和复现能力未验证。"
+        ]
+      },
+      "representative_observations": [
+        "o002"
+      ],
+      "confidence": 0.94
+    },
+    {
+      "node_id": "n003",
+      "task_context": "左侧中段发生重排、左下仍有突出布片的状态。",
+      "observation_condition": {
+        "positive_evidence": [
+          "左侧腰部轮廓向内收缩，形成弯曲、起皱的侧边。",
+          "左下布片向画面左侧突出并卷翘，未与中央衣身形成平直边线。",
+          "右侧衣身仍延伸至右下角，上胸袖片覆盖关系大体保留。"
+        ],
+        "negative_evidence": [
+          "左侧尚未形成o004中的连续纵向覆盖条。",
+          "左下突出布片尚未收进衣身宽度内。"
+        ],
+        "uncertainty_conditions": [
+          "局部收缩可能包含拖拽、堆皱或翻折，仅凭该图不能确定折线。",
+          "后续图像与动作之间的连续性未验证，不能排除人工介入。",
+          "左下卷翘处实际层数和夹持候选点语义未知。"
+        ]
+      },
+      "representative_observations": [
+        "o003"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "node_id": "n004",
+      "task_context": "左侧形成纵向覆盖、右下衣身仍较宽的状态。",
+      "observation_condition": {
+        "positive_evidence": [
+          "左侧布片沿衣身纵向覆盖至下摆，形成较连续的长条。",
+          "先前向左突出的左下布片不再明显外伸。",
+          "右下角仍向右延伸，右侧下半部宽于左侧覆盖条。",
+          "中央图案左部被纵向布片遮挡。"
+        ],
+        "negative_evidence": [
+          "右下边尚未像o005那样收向中央。",
+          "衣物仍保持接近全长，下摆未覆盖领口区域。"
+        ],
+        "uncertainty_conditions": [
+          "左侧覆盖支持可见内折进展，但折线质量、隐藏层对齐和动作因果未知。",
+          "无法排除两次观测之间存在未记录的人为调整。"
+        ]
+      },
+      "representative_observations": [
+        "o004",
+        "o_replay_e001_n004"
+      ],
+      "confidence": 0.95
+    },
+    {
+      "node_id": "n005",
+      "task_context": "右下边收拢、右侧中上段仍外凸的纵长衣物状态。",
+      "observation_condition": {
+        "positive_evidence": [
+          "右下角较o004明显向中央移动，右侧出现斜向内收的长边。",
+          "左侧纵向覆盖条仍可见，底部宽度缩小。",
+          "右侧中上段仍向外鼓出，中央图案部分暴露。"
+        ],
+        "negative_evidence": [
+          "右侧中段尚未呈现o006中更靠近中央、覆盖更多图案的状态。",
+          "衣物仍呈纵长形，下摆与领口分离。"
+        ],
+        "uncertainty_conditions": [
+          "右侧斜向布边的精确折线和隐藏层关系未知。",
+          "后续观测不能证明变化由单次机器人动作独立造成。",
+          "右侧局部厚度及夹取层数未知。"
+        ]
+      },
+      "representative_observations": [
+        "o005"
+      ],
+      "confidence": 0.94
+    },
+    {
+      "node_id": "n006",
+      "task_context": "两侧进一步收拢、尚未出现长度方向压缩的状态。",
+      "observation_condition": {
+        "positive_evidence": [
+          "右侧中段向中央收拢，右侧布片遮挡更多胸前图案。",
+          "衣身呈较窄的纵长形，两侧覆盖条靠近中央。",
+          "下摆仍位于画面下方，领口仍位于上方，二者明显分离。"
+        ],
+        "negative_evidence": [
+          "未呈现o007中的短而紧凑的叠放外形。",
+          "上部袖片仍有起伏，不能认定为平整、规则的折叠成品。"
+        ],
+        "uncertainty_conditions": [
+          "右侧变化可能同时包含内折和局部布料重排，折线质量未知。",
+          "观测连续性未验证，人工介入无法排除。",
+          "下摆中央候选点处的实际夹持层数未知。"
+        ]
+      },
+      "representative_observations": [
+        "o006"
+      ],
+      "confidence": 0.95
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "e_initial_left_sleeve",
+      "source_node": "n_initial",
+      "target_node": "n000",
+      "action_family": "画面左侧袖片向左上胸内收",
+      "action_template": {
+        "grasp_relation": "抓取画面左侧展开袖片靠外侧的可见布面；参考点击像素为 [384,163]，实际接触位置以轨迹记录为准。",
+        "target_relation": "将左袖布片向衣身中央方向转移至左上胸接收区域；参考目标像素为 [559,171]。",
+        "grasp_z_rule": "使用本条 Arm6 示范中闭合后、开始抬升前实测 TCP 相对源表面的高度偏移；在当前 RGB-D 对应点上展开。",
+        "yaw_rule": "保留本条示范抓取姿态相对抓取—目标方向的关系，按当前锚点方向转移，不沿用 Arm7 姿态。",
+        "other_constraints": [
+          "保持初始左袖展开、右袖未内收的状态前提。",
+          "当前图像重新定位抓取与接收锚点，不直接复制历史绝对坐标。",
+          "松布后保持小幅开度抬升至 Home，再完全打开；沿用当前 Arm6 执行流程。"
+        ]
+      },
+      "seed_step_id": "s_initial_left_sleeve",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                384,
+                163
+              ],
+              "world_xyz_mm": [
+                634.0941162109375,
+                181.01148986816406,
+                24.629261016845703
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                559,
+                171
+              ],
+              "world_xyz_mm": [
+                626.3496704101562,
+                58.40629959106445,
+                24.288612365722656
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/approach/native_plan.json",
+                "sha256": "1f3fa648810a147e6b2dea51c7c61152a9727f4490a4fe7e1c0dcc306546863c"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/approach/motion.py",
+                "sha256": "db6d31639acc1f722bac28b20d5bbd066d9aad96e73b85dbf1046c30165ba548"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/transfer_place/native_plan.json",
+                "sha256": "ab98581f20cb2a2746fab5eddf1d6f1a34b60ecea15cff78c0ff692c45d81dcb"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/transfer_place/motion.py",
+                "sha256": "1d1ec9f7cb8a1b5fea9615bb88aa2fa392ffeadb40a66a9c37da4ffe06c629f2"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/return_perception/native_plan.json",
+                "sha256": "3d975c29bcc932d49ee45b2fce3babe68e1d584281ade870657c388107a81f8b"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/events.jsonl",
+            "sha256": "59bc8b8c3b1687503fdcb9f4a4830ac12c74b8ed7f3c963cbd27e288f37dac82"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/states.jsonl",
+            "sha256": "9bb944defc60dfdfd911f2e215108f6cf05fbf3ed2af06874aa7d681c6cb1754"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/controller/events.jsonl",
+            "sha256": "b75f6cab410df80f8ac946df65741994840971eef7e6e37be1396504caf3b7bb"
+          },
+          "handoff": {
+            "t_s": 64.92227476462722,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              634.0922887421824,
+              181.0203178873402,
+              58.76973985460174,
+              -178.17822181971167,
+              -0.4035893083454445,
+              0.17322250836153458
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 56.1697850683704,
+              "sample_time_s": 56.134000797756016,
+              "measured_tcp_mm_deg": [
+                634.1115335204454,
+                181.02620317658702,
+                9.404249225941868,
+                -178.18108894319863,
+                -0.39304533790750407,
+                0.17316144654302754
+              ],
+              "gripper_pulse": 839.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/traj.json",
+            "sha256": "d0b941844e0be8bc247bec073e7607ab3eb856a0c71cafb624a66ea7bcbdc847"
+          }
+        },
+        "source_observation": "o_initial_unfolded"
+      },
+      "observed_outcome": "实际下一 iter 观测中左袖已纵向收拢在左上胸，右袖仍在衣身外侧；该配置与现有 n000 的决策条件一致，局部褶皱和右袖外展形状不同。操作者确认保存，未把这次观察提升为已验证策略。",
+      "outcome_evidence": [
+        "s_initial_left_sleeve",
+        "o_initial_unfolded",
+        "o_initial_left_folded"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "经验边，不宣称验证成功；由用户授权的 Arm6 示例模板适配器执行实验性 replay。"
+    },
+    {
+      "edge_id": "e000",
+      "source_node": "n000",
+      "target_node": "n001",
+      "action_family": "画面右侧袖片向上胸内收",
+      "action_template": {
+        "grasp_relation": "以o000中外伸右袖为参照，在袖片外侧、接近袖口内侧的选点[883,181]附近定位；实测闭合TCP约为[614.703,-169.812,11.746]毫米。是否夹住完整袖片及其层数未知。",
+        "target_relation": "由右袖选点朝同高度的上胸右侧选点[706,178]内移，图像相对位移为[-177,-3]像素；所选世界点位移约为[4.331,124.973,0.341]毫米。目标表示所选参照位置，不表示已验证的放置落点。",
+        "grasp_z_rule": "起点表面记录z=26.325毫米；人工闭合采样TCP z=11.746毫米，较该表面数值低约14.579毫米。交接TCP z=49.310毫米，较闭合采样上升约37.565毫米，水平位置基本相同。这些是测量差值，不能解释为可复用的压入或抬升指令。",
+        "yaw_rule": "闭合采样姿态约[-178.179,-0.391,0.170]度，交接约[-178.183,-0.406,0.170]度；末项角度近似保持。姿态约定及其与袖边的几何关系未知，不推导额外旋转规则。",
+        "other_constraints": [
+          "仅记录左臂六轴辅助示范，自动阶段为approach、transfer_place和return_perception。",
+          "闭合脉冲记录为840；人工确认交接发生在原抓取水平位置上方，不能当作目标点到达证据。",
+          "抓取策略依赖右袖仍外伸且胸前目标区域可辨认；袖片已经内收时不视为同一前置状态。",
+          "不从测量轨迹构造Arm7动作原语，不启用自动重放。"
+        ]
+      },
+      "seed_step_id": "s000",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                883,
+                181
+              ],
+              "world_xyz_mm": [
+                614.7831420898438,
+                -169.8328857421875,
+                26.324947357177734
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                706,
+                178
+              ],
+              "world_xyz_mm": [
+                619.1143188476562,
+                -44.85999298095703,
+                26.665468215942383
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/approach/native_plan.json",
+                "sha256": "f3e4c30d8fa486c0123b267626f529458596d8a634c55c70fb03e32ef3f239fe"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/approach/motion.py",
+                "sha256": "0eb10d77f970f4e15593ff8e90207478f8e48745179ae2e919341a9ad9f453cd"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/transfer_place/native_plan.json",
+                "sha256": "fb1003524eea906420e1759bbf13b5d7f5e12945ba911bf1ae61e045ab56840b"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/transfer_place/motion.py",
+                "sha256": "096ea96334341a92d6e2f3d5d2b581acf1422b4654a482c35bfd5920ef68df1d"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/return_perception/native_plan.json",
+                "sha256": "2f6cf99ec0327a5dc202681812a934e3a9e8a285bb1058b66d61dc59b50f45f1"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/events.jsonl",
+            "sha256": "495fcd04a94aa39d843d67264a33ac39c253771148ffb990f8dfedffa5afe7ad"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/states.jsonl",
+            "sha256": "27d7ad2b37902d9e3f29a9d8fd99d5f932374a562c498936e7c5cf5c795e8d8d"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/controller/events.jsonl",
+            "sha256": "13a50a1bc330135dbbe43bd08db54edb4622fc0fbdebf9125469c527c3a7ecd1"
+          },
+          "handoff": {
+            "t_s": 67.15721292700619,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              614.7698154610673,
+              -169.83084245678697,
+              49.31040268864001,
+              -178.18287630290547,
+              -0.4055201642167026,
+              0.17043588028982076
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 59.38315396383405,
+              "sample_time_s": 59.352698266506195,
+              "measured_tcp_mm_deg": [
+                614.7025776187731,
+                -169.81152804739475,
+                11.745548622308718,
+                -178.17895197230038,
+                -0.39139268068373495,
+                0.1704432231255143
+              ],
+              "gripper_pulse": 840.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0000/traj.json",
+            "sha256": "5535acc44f6b705726860eebd797ca828bb1c1e353c16a2487a7ed742c9099a9"
+          }
+        },
+        "source_observation": "o000"
+      },
+      "observed_outcome": "o000至o001可见右侧外伸袖片转为胸前内收，上部轮廓收窄，支持局部袖片折入的视觉进展；下半部仍展开。o001是下一迭代初始图像，连续性未验证，无法排除人为整理，不能将变化因果归于s000或标记为成功。控制器执行完成和人工接受仅证明示范被执行并保留。",
+      "outcome_evidence": [
+        "o000",
+        "o001",
+        "s000"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Arm6 manual trajectory requires dedicated replay compiler and verified immediate post-action observation"
+    },
+    {
+      "edge_id": "e001",
+      "source_node": "n001",
+      "target_node": "n004",
+      "action_family": "画面左下摆向衣身内部搬运（原拒绝轨迹，本次用户指定补回）",
+      "action_template": {
+        "grasp_relation": "在参考图 o001 的左下摆附近选择布料，参考 start=[433,606]。",
+        "target_relation": "搬向同一下摆区域的内部，参考 target=[595,592]；在当前图重新定位对应点。",
+        "grasp_z_rule": "由该轨迹闭合后、抬升前的稳定实测 TCP 与起点表面高度差提取。",
+        "yaw_rule": "由该轨迹实测抓取姿态和当前两锚点方向变换提取。",
+        "other_constraints": [
+          "仅 Arm6；保留原始 REJECTED、operator_accepted=false，用户本次明确授权试用。",
+          "执行后的目标观测是下一迭代 o002，不保证重复执行后能复现该状态。"
+        ]
+      },
+      "seed_step_id": "s001",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                433,
+                606
+              ],
+              "world_xyz_mm": [
+                324.1084899902344,
+                151.47869873046875,
+                38.11309051513672
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                595,
+                592
+              ],
+              "world_xyz_mm": [
+                329.1882629394531,
+                39.23265075683594,
+                30.403440475463867
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/approach/native_plan.json",
+                "sha256": "451769ca476be104c00186d2e7aa3d27b87a072a6bba409d380ac9adabbd90a4"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/approach/motion.py",
+                "sha256": "0270d346f2b0c11eaf47f5b1161c3c7ae164a48eb3acc71456bc185023b8ef3e"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/transfer_place/native_plan.json",
+                "sha256": "ca6a9b394b66431258ea795133450f6dc335d267f59cf0a7e75a0c33cc46c72a"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/transfer_place/motion.py",
+                "sha256": "451cef71e4c065ddbc7974c3503d16bdb95cf13d7d17e82e41629d1c67436fec"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/return_perception/native_plan.json",
+                "sha256": "e021d2d2adb89dae33c640fe937fd11f191c02f4e6d7e892c610bed3118658c9"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/events.jsonl",
+            "sha256": "a017fbe08f099ac36c5c9909da243ee14f6f937afe6c87e3c6da3f35cc84a8fe"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/states.jsonl",
+            "sha256": "6696bc556ab9c13dacc02615f11689edb08b1cb919057809ece1094db9a4896f"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/controller/events.jsonl",
+            "sha256": "dd51e027ee941276747cb99a9503b4b5c2878163a71c3a5fe0e6566efccd95c6"
+          },
+          "handoff": {
+            "t_s": 58.30266029108316,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              324.1663018883494,
+              151.5012998954443,
+              44.37455791302014,
+              -178.18127888075796,
+              -0.4012912534448697,
+              0.16931487663393344
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 50.09658781532198,
+              "sample_time_s": 50.05312682874501,
+              "measured_tcp_mm_deg": [
+                324.1804359303649,
+                151.5210548369806,
+                13.244972621264196,
+                -178.18210050552312,
+                -0.3973445676462217,
+                0.1700852141080023
+              ],
+              "gripper_pulse": 840.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/traj.json",
+            "sha256": "eeee917309d37ec2b3fd0c25819d15ec5f70309cfb2857f6ecca7debb7201099"
+          },
+          "replay_authorization": {
+            "kind": "USER_REQUESTED_REJECTED_DEMONSTRATION",
+            "manifest": {
+              "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/pending/iter_0001/traj.json",
+              "sha256": "eeee917309d37ec2b3fd0c25819d15ec5f70309cfb2857f6ecca7debb7201099"
+            },
+            "reason": "用户明确要求：你把iter0001接上去看一下, 如果有问题我再重新采集"
+          }
+        },
+        "source_observation": "o001"
+      },
+      "observed_outcome": "原始示范后图为 o002；20261018_151848 实际 replay 执行 e001 后匹配 n004（0.88），用户确认 n001 应直接连接 n004。目标已按实际 replay 更新，原始后图仍保留。重复执行结果未验证。",
+      "outcome_evidence": [
+        "o001",
+        "o002",
+        "o_replay_e001_n004",
+        "s001"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Experimental Arm6 template; physical outcome not validated"
+    },
+    {
+      "edge_id": "e002",
+      "source_node": "n002",
+      "target_node": "n003",
+      "action_family": "画面左侧衣身中段向中央重排",
+      "action_template": {
+        "grasp_relation": "以o002左侧衣身下半部外边为参照，在[439,438]附近选择布料；实测闭合TCP约为[440.518,145.735,11.420]毫米。选点接近侧缘，实际夹取的是边缘还是内部布层未知。",
+        "target_relation": "朝同一高度附近的衣身内部[573,432]移动，图像相对位移为[134,-6]像素；所选世界点位移约[2.265,-93.542,1.119]毫米，表达由画面左侧向中央的局部收拢意图。",
+        "grasp_z_rule": "起点表面z=32.277毫米；闭合采样TCP z=11.420毫米，差约-20.858毫米；人工交接z=45.822毫米，较闭合采样增加约34.403毫米。交接水平位置接近闭合位置；表面与TCP差值的接触语义未知，不能直接转为抓取高度规则。",
+        "yaw_rule": "闭合采样姿态约[-178.181,-0.398,0.170]度，交接约[-178.177,-0.407,0.170]度；末项角度近似保持。与衣身侧边的朝向对应关系未知。",
+        "other_constraints": [
+          "左臂六轴示范，闭合脉冲记录为841。",
+          "人工交接记录位于起点上方，后续目标只由选点和已记录自动阶段描述。",
+          "左下仍展开、上胸左袖斜向覆盖是本示范的可见前置条件。",
+          "不得把侧边收缩和堆皱自动判定为形成有效纵向折叠。"
+        ]
+      },
+      "seed_step_id": "s002",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                439,
+                438
+              ],
+              "world_xyz_mm": [
+                440.3097839355469,
+                145.66452026367188,
+                32.27730941772461
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                573,
+                432
+              ],
+              "world_xyz_mm": [
+                442.5751647949219,
+                52.122535705566406,
+                33.396141052246094
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/approach/native_plan.json",
+                "sha256": "78258d5f0b6b359bc20047bc5ae542097e7af42650e16ecc03fb9ffaa9c6785c"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/approach/motion.py",
+                "sha256": "86ce8930b4716c61ef332fde9094179f6f2ad60612dc664b873066b4f66a21e2"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/transfer_place/native_plan.json",
+                "sha256": "cd56fad957d6fb8675ce4cb5155c1fc961738b2fca22c47efbd2ce097a28f523"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/transfer_place/motion.py",
+                "sha256": "bcbd0f1cca7d432a59e8ff31b51e7c865ca619a74605740964f9fc35bfc07652"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/return_perception/native_plan.json",
+                "sha256": "33fe24f26f16cceb66638da9f3c471690b704ad08d1678b97e289a144b02b489"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/events.jsonl",
+            "sha256": "3b63268fd2888fed14f57b84fc4ece9a2d5a78d2da5819602b75604bb73fb688"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/states.jsonl",
+            "sha256": "00a1dc00db07ca5d234af64f428bb648cfb04a83f6a89a67f38d4b9b1c102b71"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/controller/events.jsonl",
+            "sha256": "3c4be223062602b0fd0aee0debd4e4ee6d7778f5c5f46dca760d3c0768fb49a0"
+          },
+          "handoff": {
+            "t_s": 54.769326308742166,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              440.5887278007412,
+              145.7631247848673,
+              45.82223331655754,
+              -178.17664048506967,
+              -0.40691224215888744,
+              0.17013704488079118
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 41.72698545921594,
+              "sample_time_s": 41.68608687631786,
+              "measured_tcp_mm_deg": [
+                440.51800572970245,
+                145.7349040364495,
+                11.419587452105787,
+                -178.18131655194543,
+                -0.398016723236385,
+                0.1698110333939467
+              ],
+              "gripper_pulse": 841.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0002/traj.json",
+            "sha256": "c511d6433cd2dac98889217902926e89fad80f085a32bc8cb00507ff8874d82b"
+          }
+        },
+        "source_observation": "o002"
+      },
+      "observed_outcome": "o002至o003可见左侧中段向内缩、褶皱增多，左下形成外突卷翘布片。此变化主要支持布料重排；未见连续平直的左侧覆盖条，不能确认有效折叠进展，也不是衣物完全未变化。o003不是即时动作后图像，可能包含人工介入，s002的因果结果未知；执行完成不能替代视觉进展判定。",
+      "outcome_evidence": [
+        "o002",
+        "o003",
+        "s002"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Arm6 manual trajectory requires dedicated replay compiler and verified immediate post-action observation"
+    },
+    {
+      "edge_id": "e003",
+      "source_node": "n003",
+      "target_node": "n004",
+      "action_family": "画面左下突出布片向衣身内部收拢",
+      "action_template": {
+        "grasp_relation": "以o003左下外突、卷翘的布片为参照，在突出边缘附近[443,542]选择抓取候选点；实测闭合TCP约[367.408,144.332,15.782]毫米。该点是否对应原始下摆角及夹取层数未知。",
+        "target_relation": "朝下摆偏中央的衣身内部[603,580]收拢，图像相对位移为[160,38]像素，即向画面右下移动；所选世界点位移约[-30.781,-110.936,-4.149]毫米。",
+        "grasp_z_rule": "起点表面z=32.477毫米；闭合采样TCP z=15.782毫米，差约-16.695毫米；交接z=77.902毫米，较闭合采样增加约62.120毫米，水平位置基本保持。仅描述人工测量，不把差值解释为通用抓取或抬升参数。",
+        "yaw_rule": "闭合采样姿态约[-178.188,-0.397,0.170]度，交接约[-178.184,-0.400,0.170]度；末项角度近似保持，未提供相对布边的姿态语义。",
+        "other_constraints": [
+          "左臂六轴示范，闭合脉冲记录为841。",
+          "起点语义依赖左下存在可见外突布片，不能替换为任何左下像素。",
+          "人工交接测量位于抓取处上方，不是所选目标处。",
+          "所见纵向覆盖变化不验证完整轨迹、释放状态或可重放性。"
+        ]
+      },
+      "seed_step_id": "s003",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                443,
+                542
+              ],
+              "world_xyz_mm": [
+                367.5672302246094,
+                144.41661071777344,
+                32.47712326049805
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                603,
+                580
+              ],
+              "world_xyz_mm": [
+                336.78582763671875,
+                33.48047637939453,
+                28.327863693237305
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/approach/native_plan.json",
+                "sha256": "be4115438bcda7da3f3f86431294a84b2ffc035d3d4feb79c7600f75baba77b0"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/approach/motion.py",
+                "sha256": "29133e9c498b010a54db52a474965cfc177d27d817304c89223b96544c5120fa"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/transfer_place/native_plan.json",
+                "sha256": "9cecc78b01244ce54509a24f3d4d3bd7b0f718b2ad7e1753933d5224d3176c11"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/transfer_place/motion.py",
+                "sha256": "30c1880c608f27087434726c37dc9b474c903293fe478bcf0c033377e4c7b283"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/return_perception/native_plan.json",
+                "sha256": "a9b10006f99fc256a773c5c42fdfce6669b146631ad96784666a4d04f5432dbb"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/events.jsonl",
+            "sha256": "2c7c4c7b03b78df42f5c3a140ec4f8b3a7a1982b4baab137e83a7183a74c2902"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/states.jsonl",
+            "sha256": "e5e19df7d3eda428d465c9f5076a691fe89205650972af583e8d12bf2ac60ad4"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/controller/events.jsonl",
+            "sha256": "fc37fc21f4474e91918ba2dd5a9f8bef66f0c163107e9953bc16c302fd34ca4c"
+          },
+          "handoff": {
+            "t_s": 57.053787731565535,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              367.4983070258237,
+              144.37016840792973,
+              77.90172131994723,
+              -178.18436192958993,
+              -0.4004396878072457,
+              0.17037557149127244
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 46.74462285730988,
+              "sample_time_s": 46.70394335966557,
+              "measured_tcp_mm_deg": [
+                367.4077092193827,
+                144.33151957983284,
+                15.782035054504604,
+                -178.1882560649975,
+                -0.39719859367451515,
+                0.17006754462488882
+              ],
+              "gripper_pulse": 841.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0003/traj.json",
+            "sha256": "cc67ffeae35314ba0474ba9f628f5402dead55b22a20f250dd3954874335a09a"
+          }
+        },
+        "source_observation": "o003"
+      },
+      "observed_outcome": "o003至o004中左下外突布片收进衣身范围，左侧出现连续纵向覆盖条，部分中央文字被遮挡；相较单纯起皱，这支持左侧内折的视觉进展。右下仍较宽，未形成最终目标证据。o004为后续初始图像，未验证即时连续性，人工介入不能排除，因此s003的因果结果保持未知。",
+      "outcome_evidence": [
+        "o003",
+        "o004",
+        "s003"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Arm6 manual trajectory requires dedicated replay compiler and verified immediate post-action observation"
+    },
+    {
+      "edge_id": "e004",
+      "source_node": "n004",
+      "target_node": "n005",
+      "action_family": "画面右下下摆向中央收拢",
+      "action_template": {
+        "grasp_relation": "以o004仍向右伸出的下摆右端为参照，选择[795,605]附近布边；实测闭合TCP约[318.660,-99.897,18.666]毫米。是否同时夹持前后衣片未知。",
+        "target_relation": "朝下摆偏中央的[681,601]内移，图像相对位移为[-114,-4]像素；所选世界点位移约[2.521,78.590,-8.013]毫米，目标沿下摆附近向画面左侧收拢。",
+        "grasp_z_rule": "起点表面z=40.300毫米；闭合采样TCP z=18.666毫米，差约-21.634毫米；人工交接z=54.971毫米，较闭合采样增加约36.305毫米，水平位置基本不变。表面高度与TCP参考点差异的物理含义未知。",
+        "yaw_rule": "闭合采样姿态约[-178.274,-0.356,0.107]度，交接约[-178.274,-0.358,0.107]度；末项角度近似保持，不推定与下摆平行或垂直。",
+        "other_constraints": [
+          "左臂六轴示范，闭合脉冲记录为840。",
+          "前置条件包括左侧已形成纵向覆盖条、右下边仍外伸。",
+          "人工交接是测量到的抓取处上方姿态，不是最终放置姿态。",
+          "目标选点、实测姿态和后续外观只构成单次假设，不支持自动重放。"
+        ]
+      },
+      "seed_step_id": "s004",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                795,
+                605
+              ],
+              "world_xyz_mm": [
+                319.3543701171875,
+                -99.60671997070312,
+                40.29982376098633
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                681,
+                601
+              ],
+              "world_xyz_mm": [
+                321.8753356933594,
+                -21.01706886291504,
+                32.28727722167969
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/approach/native_plan.json",
+                "sha256": "ec09150c508a84f013f0f0e33ac6ed739ce939ae0f587e3865f19f534bf8640a"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/approach/motion.py",
+                "sha256": "4046f1c3bb6431c7d6d2b1586cb2c8dfd47b9bbcf9ea34f56571c53fa73dcb3a"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/transfer_place/native_plan.json",
+                "sha256": "40814ef80c8c12eb345c5da3097eb4e5f9698201e95331eaba654deb16a0ae88"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/transfer_place/motion.py",
+                "sha256": "e1ee3f84edabe0a612424217137d903e835ac1d041e0495c4f4ec9e9a8531578"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/return_perception/native_plan.json",
+                "sha256": "007c1c2afedf74ae31ad1ef831df5e85db7d8a00fe7044177b700216122e227d"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/events.jsonl",
+            "sha256": "8bc2a4e53dd53eca061960e66ca19b0527de54a3bbf255ba863bdf5e925cc9a4"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/states.jsonl",
+            "sha256": "aabcd4929566ccbd61147cc98643d297d974b4829b68e092f628dd190b411c9f"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/controller/events.jsonl",
+            "sha256": "0350bb8d28db7204ecea0b4d677803341ae83ddbadcdcb80327e9b78b61882c8"
+          },
+          "handoff": {
+            "t_s": 76.64636350609362,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              318.6434170082607,
+              -99.89399591186364,
+              54.97076374325334,
+              -178.2735845797228,
+              -0.35846267637227064,
+              0.1070375099507563
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 69.97615237906575,
+              "sample_time_s": 69.95938823837787,
+              "measured_tcp_mm_deg": [
+                318.66030532697005,
+                -99.8974689590466,
+                18.666020488589368,
+                -178.27384372911447,
+                -0.35570535862737906,
+                0.106867909406964
+              ],
+              "gripper_pulse": 840.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0004/traj.json",
+            "sha256": "ad6abffccda245df55ca12ae998901fa433367bbbd2129dbbe469778469b0f7d"
+          }
+        },
+        "source_observation": "o004"
+      },
+      "observed_outcome": "o004至o005可见右下角向中央收拢，底部宽度缩小，右侧布边呈斜向覆盖，支持右下局部内折的视觉进展。右侧中上段仍外凸，不能认定整条右侧已平整折好。o005为后续初始图像，人工调整无法排除，变化与s004的因果归属未知。",
+      "outcome_evidence": [
+        "o004",
+        "o005",
+        "s004"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Arm6 manual trajectory requires dedicated replay compiler and verified immediate post-action observation"
+    },
+    {
+      "edge_id": "e005",
+      "source_node": "n005",
+      "target_node": "n006",
+      "action_family": "画面右侧中段向胸前中央收拢",
+      "action_template": {
+        "grasp_relation": "以o005右侧中段仍向外凸出的布边为参照，在[738,353]附近选取候选点；实测闭合TCP约[495.576,-62.473,30.769]毫米。该处是已有侧边覆盖区域，具体夹住哪一层未知。",
+        "target_relation": "朝中央图案附近[652,347]移动，图像相对位移为[-86,-6]像素；所选世界点位移约[5.485,57.913,-18.773]毫米。相对策略是将右侧中段进一步向衣身中央收拢。",
+        "grasp_z_rule": "起点表面z=45.940毫米；闭合采样TCP z=30.769毫米，差约-15.171毫米；人工交接z=59.811毫米，较闭合采样增加约29.042毫米，水平位置近似保持。局部布层厚度、TCP偏置与表面误差未知，不据此规定接触深度。",
+        "yaw_rule": "闭合采样姿态约[-178.180,-0.402,0.171]度，交接约[-178.181,-0.415,0.171]度；末项角度近似保持，没有证据支持按衣物纹理调整旋转。",
+        "other_constraints": [
+          "左臂六轴示范，闭合脉冲记录为841。",
+          "前置状态需区分右下已内收而右中段仍外凸，不能与o004或o006直接合并。",
+          "人工交接记录仍对应抓取位置上方，目标落点及释放接触未知。",
+          "收窄可能同时涉及翻折和褶皱重排，只保留单次经验假设。"
+        ]
+      },
+      "seed_step_id": "s005",
+      "seed_action": {
+        "exact_command": {
+          "type": "ARM6_ASSISTED_DEMONSTRATION",
+          "arm": "left",
+          "axis": 6,
+          "units": "world_mm_deg_and_gripper_pulse",
+          "selected_points": [
+            {
+              "name": "start",
+              "pixel_xy": [
+                738,
+                353
+              ],
+              "world_xyz_mm": [
+                495.377685546875,
+                -62.45384216308594,
+                45.93994140625
+              ]
+            },
+            {
+              "name": "target",
+              "pixel_xy": [
+                652,
+                347
+              ],
+              "world_xyz_mm": [
+                500.86236572265625,
+                -4.540473937988281,
+                27.16716766357422
+              ]
+            }
+          ],
+          "automated_phases": [
+            {
+              "phase": "approach",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 2
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/approach/native_plan.json",
+                "sha256": "713e5f72cb5b20e4ec4b665b24d5e5e911e30cab121bf9b1b44576b2d75b2920"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/approach/motion.py",
+                "sha256": "6b974f934ae81a3679fe9036166b22a5de1840ac0da6f1612ec66d05197370c5"
+              }
+            },
+            {
+              "phase": "transfer_place",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 4
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/transfer_place/native_plan.json",
+                "sha256": "eed1a1dce0608459b80af59ec39b85302878c5e9b391793f2bda98cd411be7c4"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/transfer_place/motion.py",
+                "sha256": "73fba485792fb3f31550f69a7131cd9bb6bdf7682e49a9fd0fedbe368d88943b"
+              }
+            },
+            {
+              "phase": "return_perception",
+              "result": {
+                "status": "EXECUTED",
+                "physical_execution": true,
+                "completed_commands": 3
+              },
+              "actual_native_plan": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/return_perception/native_plan.json",
+                "sha256": "bced88a78b5fdc626a018041da80b97ddda28500c5436c08c0a1425ddb8ae138"
+              },
+              "motion_source": {
+                "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/return_perception/motion.py",
+                "sha256": "3872ac0321cdaf297df3397d9f18aba5bae7b632b5ab81ace0d396288aa5d515"
+              }
+            }
+          ],
+          "manual_input_trace": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/events.jsonl",
+            "sha256": "94ee926e205ff3f56825427d4d2eb45beee10a87ca358cde8312754246674c48"
+          },
+          "measured_trajectory": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/states.jsonl",
+            "sha256": "eda099e479ac7817b57b03d77cbf7a00751a606a6e85d8477b9a51b4f08dbfa5"
+          },
+          "controller_events": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/controller/events.jsonl",
+            "sha256": "935bd8d8a6dbadc6613701ab1e0062a3af6aa9793771475fc8962af2b694a220"
+          },
+          "handoff": {
+            "t_s": 51.926855583675206,
+            "phase": "manual",
+            "kind": "manual_confirmed",
+            "world_tcp_mm_deg": [
+              495.67571903838814,
+              -62.48313205725872,
+              59.81078465220634,
+              -178.18079181097508,
+              -0.4149670425967581,
+              0.17109731493963282
+            ]
+          },
+          "sampled_close_poses": [
+            {
+              "button_time_s": 46.481320581398904,
+              "sample_time_s": 46.489855075255036,
+              "measured_tcp_mm_deg": [
+                495.57550654179227,
+                -62.472899185434045,
+                30.76900534654544,
+                -178.17999773480796,
+                -0.4018393413930629,
+                0.1709515164350951
+              ],
+              "gripper_pulse": 841.0
+            }
+          ],
+          "manifest": {
+            "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125738277854Z/traj_0005/traj.json",
+            "sha256": "5336352f0f5d2468c76afc1ab3ae74c6d065082ec39d0e5ac231e3cc23e98be7"
+          }
+        },
+        "source_observation": "o005"
+      },
+      "observed_outcome": "o005至o006可见右侧中段更靠近中央，布片覆盖更多图案，衣身中段进一步收窄。这支持局部内折或覆盖增加的视觉进展，同时仍有起伏和褶皱，不能等同于平整折叠完成。图像不是专门的即时动作后采集，不能排除人工介入；s005的因果结果未知。",
+      "outcome_evidence": [
+        "o005",
+        "o006",
+        "s005"
+      ],
+      "seed_outcome": "UNKNOWN",
+      "generalization_status": "ONE_SHOT_HYPOTHESIS",
+      "replayable": false,
+      "replay_block_reason": "Arm6 manual trajectory requires dedicated replay compiler and verified immediate post-action observation"
+    }
+  ],
+  "limitations": [
+    "仅离线整理所提供的Camera A图像、选点和Arm6示范记录；未执行机器人命令。",
+    "八张图像依次对应o000至o007。比较了全部可见配置，袖片覆盖、左下突出布片、左右侧覆盖范围及长度方向叠放均有决策相关差异，因此保留八个不同节点。",
+    "六个提供的物理步骤各对应且仅对应一条边；共享o003、o004、o005、o006的相邻步骤使用同一节点。",
+    "迭代1的REJECTED和迭代7的ABORTED记录不构成已提供的保留动作步骤。保留其初始观测作为已有步骤的后续证据，不补造o001至o002或o007之后的动作。",
+    "所有后图均为下一迭代初始图像，时间上后续不等于动作后立即采集；所有步骤的观测连续性均未验证，不能排除人为介入。",
+    "seed_outcome统一为UNKNOWN，表示动作因果结果未知；各边observed_outcome另行区分可见折叠进展、布料重排及没有充分折叠进展证据的情况。",
+    "控制器EXECUTED和人工接受仅表示执行与示范保留，不证明抓取成功、视觉进展、任务完成或动作一般有效。",
+    "节点置信度仅针对可见配置描述，不是动作成功概率、因果归属置信度或通用策略可靠度。",
+    "exact_command保留原始指令对象；中文策略中的数值为便于描述而取近似值。路径及哈希作为原始记录保留，未声称读取或核验其指向的轨迹、计划或表面文件。",
+    "闭合采样与人工交接是实测TCP证据；与表面选点的高度差不能直接解释为接触深度。实际夹持层数、接触力、完整路径、释放状态及姿态坐标约定中未提供的语义均未知。",
+    "画面左、右、上、下均指Camera A图像方向，不推定穿着者左右。选点位移是记录中的参照点差，不是已验证的布料运动轨迹。",
+    "所有边均为ONE_SHOT_HYPOTHESIS；不声称可重放、通用验证或自动执行能力，不引入Arm7动作原语。",
+    "最终衣物目标未记录；没有预设折叠序列，没有任何节点被认定为终端折叠目标。",
+    "e001 原始示范为 REJECTED；用户于本次会话明确要求接回，保留原始记录并单独授权。"
+  ],
+  "protocol": "arm6-traj-experience-graph-v1",
+  "robot": "Arm6",
+  "camera": "A",
+  "source_trajectory": {
+    "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261018_n001_to_n004/trajectory.json",
+    "sha256": "b9d2832ed85c35aaf33ded85c91467efc28caf7c727ad28f9646e3850f7173bc"
+  },
+  "terminal_node_ids": [],
+  "compile_metrics": {
+    "model": "gpt-6-astra",
+    "completed_calls": 1,
+    "aborted_repair_calls": 1,
+    "elapsed_s": 337.54812222067267,
+    "usage": {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 4992,
+      "input_tokens": 31285,
+      "output_tokens": 15512,
+      "reasoning_output_tokens": 133
+    }
+  },
+  "action_binding": {
+    "method": "host copies original action by seed_step_id; model action transcription discarded",
+    "rebound_edges": [
+      "e003"
+    ],
+    "raw_model_response": "compile/requests.jsonl"
+  },
+  "revision_history": [
+    {
+      "operation": "exclude_last_accepted_trajectory",
+      "removed_step_id": "s006",
+      "removed_edge_ids": [
+        "e006"
+      ],
+      "retained_observation": "o006",
+      "original_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261017/graph.json",
+        "sha256": "b3f467089e80560545d7184078a8b6077ff783ffe2336efaef1952f18e40401a"
+      },
+      "original_trajectory": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261017/trajectory.json",
+        "sha256": "3af64dff8c81c3755d7e974d9e81ae879c0c74002e1b6747691d183448f60f8a"
+      },
+      "new_model_calls": 0,
+      "raw_trajectories_modified": false
+    },
+    {
+      "operation": "prepend_missing_first_demonstration",
+      "created_at": "2026-10-18T06:41:10.589287+00:00",
+      "source_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261018_without_last/graph.json",
+        "sha256": "a52a64c5cb8d6bcaad3d3933b67d52f42c1955529acd225faa1a42a8de084b5a"
+      },
+      "added_step": "s_initial_left_sleeve",
+      "added_edge": "e_initial_left_sleeve",
+      "source_manifest": {
+        "path": "/home/sja/clothAgent_real/data/demonstrations/20261017T125159710261Z/traj_0000/traj.json",
+        "sha256": "d0b941844e0be8bc247bec073e7607ab3eb856a0c71cafb624a66ea7bcbdc847"
+      },
+      "after_source": "same earlier session pending/iter_0001/observation captured before its failed approach",
+      "node_merge": {
+        "target": "n000",
+        "basis": "assistant visual comparison of actual after RGB and existing o000; left sleeve in, right sleeve out",
+        "identical_images": false
+      },
+      "annotation_provenance": "assistant visual/evidence review; no additional compiler model call",
+      "retained_exclusion": "s006 remains excluded by user",
+      "raw_files_modified": false
+    },
+    {
+      "operation": "restore_user_requested_rejected_iteration",
+      "source_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261018_with_first/graph.json",
+        "sha256": "ad5c6fa133ca0897ef250d9dedb5a95454aa154d7878ca33faa4b60691778e01"
+      },
+      "added_step": "s001",
+      "added_edge": "e001",
+      "reason": "用户明确要求：你把iter0001接上去看一下, 如果有问题我再重新采集",
+      "raw_files_modified": false,
+      "annotation_provenance": "assistant review of recorded points, telemetry and before/after RGB; no new model compilation"
+    },
+    {
+      "operation": "redirect_e001_to_observed_n004",
+      "source_graph": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_traj_graph_20261018_with_iter0001/graph.json",
+        "sha256": "72fce7bd7946cc1ede57ed251f40094da80996f7bfa350691cf3d2bc15b9fbe5"
+      },
+      "instruction": "这个n001确实就要直接接到n004去, 你修改一下图, 然后我要重新启动",
+      "edge_id": "e001",
+      "old_target": "n002",
+      "new_target": "n004",
+      "replay_result": {
+        "path": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/result.json",
+        "sha256": "e821d10bc7284afd8bd78dd83b64ba94a7bf1767f0d16d7ed3a76b537d55a479"
+      },
+      "original_demo_after": "o002",
+      "new_replay_after": "o_replay_e001_n004",
+      "raw_files_modified": false
+    }
+  ]
+}

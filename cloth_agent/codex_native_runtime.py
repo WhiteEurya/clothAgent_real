@@ -81,7 +81,8 @@ class NativeRuntime:
         initial={k:np.asarray(v['joints']) for k,v in snapshot.items()}
         final,source=self._preparation_program(initial,owner,target)
         folder=Path(directory);folder.mkdir(parents=True,exist_ok=False)
-        if all(np.max(np.abs(initial[k]-final[k]))<=self.config.limits['stationary_tolerance_deg'] for k in final):
+        if (not getattr(self, 'open_at_home_on_return', False)
+                and all(np.max(np.abs(initial[k]-final[k]))<=self.config.limits['stationary_tolerance_deg'] for k in final)):
             self.arrival(final)
             result=dict(status='ALREADY_AT_PERCEPTION',physical_execution=False)
         else:
@@ -152,6 +153,20 @@ class NativeRuntime:
         return obs
 
     def _segments(self,a,b):
+        if not getattr(self.config, 'path_validation_enabled', True):
+            moving=[k for k in a if not np.allclose(a[k],b[k],atol=1e-9,rtol=0)]
+            if len(moving)>1:raise DualArmError('native code moves one arm at a time')
+            for state in (a,b):
+                for k,q in state.items():
+                    q=np.asarray(q,dtype=float)
+                    if (q.shape!=(self.config.arms[k].axis,) or not np.isfinite(q).all()
+                            or np.any(np.radians(q)<self.models[k].lower)
+                            or np.any(np.radians(q)>self.models[k].upper)):
+                        raise DualArmError('joint target exceeds URDF limits')
+            if not moving:return []
+            k=moving[0]
+            speed,accel,timeout=command_limits(self.config,self.models[k],self.config.arms[k],a[k],b[k])
+            return [PositionSegment(k,a,b,speed,accel,timeout)]
         if hasattr(self,'preview_candidates'):
             self.preview_candidates.append(dict(start=q_to_lists(a),end=q_to_lists(b),context=dict(self.planning_context)))
         pending=[(a,b,0)];result=[]
@@ -199,36 +214,42 @@ class NativeRuntime:
             first_operation=len(operations)
             if name=='gripper':
                 # Attachment envelopes already cover the full gripper range.
-                with complete_proof(cancel=self.cancel,progress=self._proof_progress):
-                    certify_segment(q,q,self.config,self.models)
+                if getattr(self.config, 'path_validation_enabled', True):
+                    with complete_proof(cancel=self.cancel,progress=self._proof_progress):
+                        certify_segment(q,q,self.config,self.models)
                 operations.append(('gripper',dict(**kw,joints=q_to_lists(q))))
                 continue
             if name=='move_joints':
                 goal={k:np.degrees(kw[k]) if k in kw else v.copy() for k,v in q.items()}
-                moving=[k for k in q if not np.allclose(q[k],goal[k],atol=1e-9,rtol=0)]
-                orders=(moving[0]+'_first',) if len(moving)==1 else ('left_first','right_first')
-                search_failures=[]
-                for attempt in range(1,3):
-                    if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
-                    failures=[];path=None;incomplete=False
-                    for order in orders:
-                        try:
-                            path=self.paths.joint_path(pack(q),pack(goal),order=order,timeout_s=30);break
-                        except DualArmError as exc:
-                            failures.append(str(exc))
-                            incomplete |= isinstance(exc,ProofIncompleteError) or 'time budget' in str(exc) or 'planning budget' in str(exc)
-                    if path is not None:break
-                    if not incomplete:raise DualArmError('; '.join(failures))
-                    search_failures.extend(failures)
-                    if attempt==2:
-                        self.planning_context['path_search_failure']=dict(
-                            kind='PATH_SEARCH_BUDGET_EXHAUSTED',attempt_rounds=attempt,
-                            orders=list(orders),per_search_timeout_s=30,errors=search_failures,
-                            goal_joints_deg={k:v.tolist() for k,v in goal.items()})
-                        raise DualArmError('PATH_SEARCH_BUDGET_EXHAUSTED: 路径搜索两轮仍未找到通过碰撞验证的完整路径；不是 IK 失败。'+ '; '.join(failures))
-                    print(f'路径搜索第 {attempt}/2 轮未完成，最后再试一轮（不是 IK 求解）：'+ '; '.join(failures),flush=True)
-                for a,b in zip(path,path[1:]):
-                    operations.extend(('move',s) for s in self._segments(unpack(a),unpack(b)))
+                if getattr(self, 'direct_joint_moves', False):
+                    # Validate the direct joint interpolation; no path search
+                    # or detour. A failed proof propagates to the caller.
+                    operations.extend(('move', segment) for segment in self._segments(q, goal))
+                else:
+                    moving=[k for k in q if not np.allclose(q[k],goal[k],atol=1e-9,rtol=0)]
+                    orders=(moving[0]+'_first',) if len(moving)==1 else ('left_first','right_first')
+                    search_failures=[]
+                    for attempt in range(1,3):
+                        if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
+                        failures=[];path=None;incomplete=False
+                        for order in orders:
+                            try:
+                                path=self.paths.joint_path(pack(q),pack(goal),order=order,timeout_s=30);break
+                            except DualArmError as exc:
+                                failures.append(str(exc))
+                                incomplete |= isinstance(exc,ProofIncompleteError) or 'time budget' in str(exc) or 'planning budget' in str(exc)
+                        if path is not None:break
+                        if not incomplete:raise DualArmError('; '.join(failures))
+                        search_failures.extend(failures)
+                        if attempt==2:
+                            self.planning_context['path_search_failure']=dict(
+                                kind='PATH_SEARCH_BUDGET_EXHAUSTED',attempt_rounds=attempt,
+                                orders=list(orders),per_search_timeout_s=30,errors=search_failures,
+                                goal_joints_deg={k:v.tolist() for k,v in goal.items()})
+                            raise DualArmError('PATH_SEARCH_BUDGET_EXHAUSTED: 路径搜索两轮仍未找到通过碰撞验证的完整路径；不是 IK 失败。'+ '; '.join(failures))
+                        print(f'路径搜索第 {attempt}/2 轮未完成，最后再试一轮（不是 IK 求解）：'+ '; '.join(failures),flush=True)
+                    for a,b in zip(path,path[1:]):
+                        operations.extend(('move',s) for s in self._segments(unpack(a),unpack(b)))
                 q=goal
             else:
                 for k in ('left','right'):
@@ -324,6 +345,9 @@ class NativeRuntime:
         A source statement alone is not a stop; grippers, arm switches and
         explicit arrival boundaries (Home/perception) are.
         """
+        if not getattr(self.config, 'path_validation_enabled', True):
+            self.plan_stats.update(path_validation='disabled_by_user',scope='all_collection',rrt=False)
+            return operations
         output=[];pending=[]
         for index,(kind,data) in enumerate(operations):
             if pending and (index in boundaries or kind!='move' or data.arm!=pending[-1][1].arm):
@@ -485,7 +509,12 @@ class NativeRuntime:
                 if kind=='move':
                     self.arrival(data.start)
                     c.event('astra_move_start',**data.to_dict())
-                    if hasattr(data,'segments'):
+                    if hasattr(data,'target_pose'):
+                        from .queued_motion import check_queued_feedback
+                        wait_operation(c,lambda s=data:c.connections[s.arm].move_tcp_position(
+                            s.target_pose,s.cartesian_speed,s.cartesian_acceleration,s.timeout),
+                            data.timeout,lambda s=data:check_queued_feedback(c,s))
+                    elif hasattr(data,'segments'):
                         from .queued_motion import check_queued_feedback
                         wait_operation(c,lambda s=data:c.connections[s.arm].move_joint_queue(s.segments),
                                        data.timeout,lambda s=data:check_queued_feedback(c,s))
@@ -524,6 +553,13 @@ class NativeRuntime:
                     wait_operation(c,command_gripper,
                                    self.config.arms[data['arm']].gripper.gripper_completion_timeout_s+1,
                                    lambda:self.arrival(target))
+                    if data.get('settle_s', 0):
+                        c.event('release_settle', seconds=data['settle_s'])
+                        deadline = time.monotonic() + data['settle_s']
+                        while time.monotonic() < deadline:
+                            if self.cancel.wait(min(.02, max(0., deadline-time.monotonic()))):
+                                raise DualArmError('cancelled during release settling')
+                            self.arrival(target)
                     branch=getattr(self,'auto_grasp_branch',None)
                     if branch and data['action']=='close':
                         from .auto_grasp_debug import close_evidence

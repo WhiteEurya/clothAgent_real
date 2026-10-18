@@ -31,11 +31,14 @@ def checked(result, label):
     return result[1] if isinstance(result, (tuple, list)) else result
 
 
-def world_twist(intent, speed_mm_s, yaw_deg_s):
+def world_twist(intent, speed_mm_s, yaw_deg_s, downward_gain=1.):
     if not intent.enabled or intent.stop:
         return np.zeros(6)
     linear = np.array([intent.forward, -intent.right, intent.up], dtype=float)
     linear *= speed_mm_s / max(1., np.linalg.norm(linear))
+    if linear[2] < 0:
+        linear[2] *= downward_gain
+        linear *= min(1., 15. / max(np.linalg.norm(linear), 1e-12))
     return np.r_[linear, 0., 0., intent.yaw * yaw_deg_s]
 
 
@@ -91,11 +94,20 @@ class CertifiedBox:
         return bool(np.all(joints - reach >= self.lower) and np.all(joints + reach <= self.upper))
 
 
-def certify_adaptive_box(q, static, config, models, max_speed, max_age, latency, certify):
+def certify_adaptive_box(q, static, config, models, max_speed, max_age, latency, certify, *, active_arm='right'):
     """Use the pipeline proof and workspace, reducing the candidate on failure."""
+    if active_arm not in ('left', 'right'):
+        raise ValueError('invalid active arm')
+    if not getattr(config, 'path_validation_enabled', True):
+        model = models[active_arm]
+        # Joint limits and expiring commands remain enforced. No geometric
+        # proof, collision bounds or recursive path subdivision is run.
+        return CertifiedBox(np.degrees(model.lower), np.degrees(model.upper),
+                            time.monotonic(), max_speed)
+    other_arm = 'left' if active_arm == 'right' else 'right'
     for radius in BOX_RADII_DEG:
-        low = {'left': static.copy(), 'right': q - radius}
-        high = {'left': static.copy(), 'right': q + radius}
+        low = {other_arm: static.copy(), active_arm: q - radius}
+        high = {other_arm: static.copy(), active_arm: q + radius}
         try:
             certify(low, high, config, models)
         except DualArmError:
@@ -104,7 +116,7 @@ def certify_adaptive_box(q, static, config, models, max_speed, max_age, latency,
             continue
         # Reserve room for validator refresh as well as a whole command lease.
         speed = min(max_speed, radius / (max_age + VELOCITY_DURATION + latency + .15))
-        return CertifiedBox(low['right'], high['right'], time.monotonic(), speed)
+        return CertifiedBox(low[active_arm], high[active_arm], time.monotonic(), speed)
 
 
 class HeldGripper:
@@ -132,19 +144,60 @@ class HeldGripper:
                              self.closed, self.opened))
 
 
+class SmoothHeldGripper:
+    """One endpoint command per press/direction; measured hold on release."""
+    continuous_goal = True
+
+    def __init__(self, closed, opened, rate):
+        if not 0 <= closed < opened <= 850 or not 0 < rate <= 5000:
+            raise ValueError('invalid gripper bounds/speed')
+        self.closed, self.opened, self.rate = closed, opened, rate
+        self.active = False
+        self.direction = None
+
+    def target(self, position, direction):
+        if not np.isfinite(position) or not self.closed-15 <= position <= self.opened+15:
+            raise DualArmError('gripper position is outside configured range')
+        if direction not in (None, 'open', 'close'):
+            raise ValueError('invalid held gripper direction')
+        if direction is None:
+            if not self.active:
+                return None
+            self.active = False
+            self.direction = None
+            return float(np.clip(position, self.closed, self.opened))
+        if self.active and self.direction == direction:
+            return None
+        self.active = True
+        self.direction = direction
+        return self.opened if direction == 'open' else self.closed
+
+
 class ContinuousArm7(Arm7Jogger):
+    arm_key = 'right'
+    other_key = 'left'
+    axis = 7
+    label = 'Arm7'
+    gripper_class = HeldGripper
+    max_gripper_rate = 200
+    position_hold_on_idle = False
+    downward_gain = 1.
+
     def _watch(self):
         # The legacy one-step watchdog ends a session on LB release. Continuous
         # control instead publishes zero and permits a fresh LB press to resume.
         pass
 
-    def __init__(self, config, output, guard, speed_mm_s=10., yaw_deg_s=5., gripper_rate=100., *, start_workers=True):
-        if not (0 < speed_mm_s <= 15 and 0 < yaw_deg_s <= 5 and 0 < gripper_rate <= 200):
+    def __init__(self, config, output, guard, speed_mm_s=10., yaw_deg_s=5., gripper_rate=100., *, start_workers=True, runtime=None):
+        if not (0 < speed_mm_s <= 15 and 0 < yaw_deg_s <= 5 and 0 < gripper_rate <= self.max_gripper_rate):
             raise ValueError('invalid continuous teleoperation rates')
         self.workers = []
         self.gripper_api = None
         self.gripper = None
         self.mode_entered = False
+        self.motion_started = False
+        self.idle_joints = None
+        self.idle_pose = None
         self.transitioning = threading.Event()
         self.activation_lock = threading.Lock()
         self.failure = None
@@ -157,32 +210,45 @@ class ContinuousArm7(Arm7Jogger):
         self.velocity_active = False
         self.status = None
         self.bounds_available = False
-        super().__init__(config, output, guard)
+        super().__init__(config, output, guard, runtime=runtime)
         try:
             from .dual_arm.kinematics import ArmModel
             from xarm.wrapper import XArmAPI
-            self.connection = self.runtime.coordinator.connections['right']
+            self.connection = self.runtime.coordinator.connections[self.arm_key]
             self.arm = self.connection.arm
             self.fast = self.connection._report_arm
+            if self.owns_runtime and self.runtime.config.home_recover_stopped and start_workers:
+                self.connection.prepare_position()
             if tuple(self.arm.version_number) < (1, 8, 0):
                 raise DualArmError('continuous control requires firmware with expiring velocity commands (>=1.8.0)')
-            self.model = ArmModel(self.runtime.config.arms['right'])
+            self.model = ArmModel(self.runtime.config.arms[self.arm_key])
             self.speed_mm_s = min(speed_mm_s, self.runtime.config.limits['cartesian_speed_mm_s'])
             self.yaw_deg_s = yaw_deg_s
             self.max_speed = min(self.runtime.config.limits['joint_speed_deg_s'],
-                self.runtime.config.raw['safety']['arms']['right']['max_joint_speed_deg_s'])
+                self.runtime.config.raw['safety']['arms'][self.arm_key]['max_joint_speed_deg_s'])
             self.acceleration = self.runtime.config.limits['joint_accel_deg_s2']
             self.max_age = self.runtime.config.raw['safety']['max_feedback_age_s']
             self.latency = self.runtime.config.raw['safety']['stop_command_latency_s']
-            self.static = np.asarray(self.runtime.config.static_arm_obstacles['left']['joint_angles_deg'])
-            self.gripper_api = XArmAPI(self.runtime.config.arms['right'].ip, is_radian=False)
-            grip = self.runtime.config.arms['right'].gripper
-            self.gripper = HeldGripper(grip.gripper_close, grip.gripper_open, gripper_rate)
+            parked = getattr(self.runtime.config, 'static_arm_obstacles', {}).get(self.other_key)
+            self.other_connection = None if parked is not None else self.runtime.coordinator.connections[self.other_key]
+            self.static = np.asarray(parked['joint_angles_deg'] if parked is not None
+                else self.other_connection.snapshot()['joints'])
+            self.gripper_api = XArmAPI(self.runtime.config.arms[self.arm_key].ip, is_radian=False)
+            grip = self.runtime.config.arms[self.arm_key].gripper
+            self.gripper = self.gripper_class(grip.gripper_close, grip.gripper_open, gripper_rate)
             (self.output / 'continuous_config.json').write_text(json.dumps(dict(
+                arm=self.arm_key, robot=self.label, axis=self.axis,
+                robot_ip=self.runtime.config.arms[self.arm_key].ip,
+                control_frame='world',
                 command_period_s=PERIOD, velocity_duration_s=VELOCITY_DURATION,
                 speed_mm_s=self.speed_mm_s, yaw_deg_s=yaw_deg_s,
                 joint_speed_deg_s=self.max_speed, gripper_rate=gripper_rate,
+                gripper_control=('hold_to_run_endpoint' if getattr(self.gripper,'continuous_goal',False)
+                                 else 'bounded_lookahead'),
                 box_radius_deg=BOX_RADIUS_DEG, adaptive_box_radii_deg=BOX_RADII_DEG,
+                path_validation_enabled=getattr(self.runtime.config,'path_validation_enabled',True),
+                position_hold_on_idle=self.position_hold_on_idle,
+                downward_gain=self.downward_gain,
                 commissioning_verified=False), indent=2))
             self.control_heartbeat = self.gripper_heartbeat = time.monotonic()
             jobs = [('bounds', self._validate_loop), ('velocity', self._control_loop),
@@ -213,10 +279,19 @@ class ContinuousArm7(Arm7Jogger):
         # prevent attempting the arm STOP. Firmware expiry remains a fallback.
         try:
             with self.activation_lock:
-                if self.mode_entered:
+                if self.mode_entered or getattr(self, 'motion_started', False):
                     checked(self.fast.set_state(4), 'emergency stop')
         except Exception as exc:
             print(f'停止请求未确认：{exc}', flush=True)
+        if self.gripper is not None and self.gripper.active and getattr(self.gripper,'continuous_goal',False):
+            try:
+                # Use the independent report transport if the gripper worker
+                # is stuck; STOP alone does not stop this gripper's motor.
+                position = checked(self.fast.get_gripper_position(), 'fault gripper position')
+                checked(self.fast.set_gripper_position(position, wait=False,
+                            wait_motion=False, auto_enable=False), 'fault gripper hold')
+            except Exception as exc:
+                print(f'夹爪故障保持请求未确认：{exc}', flush=True)
         self.runtime.coordinator.event('teleop_failure', reason=reason)
 
     def check_health(self):
@@ -241,22 +316,42 @@ class ContinuousArm7(Arm7Jogger):
         return intent, generation
 
     def _feedback(self):
+        self._check_other_arm()
         if not self.arm.connected or not self.fast.connected:
-            raise DualArmError('Arm7 disconnected')
+            raise DualArmError(f'{self.label} disconnected')
         # Fast packets contain state/joints/TCP, but error/warning fields come
         # from the normal report channel (not the real-time packet format).
         if self.arm.error_code or self.arm.warn_code or (self.fast.state not in (0, 1, 2)
                                                          and not self.transitioning.is_set()):
-            raise DualArmError(f'Arm7 fault/state {self.fast.state}, {self.arm.error_code}, {self.arm.warn_code}')
+            raise DualArmError(f'{self.label} fault/state {self.fast.state}, {self.arm.error_code}, {self.arm.warn_code}')
         with self.connection._report_lock:
             report = self.connection._latest_report
             if report is None:
                 raise DualArmError('no coherent feedback')
             joints, pose, sampled = report
-            q, pose = np.asarray(joints[:7], dtype=float), np.asarray(pose, dtype=float)
+            q, pose = np.asarray(joints[:self.axis], dtype=float), np.asarray(pose, dtype=float)
         if not np.isfinite(q).all() or not 0 <= time.monotonic() - sampled <= self.max_age:
-            raise DualArmError('stale or invalid Arm7 feedback')
+            raise DualArmError(f'stale or invalid {self.label} feedback')
         return q, pose, sampled
+
+    def _check_other_arm(self):
+        # A live inactive arm must remain at the posture used in the proofs.
+        other = getattr(self, 'other_connection', None)
+        if other is None:
+            return
+        if (not other.arm.connected or not other._report_arm.connected
+                or other.arm.error_code or other.arm.warn_code
+                or other._report_arm.state not in (0, 2)):
+            raise DualArmError('inactive arm is disconnected, moving or faulted')
+        with other._report_lock:
+            report = other._latest_report
+        if report is None:
+            raise DualArmError('inactive arm feedback missing')
+        joints, _, sampled = report
+        q = np.asarray(joints[:len(self.static)], dtype=float)
+        if (not np.isfinite(q).all() or not 0 <= time.monotonic()-sampled <= self.max_age
+                or np.max(np.abs(q-self.static)) > self.runtime.config.limits['stationary_tolerance_deg']):
+            raise DualArmError('inactive arm moved or feedback expired')
 
     def _validate_loop(self):
         from .dual_arm.sequential_home import certify_segment
@@ -269,7 +364,7 @@ class ContinuousArm7(Arm7Jogger):
                 with search_proof_budget(.15):
                     zone = certify_adaptive_box(q, self.static, self.runtime.config,
                         self.runtime.models, self.max_speed, self.max_age, self.latency,
-                        certify_segment)
+                        certify_segment, active_arm=self.arm_key)
             except DualArmError as exc:
                 zone = None
                 message = f'等待可验证的运动范围：{str(exc)[:180]}'
@@ -306,7 +401,7 @@ class ContinuousArm7(Arm7Jogger):
         # Only from an already ready, stationary controller. No fault clearing
         # or motor enabling. set_state(0) completes the explicit mode switch.
         if checked(self.arm.get_state(), 'state') not in (0, 2):
-            raise DualArmError('Arm7 must be ready before entering velocity mode')
+            raise DualArmError(f'{self.label} must be ready before entering velocity mode')
         if list(checked(self.arm.get_err_warn_code(), 'errors')) != [0, 0]:
             raise DualArmError('cannot enter velocity mode with faults')
         if self.arm.get_is_moving() or checked(self.arm.get_cmdnum(), 'queue') != 0:
@@ -317,27 +412,79 @@ class ContinuousArm7(Arm7Jogger):
                 if self.runtime.cancel.is_set() or self.closed.is_set():
                     raise DualArmError('cancelled before velocity mode switch')
                 self.mode_entered = True  # even a failed switch must be cleaned up
+                self.motion_started = True
+                self.idle_joints = self.idle_pose = None
                 checked(self.arm.set_mode(4), 'joint velocity mode')
                 if self.runtime.cancel.is_set() or self.closed.is_set():
                     raise DualArmError('cancelled during velocity mode switch')
                 checked(self.arm.set_state(0), 'activate velocity mode')
-                checked(self.arm.vc_set_joint_velocity([0.]*7, is_radian=False, duration=VELOCITY_DURATION), 'initial zero velocity')
-                deadline = time.monotonic() + .2
-                while self.fast.mode != 4 or self.fast.state not in (0, 1, 2):
-                    if time.monotonic() > deadline or self.runtime.cancel.is_set():
+                deadline = time.monotonic() + 1.
+                # The command SDK and fast feedback SDK have independent
+                # report caches. Confirm both before issuing velocity commands.
+                while (self.fast.mode != 4 or self.arm.mode != 4
+                       or self.fast.state not in (0, 1, 2)):
+                    if time.monotonic() > deadline or self.runtime.cancel.is_set() or self.closed.is_set():
                         raise DualArmError('velocity mode transition not confirmed')
                     time.sleep(.005)
+                checked(self.arm.vc_set_joint_velocity([0.]*self.axis, is_radian=False, duration=VELOCITY_DURATION), 'initial zero velocity')
             finally:
+                self.control_heartbeat = time.monotonic()
                 self.transitioning.clear()
 
+    def _hold_position_mode(self):
+        """End velocity control on release; never treat zero ACK as proof of rest."""
+        with self.activation_lock:
+            self.transitioning.set()
+            try:
+                if self.runtime.cancel.is_set() or self.closed.is_set():
+                    return
+                checked(self.arm.vc_set_joint_velocity([0.]*self.axis, is_radian=False,
+                    is_sync=True, duration=VELOCITY_DURATION), 'idle zero velocity')
+                if self.closed.wait(VELOCITY_DURATION + self.latency):
+                    return
+                if self.runtime.cancel.is_set():
+                    return
+                if list(checked(self.arm.get_err_warn_code(), 'idle faults')) != [0,0]:
+                    raise DualArmError('cannot enter position hold with faults')
+                if checked(self.arm.get_state(), 'idle state') not in (0,1,2):
+                    raise DualArmError('cannot enter position hold from stopped state')
+                checked(self.arm.set_mode(0), 'idle position hold mode')
+                if self.runtime.cancel.is_set() or self.closed.is_set():
+                    return
+                checked(self.arm.set_state(0), 'activate idle position hold')
+                deadline = time.monotonic() + 1.
+                while self.fast.mode != 0 or self.arm.mode != 0 or self.fast.state not in (0,2):
+                    if self.runtime.cancel.is_set() or self.closed.is_set() or time.monotonic()>deadline:
+                        raise DualArmError('idle position hold not confirmed')
+                    time.sleep(.01)
+                self.mode_entered = False
+                self.velocity_active = False
+                q, pose, _ = self._feedback()
+                self.idle_joints, self.idle_pose = q.copy(), pose.copy()
+                self.runtime.coordinator.event('teleop_idle_position_hold',
+                    joints_deg=q.tolist(), tcp_mm_deg=pose.tolist())
+            finally:
+                self.control_heartbeat = time.monotonic()
+                self.transitioning.clear()
+
+    def _check_idle_hold(self, q, pose):
+        anchor = getattr(self, 'idle_joints', None)
+        if self.mode_entered or anchor is None:
+            return
+        distance, angle = pose_error(pose, self.idle_pose)
+        if self.fast.mode != 0 or np.max(np.abs(q-anchor)) > .1 or distance > 1. or angle > .2:
+            raise DualArmError(f'idle position drift detected; stopping {self.label}')
+
     def _control_loop(self):
-        previous = np.zeros(7)
+        previous = np.zeros(self.axis)
         last = time.monotonic()
         logged = last
         while not self.closed.is_set() and not self.runtime.cancel.is_set():
             began = time.monotonic()
             intent, generation = self._input()
             q, pose, sampled = self._feedback()
+            if self.position_hold_on_idle:
+                self._check_idle_hold(q, pose)
             if self.mode_entered and self.fast.mode != 4:
                 raise DualArmError('controller mode changed externally')
             distance, angle = pose_error(pose, self.model.forward(q))
@@ -350,15 +497,20 @@ class ContinuousArm7(Arm7Jogger):
                 lease_speed, self.max_age, self.latency)
             self.bounds_available = allowed
             dt = min(began - last, .05)
-            target = np.zeros(7)
+            target = np.zeros(self.axis)
             if allowed and intent.enabled and intent.moving and not intent.stop:
-                twist = world_twist(intent, self.speed_mm_s, self.yaw_deg_s)
-                target = velocity_ik(self.model, q, self.runtime.config.arms['right'].world_from_base,
+                twist = world_twist(intent, self.speed_mm_s, self.yaw_deg_s, self.downward_gain)
+                target = velocity_ik(self.model, q, self.runtime.config.arms[self.arm_key].world_from_base,
                                      twist, min(self.max_speed, zone.speed_limit))
                 target = slew(previous, target, max(.001, dt), self.acceleration)
                 peak = float(np.max(np.abs(target)))
                 target *= min(1., zone.speed_limit / max(peak, 1e-12))
+                entering = not self.mode_entered
                 self._enter_mode()
+                if entering:
+                    # Mode acknowledgement can outlive the feedback age limit.
+                    # Do not reuse the pre-switch sample and immediately stop.
+                    q, pose, sampled = self._feedback()
             # A fresh input check after computation prevents an old direction
             # from being issued after LB was released/repressed meanwhile.
             live, token = self._input()
@@ -367,6 +519,12 @@ class ContinuousArm7(Arm7Jogger):
             if intent.moving != live.moving or any(abs(getattr(intent, k)-getattr(live, k)) > .15
                     for k in ('forward', 'right', 'up', 'yaw')):
                 target[:] = 0
+                if (self.position_hold_on_idle and allowed and token == generation
+                        and live.enabled and live.moving and not live.stop):
+                    target = slew(previous, velocity_ik(self.model, q,
+                        self.runtime.config.arms[self.arm_key].world_from_base,
+                        world_twist(live, self.speed_mm_s, self.yaw_deg_s, self.downward_gain),
+                        min(self.max_speed, zone.speed_limit)), max(.001, dt), self.acceleration)
             if self.mode_entered:
                 if self.runtime.cancel.is_set() or self.closed.is_set():
                     break
@@ -379,6 +537,8 @@ class ContinuousArm7(Arm7Jogger):
                 if np.any(target):
                     with self.zone_lock:
                         self.velocity_history.append((time.monotonic(), float(np.max(np.abs(target)))))
+                elif self.position_hold_on_idle and (not live.enabled or not live.moving or live.stop):
+                    self._hold_position_mode()
             previous = target
             self.velocity_active = bool(np.any(target))
             self.control_heartbeat = time.monotonic()
@@ -410,7 +570,10 @@ class ContinuousArm7(Arm7Jogger):
                     if not initialized and direction:
                         checked(api.set_gripper_mode(0), 'gripper mode')
                         checked(api.set_gripper_enable(True), 'gripper enable')
-                        checked(api.set_gripper_speed(self.runtime.config.arms['right'].gripper.gripper_speed), 'gripper speed')
+                        speed = self.runtime.config.arms[self.arm_key].gripper.gripper_speed
+                        if getattr(self.gripper, 'continuous_goal', False):
+                            speed = self.gripper.rate
+                        checked(api.set_gripper_speed(speed), 'gripper speed')
                         initialized = True
                     position = checked(api.get_gripper_position(), 'gripper position')
                     live, token = self._input()
@@ -445,12 +608,62 @@ class ContinuousArm7(Arm7Jogger):
         # alive until close so it can replace its short lookahead by a hold.
         if hasattr(self, 'runtime'):
             self.runtime.cancel.set()
-        if self.mode_entered:
+        if self.mode_entered or getattr(self, 'motion_started', False):
             try:
                 with self.activation_lock:
-                    checked(self.fast.set_state(4), 'stop Arm7')
+                    checked(self.fast.set_state(4), f'stop {self.label}')
             except Exception as exc:
                 print(f'停止请求未确认：{exc}', flush=True)
+
+    def handoff(self):
+        """End an explicitly confirmed manual stage without issuing STOP.
+
+        The caller must publish a disabled intent before calling. A failure
+        leaves the session cancelled; it must never resume automatically.
+        """
+        try:
+            self.check_health()
+            intent, _, _ = self.guard.snapshot()
+            if intent.enabled or intent.moving or intent.gripper or intent.stop:
+                raise DualArmError('handoff requires neutral disabled input')
+            self.closed.set()
+            for worker in self.workers:
+                worker.join(timeout=2)
+            if any(worker.is_alive() for worker in self.workers):
+                raise DualArmError('teleop worker did not finish; handoff blocked')
+            self.check_health()
+            if self.runtime.cancel.is_set():
+                raise DualArmError('cancelled handoff')
+            if self.mode_entered:
+                checked(self.arm.vc_set_joint_velocity([0.]*self.axis, is_radian=False,
+                            duration=VELOCITY_DURATION), 'handoff zero velocity')
+            position = checked(self.gripper_api.get_gripper_position(), 'handoff gripper position')
+            checked(self.gripper_api.set_gripper_position(position, wait=False,
+                        wait_motion=False, auto_enable=False), 'handoff gripper hold')
+            # Observe fresh, stable feedback after the final velocity lease.
+            time.sleep(VELOCITY_DURATION + self.latency)
+            previous = self._feedback()[0]
+            for _ in range(5):
+                time.sleep(.04)
+                current = self._feedback()[0]
+                if np.max(np.abs(current - previous)) > .05:
+                    raise DualArmError(f'{self.label} still moving at handoff')
+                previous = current
+            if self.mode_entered:
+                checked(self.arm.set_mode(0), 'handoff position mode')
+                checked(self.arm.set_state(0), 'activate position mode')
+                deadline = time.monotonic() + 1
+                while self.fast.mode != 0 or self.fast.state not in (0, 2):
+                    if time.monotonic() > deadline:
+                        raise DualArmError('position mode handoff not confirmed')
+                    time.sleep(.01)
+            self.runtime.prepared = False
+            self.gripper_api.disconnect()
+            self.gripper_api = None
+            self.runtime.coordinator.event('teleop_handoff_complete')
+        except BaseException:
+            self.stop()
+            raise
 
     def close(self):
         self.stop()
@@ -473,3 +686,25 @@ class ContinuousArm7(Arm7Jogger):
                 checked(self.arm.set_mode(0), 'restore position mode')
         finally:
             super().close()
+
+
+class ContinuousArm6(ContinuousArm7):
+    """Six-axis control, standalone or sharing an Arm6 collection runtime."""
+    arm_key = 'left'
+    other_key = 'right'
+    axis = 6
+    label = 'Arm6'
+    recover_stopped_on_start = True
+    gripper_class = SmoothHeldGripper
+    max_gripper_rate = 5000
+    position_hold_on_idle = True
+    downward_gain = 1.5
+
+    def _create_runtime(self, config):
+        from .gamepad_collect_runtime import CollectionRuntime
+        return CollectionRuntime(config)
+
+    def __init__(self, *args, runtime=None, **kwargs):
+        if runtime is not None and getattr(runtime, 'active_arms', ()) != ('left',):
+            raise ValueError('Arm6 teleoperation requires an Arm6 runtime')
+        super().__init__(*args, runtime=runtime, **kwargs)

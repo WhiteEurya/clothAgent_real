@@ -271,3 +271,12 @@ def test_jog_connects_only_arm7_with_parked_arm6(tmp_path, monkeypatch):
     reference.write_text(json.dumps({'arm': 'left', 'joint_angles_deg': [1, 2]}))
     with pytest.raises(DualArmError, match='invalid arm6'):
         runtime.load_config('fake')
+
+
+def test_standalone_cli_defaults_to_arm6_and_requires_explicit_arm7(monkeypatch):
+    from cloth_agent import gamepad_teleop
+    selected = []
+    monkeypatch.setattr(gamepad_teleop, 'run', lambda args: selected.append(args.arm) or 0)
+    gamepad_teleop.main(['--real'])
+    gamepad_teleop.main(['--arm', 'arm7', '--real'])
+    assert selected == ['arm6', 'arm7']

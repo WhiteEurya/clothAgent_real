@@ -73,6 +73,7 @@ def test_display_reports_bounds_block_instead_of_input_running():
 
 def controller():
     obj = object.__new__(ContinuousArm7)
+    obj.owns_runtime = True
     obj.closed = threading.Event()
     obj.guard = InputGuard()
     obj.guard.update(Intent(forward=1, enabled=True))
@@ -289,3 +290,271 @@ def test_gripper_never_moves_without_certified_bounds():
     finally:
         obj.closed.set();thread.join(1)
     assert calls == []
+
+
+def test_arm6_box_moves_six_left_joints_and_keeps_seven_right_joints():
+    visited = []
+    def certify(low, high, config, models):
+        visited.append((low, high))
+    box = certify_adaptive_box(np.zeros(6), np.arange(7.), None, None,
+                              5, .1, .05, certify, active_arm='left')
+    low, high = visited[0]
+    assert low['left'].shape == (6,) and high['left'].shape == (6,)
+    assert low['right'] == pytest.approx(np.arange(7.))
+    assert high['right'] == pytest.approx(np.arange(7.))
+    assert box.lower.shape == (6,)
+
+
+def test_arm6_velocity_loop_dispatches_six_axis_commands():
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    obj = controller()
+    obj.__class__ = ContinuousArm6
+    obj.runtime.config.arms['left'] = obj.runtime.config.arms.pop('right')
+    obj._feedback = lambda: (np.zeros(6), np.zeros(6), time.monotonic())
+    obj.zone = CertifiedBox(np.full(6, -2.), np.full(6, 2.), time.monotonic())
+    seen = []
+    def send(velocity, **kwargs):
+        seen.append(velocity); obj.closed.set(); return 0
+    obj.arm = SimpleNamespace(vc_set_joint_velocity=send)
+    obj._control_loop()
+    assert len(seen) == 1 and len(seen[0]) == 6
+    assert seen[0][0] > 0
+
+
+def test_live_inactive_arm_drift_or_stale_feedback_blocks_arm6():
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    obj = object.__new__(ContinuousArm6)
+    obj.max_age = .1; obj.static = np.zeros(7)
+    obj.runtime = SimpleNamespace(config=SimpleNamespace(limits={'stationary_tolerance_deg': .1}))
+    other = SimpleNamespace(arm=SimpleNamespace(connected=True, error_code=0, warn_code=0),
+        _report_arm=SimpleNamespace(connected=True, state=0), _report_lock=threading.Lock(),
+        _latest_report=(np.zeros(7), None, time.monotonic()))
+    obj.other_connection = other
+    obj._check_other_arm()
+    other._latest_report = (np.ones(7), None, time.monotonic())
+    with pytest.raises(DualArmError, match='inactive arm moved'):
+        obj._check_other_arm()
+    other._latest_report = (np.zeros(7), None, time.monotonic()-1)
+    with pytest.raises(DualArmError, match='expired'):
+        obj._check_other_arm()
+
+
+def test_collection_manual_control_uses_joint_limits_without_collision_proof():
+    model = SimpleNamespace(lower=np.full(6, -1.), upper=np.full(6, 1.))
+    def forbidden(*a): pytest.fail('collision proof must not run')
+    zone = certify_adaptive_box(np.zeros(6), np.zeros(7),
+        SimpleNamespace(path_validation_enabled=False), {'left': model}, 5, .1, .05,
+        forbidden, active_arm='left')
+    now = time.monotonic()
+    assert zone.permits(np.zeros(6), now, now, 5, .1, .05)
+    assert not zone.permits(np.degrees(model.upper), now, now, 5, .1, .05)
+
+
+def test_standalone_arm6_connects_only_six_axis_controller(monkeypatch, tmp_path):
+    import json
+    from xarm import wrapper
+    from cloth_agent.dual_arm import cli
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    opened = []; writes = []
+    class Connection:
+        simulated = False
+        def __init__(self, config, cancel, **kwargs):
+            opened.append((config.arm_id, config.axis, config.ip))
+            self.arm = SimpleNamespace(version_number=(2,5,1), connected=True)
+            self._report_arm = self.arm
+        def prepare_position(self): writes.append('prepare')
+        def disconnect(self): pass
+    class Gripper:
+        def __init__(self, ip, **kwargs): opened.append(('gripper', ip))
+        def disconnect(self): pass
+    monkeypatch.setattr('cloth_agent.gamepad_arm7.fcntl.flock', lambda *args: None)
+    monkeypatch.setattr(cli, 'XArmConnection', Connection)
+    monkeypatch.setattr(wrapper, 'XArmAPI', Gripper)
+    backend = ContinuousArm6('config/dual_arm.local.json', tmp_path/'manual', InputGuard(),
+                             start_workers=False)
+    try:
+        assert opened == [('left', 6, '192.168.2.232'), ('gripper', '192.168.2.232')]
+        assert writes == []  # --connect-only stays read-only.
+        assert backend.axis == 6 and backend.model.config.axis == 6
+        assert backend.other_connection is None
+        report = json.loads((tmp_path/'manual/continuous_config.json').read_text())
+        assert report['arm'] == 'left' and report['axis'] == 6
+        assert report['robot_ip'] == '192.168.2.232'
+    finally:
+        backend.close()
+
+
+def test_arm6_smooth_gripper_does_not_restart_held_motion():
+    from cloth_agent.gamepad_continuous import SmoothHeldGripper
+    grip = SmoothHeldGripper(5, 850, 500)
+    assert grip.target(800, 'close') == 5
+    for position in (795, 770, 700, 676, 676, 676):
+        assert grip.target(position, 'close') is None
+    assert grip.target(676, None) == 676
+    assert grip.target(676, None) is None
+    assert grip.target(676, 'close') == 5
+    assert grip.target(670, 'open') == 850
+    assert grip.target(680, 'open') is None
+    assert grip.target(690, None) == 690
+
+
+@pytest.mark.parametrize('speed', [300, 2000, 5000])
+def test_arm6_smooth_loop_uses_sdk_speed_and_holds_on_release(speed):
+    from cloth_agent.gamepad_continuous import SmoothHeldGripper
+    obj = controller()
+    obj.gripper = SmoothHeldGripper(5, 850, speed)
+    obj.guard.update(Intent(gripper='close', enabled=True))
+    targets = []; speeds = []
+    def send(value, **kwargs):
+        assert kwargs['wait'] is False and kwargs['wait_motion'] is False
+        targets.append(value)
+        if len(targets) == 1:
+            obj.guard.update(Intent())  # LB released.
+        else:
+            obj.closed.set()
+        return 0
+    obj.gripper_api = SimpleNamespace(set_gripper_mode=lambda _:0,
+        set_gripper_enable=lambda _:0,set_gripper_speed=lambda v:speeds.append(v) or 0,
+        get_gripper_position=lambda:(0,650),set_gripper_position=send)
+    obj._gripper_loop()
+    assert targets == [5,650]
+    assert speeds == [speed]
+
+
+def test_smooth_gripper_fault_requests_independent_hold():
+    from cloth_agent.gamepad_continuous import SmoothHeldGripper
+    obj = controller(); obj.failure = None; obj.failure_lock = threading.Lock()
+    obj.mode_entered = False
+    obj.gripper = SmoothHeldGripper(5,850,500)
+    obj.gripper.target(600,'close')
+    targets = []
+    obj.fast = SimpleNamespace(get_gripper_position=lambda:(0,570),
+        set_gripper_position=lambda value, **kw:targets.append(value) or 0)
+    obj._fail('input heartbeat expired')
+    assert targets == [570]
+    assert obj.runtime.cancel.is_set()
+
+
+def test_arm6_idle_switches_to_position_hold_and_checks_drift():
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    obj = controller(); obj.__class__ = ContinuousArm6
+    obj.activation_lock = threading.Lock(); obj.transitioning = threading.Event()
+    obj.fast = SimpleNamespace(mode=4, state=0)
+    obj._feedback = lambda: (np.zeros(6), np.zeros(6), time.monotonic())
+    calls = []
+    def mode(value):
+        calls.append(('mode', value)); obj.fast.mode = value; obj.arm.mode = value
+        return 0
+    obj.arm = SimpleNamespace(
+        vc_set_joint_velocity=lambda values, **kw: calls.append(('velocity', values)) or 0,
+        get_err_warn_code=lambda: (0, [0,0]), get_state=lambda: (0,0),
+        set_mode=mode, set_state=lambda value: calls.append(('state', value)) or 0)
+    obj._hold_position_mode()
+    assert calls == [('velocity', [0.]*6), ('mode', 0), ('state', 0)]
+    assert not obj.mode_entered and not obj.transitioning.is_set()
+    obj._check_idle_hold(np.zeros(6), np.zeros(6))
+    pose = np.zeros(6); pose[2] = -1.1
+    with pytest.raises(DualArmError, match='drift'):
+        obj._check_idle_hold(np.zeros(6), pose)
+    with pytest.raises(DualArmError, match='drift'):
+        obj._check_idle_hold(np.ones(6)*.11, np.zeros(6))
+
+
+@pytest.mark.parametrize('intent', [Intent(), Intent(enabled=True, gripper='close')])
+def test_arm6_no_motion_input_enters_hold_even_while_closing_gripper(intent):
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    obj = controller(); obj.__class__ = ContinuousArm6
+    obj._feedback = lambda: (np.zeros(6), np.zeros(6), time.monotonic())
+    obj.zone = CertifiedBox(np.full(6,-2.), np.full(6,2.), time.monotonic())
+    obj.guard.update(intent)
+    calls = []
+    obj.arm = SimpleNamespace(vc_set_joint_velocity=lambda values, **kw:
+        calls.append(values) or 0)
+    def hold():
+        calls.append('hold'); obj.closed.set()
+    obj._hold_position_mode = hold
+    obj._control_loop()
+    assert calls == [[0.]*6, 'hold']
+
+
+def test_drift_failure_stops_arm_after_leaving_velocity_mode():
+    obj = controller(); obj.mode_entered = False; obj.motion_started = True
+    obj.failure = None; obj.failure_lock = threading.Lock()
+    obj.activation_lock = threading.Lock()
+    calls = []
+    obj.fast = SimpleNamespace(set_state=lambda value: calls.append(value) or 0)
+    obj._fail('idle position drift')
+    assert calls == [4]
+    assert obj.runtime.cancel.is_set()
+
+
+def test_velocity_waits_for_command_connection_mode_before_dispatch(monkeypatch):
+    obj = controller(); obj.mode_entered = False
+    obj.activation_lock = threading.Lock(); obj.transitioning = threading.Event()
+    obj.fast = SimpleNamespace(mode=4, state=0)
+    calls = []
+    obj.arm = SimpleNamespace(mode=0, get_state=lambda:(0,0),
+        get_err_warn_code=lambda:(0,[0,0]), get_is_moving=lambda:False,
+        get_cmdnum=lambda:(0,0), set_mode=lambda _:0, set_state=lambda _:0)
+    def velocity(*args, **kwargs):
+        assert obj.arm.mode == obj.fast.mode == 4
+        calls.append('velocity'); return 0
+    obj.arm.vc_set_joint_velocity = velocity
+    def report_update(_):
+        assert not calls
+        calls.append('report')
+        obj.arm.mode = 4
+    monkeypatch.setattr('cloth_agent.gamepad_continuous.time.sleep', report_update)
+    del obj._enter_mode
+    obj._enter_mode()
+    assert calls == ['report', 'velocity']
+    assert not obj.transitioning.is_set()
+
+
+@pytest.mark.parametrize('case', ['mode_latency', 'changing_stick', 'temporary_zero'])
+def test_arm6_active_motion_does_not_cycle_position_mode(case):
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    obj = controller(); obj.__class__ = ContinuousArm6
+    obj.runtime.config.arms['left'] = obj.runtime.config.arms.pop('right')
+    obj.zone = CertifiedBox(np.full(6,-2.), np.full(6,2.), time.monotonic())
+    count = 0
+    def feedback():
+        nonlocal count
+        count += 1
+        if case == 'changing_stick':
+            obj.guard.update(Intent(forward=.5, enabled=True))
+        return np.zeros(6), np.zeros(6), time.monotonic()
+    obj._feedback = feedback
+    if case == 'mode_latency':
+        obj.mode_entered = False
+        def enter():
+            time.sleep(.11)
+            obj.guard.update(Intent(forward=1, enabled=True))
+            obj.mode_entered = True
+        obj._enter_mode = enter
+    if case == 'temporary_zero':
+        obj.zone = None
+    obj._hold_position_mode = lambda: pytest.fail('active input must not switch to position mode')
+    sent = []
+    def send(values, **kwargs):
+        sent.append(values); obj.closed.set(); return 0
+    obj.arm = SimpleNamespace(vc_set_joint_velocity=send)
+    obj._control_loop()
+    if case == 'temporary_zero':
+        assert sent == [[0.]*6]
+    else:
+        assert sent[0][0] > 0
+    if case == 'mode_latency':
+        assert count == 2
+
+
+def test_arm6_downward_gain_preserves_up_and_caps_combined_speed():
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    gain = ContinuousArm6.downward_gain
+    down = world_twist(Intent(up=-1,enabled=True),10,5,gain)
+    up = world_twist(Intent(up=1,enabled=True),10,5,gain)
+    assert down[2] == -15
+    assert up[2] == 10
+    combined = world_twist(Intent(up=-1,forward=1,enabled=True),15,5,gain)
+    assert np.linalg.norm(combined[:3]) <= 15 + 1e-9
+    assert world_twist(Intent(up=-1,enabled=False),10,5,gain).tolist() == [0.]*6

@@ -311,3 +311,27 @@ def test_home_open_failure_prevents_all_motion(scene,monkeypatch):
         assert result['status']=='FAILED'
         assert all(not any(cmd[0]=='position' for cmd in c.commands) for c in scene.connections.values())
     finally:c.close()
+
+
+@pytest.mark.parametrize('fault', [False, True])
+def test_stopped_velocity_mode_recovers_to_position_without_clearing_faults(fault):
+    c=object.__new__(XArmConnection)
+    c.cancel=threading.Event(); c.recover_stopped=True; c.snapshot=lambda:{}
+    state=[4]; commands=[]
+    def set_mode(mode):
+        commands.append(('mode',mode));c.arm.mode=mode;return 0
+    def set_state(value):
+        commands.append(('state',value));state[0]=value;return 0
+    c.arm=SimpleNamespace(mode=4,get_state=lambda:(0,state[0]),
+        get_is_moving=lambda:False,get_cmdnum=lambda:(0,0),
+        get_err_warn_code=lambda:(0,[1 if fault else 0,0]),
+        set_mode=set_mode, set_state=set_state,
+        motion_enable=lambda **kw:commands.append(('enable',True)) or 0,
+        set_gripper_mode=lambda n:0,set_gripper_enable=lambda n:0)
+    if fault:
+        with pytest.raises(DualArmError):c.prepare_position()
+        assert commands==[]
+    else:
+        c.prepare_position()
+        assert commands==[('mode',0),('enable',True),('state',0)]
+        assert not c.recover_stopped

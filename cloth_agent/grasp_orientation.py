@@ -5,11 +5,11 @@ from scipy.spatial.transform import Rotation
 from .codex_motion import parse_code
 
 
-def nearest_grasp_orientation(source, reference_world_rotation, *, prefer_ccw=False):
+def nearest_grasp_orientation(source, reference_world_rotation, *, prefer_ccw=False, arm='right'):
     calls=parse_code(source,allow_grasp=True)
-    if calls[0][0]!='grasp' or set(calls[0][1])!={'right'}:return source,None
+    if calls[0][0]!='grasp' or set(calls[0][1])!={arm}:return source,None
     reference=Rotation.from_matrix(reference_world_rotation)
-    grasp=Rotation.from_euler('xyz',calls[0][1]['right'][3:])
+    grasp=Rotation.from_euler('xyz',calls[0][1][arm][3:])
     flip=Rotation.from_rotvec([0,0,np.pi])
     original=(reference.inv()*grasp).magnitude()
     alternative=(reference.inv()*grasp*flip).magnitude()
@@ -33,7 +33,7 @@ def nearest_grasp_orientation(source, reference_world_rotation, *, prefer_ccw=Fa
     if not changed:return source,report
     tree=ast.parse(source)
     for node,(_,args) in zip(tree.body,calls):
-        pose=list(args['right'])
+        pose=list(args[arm])
         pose[3:]=(Rotation.from_euler('xyz',pose[3:])*flip).as_euler('xyz').tolist()
-        next(k for k in node.value.keywords if k.arg=='right').value=ast.parse(repr(pose),mode='eval').body
+        next(k for k in node.value.keywords if k.arg==arm).value=ast.parse(repr(pose),mode='eval').body
     return ast.unparse(ast.fix_missing_locations(tree))+'\n',report

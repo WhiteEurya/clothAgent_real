@@ -1,0 +1,15 @@
+{"t_s": 25.473135506734252, "phase": "select_points", "kind": "stage"}
+{"t_s": 33.38968290388584, "phase": "approach", "kind": "stage"}
+{"t_s": 45.480771996080875, "phase": "manual", "kind": "stage"}
+{"t_s": 45.48095025587827, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": 0.0, "up": 0.0, "yaw": 0.0, "gripper": null, "enabled": false, "stop": false}}
+{"t_s": 51.675298363901675, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 51.932848549447954, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": -1.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 58.63379694707692, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 59.38315396383405, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": "close", "enabled": true, "stop": false}}
+{"t_s": 61.03816755581647, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 61.2013900782913, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 1.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 65.04976163897663, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": -0.0, "up": 0.0, "yaw": -0.0, "gripper": null, "enabled": true, "stop": false}}
+{"t_s": 66.06296549364924, "phase": "manual", "kind": "gamepad", "intent": {"forward": 0.0, "right": 0.0, "up": 0.0, "yaw": 0.0, "gripper": null, "enabled": false, "stop": false}}
+{"t_s": 67.15721292700619, "phase": "manual", "kind": "manual_confirmed", "world_tcp_mm_deg": [614.7698154610673, -169.83084245678697, 49.31040268864001, -178.18287630290547, -0.4055201642167026, 0.17043588028982076]}
+{"t_s": 67.16577996499836, "phase": "transfer_place", "kind": "stage"}
+{"t_s": 81.84450511820614, "phase": "return_perception", "kind": "stage"}

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "COMPLETE",
+  "arm": "left",
+  "camera": "A",
+  "started_at": "2026-10-17T12:51:59.710435+00:00",
+  "calibration_id": "coordinate_correction_20261008_145014_arm6_camera_tilt1_20261009",
+  "parameters": {
+    "real": true,
+    "config": "config/dual_arm.local.json",
+    "output": "data/demonstrations",
+    "device": null,
+    "iterations": 10,
+    "approach_height_mm": 50.0,
+    "clearance_mm": 30.0,
+    "place_offset_mm": 5.0,
+    "approach_rpy_deg": null,
+    "speed_mm_s": 10.0,
+    "yaw_speed_deg_s": 5.0,
+    "gripper_rate": 2000.0
+  },
+  "samples": 777,
+  "elapsed_s": 95.02608001045883,
+  "finished_at": "2026-10-17T12:53:34.736487+00:00",
+  "operator_accepted": true,
+  "reviewed_at": "2026-10-17T12:53:38.338347+00:00"
+}

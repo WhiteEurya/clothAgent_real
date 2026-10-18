@@ -69,3 +69,18 @@ def test_connection_forwards_partial_target_to_feedback_gate(config):
     result=connection.gripper('release_partial',opening_delta_pulse=120.)
     assert seen==[(config,dict(target='release_partial',opening_delta_pulse=120.))]
     assert result['completion']['status']=='COMPLETED'
+
+
+def test_arm6_automatic_close_dispatches_gamepad_speed(backend):
+    from cloth_agent.gamepad_collect_runtime import CollectionRuntime
+    runtime = CollectionRuntime('config/dual_arm.local.json')
+    try:
+        config = runtime.config.arms['left'].gripper
+        assert config.gripper_speed == 2000
+        assert runtime.config.arms['right'].gripper.gripper_speed == 500
+        b = copied_backend(backend, [sample(850), sample(600,1), sample(20,2), sample(20,2), sample(20,2)])
+        result, _ = b._command_gripper(config, target='close')
+        assert b.arm.commands == [(config.gripper_close, dict(speed=2000., wait=False))]
+        assert result['completion']['status'] == 'COMPLETED'
+    finally:
+        runtime.close()

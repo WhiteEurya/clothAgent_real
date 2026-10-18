@@ -415,3 +415,61 @@ edge，完整 planner 按当前 observation 实例化其已修正策略，允许
 新模式的 self-loop recovery 由 `--recover-no-progress` 控制。下一次应将
 `--growth-state` 指向本次新输出目录的 `latest.json`，以继续使用已提交的修正版。
 没有 `--execute` 时只验证快照与生成静态图，不调用机器人或模型。
+
+### Arm6 手柄示范图接入（2026-10-18）
+
+`arm6-traj-experience-graph-v1` 使用同一个 replay CLI，按协议进入
+`arm6_traj_replay.py`，只连接 Arm6 / Camera A。原 Arm7 图入口保持原行为。
+该分支为用户指定示范的实验性 replay，不修改源图的 `UNKNOWN` 或 `replayable=false` 标签。
+
+离线编译各边的 Arm6 模板时，校验源轨迹哈希、人工确认结果、闭合事件和抬升前停稳反馈。
+实机先使用现有 `topology_match` 匹配节点，再识别参考 start/target 在当前 RGB 中的对应点。
+主机从当前 RGB-D 取坐标，以参考抓取—目标轴转移小幅 XY 修正及姿态，并保留实测表面相对抓取高度和抬升高度。
+全段 IK 规划完成后才执行；平移使用采集入口的控制器直线运动。
+松布张开 180 pulse、等待 0.5 秒、抬起，到 Home 后完全打开，再到 perception 拍摄独立 after。
+
+无出边、匹配不确定、目标状态不符、同边重复、IK 或控制器故障时停止；不跨越图中缺失边，不启用自由规划或重试。
+沿用用户指定的 CollectionRuntime 检查配置（路径/几何碰撞验证关闭，限位、IK、实测反馈和控制器故障检查保留）。
+本适配器暂不支持 online-growth、旧 Arm7 恢复模式或用户指定的其他模板包；支持现有只读 live graph。
+
+```bash
+python -m cloth_agent.experiments.graph_policy_replay \
+  --graph reports/arm6_traj_graph_20261018_without_last/graph.json \
+  --grounding-mode minimal --max-recovery-attempts 0 \
+  --max-steps 5 --max-calls 20 --graph-port 8090 \
+  --output reports/arm6_replay_new_run --execute
+```
+
+用 `--dry-run` 替代 `--execute` 只编译/验证，不连接机器人、不调用模型。输出目录须为新目录。
+首次启动记录位于 `reports/arm6_traj_replay_live_20261018/result.json`：连接时 Arm6 已报告
+state 4 / controller error 11（关节 1 错误），0 条动作派发；未自动清故障。
+
+2026-10-18 补齐首动作版本：`reports/arm6_traj_graph_20261018_with_first/graph.json`，新增跨会话的左袖内收动作，共 6 条边。启动时使用此路径及 `--max-steps 6`。原末条 s006 仍排除，旧图不覆盖；离线预检见同目录 `replay_preflight/result.json`。
+
+Arm6 CollectionRuntime 自动夹爪（包括 replay）速度已与手柄默认保持一致：SDK 速度 2000。自动位置指令显式携带该速度，不再被原配置的 500 覆盖；松爪分段顺序及完成反馈检查保持不变。
+
+### Arm6 当前图（n007 目标，2026-10-18）
+
+仓库中的可移植包为 `data/graphs/arm6_replay_goal_n007/graph.json`。从仓库根目录运行；
+引用的 RGB、深度表面、示范轨迹及控制器证据均已按哈希收集在同目录的 `assets/`。
+历史审计 JSON 保留原始内容，运行时使用顶层 graph/trajectory 中的仓库相对路径。
+
+当前主路径：`n_initial → n000 → n001 → n004 → n005 → n006 → n007`。
+保留 e002/e003 的原始分支证据。e001 原始示范为 REJECTED，但用户明确授权补回，
+其目标依据后续实机 replay 和用户确认改为 n004；原始示范后图仍记录为 o002。
+e006 已恢复，仅使用 iter0007 的起始观测作为 n007，未导入 iter0007 动作。
+可靠匹配 n007 后返回 `GOAL_REACHED`。其他动作结果若偏离预期目标仍返回 `OUTCOME_MISMATCH`。
+
+```bash
+conda activate cali
+python -m cloth_agent.experiments.graph_policy_replay \
+  --graph data/graphs/arm6_replay_goal_n007/graph.json \
+  --grounding-mode minimal --max-recovery-attempts 0 \
+  --max-steps 8 --max-calls 32 --graph-port 8090 \
+  --output "reports/arm6_replay_$(date +%Y%m%d_%H%M%S)" --execute
+```
+
+把 `--execute` 换成 `--dry-run` 可离线验证，不连接机械臂。实机仍需当前机器的
+`config/dual_arm.local.json`、相机 A 标定及硬件环境。
+`python scripts/package_arm6_replay_graph.py --graph <源图> --output <仓库内新目录>`
+可重新生成证据包，不修改原始示范。

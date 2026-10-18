@@ -1,0 +1,33 @@
+{
+  "status": "OUTCOME_MISMATCH",
+  "physical_actions": 1,
+  "steps": [
+    {
+      "edge_id": "e001",
+      "execution": {
+        "status": "EXECUTED",
+        "physical_execution": true,
+        "completed_commands": 9
+      }
+    }
+  ],
+  "robot": "Arm6",
+  "current_node": "n004",
+  "last_observation": "/home/sja/clothAgent_real/reports/arm6_replay_20261018_151848/step_0000/after/rgb.png",
+  "model_metrics": {
+    "model_calls": 5,
+    "cache_hits": 0,
+    "tool_calls": 0,
+    "visual_tool_calls": 0,
+    "completed_model_turns": 5,
+    "reasoning_time_s": 122.40866969525814,
+    "metric_definition": "Codex invocations and completed tool events; wall time includes model latency; attached RGBs are not tool calls; internal API calls unavailable"
+  },
+  "matching_metrics": {
+    "local_match_time": 18.02268253546208,
+    "expanded_match_time": 19.4207822419703,
+    "global_match_time": 66.2162439962849,
+    "representative_image_fallback_count": 0,
+    "representative_image_match_count": 4
+  }
+}

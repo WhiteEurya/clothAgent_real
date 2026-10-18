@@ -1676,6 +1676,10 @@ def main(argv=None):
                         help='minimal: two visual anchors; requires a compiled Host template for every selected edge')
     parser.add_argument('--grounding-templates',type=Path,help='frozen minimal-mode Host template bundle')
     args = parser.parse_args(argv)
+    if args.graph is not None and load_frozen(args.graph).get('protocol') == 'arm6-traj-experience-graph-v1':
+        from .arm6_traj_replay import run_cli
+        result = run_cli(args, parser)
+        return 1 if cli_failed(result) else 0
     if args.collect_only and (not args.online_growth or args.grounding_mode!='full'):
         parser.error('--collect-only requires --online-growth and --grounding-mode full')
     if args.recover_no_progress and (not args.online_growth or args.collect_only or args.grounding_mode!='full'):

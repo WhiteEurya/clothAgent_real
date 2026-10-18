@@ -1,4 +1,4 @@
-"""Linux gamepad input and continuous Arm7 control (preview by default)."""
+"""Linux gamepad input; Arm6 by default, preview unless --real is set."""
 from __future__ import annotations
 
 import argparse
@@ -217,12 +217,14 @@ def run(args):
     try:
         print(f'{pad.device.name}: Y up / A down / X open / B close; hold LB; START exits', file=sys.stderr)
         if args.real:
-            from .gamepad_continuous import ContinuousArm7
-            backend = ContinuousArm7(args.config, args.output, guard,
+            from .gamepad_continuous import ContinuousArm6, ContinuousArm7
+            backend_type = ContinuousArm6 if args.arm == 'arm6' else ContinuousArm7
+            print(f'控制目标：{args.arm.upper()}；World 坐标系。', flush=True)
+            backend = backend_type(args.config, args.output, guard,
                                      args.speed_mm_s, args.yaw_speed_deg_s, args.gripper_rate,
                                      start_workers=not args.connect_only)
             if args.connect_only:
-                print('连接检查通过：仅连接 Arm7，未切换运动模式，未发送运动或夹爪指令。', flush=True)
+                print(f'连接检查通过：仅连接 {args.arm.upper()}，未切换运动模式，未发送运动或夹爪指令。', flush=True)
                 return 0
         previous = None
         previous_status = None
@@ -263,20 +265,25 @@ def main(argv=None):
     parser.add_argument('--device', help='/dev/input/eventN or stable by-id path')
     parser.add_argument('--yaw-axis', choices=('ABS_RX', 'ABS_Z'), default='ABS_RX')
     parser.add_argument('--deadzone', type=float, default=.15)
-    parser.add_argument('--real', action='store_true', help='enable continuous Arm7 control')
+    parser.add_argument('--arm', choices=('arm6', 'arm7'), default='arm6', help='controlled arm (default: arm6)')
+    parser.add_argument('--real', action='store_true', help='enable continuous control of --arm')
     parser.add_argument('--connect-only', action='store_true', help='with --real: check connections without controller writes')
     parser.add_argument('--speed-mm-s', type=float, default=10.)
     parser.add_argument('--yaw-speed-deg-s', type=float, default=5.)
-    parser.add_argument('--gripper-rate', type=float, default=100., help='gripper target pulse rate while held')
+    parser.add_argument('--gripper-speed', '--gripper-rate', dest='gripper_rate', type=float,
+                        help='Arm6 SDK speed (default 2000); Arm7 target rate (default 100)')
     parser.add_argument('--config', type=Path, default=Path('config/dual_arm.local.json'))
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
+    if args.gripper_rate is None:
+        args.gripper_rate = 2000. if args.arm == 'arm6' else 100.
     if not 0 <= args.deadzone < .8:
         parser.error('deadzone must be in [0,0.8)')
     if args.connect_only and not args.real:
         parser.error('--connect-only requires --real')
-    if not (0 < args.speed_mm_s <= 15 and 0 < args.yaw_speed_deg_s <= 5 and 0 < args.gripper_rate <= 200):
-        parser.error('speed must be (0,15] mm/s, yaw (0,5] deg/s, gripper rate (0,200] pulse/s')
+    if not (0 < args.speed_mm_s <= 15 and 0 < args.yaw_speed_deg_s <= 5
+            and 0 < args.gripper_rate <= (5000 if args.arm == 'arm6' else 200)):
+        parser.error('speed/yaw/gripper setting outside supported range')
     try:
         return run(args)
     except KeyboardInterrupt:

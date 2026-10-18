@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "observation_id": "c0646e5c832c462cbb9678f2e8dcdf31",
+  "frame_id": "world_mm",
+  "calibration_id": "coordinate_correction_20261008_145014_arm6_camera_tilt1_20261009",
+  "captured_unix_s": 1792242599.1170557,
+  "captured_at": "2026-10-17T13:09:59.117057+00:00",
+  "synthetic": false,
+  "joints_deg": {
+    "left": [
+      -2.423153107167278,
+      3.4684000128244383,
+      -122.42372019826445,
+      1.8155886612105527,
+      115.43157244960594,
+      -1.6757296634191186
+    ],
+    "right": [
+      -1.755371,
+      -3.490573,
+      0.187987,
+      112.804446,
+      1.037856,
+      108.204226,
+      0.32418
+    ]
+  },
+  "sha256": {
+    "rgb.png": "3de1f3f04b3930ff63eebb381ab9bc1686c1057d533a3ce3a47382321545848f",
+    "world_xyz_mm.npy": "c8e1c5e949e8450f5d0f88355c400b9239ce0763ca21b8cb9d728e10c3a00ac0"
+  },
+  "world_from_camera_mm": [
+    [
+      -0.020606262812839497,
+      -0.9996523512484181,
+      -0.01644866488190799,
+      494.52857224745037
+    ],
+    [
+      -0.9997055295461038,
+      0.0208126679593367,
+      -0.012477461575184765,
+      23.079366459819564
+    ],
+    [
+      0.01281546440180659,
+      0.01618670738363868,
+      -0.9997868544726143,
+      668.0327162486396
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "camera_serial": "317222073552",
+  "depth_capture_policy": {
+    "depth_exposure_us": 8500.0,
+    "depth_gain": 16.0,
+    "depth_stability": {
+      "warmup_frames": 30,
+      "max_frames": 90,
+      "window_frames": 5,
+      "stable_windows": 3,
+      "max_range_mm": 3.0
+    }
+  },
+  "depth_stability": {
+    "stable": true,
+    "worst_tile_range_mm": 1.999974250793457,
+    "max_range_mm": 3.0,
+    "tiles": 36,
+    "frames_checked": 20,
+    "consecutive_windows": 3
+  },
+  "extrinsic_tilt_correction": {
+    "type": "empirical_mount_rotation_correction",
+    "angle_deg": 1.0,
+    "axis_in_mount": [
+      0.020724136711609574,
+      -0.9994059098862503,
+      0.02753792733655654
+    ],
+    "reference_observation": "results/codex_astra/loop_20261009T061221239663Z/round_001/before",
+    "original_mount_from_camera_mm": [
+      [
+        -0.020616121886707174,
+        -0.9978977851749548,
+        -0.06144091357777988,
+        78.7092711644584
+      ],
+      [
+        0.9989846386164664,
+        -0.0230228973488814,
+        0.038725159857548916,
+        -36.056259300503285
+      ],
+      [
+        -0.040058299098716645,
+        -0.060580166231058184,
+        0.9973592011571043,
+        27.152990926238346
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "corrected_mount_from_camera_mm": [
+      [
+        -0.0203975548241723,
+        -0.9966780919788966,
+        -0.07884618396917618,
+        78.7092711644584
+      ],
+      [
+        0.9989892711893412,
+        -0.02347717313996108,
+        0.03833090645872063,
+        -36.056259300503285
+      ],
+      [
+        -0.040054660225568584,
+        -0.07798463509347567,
+        0.99614959764262,
+        27.152990926238346
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "translation_unchanged": true,
+    "physical_validation": false,
+    "supersedes": {
+      "mode": "world_y_rotation",
+      "angle_deg": 1.0,
+      "pivot_world_mm": [
+        707.672,
+        227.676,
+        32.395
+      ],
+      "reference": "loop_20261009T041829419327Z/round_002 arm7 grasp target; fixed world pivot, not recomputed per grasp"
+    }
+  },
+  "snapshot_before": {
+    "left": {
+      "joints": [
+        -2.423153107167278,
+        3.4684000128244383,
+        -122.42372019826445,
+        1.8155886612105527,
+        115.43157244960594,
+        -1.6757296634191186
+      ],
+      "pose": [
+        425.092,
+        -9.25,
+        517.669,
+        -178.5125641159037,
+        -3.579611120859331,
+        0.03626822843178111
+      ],
+      "gripper": {
+        "sampled_at": "2026-10-17T13:09:55.274+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 841,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "sampled_monotonic_s": 5816370.410375545,
+      "sample_started_monotonic_s": 5816370.402442495
+    },
+    "right": {
+      "joints": [
+        -1.755371,
+        -3.490573,
+        0.187987,
+        112.804446,
+        1.037856,
+        108.204226,
+        0.32418
+      ],
+      "pose": [
+        421.3084379781525,
+        -12.03951439968733,
+        524.4562898338895,
+        178.8182487650343,
+        -8.120207748971985,
+        -0.8809615237281659
+      ],
+      "gripper": {
+        "state": "unobserved",
+        "available": false,
+        "usable_for_completion": false
+      },
+      "sampled_monotonic_s": 5816370.402063721,
+      "state_source": "assumed_static_obstacle",
+      "live_feedback": false,
+      "static_obstacle_reference": {
+        "arm": "right",
+        "joint_angles_deg": [
+          -1.755371,
+          -3.490573,
+          0.187987,
+          112.804446,
+          1.037856,
+          108.204226,
+          0.32418
+        ],
+        "reference_file": "/home/sja/clothAgent_real/data/robot/xarm7_perception_pose.json",
+        "recorded_at": "2026-10-07T02:48:57.080454+00:00",
+        "assumption": "saved_perception_pose",
+        "live_feedback": false
+      }
+    }
+  },
+  "snapshot_after": {
+    "left": {
+      "joints": [
+        -2.423153107167278,
+        3.4684000128244383,
+        -122.42372019826445,
+        1.8155886612105527,
+        115.43157244960594,
+        -1.6757296634191186
+      ],
+      "pose": [
+        425.092,
+        -9.25,
+        517.669,
+        -178.5125641159037,
+        -3.579611120859331,
+        0.03626822843178111
+      ],
+      "gripper": {
+        "sampled_at": "2026-10-17T13:09:58.559+00:00",
+        "status_code": 0,
+        "status_raw": 0,
+        "state_code": 0,
+        "state": "stop",
+        "position_pulse": 841,
+        "error_code": 0,
+        "read_errors": [],
+        "position_code": 0,
+        "mechanical_grasp_detected": false,
+        "available": true,
+        "usable_for_completion": true
+      },
+      "sampled_monotonic_s": 5816373.688269677,
+      "sample_started_monotonic_s": 5816373.68646998
+    },
+    "right": {
+      "joints": [
+        -1.755371,
+        -3.490573,
+        0.187987,
+        112.804446,
+        1.037856,
+        108.204226,
+        0.32418
+      ],
+      "pose": [
+        421.3084379781525,
+        -12.03951439968733,
+        524.4562898338895,
+        178.8182487650343,
+        -8.120207748971985,
+        -0.8809615237281659
+      ],
+      "gripper": {
+        "state": "unobserved",
+        "available": false,
+        "usable_for_completion": false
+      },
+      "sampled_monotonic_s": 5816373.68643517,
+      "state_source": "assumed_static_obstacle",
+      "live_feedback": false,
+      "static_obstacle_reference": {
+        "arm": "right",
+        "joint_angles_deg": [
+          -1.755371,
+          -3.490573,
+          0.187987,
+          112.804446,
+          1.037856,
+          108.204226,
+          0.32418
+        ],
+        "reference_file": "/home/sja/clothAgent_real/data/robot/xarm7_perception_pose.json",
+        "recorded_at": "2026-10-07T02:48:57.080454+00:00",
+        "assumption": "saved_perception_pose",
+        "live_feedback": false
+      }
+    }
+  }
+}
