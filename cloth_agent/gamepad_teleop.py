@@ -268,20 +268,22 @@ def main(argv=None):
     parser.add_argument('--arm', choices=('arm6', 'arm7'), default='arm6', help='controlled arm (default: arm6)')
     parser.add_argument('--real', action='store_true', help='enable continuous control of --arm')
     parser.add_argument('--connect-only', action='store_true', help='with --real: check connections without controller writes')
-    parser.add_argument('--speed-mm-s', type=float, default=10.)
+    parser.add_argument('--speed-mm-s', type=float)
     parser.add_argument('--yaw-speed-deg-s', type=float, default=5.)
     parser.add_argument('--gripper-speed', '--gripper-rate', dest='gripper_rate', type=float,
                         help='Arm6 SDK speed (default 2000); Arm7 target rate (default 100)')
     parser.add_argument('--config', type=Path, default=Path('config/dual_arm.local.json'))
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
+    if args.speed_mm_s is None:
+        args.speed_mm_s = 20. if args.arm == 'arm6' else 10.
     if args.gripper_rate is None:
         args.gripper_rate = 2000. if args.arm == 'arm6' else 100.
     if not 0 <= args.deadzone < .8:
         parser.error('deadzone must be in [0,0.8)')
     if args.connect_only and not args.real:
         parser.error('--connect-only requires --real')
-    if not (0 < args.speed_mm_s <= 15 and 0 < args.yaw_speed_deg_s <= 5
+    if not (0 < args.speed_mm_s <= (30 if args.arm == 'arm6' else 15) and 0 < args.yaw_speed_deg_s <= 5
             and 0 < args.gripper_rate <= (5000 if args.arm == 'arm6' else 200)):
         parser.error('speed/yaw/gripper setting outside supported range')
     try:

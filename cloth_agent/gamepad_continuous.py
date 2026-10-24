@@ -31,14 +31,14 @@ def checked(result, label):
     return result[1] if isinstance(result, (tuple, list)) else result
 
 
-def world_twist(intent, speed_mm_s, yaw_deg_s, downward_gain=1.):
+def world_twist(intent, speed_mm_s, yaw_deg_s, downward_gain=1., linear_limit=15.):
     if not intent.enabled or intent.stop:
         return np.zeros(6)
     linear = np.array([intent.forward, -intent.right, intent.up], dtype=float)
     linear *= speed_mm_s / max(1., np.linalg.norm(linear))
     if linear[2] < 0:
         linear[2] *= downward_gain
-        linear *= min(1., 15. / max(np.linalg.norm(linear), 1e-12))
+    linear *= min(1., linear_limit / max(np.linalg.norm(linear), 1e-12))
     return np.r_[linear, 0., 0., intent.yaw * yaw_deg_s]
 
 
@@ -182,6 +182,7 @@ class ContinuousArm7(Arm7Jogger):
     max_gripper_rate = 200
     position_hold_on_idle = False
     downward_gain = 1.
+    max_linear_speed = 15.
 
     def _watch(self):
         # The legacy one-step watchdog ends a session on LB release. Continuous
@@ -189,7 +190,7 @@ class ContinuousArm7(Arm7Jogger):
         pass
 
     def __init__(self, config, output, guard, speed_mm_s=10., yaw_deg_s=5., gripper_rate=100., *, start_workers=True, runtime=None):
-        if not (0 < speed_mm_s <= 15 and 0 < yaw_deg_s <= 5 and 0 < gripper_rate <= self.max_gripper_rate):
+        if not (0 < speed_mm_s <= self.max_linear_speed and 0 < yaw_deg_s <= 5 and 0 < gripper_rate <= self.max_gripper_rate):
             raise ValueError('invalid continuous teleoperation rates')
         self.workers = []
         self.gripper_api = None
@@ -222,7 +223,9 @@ class ContinuousArm7(Arm7Jogger):
             if tuple(self.arm.version_number) < (1, 8, 0):
                 raise DualArmError('continuous control requires firmware with expiring velocity commands (>=1.8.0)')
             self.model = ArmModel(self.runtime.config.arms[self.arm_key])
-            self.speed_mm_s = min(speed_mm_s, self.runtime.config.limits['cartesian_speed_mm_s'])
+            # Arm6 manual speed is independent of automatic Cartesian approach speed.
+            self.speed_mm_s = min(speed_mm_s, getattr(self, 'manual_cartesian_limit',
+                self.runtime.config.limits['cartesian_speed_mm_s']))
             self.yaw_deg_s = yaw_deg_s
             self.max_speed = min(self.runtime.config.limits['joint_speed_deg_s'],
                 self.runtime.config.raw['safety']['arms'][self.arm_key]['max_joint_speed_deg_s'])
@@ -499,7 +502,7 @@ class ContinuousArm7(Arm7Jogger):
             dt = min(began - last, .05)
             target = np.zeros(self.axis)
             if allowed and intent.enabled and intent.moving and not intent.stop:
-                twist = world_twist(intent, self.speed_mm_s, self.yaw_deg_s, self.downward_gain)
+                twist = world_twist(intent, self.speed_mm_s, self.yaw_deg_s, self.downward_gain, self.max_linear_speed)
                 target = velocity_ik(self.model, q, self.runtime.config.arms[self.arm_key].world_from_base,
                                      twist, min(self.max_speed, zone.speed_limit))
                 target = slew(previous, target, max(.001, dt), self.acceleration)
@@ -523,7 +526,7 @@ class ContinuousArm7(Arm7Jogger):
                         and live.enabled and live.moving and not live.stop):
                     target = slew(previous, velocity_ik(self.model, q,
                         self.runtime.config.arms[self.arm_key].world_from_base,
-                        world_twist(live, self.speed_mm_s, self.yaw_deg_s, self.downward_gain),
+                        world_twist(live, self.speed_mm_s, self.yaw_deg_s, self.downward_gain, self.max_linear_speed),
                         min(self.max_speed, zone.speed_limit)), max(.001, dt), self.acceleration)
             if self.mode_entered:
                 if self.runtime.cancel.is_set() or self.closed.is_set():
@@ -699,6 +702,8 @@ class ContinuousArm6(ContinuousArm7):
     max_gripper_rate = 5000
     position_hold_on_idle = True
     downward_gain = 1.5
+    max_linear_speed = 30.
+    manual_cartesian_limit = 30.
 
     def _create_runtime(self, config):
         from .gamepad_collect_runtime import CollectionRuntime

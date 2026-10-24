@@ -39,18 +39,23 @@ def isolated_command(binary, workspace, auth=None):
 
 
 class CodexMultimodal:
-    def __init__(self, model=MODEL, timeout=900, binary='codex'):
+    def __init__(self, model=MODEL, timeout=900, binary='codex', timing_output=None):
         self.model=model;self.timeout=timeout;self.binary=shutil.which(binary)
+        self.timing_output=Path(timing_output) if timing_output is not None else None
+        self.invocations=0
         if not self.binary:raise RuntimeError('Codex CLI missing')
 
     def invoke(self, prompt, images, schema):
+        invocation_started=time.monotonic()
+        self.invocations+=1
         with tempfile.TemporaryDirectory(prefix='decision_state_') as tmp:
             work=Path(tmp);save(work/'schema.json',schema)
-            local_images=[]
+            local_images=[];image_dimensions=[]
             for i,image in enumerate(images):
                 p=work/f'image_{i:03d}.png'
                 # RGB pixels only: remove paths, EXIF, embedded text/metadata.
                 with Image.open(image) as im:
+                    image_dimensions.append(list(im.size))
                     im.convert('RGB').save(p)
                 local_images.append(Path('/work')/p.name)
             cmd=build_command('/opt/codex',Path('/work'),Path('/work'),read_only=True)
@@ -62,8 +67,17 @@ class CodexMultimodal:
             command=isolated_command(self.binary,work,auth)+cmd
             started=time.monotonic()
             with (work/'events.jsonl').open('w') as events,(work/'stderr.txt').open('w') as errors:
-                p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=events,stderr=errors,
-                                   text=True,start_new_session=True,env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+                timeline=None
+                if self.timing_output is not None:
+                    from .model_timing import EventTimeline
+                    timeline=EventTimeline(work/'events.jsonl',started)
+                    timeline.start()
+                try:
+                    p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=events,stderr=errors,
+                                       text=True,start_new_session=True,env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+                except BaseException:
+                    if timeline is not None:timeline.finish()
+                    raise
                 try:p.communicate(prompt,timeout=self.timeout)
                 except BaseException as exc:
                     os.killpg(p.pid,signal.SIGTERM)
@@ -72,6 +86,16 @@ class CodexMultimodal:
                     if isinstance(exc,subprocess.TimeoutExpired):
                         raise ModelInvocationError('Isolated model request timed out',retryable=True,details={'timeout_s':self.timeout}) from exc
                     raise
+                finally:
+                    process_wall_s=time.monotonic()-started
+                    if timeline is not None:
+                        from .model_timing import summarize
+                        observed=timeline.finish()
+                        save(self.timing_output/f'invocation_{self.invocations:03d}.json',dict(
+                            host_setup_s=started-invocation_started, process_wall_s=process_wall_s,
+                            image_count=len(images), image_dimensions=image_dimensions,
+                            model=self.model, returncode=p.returncode, observer_error=timeline.error,
+                            event_timing=observed, summary=summarize(observed,process_wall_s)))
             events_parsed=[]
             usage={};tool_calls=0;visual_tool_calls=0;completed_turns=0
             for line in (work/'events.jsonl').read_text().splitlines():

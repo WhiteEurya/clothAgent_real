@@ -143,6 +143,14 @@ class NativeRuntime:
             self.coordinator=DualArmCoordinator(self.config,self.models,connections,self.cancel,
                                                 directory.parent/'controller',realtime=True)
         self.move_to_perception(directory.with_name(directory.name+'_perception'))
+        return self.capture_current(directory)
+
+    def capture_current(self,directory):
+        """Capture at the actual current pose without moving back to perception."""
+        from .dual_arm.observation import capture, create_camera
+        directory=Path(directory)
+        if self.coordinator is None:
+            raise DualArmError('capture_current requires connected stationary arms')
         if getattr(self,'camera',None) is None:
             self.camera=create_camera(self.config)
         obs=capture(directory,self.config,self.models,self.coordinator.snapshots,camera=self.camera)

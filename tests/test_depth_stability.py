@@ -55,6 +55,29 @@ def test_stable_depth_passes_but_local_drift_does_not():
     assert not depth_window_report(frames, 3.)['stable']
 
 
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+@pytest.mark.parametrize('base_m', [.7, 2.4])
+@pytest.mark.parametrize('limit_mm', [2., 3.])
+def test_depth_threshold_accepts_float_roundoff(dtype, base_m, limit_mm):
+    frames = np.full((10, 240, 320), base_m, dtype=dtype)
+    frames[5:] = base_m + limit_mm / 1000
+    report = depth_window_report(frames, limit_mm)
+    assert report['stable']
+    assert report['max_range_mm'] == limit_mm
+    assert report['worst_tile_range_mm'] == pytest.approx(limit_mm, abs=.001)
+    # Preserve the measured value in evidence instead of rounding it away.
+    if dtype == np.float32 and base_m == .7 and limit_mm == 3.:
+        assert report['worst_tile_range_mm'] == 3.000020980834961
+
+
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+@pytest.mark.parametrize('change_mm', [3.002, 3.01, 4.])
+def test_depth_threshold_rejects_change_beyond_roundoff(dtype, change_mm):
+    frames = np.full((10, 240, 320), .7, dtype=dtype)
+    frames[5:] = .7 + change_mm / 1000
+    assert not depth_window_report(frames, 3.)['stable']
+
+
 def test_missing_cloth_depth_cannot_hide_in_stable_background():
     frames = np.full((5, 240, 320), .7)
     frames[:, 65:110, 130:180] = 0

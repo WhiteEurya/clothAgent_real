@@ -53,6 +53,8 @@ def import_session(session, *, replay_rejected_iterations=None):
         if not replay_reason and (manifest.get('status') != 'COMPLETE' or manifest.get('operator_accepted') is not True):
             excluded.append(dict(iteration=index, status=manifest.get('status')))
             continue
+        if manifest.get('collection_mode') in ('manual_only', 'single_point_manual'):
+            raise ValueError('free manual trajectories require a full manual trajectory compiler; assisted two-anchor import is unsupported')
         if manifest['arm'] != 'left' or manifest['camera'] != 'A':
             raise ValueError('requires Arm6 / Camera A')
         states = rows(folder/'states.jsonl')

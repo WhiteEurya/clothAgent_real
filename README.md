@@ -1,5 +1,9 @@
 # ClothAgent
 
+[冻结 DINO 双图点对应工具](docs/experiments/dino_point_correspondence.md)：加载参考图与当前图，
+点击参考抓点查看热力图、三个分离候选、反向误差；支持独立人工区域标注和结果导出。
+本机启动：`bash scripts/start_dino_correspondence.sh`。
+
 [现成 Graph 与真实运行对照 Demo](examples/graph_demo/README.md)：可视化、原始观测、
 动作/执行反馈、无进展案例及自动核对脚本。
 

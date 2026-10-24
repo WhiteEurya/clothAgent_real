@@ -17,9 +17,9 @@
   "table_reference_clearance_px": 24,
   "background_plane_inlier_threshold_mm": 6.0,
   "table_roi_xyxy": [
-    0.18,
+    0.195,
     0.03,
-    0.77,
+    0.81,
     0.98
   ],
   "width": 1280,

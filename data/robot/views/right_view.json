@@ -1,0 +1,44 @@
+{
+  "name": "right_view",
+  "display_name": "right view",
+  "recorded_at": "2026-10-21T14:49:05.005300+00:00",
+  "camera_label": "A",
+  "camera_serial": "317222073552",
+  "mount_arm": "left",
+  "robot_name": "arm6",
+  "robot_ip": "192.168.2.232",
+  "axis": 6,
+  "robot_sn": "XI130312B22L0F",
+  "control_box_sn": "AC130308A40050",
+  "joint_angles_deg": [
+    46.696289,
+    21.038724,
+    -121.476506,
+    -50.272463,
+    112.121194,
+    -1.673667,
+    0.0
+  ],
+  "tcp_pose_mm_deg": [
+    482.409515,
+    200.324265,
+    471.373749,
+    130.784836,
+    5.216838,
+    30.915943
+  ],
+  "tcp_offset_mm_deg": [
+    0.0,
+    0.0,
+    172.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "controller_state_at_capture": 2,
+  "stationary_check": {
+    "interval_s": 0.5,
+    "max_joint_delta_deg": 0.0
+  },
+  "recording_note": "User designated current Camera A / Arm6 pose as right view. Live read-only SDK queries; no motion commands."
+}

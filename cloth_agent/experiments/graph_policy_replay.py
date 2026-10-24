@@ -1675,11 +1675,34 @@ def main(argv=None):
     parser.add_argument('--grounding-mode',choices=['full','minimal'],default='full',
                         help='minimal: two visual anchors; requires a compiled Host template for every selected edge')
     parser.add_argument('--grounding-templates',type=Path,help='frozen minimal-mode Host template bundle')
+    parser.add_argument('--arm6-expanded-graph', action='store_true',
+                        help='Arm6: match all observed states, follow reliable rematches, and select among supported untried edges; unsupported edges remain blocked')
+    parser.add_argument('--arm6-route', help='Arm6: comma-separated existing edge IDs; require this continuous route and stop at its final state')
+    parser.add_argument('--arm6-review', action='store_true', help='Arm6 fixed route: operator confirms states and current-image anchors; records assisted results')
+    parser.add_argument('--arm6-live-start', action='store_true', help='Arm6 reviewed route: live camera placement and snapshot recognition until the required start state matches')
+    parser.add_argument('--matcher',choices=['current','retrieval_gpt_rerank'],default='current',
+                        help='Arm6: current matcher or precomputed DINO Top-K plus one GPT rerank')
+    parser.add_argument('--retrieval-memory',type=Path,help='full-graph memory prepared by visual_retrieval_index')
+    parser.add_argument('--retrieval-python',type=Path,help='Python environment for the persistent DINO/FAISS worker')
+    parser.add_argument('--retrieval-top-k',type=int,default=10)
+    parser.add_argument('--retrieval-timeout-s',type=float,default=120.,help='local worker startup/query timeout')
     args = parser.parse_args(argv)
-    if args.graph is not None and load_frozen(args.graph).get('protocol') == 'arm6-traj-experience-graph-v1':
+    if args.matcher=='retrieval_gpt_rerank' and args.retrieval_memory is None:
+        parser.error('--retrieval-memory is required for retrieval_gpt_rerank')
+    if args.retrieval_top_k<1 or args.retrieval_timeout_s<=0:
+        parser.error('retrieval top-k and timeout must be positive')
+    if args.matcher=='current' and (args.retrieval_memory is not None or args.retrieval_python is not None):
+        parser.error('retrieval options require --matcher retrieval_gpt_rerank')
+    if args.graph is not None and load_frozen(args.graph).get('protocol') in ('arm6-traj-experience-graph-v1', 'arm6-archive-graph-v1'):
         from .arm6_traj_replay import run_cli
         result = run_cli(args, parser)
         return 1 if cli_failed(result) else 0
+    if args.arm6_expanded_graph:
+        parser.error('--arm6-expanded-graph requires an Arm6 experience graph')
+    if args.arm6_route or args.arm6_review or args.arm6_live_start:
+        parser.error('--arm6-route/--arm6-review/--arm6-live-start require an Arm6 experience graph')
+    if args.matcher!='current':
+        parser.error('retrieval matcher currently requires an Arm6 experience graph')
     if args.collect_only and (not args.online_growth or args.grounding_mode!='full'):
         parser.error('--collect-only requires --online-growth and --grounding-mode full')
     if args.recover_no_progress and (not args.online_growth or args.collect_only or args.grounding_mode!='full'):

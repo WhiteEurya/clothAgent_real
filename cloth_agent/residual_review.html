@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>人工排名与动作选择 · Rθ</title>
+<style>
+body{font-family:system-ui;background:#f3f5f9;color:#182235;margin:24px;max-width:1500px}
+section,article{background:white;border-radius:12px;padding:18px;margin-bottom:16px}p{line-height:1.6}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:18px}img{width:100%}
+button,select{padding:10px;font:inherit;cursor:pointer}#controls{border:2px solid #b77d00}
+.selected{outline:3px solid #b77d00}.move{margin-right:8px}#status{white-space:pre-wrap}
+.badge{color:#546476;font-size:14px}.score{font-variant-numeric:tabular-nums}
+@media(max-width:900px){.cards{grid-template-columns:1fr}}
+</style>
+<h1>Top10：按优先级分组，再选择本轮动作</h1>
+<section><p id="protocol"></p><p id="history"></p>
+<p>为每个动作选择「优先组」：数字越小越优先，同一组内并列，不比较高低。画面里的组内排列仅方便查看，不作为训练或评估标签。执行动作另外选择。</p>
+<p><button id="all-tied">全部放入第1组（全部并列）</button> <button id="reset-groups">恢复系统顺序，每个动作一组</button></p>
+<p>提交一次后：记录训练前表现 → 训练修正器 → 检查并执行已选动作。新权重从下一轮开始参与排名。</p>
+<details><summary>查看干净当前图与展平目标</summary><img src="current.png"><img src="goal.png"></details></section>
+<section id="controls"><b id="selected">尚未选择执行动作</b>
+<p><label><input id="ranking-confirmed" type="checkbox">我已检查所有分组；组间有优先顺序，组内并列</label><br>
+<label><input id="unchanged" type="checkbox">确认拍照后衣物和桌面没有被挪动</label></p>
+<button id="submit" disabled>提交排名、训练 Rθ 并执行已选动作</button>
+<button id="stop">都不合适，停止本轮</button><p id="status">等待人工反馈；不会自动执行系统第一名。</p></section>
+<div class="cards" id="cards"></div>
+<script>
+const context=__PAYLOAD__;
+let rows=[...context.displayed],chosen=null,busy=false;
+const original=new Map(rows.map((r,i)=>[r.id,i+1]));
+const groupOf=new Map(rows.map((r,i)=>[r.id,i+1]));
+const status=document.querySelector('#status');
+const percent=x=>x===null?'无跨组比较':(100*x).toFixed(1)+'%';
+document.querySelector('#protocol').textContent=`S = Ps + αPt + Rθ；固定 α=${context.alpha.toFixed(7)}；修正器版本 ${context.revision}。分数不是成功概率。`+(context.simulated?' 这是模拟测试，不执行机器人。':'');
+const e=context.previous_evaluation;
+document.querySelector('#history').textContent=e?`上一轮训练前评估（仅当轮Top10）：base成对一致率 ${percent(e.baseline.pairwise_accuracy)}；当前模型 ${percent(e.current.pairwise_accuracy)}；相对base变化 ${percent(e.delta_vs_base)}。${e.eligible_new_image?'':'该RGB重复出现，不计入新图效果。'} 当前轮效果需在你提交人工排名后计算。`:'尚无后续新状态评估；不能判断修正是否有效。';
+function text(parent,tag,value,cls){const el=document.createElement(tag);el.textContent=value;if(cls)el.className=cls;parent.append(el);return el;}
+function render(){
+ rows.sort((a,b)=>groupOf.get(a.id)-groupOf.get(b.id)||original.get(a.id)-original.get(b.id));
+ const container=document.querySelector('#cards');container.replaceChildren();
+ rows.forEach((r,i)=>{
+  const article=document.createElement('article');article.dataset.id=r.id;article.classList.toggle('selected',r.id===chosen);
+  const group=groupOf.get(r.id),count=rows.filter(x=>groupOf.get(x.id)===group).length;
+  text(article,'h2',`第 ${group} 组 · ${r.id}${count>1?' · 组内并列':''}`);
+  text(article,'p',`原系统第 ${original.get(r.id)} · 抓点 ${r.point_id}`,'badge');
+  const im=document.createElement('img');im.src=r.id+'.png';article.append(im);
+  text(article,'p',`Ps ${r.Ps} + α × Pt ${r.Pt} = base ${r.base.toFixed(2)}；Rθ ${r.correction>=0?'+':''}${r.correction.toFixed(2)}；S ${r.S.toFixed(2)}`,'score');
+  text(article,'p',`Pa [${r.grasp_px}] → Pb [${r.target_px}]；抓前角度 ${r.grasp_angle_deg??'默认'}°`);
+  text(article,'p','抓点：'+r.point_reason);text(article,'p','动作：'+r.trajectory_reason);
+  const label=text(article,'label','优先组：');const select=document.createElement('select');select.className='group';
+  select.setAttribute('aria-label',r.id+' 优先组');
+  for(let g=1;g<=10;g++){const option=document.createElement('option');option.value=g;option.textContent='第 '+g+' 组';select.append(option);}
+  select.value=group;select.disabled=busy;label.append(select);
+  select.onchange=()=>{groupOf.set(r.id,Number(select.value));document.querySelector('#ranking-confirmed').checked=false;render();};
+  const choose=text(article,'button',chosen===r.id?'已选执行':'执行此动作','choose');choose.disabled=busy;
+  choose.onclick=()=>{chosen=r.id;document.querySelector('#selected').textContent='本轮执行 '+chosen;document.querySelector('#submit').disabled=false;render();};
+  container.append(article);
+ });
+}
+async function send(stop){
+ if(busy)return;
+ if(location.protocol==='file:'){status.textContent='这是保存的页面，请打开终端显示的 http://127.0.0.1 地址提交。';return;}
+ if(!stop&&(!chosen||!document.querySelector('#unchanged').checked||!document.querySelector('#ranking-confirmed').checked)){
+  status.textContent='请选择执行动作，并确认完整分组和场景未变化。';return;
+ }
+ busy=true;document.querySelectorAll('button,input,select').forEach(b=>b.disabled=true);
+ try{
+  const res=await fetch('/choice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+   review_id:context.review_id,token:context.token,decision:stop?'STOP':'SELECT',candidate_id:stop?null:chosen,
+   human_groups:[...new Set(rows.map(r=>groupOf.get(r.id)))].sort((a,b)=>a-b).map(g=>rows.filter(r=>groupOf.get(r.id)===g).map(r=>r.id)),
+   ranking_confirmed:!stop,scene_unchanged:!stop})});
+  const data=await res.json();if(!res.ok)throw Error(data.error);status.textContent=data.message;
+ }catch(error){status.textContent=String(error)+'；请查看运行终端确认状态，不要重复启动机器人。';}
+}
+document.querySelector('#submit').onclick=()=>send(false);document.querySelector('#stop').onclick=()=>send(true);
+document.querySelector('#all-tied').onclick=()=>{rows.forEach(r=>groupOf.set(r.id,1));document.querySelector('#ranking-confirmed').checked=false;render();};
+document.querySelector('#reset-groups').onclick=()=>{rows.forEach(r=>groupOf.set(r.id,original.get(r.id)));document.querySelector('#ranking-confirmed').checked=false;render();};
+if(context.simulated)document.querySelector('#submit').textContent='演示：提交排名和选择（不执行机器人）';
+render();
+</script></html>

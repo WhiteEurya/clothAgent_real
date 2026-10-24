@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>本轮动作：A → B</title>
+<style>
+body{font:16px system-ui,sans-serif;margin:24px;background:#f4f6f8;color:#17212b}h1{font-size:25px;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:white;border-radius:10px;padding:16px;margin:16px 0}
+img,svg{display:block;width:100%;height:auto;background:#111}button{padding:9px 14px;margin:5px;border:1px solid #c5cbd1;border-radius:6px;background:white;cursor:pointer}
+button.active{background:#dcf3ff;border-color:#2183af}.hint{color:#546370;font-size:14px}pre{white-space:pre-wrap;font-size:13px}svg{touch-action:none}
+#errors{font-size:19px;margin:12px 0}.legend{display:flex;gap:20px}strong.a{color:#b82d30}strong.b{color:#007eaa}
+@media(max-width:850px){.grid{grid-template-columns:1fr}body{margin:12px}}
+</style>
+<h1 id="heading">本轮规划：抓住 A，移动到 B 后释放</h1>
+<p>参考图由 DINO 固定选择（动作 @@EDGE@@）；GPT 仅定位当前图上的点对。状态：<b>@@STATUS@@</b>。尚未执行。</p>
+<div class="grid">
+<section class="card"><h2>DINO 参考动作 Pa → Pb</h2><img src="@@REFERENCE@@" alt="参考图上的记录点对"><p class="hint">参考原图像素：@@REFERENCE_POINTS@@</p></section>
+<section class="card"><h2>当前图上的 A → B</h2>
+<svg id="scene" viewBox="0 0 @@WIDTH@@ @@HEIGHT@@" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#ffd43b"/></marker></defs>
+<image href="@@CURRENT@@" width="@@WIDTH@@" height="@@HEIGHT@@"/>
+<g id="prediction"></g><g id="gt"></g></svg>
+<p class="legend"><strong class="a">A：抓取点</strong><strong class="b">B：放置目标</strong><span>黄色箭头：移动方向</span></p>
+<div id="coords"></div></section></div>
+<section class="card"><h2>人工检查与误差</h2>
+<p>点击“标注 GT A”，再点当前图上的正确抓取位置；GT B 同理。B 是放置位置，可以在桌面上。</p>
+<button id="pickA">标注 GT A</button><button id="pickB">标注 GT B</button><button id="toggle">隐藏预测</button><button id="clear">清除 GT</button><button id="save">导出标注与误差 JSON</button>
+<div id="instruction">等待人工 GT；当前没有准确率或位置误差结论。</div><div id="errors"></div>
+<p class="hint">GT 使用原图像素坐标。误差为预测点到 GT 点的欧氏距离；归一化误差除以图像对角线。此页面已经展示预测，属于辅助校对，不是盲审。标注只在本页内存中，需导出保存。</p></section>
+<section class="card"><h2>定位依据</h2><p>@@REASON@@</p><p>不确定性：@@UNCERTAINTY@@</p></section>
+<section class="card"><h2>耗时记录</h2><p><b>DINO 前向：@@DINO_MS@@ ms　｜　@@SEARCH_LABEL@@：@@SEARCH_MS@@ ms　｜　GPT 定位：@@GPT_SECONDS@@ s</b></p><p>GPT 耗时含请求、进程启动及可能的格式修复。@@MEASUREMENT_NOTE@@</p><details><summary>详细计时记录</summary><pre>@@TIMING@@</pre></details></section>
+<script>
+const record=@@DATA@@;
+const scene=document.getElementById('scene'), pred=document.getElementById('prediction'), gtLayer=document.getElementById('gt');
+let gt={A:null,B:null},mode=null,visible=true;
+const ns='http://www.w3.org/2000/svg';
+function element(tag,attrs,parent,text){const e=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);if(text)e.textContent=text;parent.appendChild(e);return e}
+function mark(p,label,color,parent){element('circle',{cx:p[0],cy:p[1],r:12,fill:'none',stroke:'black','stroke-width':7},parent);element('circle',{cx:p[0],cy:p[1],r:12,fill:'none',stroke:color,'stroke-width':4},parent);element('text',{x:p[0]+16,y:p[1]-16,fill:color,'font-size':26,'font-weight':'bold',stroke:'black','stroke-width':1,'paint-order':'stroke'},parent,label)}
+if(record.grasp_xy&&record.target_xy){const [a,b]=[record.grasp_xy,record.target_xy];element('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:'#ffd43b','stroke-width':4,'stroke-dasharray':record.grounding_status==='PROPOSED'?'none':'12 6','marker-end':'url(#arrow)'},pred);mark(a,'A','#ff5252',pred);mark(b,'B','#37dbff',pred);document.getElementById('coords').textContent=`原图像素：A (${a.join(', ')}) → B (${b.join(', ')})`}else{document.getElementById('heading').textContent='本轮未产生可定位的 A → B 动作';document.getElementById('coords').textContent='模型未给出点对。本轮记为未出结果，不能计算位置误差；可以标注 GT 用于后续评估。'}
+function errors(){const norm=Math.hypot(record.width,record.height),calc=(p,q)=>p&&q?Math.hypot(p[0]-q[0],p[1]-q[1]):null;const a=calc(record.grasp_xy,gt.A),b=calc(record.target_xy,gt.B);return {A_px:a,B_px:b,A_image_diagonal_fraction:a===null?null:a/norm,B_image_diagonal_fraction:b===null?null:b/norm,pair_mean_px:a===null||b===null?null:(a+b)/2}}
+function update(){gtLayer.replaceChildren();for(const k of ['A','B'])if(gt[k])mark(gt[k],'GT '+k,'#66ff8b',gtLayer);for(const k of ['A','B'])document.getElementById('pick'+k).classList.toggle('active',mode===k);document.getElementById('instruction').textContent=mode?'请在当前图上点选 GT '+mode:gt.A&&gt.B?'两个 GT 已标注，可导出保存。':'等待人工 GT；未标注的点不计算误差。';const e=errors();document.getElementById('errors').textContent=['A','B'].map(k=>e[k+'_px']===null?k+'：未测量':`${k} 误差：${e[k+'_px'].toFixed(1)} px（对角线 ${(e[k+'_image_diagonal_fraction']*100).toFixed(2)}%）`).join('　 |　 ')}
+document.getElementById('pickA').onclick=()=>{mode='A';update()};document.getElementById('pickB').onclick=()=>{mode='B';update()};
+scene.onclick=event=>{if(!mode)return;const p=scene.createSVGPoint();p.x=event.clientX;p.y=event.clientY;const local=p.matrixTransform(scene.getScreenCTM().inverse());if(local.x<0||local.y<0||local.x>=record.width||local.y>=record.height)return;gt[mode]=[Math.min(record.width-1,local.x),Math.min(record.height-1,local.y)];mode=mode==='A'&&!gt.B?'B':null;update()};
+document.getElementById('toggle').onclick=()=>{visible=!visible;pred.style.display=visible?'':'none';document.getElementById('toggle').textContent=visible?'隐藏预测':'显示预测'};
+document.getElementById('clear').onclick=()=>{gt={A:null,B:null};mode=null;update()};
+document.getElementById('save').onclick=()=>{const data={...record,ground_truth:gt,errors:errors(),annotation_protocol:'post_prediction_manual_point_labels',annotated_at:new Date().toISOString()};const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='action_ground_truth.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+update();
+</script></html>

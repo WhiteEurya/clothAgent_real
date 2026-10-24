@@ -1,5 +1,9 @@
 # 独立 Frozen Graph-as-Policy Replay
 
+Arm6 现支持独立的 DINO Top-10 + GPT matcher；启动、完整图库预计算及离线检查见
+[Arm6 retrieval matcher](arm6_retrieval_matcher.md)。它通过 `--matcher retrieval_gpt_rerank`
+显式启用，默认仍使用原匹配流程。
+
 2026-10-17 发布快照的跨设备安装、数据下载、路径挂载及最新保存图入口，见
 [复现说明](../../reproduction/README.md)。本页保留各阶段命令及行为演进；下文
 “本次最新采集图”是该段实验的起始图，发布时最新保存快照是
@@ -473,3 +477,55 @@ python -m cloth_agent.experiments.graph_policy_replay \
 `config/dual_arm.local.json`、相机 A 标定及硬件环境。
 `python scripts/package_arm6_replay_graph.py --graph <源图> --output <仓库内新目录>`
 可重新生成证据包，不修改原始示范。
+
+Arm6 识别与两点定位统一使用衣物坐标约定：上指领口、下指下摆；左右为
+正面朝观察者、领口朝上时的观察者左右，不是穿衣者左右。模型分别从当前图和
+参考图的可见标志判断朝向，比较随衣服旋转后的覆盖关系。旧描述中的画面方向
+只描述参考图，不能直接当作当前图方向。遮挡导致方向不确定时允许返回歧义。
+这是模型提示约定，尚未实现确定性的旋转归一化；返回的抓取点和目标点始终是
+原始当前 RGB 的像素坐标，机器人坐标计算没有改变。
+
+### 使用包含自由手动证据的扩展图
+
+```bash
+python -m cloth_agent.experiments.graph_policy_replay \
+  --graph reports/arm6_graph_extended_20261018/graph.json \
+  --arm6-expanded-graph --grounding-mode minimal --max-recovery-attempts 0 \
+  --max-steps 12 --max-calls 48 --graph-port 8090 \
+  --output "reports/arm6_replay_$(date +%Y%m%d_%H%M%S)" --execute
+```
+
+`--arm6-expanded-graph` 是显式可选行为：对所有有参考照片的节点做全图匹配，
+允许可靠的动作后匹配落在原目标之外，再按实际节点选边；未知无照片节点不参与识别。
+支持的未尝试出边有多个时由模型对照当前图与动作参考图选择，优先排除自环；
+不确定则停止。同一边单次运行最多执行一次，不会无限重试。
+
+扩展图目前 21 条边中 15 条可编译、6 条不支持。完整手动轨迹及缺少必要抓取事件的
+示范保留作证据，不能被当成两点动作直接执行。若当前节点只有未支持出边，返回
+`ACTION_TEMPLATE_UNAVAILABLE` 和原因。证据文件的哈希仍逐一验证；证据损坏不会被
+当作普通的未支持动作忽略。启动 dry-run 会列出可用动作、不可用动作和可匹配节点。
+此开关不把旧图或扩展图改写成新策略，也不声称新分支已能到达目标 n007。
+
+### Arm6 缺失深度时左右换视角
+
+选中的抓取点或目标点触发 `DepthUnavailableError` 时，replay 会在抓取下发之前
+尝试两次换视角：相对于原拍照位，沿相机图像水平轴在世界 XY 平面左移 15 mm，
+仍缺深度则到原位置右侧 15 mm。高度及朝向保持不变，Cartesian 速度最多 10 mm/s，
+不发送夹爪开合指令；原有关节限制、到位和实时反馈检查仍生效。
+
+每次在新姿态原地拍照（不会调用回 perception 的 observe），按实际关节姿态计算
+相机外参，重新做状态匹配及两点定位。只有可靠匹配原动作起始状态且新选点深度有效
+才继续。原 RGB 像素不会复用。两次仍缺深度时回原拍照位并停止；取消、硬件故障、
+不确定匹配或其他规划错误不会触发额外自动重试。所有记录在 step_*/depth_recovery。
+此恢复用于 Arm6 自动 replay，不改变手动采集点选界面的交互。
+
+Arm6 replay 默认保存每一步的前后画面和耗时，无需增加启动参数：
+
+- `step_XXXX/before.png`：本次匹配使用的开始画面（通常来自上一步结束照片）。
+- `step_XXXX/action_before.png`：实际下发动作使用的画面；深度恢复重新拍照后可能不同。
+- `step_XXXX/after.png`：动作完成并返回 perception 后拍摄的结束画面。原始 RGB、深度和相机信息仍保存在 `after/`。
+- `step_XXXX/timing.json`：匹配、动作选择、像素定位、规划及深度恢复、执行、回位、结束拍照各阶段的单调时钟耗时；开始时间另存 UTC。
+- `timing.json`：整个运行的时间和各步记录，包含最终状态匹配。总耗时包括初始化与关闭设备，不含视频编码。
+- `replay_summary.mp4`：结束时通过 ffmpeg 自动生成前后对照视频，每一步显示 3 秒，标注阶段耗时和运行总耗时。这是关键帧回顾，不是连续相机录像；`video_frames/` 中也保留可直接打开的 PNG。
+
+正常结束、异常退出或 Ctrl+C 都会尽量生成已有部分的视频。未执行动作的最终匹配步骤、或失败而未拍到结束照片的步骤，会明确显示无结束画面；不会为补拍自动移动机械臂。视频生成失败只写入 `result.json` 的 `media_error`，不覆盖 replay 原本的执行结果。强制 kill/断电无法保证生成视频，但已经写入的图片与计时文件保留。dry-run 不生成视频。

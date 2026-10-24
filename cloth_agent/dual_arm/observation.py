@@ -16,6 +16,10 @@ from PIL import Image
 from .geometry import DualArmError, finite, transform
 
 
+class DepthUnavailableError(DualArmError):
+    """A selected pixel lacks enough measured depth; a new view may help."""
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -71,8 +75,9 @@ class Observation:
         patch = self.xyz[y - 2 : y + 3, x - 2 : x + 3].reshape(-1, 3)
         valid = patch[np.isfinite(patch).all(axis=1)]
         if len(valid) < 18 or not np.isfinite(self.xyz[y, x]).all():
-            raise DualArmError("grasp has insufficient measured depth")
-        if np.ptp(valid[:, 2]) > max_spread:
+            raise DepthUnavailableError("grasp has insufficient measured depth")
+        # None disables only the local height-spread gate; measured-depth validity remains mandatory.
+        if max_spread is not None and np.ptp(valid[:, 2]) > max_spread:
             raise DualArmError("grasp depth patch crosses a discontinuity")
         return np.median(valid, axis=0)
 

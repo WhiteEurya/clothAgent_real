@@ -558,3 +558,14 @@ def test_arm6_downward_gain_preserves_up_and_caps_combined_speed():
     combined = world_twist(Intent(up=-1,forward=1,enabled=True),15,5,gain)
     assert np.linalg.norm(combined[:3]) <= 15 + 1e-9
     assert world_twist(Intent(up=-1,enabled=False),10,5,gain).tolist() == [0.]*6
+
+
+def test_arm6_faster_manual_motion_and_diagonal_cap():
+    from cloth_agent.gamepad_continuous import ContinuousArm6
+    limit=ContinuousArm6.max_linear_speed
+    assert world_twist(Intent(forward=1, enabled=True),20,5,1.5,limit)[0] == 20
+    assert world_twist(Intent(up=1, enabled=True),20,5,1.5,limit)[2] == 20
+    assert world_twist(Intent(up=-1, enabled=True),20,5,1.5,limit)[2] == -30
+    mixed=world_twist(Intent(up=-1, forward=1, enabled=True),30,5,1.5,limit)
+    assert np.linalg.norm(mixed[:3]) == pytest.approx(30)
+    assert not world_twist(Intent(up=-1, enabled=False),20,5,1.5,limit).any()

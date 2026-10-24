@@ -2,6 +2,12 @@
 import numpy as np
 
 
+# Depths are float32 metres. Converting their differences to millimetres can
+# put an exact threshold value slightly above the limit (e.g. 3.00002098 mm).
+# One micrometre covers roundoff over the accepted 0.1–2.5 m depth range.
+_COMPARISON_ATOL_MM = 0.001
+
+
 def depth_window_report(depths, max_range_mm):
     stack = np.asarray(depths)[:, ::4, ::4]
     valid = np.isfinite(stack) & (stack > .1) & (stack <= 2.5)
@@ -25,5 +31,6 @@ def depth_window_report(depths, max_range_mm):
                 return dict(stable=False, reason='insufficient_local_depth')
             scores.append(float(np.median(spread[np.ix_(ys, xs)][mask])*1000))
     worst = max(scores)
-    return dict(stable=worst <= max_range_mm, worst_tile_range_mm=worst,
-                max_range_mm=max_range_mm, tiles=len(scores))
+    return dict(stable=worst <= max_range_mm + _COMPARISON_ATOL_MM,
+                worst_tile_range_mm=worst, max_range_mm=max_range_mm,
+                comparison_atol_mm=_COMPARISON_ATOL_MM, tiles=len(scores))
