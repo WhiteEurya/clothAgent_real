@@ -1,5 +1,8 @@
 # ClothAgent
 
+[Arm6 折叠 Graph 部署](docs/arm6_folding_deployment.md)：10 月 18 日的小型折叠图，
+9 个节点 / 8 条边，Camera A；离线检查：`bash scripts/run_arm6_folding_graph.sh --dry-run`。
+
 [新机器部署与多衣服实验](docs/deployment.md)：当前实验源码安装、现场配置、
 RGB-only 基线、CV/GGO 对比及衣物/颜色先验限制。
 
