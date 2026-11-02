@@ -30,7 +30,7 @@ from cloth_agent import codex_recovery
 from cloth_agent import one_shot_views, one_shot_orientation
 
 ROOT = Path('reports/one_shot_goal_full_episode_v1')
-DEFAULT_GOAL = Path('reports/goal_only_full_episode_v1_restart02/goal/target.png')
+DEFAULT_GOAL = Path('data/reference/deployment_example/goal.png')
 save, read, sha = planner.save, planner.read, planner.sha
 PROTECTED = ['cloth_agent/codex_native_runtime.py', 'cloth_agent/gamepad_collect_runtime.py',
              'cloth_agent/gamepad_collect.py', 'cloth_agent/random_fold_reset.py',
@@ -39,11 +39,14 @@ PROTECTED = ['cloth_agent/codex_native_runtime.py', 'cloth_agent/gamepad_collect
              'cloth_agent/grasp_angle.py', 'cloth_agent/dual_arm/observation.py',
              'cloth_agent/experiments/trajectory_memory_full_episode_v1.py']
 INITIALIZATION_RELEASE_POLICY = 'HOME_Y_HOME_YAW_V1'
+SINGLE_VIEW_PROMPT = planner.PROMPT + '\ngrasp_angle_deg must be null; keep the Home gripper orientation.'
 
 
 def prepare_action(runtime, before, plan, folder):
     return prepare_collection_action(runtime, before, plan, folder,
-                                     target_sampler=table_target_depth.project_target,
+                                     target_sampler=(table_target_depth.project_reveal_target
+                                         if table_target_depth.is_hem_reveal(plan)
+                                         else table_target_depth.project_target),
                                      orientation_resolver=one_shot_orientation.resolve,
                                      check_grasp_height_spread=False,
                                      smoothing=bool(plan and plan.get("is_smoothing",False)))
@@ -104,21 +107,41 @@ def direct_once(folder, body, headers, timeout_s):
         save(folder/'model_metrics.json', result)
 
 
+def retry_feedback_text(feedback):
+    return ('\n上一次提案在执行前被拒绝，动作没有执行。以下坐标属于上一轮观测，'
+            '请结合本轮当前图和拒绝原因重新规划，不要直接重发被拒绝的动作。\n'
+            + json.dumps(feedback, ensure_ascii=False, sort_keys=True))
+
+
 def plan_round(root, folder, before, headers, timeout_s):
     started = time.perf_counter()
     with Image.open(before.image) as image:
         size = list(image.size)
+    single_view = (root/'protocol.json').exists() and read(root/'protocol.json').get('single_view', False)
     body = planner.payload(before.image, root/'goal/target.png', size,
-                           right_view=folder/'right_view/rgb.png', allow_grasp_rotation=True)
-    manifest = dict(model=planner.MODEL, effort=planner.EFFORT, input_image_count=3,
+                           right_view=None if single_view else folder/'right_view/rgb.png',
+                           allow_grasp_rotation=not single_view)
+    if single_view:
+        body['instructions'] = SINGLE_VIEW_PROMPT
+        schema = json.loads(json.dumps(planner.ROTATION_SCHEMA))
+        schema['properties']['grasp_angle_deg'] = {'type': 'null'}
+        body['text']['format']['schema'] = schema
+    feedback_path = folder/'retry_feedback.json'
+    if single_view and feedback_path.exists():
+        body['input'][0]['content'][0]['text'] += retry_feedback_text(read(feedback_path))
+    manifest = dict(model=planner.MODEL, effort=planner.EFFORT, input_image_count=2 if single_view else 3,
         current_rgb='before/rgb.png', current_sha256=sha(before.image), goal_rgb='goal/target.png',
         goal_sha256=sha(root/'goal/target.png'),
-        right_view_rgb=str(folder/'right_view/rgb.png'), right_view_sha256=sha(folder/'right_view/rgb.png'),
         coordinate_frame='perception before/rgb.png', image_size_px=size,
         prompt_chars=len(body['instructions'])+len(body['input'][0]['content'][0]['text']),
         prompt_sha256=sha(root/'prompt.txt'), tools=[], tool_choice='none', retries=0,
         episode_history_supplied=False, trajectory_memory=False, depth_supplied_to_model=False,
         host_preparation_s=time.perf_counter()-started)
+    if not single_view:
+        manifest.update(right_view_rgb=str(folder/'right_view/rgb.png'),
+                        right_view_sha256=sha(folder/'right_view/rgb.png'))
+    manifest['retry_feedback_supplied'] = single_view and feedback_path.exists()
+    manifest['episode_history_supplied'] = manifest['retry_feedback_supplied']
     save(folder/'request_manifest.json', manifest)
     plan, metrics = direct_once(folder, body, headers, timeout_s)
     # Preserve even a schema-valid but semantically invalid proposal; never repair it.
@@ -190,12 +213,12 @@ Return only the region schema; no action or desired press force.'''
                 action_folder='post_drop_press',source_image='after_drop/rgb.png')
 
 
-def initialize(runtime, folder, headers, timeout_s, *, center_radius_mm=80., press_after_drop=False):
+def initialize(runtime, folder, headers, timeout_s, *, center_radius_mm=80., press_after_drop=False, seed=None):
     """Existing reset geometry and sampling; direct region request instead of Agent."""
     folder.mkdir()
     started = time.monotonic()
     report = dict(status='PREPARING', physical_actions=0, robot_execution_s=0., model_calls=0,
-                  seed=secrets.randbits(63), max_retries=0, acquisition='UNKNOWN_PENDING_HUMAN_REVIEW',
+                  seed=secrets.randbits(63) if seed is None else int(seed), max_retries=0, acquisition='UNKNOWN_PENDING_HUMAN_REVIEW',
                   release_policy=INITIALIZATION_RELEASE_POLICY,
                   center_radius_mm=float(center_radius_mm),press_after_drop=bool(press_after_drop))
     recorder = None
@@ -216,7 +239,10 @@ def initialize(runtime, folder, headers, timeout_s, *, center_radius_mm=80., pre
         save(folder/'region.json', region)
         reset.validate_region(region, size)
         seeds = np.random.SeedSequence(report['seed']).spawn(1)[0].generate_state(2, dtype=np.uint64)
-        point = reset.sample_grasp(before, region, runtime.config.limits['max_surface_spread_mm'], center_radius_mm, int(seeds[0]))
+        # Cloth folds may have valid, steep depth gradients. Keep measured-depth
+        # validity checks, but do not reject reset centers/candidates by height spread.
+        point = reset.sample_grasp(before, region, None, center_radius_mm, int(seeds[0]))
+        report['grasp_depth_policy'] = 'MEASURED_DEPTH_REQUIRED; LOCAL_HEIGHT_SPREAD_DISABLED'
         release = sample_initialization_release(int(seeds[1]))
         save(folder/'grasp.json', point)
         save(folder/'release.json', dict(seed=int(seeds[1]), policy=INITIALIZATION_RELEASE_POLICY, **release))
@@ -319,7 +345,7 @@ def render(root, summary):
             model_wait_after_return_s=t.get('model_wait_after_return_s', 0.)))
         panel = Image.new('RGB', (1280, 285), 'white'); draw = ImageDraw.Draw(panel)
         views=[('GOAL', root/'goal/target.png'),(item['round']+' PERCEPTION', folder/'before/rgb.png')]
-        if not (summary.get('human_preference_enabled') or summary.get('automatic_top5_enabled') or summary.get('visible_sleeve_hem_enabled')):
+        if not (summary.get('single_view') or summary.get('human_preference_enabled') or summary.get('automatic_top5_enabled') or summary.get('visible_sleeve_hem_enabled')):
             views.append(('RIGHT VIEW',folder/'right_view/rgb.png'))
         views.append(('AFTER',folder/'after/rgb.png'))
         column_width=1280//len(views)
@@ -350,6 +376,8 @@ def render(root, summary):
          '人工候选模式每轮用perception当前图与目标图独立请求Ps与Pt；启用排名修正时按Ps+固定alpha*Pt+Rθ显示Top10，否则按Ps+alpha*Pt。人工选择后才检查并执行。评分期间机械臂保持观测位，人工等待单列。'
          'ACTION仍经过独立shadow gate和原有Host检查；无自动选择、重试或恢复替换。'
          if summary.get('human_preference_enabled') else
+        'FastPlanner 每轮仅当前主视角 RGB + 静态目标 RGB，无侧视拍摄或侧视移动；单次规划，具体Prompt和附加评审开关见protocol.json。'
+        if summary.get('single_view') else
         'FastPlanner 每轮 perception RGB + right view RGB + 固定 goal RGB；优先可见边角，Pa/Pb 只用 perception 坐标。'
         '一次 direct gpt-6-astra/high 请求与慢速回程并行，回到 perception 核验后才使用结果；'
         'tools=[] / tool_choice=none / retries=0。ACTION 额外调用独立 shadow gate，仅记录标签。'
@@ -388,8 +416,21 @@ def render(root, summary):
     (root/'report.md').write_text('\n'.join(lines))
 
 
+def episode_round_indices(args):
+    if getattr(args, 'unlimited_rounds', False):
+        from itertools import count
+        return count()
+    return range(args.max_rounds)
+
+
+def another_round_available(args, index):
+    return getattr(args, 'unlimited_rounds', False) or index+1 < args.max_rounds
+
+
 def run(args):
     from cloth_agent import unfold_experiment_policy as experiment_policy
+    if getattr(args, "unlimited_rounds", False) and (not getattr(args, "single_view", False) or getattr(args, "continue_from", None)):
+        raise ValueError("unlimited rounds require a new single-view session")
     no_improvement_streak = 0
     patience = getattr(args, 'no_improvement_patience', 0)
     max_actions = getattr(args, 'max_actions', 0)
@@ -400,12 +441,39 @@ def run(args):
     automatic_top5 = getattr(args, 'automatic_top5', False)
     stateful_context = getattr(args, 'stateful_context', False)
     restricted_mode = getattr(args, 'visible_sleeve_hem', False)
+    hem_sleeve_rule = getattr(args,'hem_sleeve_pull_rule',False)
+    if hem_sleeve_rule and not restricted_mode:
+        raise ValueError('--hem-sleeve-pull-rule requires --visible-sleeve-hem')
+    ggo_seed = getattr(args,'ggo_reference_annotations',None)
+    cv_feedback = getattr(args,'cv_feedback',False)
+    depth_image=getattr(args,'depth_image',False)
+    rgb_only=getattr(args,'rgb_only',False)
+    if depth_image and not rgb_only:raise ValueError('--depth-image requires --rgb-only')
+    if rgb_only and (not restricted_mode or cv_feedback or ggo_seed):
+        raise ValueError('--rgb-only requires original sleeve/hem mode without CV feedback or GGO')
+    if cv_feedback and (not restricted_mode or ggo_seed or patience):
+        raise ValueError('CV feedback requires sleeve/hem mode, no GGO and no semantic progress stopping')
+    if ggo_seed and (not restricted_mode or (not getattr(args,'ggo_auto_anchors',False) and (args.max_rounds!=1 or max_actions))):
+        raise ValueError('GGO pilot requires sleeve/hem mode, max-rounds=1, no max-actions assessment')
     if restricted_mode:
         if human_preference or automatic_top5 or getattr(args,'ranking_correction',False) or getattr(args,'codex_recovery',False) or getattr(args,'continue_from',None):
             raise ValueError('sleeve/hem experiment requires a new episode without candidate scoring, learning or recovery')
         from cloth_agent import restricted_context_one_shot as restricted
+        if ggo_seed:
+            from cloth_agent.ggo import live as restricted
+        if cv_feedback:
+            from cloth_agent.cloth_harness.runtime import live as restricted
         stateful_context = True
     candidate_mode = human_preference or automatic_top5 or restricted_mode
+    single_view = getattr(args, 'single_view', False)
+    same_prompt_retry = getattr(args, 'same_prompt_retry', False)
+    retry_plan_feedback = getattr(args, 'retry_plan_feedback', False)
+    if retry_plan_feedback and not same_prompt_retry:
+        raise ValueError('retry plan feedback requires same-prompt retry')
+    if same_prompt_retry and not single_view:
+        raise ValueError('same-prompt retry requires plain single-view mode')
+    if single_view and (candidate_mode or getattr(args, 'codex_recovery', False) or getattr(args, 'continue_from', None)):
+        raise ValueError('single-view requires plain one-shot without recovery or continuation')
     if stateful_context and not (automatic_top5 or restricted_mode):
         raise ValueError('previous-action context requires automatic Top5 mode')
     if automatic_top5 and (human_preference or getattr(args,'ranking_correction',False) or getattr(args,'codex_recovery',False)):
@@ -456,21 +524,38 @@ def run(args):
         args.goal_image = source/'goal/target.png'
     root = args.output.resolve(); root.mkdir(parents=True, exist_ok=False)
     (root/'goal').mkdir(); shutil.copyfile(args.goal_image, root/'goal/target.png')
+    if ggo_seed:
+        shutil.copyfile(ggo_seed,root/'ggo_reference_seed.json')
+        save(root/'ggo_live_config.json',dict(reference=str(restricted.geometry_report.REFERENCE),port=getattr(args,'ggo_port',8781),automatic_anchors=getattr(args,'ggo_auto_anchors',False)))
     prompt_text = restricted.PROMPT if restricted_mode else ((preference.AUTO_PS_CONTEXT_PROMPT+'\n\n'+auto.PROMPT+preference.PT_CONTEXT_PROMPT)
                    if stateful_context else
                    ((preference.AUTO_PS_PROMPT if automatic_top5 else preference.PS_PROMPT)+'\n\n'+
                     (auto.PROMPT if automatic_top5 else preference.PT_PROMPT)
                     if candidate_mode else planner.ROTATING_MULTIVIEW_PROMPT))
+    if restricted_mode:
+        from cloth_agent import hem_sleeve_pull_rule
+        save(root/hem_sleeve_pull_rule.CONFIG,dict(enabled=hem_sleeve_rule,depth_image=depth_image,rgb_only=rgb_only,version=2,sleeve_rule='如果目前的袖子可以被摩擦力拉开,则抓对向'))
+        prompt_text=hem_sleeve_pull_rule.apply(root,prompt_text)
+    if single_view:
+        prompt_text = SINGLE_VIEW_PROMPT
     (root/'prompt.txt').write_text(prompt_text)
-    if not candidate_mode:
+    if not candidate_mode and not single_view:
         shutil.copyfile(one_shot_views.RIGHT_VIEW, root/'right_view_pose.json')
     (root/'gate_prompt.txt').write_text(GATE_PROMPT)
     protected = {p: sha(p) for p in PROTECTED}
     if candidate_mode:
         protected.update({p:sha(p) for p in ('cloth_agent/action_preference.py','cloth_agent/preference_one_shot.py')})
     if restricted_mode:
-        protected.update({p:sha(p) for p in ('cloth_agent/restricted_context_one_shot.py','cloth_agent/geometry_report.py','cloth_agent/unfold_experiment_policy.py',
+        protected.update({p:sha(p) for p in ('cloth_agent/restricted_context_one_shot.py','cloth_agent/hem_sleeve_pull_rule.py','cloth_agent/depth_image_input.py','cloth_agent/geometry_report.py','cloth_agent/unfold_experiment_policy.py',
             'cloth_agent/one_shot_depth_recovery.py','cloth_agent/experiments/arm6_depth_recovery.py')})
+    if cv_feedback:
+        protected.update({str(p):sha(p) for sub in ('runtime','cv_harness') for p in (Path('cloth_agent/cloth_harness')/sub).glob('*.py')})
+    if ggo_seed:
+        protected.update({str(p):sha(p) for p in Path('cloth_agent/ggo').glob('*.py')})
+        protected[str(root/'ggo_reference_seed.json')]=sha(root/'ggo_reference_seed.json')
+        protected[str(root/'ggo_live_config.json')]=sha(root/'ggo_live_config.json')
+        for name in ('rgb.png','world_xyz_mm.npy','observation.json'):
+            path=restricted.geometry_report.REFERENCE/name;protected[str(path)]=sha(path)
     if automatic_top5:protected['cloth_agent/automatic_top5.py']=sha('cloth_agent/automatic_top5.py')
     if ranking_correction:
         protected.update({p:sha(p) for p in ('cloth_agent/ranking_residual.py','cloth_agent/residual_features.py',
@@ -484,12 +569,14 @@ def run(args):
         'cloth_agent/experiments/goal_only_full_episode_v1.py',
         'cloth_agent/experiments/trajectory_memory_agent_probe.py')}
     frozen_paths=[root/'goal/target.png',root/'prompt.txt',root/'gate_prompt.txt']
-    if not candidate_mode:frozen_paths.append(root/'right_view_pose.json')
+    if restricted_mode:frozen_paths.append(root/hem_sleeve_pull_rule.CONFIG)
+    if not candidate_mode and not single_view:frozen_paths.append(root/'right_view_pose.json')
+    if ggo_seed:frozen_paths.extend([root/'ggo_reference_seed.json',root/'ggo_live_config.json'])
     frozen = {str(p.relative_to(root)): sha(p) for p in frozen_paths}
-    save(root/'protocol.json', dict(experiment=ROOT.name, model=planner.MODEL, effort=planner.EFFORT,
-        schema=restricted.SCHEMA if restricted_mode else planner.ROTATION_SCHEMA, prompt=prompt_text, max_rounds=args.max_rounds,
-        observation_views=['perception'] if candidate_mode else ['perception','right_view'],
-        input_image_count=2 if candidate_mode else 3,
+    save(root/'protocol.json', dict(depth_image=depth_image,rgb_only=rgb_only,hem_sleeve_pull_rule=hem_sleeve_rule,cv_feedback=cv_feedback, cv_geometry_refinement='disabled until calibrated', ggo_manual_geometry=bool(ggo_seed) and not getattr(args,'ggo_auto_anchors',False),ggo_auto_anchors=getattr(args,'ggo_auto_anchors',False),ggo_action_model_calls=1 if ggo_seed else None,experiment=ROOT.name, model=planner.MODEL, effort=planner.EFFORT,
+        schema=restricted.SCHEMA if restricted_mode else planner.ROTATION_SCHEMA, prompt=prompt_text, max_rounds=None if getattr(args,"unlimited_rounds",False) else args.max_rounds,
+        single_view=single_view, observation_views=['perception'] if candidate_mode or single_view else ['perception','right_view'],
+        input_image_count=2 if candidate_mode or single_view else 3,
         stateful_context_enabled=stateful_context,
         stateful_context_policy=('from the second action: current RGB + goal RGB + previous pre-action RGB; '
                                  'previous executed Pa/Pb as text; assess local effect before choosing the next action'
@@ -501,21 +588,22 @@ def run(args):
         gripper_orientation='image opening axis; adjust before grasp only; hold fixed after closing',
         view_joint_speed_cap_deg_s=one_shot_views.VIEW_SPEED_DEG_S,
         view_joint_accel_cap_deg_s2=one_shot_views.VIEW_ACCEL_DEG_S2,
-        model_overlaps_view_return=not candidate_mode,
+        model_overlaps_view_return=not candidate_mode and not single_view,
         global_gripper_boundary_prompt=planner.GRIPPER_BOUNDARY_PROMPT,
-        tools=[], tool_choice='none', retries=0, model_calls_per_round=2 if (human_preference or automatic_top5) else 1,
+        tools=[], tool_choice='none', retries=0, model_calls_per_round=2 if (human_preference or automatic_top5 or (ggo_seed and getattr(args,'ggo_auto_anchors',False))) else 1,
         no_improvement_patience=patience,max_actions=max_actions,uncertain_is_no_improvement=uncertain_counts,
         visible_sleeve_hem_enabled=restricted_mode, topn_enabled=human_preference or automatic_top5,
         request_constraints_scope='FastPlanner only; gate and optional Codex recovery logged separately',
         episode_history=False, graph=False, memory=False, frozen=frozen, protected_sources=protected,
-        initialization=('none; user-authorized continuation from current garment state' if previous else
+        initialization=('none; manual initial state' if getattr(args,'no_reset',False) else
+                        'none; user-authorized continuation from current garment state' if previous else
                         'single existing random reset primitive; direct region request; no Agent/comparison/retry'),
         initialization_center_radius_mm=float(getattr(args,'initialize_center_radius_mm',80.)),
         post_drop_press_enabled=bool(getattr(args,'press_after_drop',False)),
         post_drop_press_policy=('fresh RGB-D after free drop; central visible cloth; hard-table world Z=0; lift and reobserve'
                                 if getattr(args,'press_after_drop',False) else None),
         initialization_review_required=getattr(args, 'review_initialization', False),
-        initialization_release_policy=INITIALIZATION_RELEASE_POLICY if not previous else None,
+        initialization_release_policy=INITIALIZATION_RELEASE_POLICY if not previous and not getattr(args,'no_reset',False) else None,
         planner_framework='FAST_WITH_HOST_RECOVERY_V1' if recovery_enabled else 'FAST_WITH_SHADOW_GATE_V1',
         codex_recovery=dict(enabled=recovery_enabled, max_calls_per_episode=recovery_limit,
             max_calls_per_incident=incident_limit, timeout_s=recovery_timeout,
@@ -580,11 +668,21 @@ def run(args):
         for path in (preference.__file__,preference.pref.__file__):
             shutil.copyfile(path,source_dir/Path(path).name)
     if restricted_mode:
+        shutil.copyfile(hem_sleeve_pull_rule.__file__,source_dir/'hem_sleeve_pull_rule.py')
+        if depth_image:
+            from cloth_agent import depth_image_input
+            shutil.copyfile(depth_image_input.__file__,source_dir/'depth_image_input.py')
         shutil.copyfile(restricted.__file__,source_dir/Path(restricted.__file__).name)
         shutil.copyfile(restricted.geometry_report.__file__,source_dir/'geometry_report.py')
         shutil.copyfile(experiment_policy.__file__,source_dir/Path(experiment_policy.__file__).name)
         for path in ('cloth_agent/one_shot_depth_recovery.py','cloth_agent/experiments/arm6_depth_recovery.py'):
             shutil.copyfile(path,source_dir/Path(path).name)
+    if cv_feedback:
+        for sub in ('runtime','cv_harness'):
+            shutil.copytree(Path('cloth_agent/cloth_harness')/sub,source_dir/'cloth_harness'/sub,ignore=shutil.ignore_patterns('__pycache__'))
+    if ggo_seed:
+        ggo_snapshot=source_dir/'ggo';ggo_snapshot.mkdir()
+        for path in Path('cloth_agent/ggo').glob('*.py'):shutil.copyfile(path,ggo_snapshot/path.name)
     if automatic_top5:shutil.copyfile(auto.__file__,source_dir/Path(auto.__file__).name)
     if ranking_correction:
         for path in ('cloth_agent/ranking_residual.py','cloth_agent/residual_features.py',
@@ -595,6 +693,7 @@ def run(args):
         total_planning_s=0., total_robot_execution_s=0., rounds=[], human_fold_ready=None,
         codex_recovery_enabled=recovery_enabled, codex_recovery_calls=0,
         total_deliberative_planning_s=0.)
+    summary['single_view']=single_view
     summary['human_preference_enabled']=human_preference
     summary['automatic_top5_enabled']=automatic_top5
     summary['stateful_context_enabled']=stateful_context
@@ -606,6 +705,10 @@ def run(args):
     save(root/'episode_summary.json', summary)
     runtime = None; folder = None; history = []; started = time.monotonic()
     pending_recovery = None
+    pending_same_prompt_joints = None
+    pending_retry_feedback = None
+    summary['same_prompt_retry_enabled'] = same_prompt_retry
+    summary['same_prompt_retries_scheduled'] = 0
     fast_planner = FastPlanner(plan_round)
     if previous:
         continuation = dict(source_episode=str(source), source_summary_sha256=sha(source/'episode_summary.json'),
@@ -641,23 +744,24 @@ def run(args):
     try:
         headers = planner.auth_headers()  # Local read only; before connecting hardware.
         runtime = EpisodeCollectionRuntime(args.config)
-        if not candidate_mode:
+        if not candidate_mode and not single_view:
             one_shot_views.view_target(runtime, read(root/'right_view_pose.json'))
-        if previous:
-            print('CONTINUE from current state; no reset; fresh RGB-D; no model history', flush=True)
+        if previous or getattr(args,'no_reset',False):
+            print('MANUAL INITIAL STATE; reset disabled' if getattr(args,'no_reset',False) else 'CONTINUE from current state; no reset; fresh RGB-D; no model history', flush=True)
             startup = time.monotonic()
             runtime.observe(root/'startup_observation')
             summary['startup_observation_s'] = time.monotonic()-startup
         else:
             print('INITIALIZE one existing random pick-up/drop; direct region request; no retries', flush=True)
             init_options={}
+            if getattr(args,'initialize_seed',None) is not None:init_options['seed']=args.initialize_seed
             if getattr(args,'initialize_center_radius_mm',80.)!=80.:
                 init_options['center_radius_mm']=args.initialize_center_radius_mm
             if getattr(args,'press_after_drop',False):init_options['press_after_drop']=True
             initialize(runtime, root/'initialization', headers, args.timeout_s,**init_options)
             if getattr(args, 'review_initialization', False):
                 wait_initialization_review(runtime, root)
-        for index in range(args.max_rounds):
+        for index in episode_round_indices(args):
             folder = root/f'round_{index:03d}'; folder.mkdir()
             timing = dict(planning_s=0., robot_execution_s=0., host_planning_s=0., observation_s=0.,
                           fast_planner_wall_s=0., gate_wall_s=0., host_validation_s=0., total_round_s=0.,
@@ -674,12 +778,23 @@ def run(args):
             save(folder/'gate_status.json', dict(status='NOT_RUN', mode='SHADOW', affects_execution=False))
             began = time.monotonic(); phase = 'OBSERVATION'
             try:
+                if pending_same_prompt_joints is not None:
+                    codex_recovery.check_stationary(runtime, pending_same_prompt_joints,
+                                                   folder/'same_prompt_preflight.json')
+                    pending_same_prompt_joints = None
+                if pending_retry_feedback is not None:
+                    save(folder/'retry_feedback.json', pending_retry_feedback)
+                    pending_retry_feedback = None
                 if recovery_request:
                     if not all(sha(p) == digest for p, digest in recovery_sources.items()):
                         raise DualArmError('frozen recovery source changed')
                     codex_recovery.check_stationary(runtime, recovery_request['expected_joints'],
                                                    folder/'recovery_preflight.json')
                 capture = time.monotonic(); before = runtime.capture_current(folder/'before')
+                if depth_image:
+                    from cloth_agent.depth_image_input import capture_pair
+                    pair_started=time.monotonic();capture_pair(runtime,before,folder)
+                    timing['depth_pair_s']=time.monotonic()-pair_started
                 timing['observation_s'] += time.monotonic()-capture
                 if not all(sha(root/p) == value for p, value in frozen.items()):
                     raise DualArmError('frozen goal/prompt changed')
@@ -705,9 +820,9 @@ def run(args):
                         save(folder/'previous_context_continuity.json',dict(
                             passed=same,previous_after_sha256=sha(latest['after']),
                             current_sha256=sha(before.image),rgb_q95=gap,threshold=8,
-                            source_round=latest['source_round']))
-                        if not same:
-                            raise DualArmError('garment changed since previous action outcome; previous-action context invalid')
+                            source_round=latest['source_round'],mode='DIAGNOSTIC_ONLY',
+                            affects_execution=False,
+                            interpretation='RGB difference is not proof of garment motion; current observation is authoritative'))
                         score_options['previous_context']=dict(source_round=latest['source_round'],
                             before_image=latest['before'],after_image=latest['after'],plan=latest['plan'],
                             completed_commands=latest.get('completed_commands'))
@@ -741,9 +856,12 @@ def run(args):
                     if automatic_top5:auto.render_round(folder)
                 else:
                     phase = 'MODEL'; print(f'ROUND {index:03d} ONE_SHOT', flush=True)
-                    plan, metrics = one_shot_views.plan_with_right_view(
-                        runtime, root, folder, before,
-                        lambda: fast_planner.plan(root, folder, before, headers, args.timeout_s), timing)
+                    if single_view:
+                        plan, metrics = fast_planner.plan(root, folder, before, headers, args.timeout_s)
+                    else:
+                        plan, metrics = one_shot_views.plan_with_right_view(
+                            runtime, root, folder, before,
+                            lambda: fast_planner.plan(root, folder, before, headers, args.timeout_s), timing)
                     timing['planning_s'] = metrics['wall_latency_s']
                     timing['fast_planner_wall_s'] = metrics['wall_latency_s']
                     router.accept_fast(plan)
@@ -783,7 +901,10 @@ def run(args):
                     summary.update(termination_reason=plan['decision'], termination_detail=plan['short_reason'])
                     item['execution']['status'] = 'NO_ACTION_'+plan['decision']
                     runtime.capture_current(folder/'after'); break
-                if not recovery_request:
+                if ggo_seed or cv_feedback:
+                    save(folder/'gate_result.json',dict(decision='UNCERTAIN'))
+                    save(folder/'gate_status.json',dict(status='NOT_APPLICABLE',mode='SHADOW',affects_execution=False,model_called=False,reason='GGO pilot: one action model call, all Host checks retained'))
+                elif not recovery_request:
                     phase = 'SHADOW_GATE'
                     print(f'ROUND {index:03d} SHADOW_GATE (no routing authority)', flush=True)
                     gate = PreActionGate(folder, headers, direct_once, getattr(args, 'gate_timeout_s', 120.))
@@ -815,16 +936,19 @@ def run(args):
                     if candidate_mode:
                         execution_before=runtime.capture_current(folder/('pre_execution_observation' if (automatic_top5 or restricted_mode) else 'after_human_review'))
                         preference.verify_scene(before,execution_before,plan,folder,**({'automatic':True} if (automatic_top5 or restricted_mode) else {}))
+                    if cv_feedback:
+                        restricted.verify(execution_before,plan,folder)
                     missing_grasp_depth = None
                     if restricted_mode:
                         try:execution_before.sample(plan['grasp_px'],None)
                         except DepthUnavailableError as exc:missing_grasp_depth=exc
                     if missing_grasp_depth is not None:
+                        if cv_feedback or (ggo_seed and not getattr(args,'ggo_auto_anchors',False)):raise missing_grasp_depth
                         from cloth_agent import one_shot_depth_recovery
                         before,execution_before,plan,prepared=one_shot_depth_recovery.recover(
                             runtime,root,folder,execution_before,plan,missing_grasp_depth,
                             headers,args.timeout_s,getattr(args,'gate_timeout_s',120.),direct_once,
-                            prepare_action,score_options.get('previous_context'),timing,history=history)
+                            prepare_action,score_options.get('previous_context'),timing,history=history,**({'planner_override':restricted} if ggo_seed else {}))
                         operations,initial=prepared if prepared is not None else (None,None)
                         host_validation.update(plan_sha256=sha(folder/'plan.json'),
                             fast_plan_sha256=sha(folder/'fast_plan.json'),depth_view_recovered=True)
@@ -832,7 +956,7 @@ def run(args):
                         operations, initial = prepare_action(runtime, execution_before, plan, folder)
                 except DualArmError as exc:
                     # Retry only geometric target rejection, before any dispatch. One attempt.
-                    if not restricted_mode or not str(exc).startswith(('table-target fallback rejected:','smoothing action rejected:')):
+                    if cv_feedback or (ggo_seed and not getattr(args,'ggo_auto_anchors',False)) or not restricted_mode or not str(exc).startswith(('table-target fallback rejected:','smoothing action rejected:')):
                         raise
                     archive=folder/'target_replan'/'original';archive.mkdir(parents=True)
                     for path in list(folder.iterdir()):
@@ -929,12 +1053,14 @@ def run(args):
                 recorder.check(); phase = 'AFTER_OBSERVATION'
                 capture = time.monotonic(); runtime.capture_current(folder/'after')
                 timing['observation_s'] += time.monotonic()-capture
+                if cv_feedback:
+                    timing['cv_outcome_s']=restricted.record_outcome(execution_before,folder/'after',plan,item['execution'],folder)
                 item['execution']['acquisition'] = 'UNKNOWN_PENDING_HUMAN_REVIEW'
                 history.append(dict(plan=plan,before=before.image,after=folder/'after/rgb.png',
                                     source_round=folder.name,completed_commands=execution.get('completed_commands'),
                                     acquisition='UNKNOWN_PENDING_HUMAN_REVIEW'))
                 # History is used only by the repetition guard unless previous-action context is enabled.
-                if index == args.max_rounds-1:
+                if not another_round_available(args,index):
                     summary.update(termination_reason='ROUND_LIMIT', termination_detail='Configured maximum reached')
             except BaseException as exc:
                 if isinstance(exc, one_shot_views.ViewError):
@@ -951,15 +1077,46 @@ def run(args):
                 item['execution'].update(status=status, error=f'{type(exc).__name__}: {exc}', failure_phase=phase)
                 if status == 'SAFETY_REJECTED': summary['safety_rejections'] += 1
                 category = codex_recovery.recovery_category(exc, phase, item['execution']['physical_execution'])
+                if same_prompt_retry:
+                    eligible_retry = bool(category)
+                    schedule_retry = eligible_retry and another_round_available(args,index)
+                    save(folder/'same_prompt_retry.json', dict(category=category,
+                        eligible=eligible_retry, scheduled=schedule_retry,
+                        remaining_iterations=None if getattr(args,"unlimited_rounds",False) else args.max_rounds-index-1,
+                        original_action_executed=item['execution']['physical_execution'],
+                        model_prompt_unchanged=True,
+                        error_feedback_supplied=False,
+                        next_request_feedback_scheduled=bool(schedule_retry and retry_plan_feedback),
+                        side_view_motion=False))
+                    if eligible_retry:
+                        save(folder/'after/unavailable.json', dict(reason='Rejected before dispatch; no physical action'))
+                        if schedule_retry:
+                            pending_same_prompt_joints = before.meta['joints_deg']
+                            if retry_plan_feedback:
+                                pending_retry_feedback = dict(
+                                    source_round=folder.name,
+                                    rejected_plan=plan if plan is not None else (
+                                        read(folder/'plan.json') if (folder/'plan.json').exists() else None),
+                                    rejection_category=category, rejection_reason=f'{type(exc).__name__}: {exc}',
+                                    physical_execution=False,
+                                    observation_sha256=sha(before.image))
+                            summary['same_prompt_retries_scheduled'] += 1
+                            item['execution']['same_prompt_retry_scheduled'] = True
+                            retry_note = ' + last rejected plan/reason' if retry_plan_feedback else ''
+                            print(f'ROUND {index:03d} rejected ({category}); same base prompt{retry_note}, fresh observation next round', flush=True)
+                            continue
+                        summary.update(termination_reason='ROUND_LIMIT',
+                            termination_detail='Iteration budget exhausted after pre-dispatch rejection')
+                        break
                 attempt = (recovery_request['attempt']+1) if recovery_request else 1
                 eligible = bool(recovery_enabled and category)
                 can_schedule = (eligible and attempt <= incident_limit
-                    and summary['codex_recovery_calls'] < recovery_limit and index+1 < args.max_rounds)
+                    and summary['codex_recovery_calls'] < recovery_limit and another_round_available(args,index))
                 if recovery_enabled:
                     save(folder/'recovery_eligibility.json', dict(category=category, eligible=eligible,
                         scheduled=can_schedule, next_attempt=attempt, max_per_incident=incident_limit,
                         used_episode_calls=summary['codex_recovery_calls'], max_episode_calls=recovery_limit,
-                        another_round_available=index+1 < args.max_rounds))
+                        another_round_available=another_round_available(args,index)))
                 if can_schedule:
                     failure = dict(round=folder.name, category=category, phase=phase,
                         error=f'{type(exc).__name__}: {exc}',
@@ -982,6 +1139,7 @@ def run(args):
                                             +timing.get('depth_recovery_prior_planning_s',0.))
                     timing['fast_planner_wall_s'] = timing['planning_s']
                     timing['geometry_report_s'] = read(folder/'model_metrics.json').get('geometry_wall_s',0.)
+                    timing['annotation_wait_s'] = read(folder/'model_metrics.json').get('annotation_wait_s',0.)
                     timing['structure_grounding_model_s'] = read(folder/'model_metrics.json').get('structure_model_wall_s',0.)
                     timing['structure_stage_s'] = read(folder/'model_metrics.json').get('structure_wall_s',0.)
                     timing['action_model_s'] = read(folder/'model_metrics.json').get('action_model_wall_s',timing['planning_s'])
@@ -1069,9 +1227,17 @@ def main():
     parser.add_argument('--goal-image', type=Path, default=DEFAULT_GOAL)
     parser.add_argument('--config', type=Path, default=Path('config/dual_arm.local.json'))
     parser.add_argument('--max-rounds', type=int, default=12)
+    parser.add_argument('--unlimited-rounds',action='store_true',help='single-view loop without a round cap; DONE, faults and user stop still terminate')
     parser.add_argument('--timeout-s', type=float, default=600.)
     parser.add_argument('--gate-timeout-s', type=float, default=120.,
                         help='independent shadow gate request timeout; errors do not replace or block the fast action')
+    parser.add_argument('--initialize-seed',type=int,help='recorded reset seed; does not reproduce physical cloth state')
+    parser.add_argument('--single-view', action='store_true', help='perception RGB plus static goal; no right-view tour')
+    parser.add_argument('--same-prompt-retry', action='store_true',
+                        help='allowlisted pre-dispatch rejection consumes next iteration; no error feedback')
+    parser.add_argument('--retry-plan-feedback', action='store_true',
+                        help='include last rejected plan and reason in the next retry input')
+    parser.add_argument('--no-reset',action='store_true',help='skip random initialization; observe the manually arranged current state')
     parser.add_argument('--review-initialization', action='store_true',
                         help='wait stationary for image-bound initialization/review_decision.json')
     parser.add_argument('--initialize-center-radius-mm',type=float,default=80.,
@@ -1090,6 +1256,13 @@ def main():
     parser.add_argument('--no-improvement-patience',type=int,default=0)
     parser.add_argument('--max-actions',type=int,default=0,help='requires an additional final observation round')
     parser.add_argument('--uncertain-is-no-improvement',action='store_true')
+    parser.add_argument('--ggo-reference-annotations',type=Path,help='manual GGO pilot; only max-rounds=1; one action model call')
+    parser.add_argument('--depth-image',action='store_true',help='add world Z image only; capture closed-gripper frame to fill measured holes at perception')
+    parser.add_argument('--rgb-only',action='store_true',help='original contextual policy without geometry reports or structure grounding')
+    parser.add_argument('--hem-sleeve-pull-rule',action='store_true',help='opt-in hem rule plus friction-based opposite-sleeve prompt')
+    parser.add_argument('--cv-feedback',action='store_true',help='one GPT call, local geometry checks and observed outcome feedback; no automatic model replan')
+    parser.add_argument('--ggo-auto-anchors',action='store_true')
+    parser.add_argument('--ggo-port',type=int,default=8781)
     parser.add_argument('--visible-sleeve-hem',action='store_true',help='single contextual action; only visible sleeve/hem grasps; no TopN')
     parser.add_argument('--automatic-top5',action='store_true',help='save Ps/Pt Top5; execute explicit GPT choice without learned preferences')
     parser.add_argument('--stateful-context',action='store_true',
@@ -1107,8 +1280,8 @@ def main():
         parser.error('stop limits must be nonnegative')
     if args.max_actions and args.max_rounds<args.max_actions+1:
         parser.error('max-rounds must include final action assessment: at least max-actions+1')
-    if not 0<args.initialize_center_radius_mm<=80:
-        parser.error('initialization center radius must be in (0,80] mm')
+    if not 0<=args.initialize_center_radius_mm<=80:
+        parser.error('initialization center radius must be in [0,80] mm')
     if not 1 <= args.max_codex_replans <= 8 or not 1 <= args.max_replans_per_incident <= 4 or not 0 < args.codex_timeout_s <= 1200:
         parser.error('invalid recovery limits')
     if not 0<=args.preference_port<=65535 or not 0<args.preference_timeout_s<=7200:

@@ -12,7 +12,7 @@ from . import trajectory_memory_full_episode_v1 as shared
 from . import trajectory_memory_agent_probe as visuals
 
 ROOT = Path("reports/goal_only_full_episode_v1")
-DEFAULT_GOAL = Path("reports/trajectory_memory_full_episode_v1_collection_aligned/round_006/after/rgb.png")
+DEFAULT_GOAL = Path("data/reference/deployment_example/ggo_goal.png")
 PROMPT = """你是单臂真实衣物操作的自由探索 Agent。本实验没有任何人工示范或历史 trajectory memory。
 附图第一张 /work/query.png 是当前观察，第二张 /goal/target.png 是唯一目标状态。
 完整当前 RGB-D 在 /observation：world_xyz_mm.npy 与当前 RGB 对齐，单位 World 毫米，NaN 表示缺深度。

@@ -6,26 +6,34 @@ import shutil
 import time
 from PIL import Image
 from cloth_agent import preference_one_shot as shared
-from cloth_agent import geometry_report
+from cloth_agent import geometry_report, hem_sleeve_pull_rule
 from cloth_agent.experiments import one_shot_goal_planner_probe_v1 as io
 
 PROMPT = """你是衣物展开的单步规划器。第一张是当前RGB，第二张是展平目标；如有第三张，则是上一动作前图，并附有实际执行动作，仅作为上下文。
-只输出一个动作，不生成候选、不评分，不输出结构分析、上一动作效果评价、动作关系解释或风险分析。
+只输出一个动作，不生成候选、不评分，不输出长篇结构分析、上一动作效果评价或风险分析。
 只能抓当前图中可见的衣袖或者下摆。不能抓领口、肩部或衣身内部，不猜隐藏点。
+显露单侧隐藏下摆角的特例：当能够确认只有一侧下摆角隐藏时，可以考虑抓取隐藏侧当前仍可接近的外露边缘，朝衣身中心进行一次足够大幅度的翻折，使原本位于下层的真实衣角暴露出来。此操作的目标是显露衣角，不是立即展平衣服。只有存在可靠抓取位置且动作满足机器人约束时才能使用。此特例允许抓取上述外露边缘，不要求它已经是真实衣角；不得猜测或直接抓隐藏点。此特例的action_purpose必须以HEM_REVEAL:开头并写明显露衣角，is_smoothing=false。仅此特例允许Pb位于衣物上，Host必须取得可靠的目标布面深度，并按布面高度放置；普通动作仍要求Pb位于裸桌面。expected_stop_state写真实衣角变得可见；幅度仍须遵守Host边界，不因显露目的而绕过限制。
 避免只夹最外沿的一小撮；在同一可见衣袖或下摆边缘带稍向布面内侧选点，以夹入足够布料，避免明显多层堆叠。这是调整Pa，不是额外下压。
 若目标袖子或下摆角不可见，可抓清楚可见的对侧对应部位；一侧收缩且临近桌面边界时，也可通过拉已展开的对侧间接展开。不机械镜像坐标或固定方向。
 所有坐标使用第一张原图，左上原点，x向右、y向下，整数像素；目标图或历史图的坐标不能直接复用。
 仅使用lift_pull_place。is_smoothing为布尔值：仅对残余小褶皱作小幅整理时true；解除明显折叠、释放内收部位时false。已基本展开时优先DONE，不为了普通小皱纹反复整理。
-常规动作抬升至抓点/目标表面较高者上方50毫米，平移10–150毫米；整理动作抬升至较高表面上方10毫米，平移10–30毫米。Host按实测毫米检查，超限不执行；仅抓前可调整夹爪方向，持布时不旋转。附带Geometry Report来自本轮RGB-D的本地计算，不臆造像素到毫米换算；几何可行性仍由Host检查。
+常规动作抬升至抓点/目标表面较高者上方20毫米，平移10–150毫米；整理动作抬升至较高表面上方10毫米，平移10–30毫米。Host按实测毫米检查，超限不执行；仅抓前可调整夹爪方向，持布时不旋转。附带Geometry Report来自本轮RGB-D的本地计算，不臆造像素到毫米换算；几何可行性仍由Host检查。
 几何报告仅作辅助：轮廓候选不是已识别的下摆，需结合RGB辨认；未知长度保持未知，不根据候选跨度比直接决定DONE。报告不可用时按RGB规划，不猜隐藏长度。不要求复述报告或增加输出字段。
 结构距离报告按对应部位给出八段直线距离、桌面XY距离/三维距离及相对展平参考比值。选择Pa前必须结合当前RGB复核候选部位身份：例如左下摆清晰但右侧候选不清楚，检查下摆两角跨度和候选到右腋下的距离。多段距离异常或边缘连接关系不符时降低身份置信度，不把折角冒充右下摆；优先改选清晰可见的对侧衣袖/下摆，无可靠抓点则ABSTAIN。短距离可能是真实折叠，也可能认错点，不能单独判假或判DONE。HIDDEN/UNCERTAIN、无效深度的点及相关长度均未知，不补全、不猜毫米。结构识别结果也是视觉假设，须复核，不作为真值；换到未被测量的新候选时不得套用原点距离。short_reason简短说明所抓部位；若因身份不可靠改选对侧，点明原因。
 只做一个简单完成判断：主要衣身、双袖和下摆已基本展开、没有明显内收或大片覆盖时DONE，允许普通小皱纹；仍需展开时ACTION；无法可靠选择动作时ABSTAIN。
-ACTION输出Pa、Pb、grasp_angle_deg、is_smoothing和一句简短动作理由；DONE/ABSTAIN时is_smoothing=false，坐标、角度和motion_type均为null，short_reason简短说明判断。
+选择Pa、Pb前，先明确action_purpose（希望哪个部位发生什么变化）和expected_stop_state（出现什么可见状态就达到本动作目的），各用一句短句。区分展开所抓部位、显露对向被遮挡部位、通过所抓部位间接展开其他区域；不要仅写“向外拉开”。根据当前衣服朝向、布层关系和动作目的自行生成Pb与所需幅度，达到目的即可，避免继续牵拉已经展开的布料。不要把抓袖子固定等同于大幅拉动，也不要固定认为显露对向必然需要长拉。不新增统一距离限制，仍遵守已有Host运动边界。expected_stop_state是规划的预期状态，不表示执行中有视觉闭环停止。
+ACTION输出action_purpose、expected_stop_state、Pa、Pb、grasp_angle_deg、is_smoothing和一句简短动作理由；DONE/ABSTAIN时两个目的字段为null，is_smoothing=false，坐标、角度和motion_type均为null，short_reason简短说明判断。
 历史图可能来自不同视角；不要把相机视角变化当成衣服移动。只输出指定JSON。
 """ + io.GRASP_ANGLE_PROMPT + io.GRIPPER_BOUNDARY_PROMPT
 SCHEMA = copy.deepcopy(io.ROTATION_SCHEMA)
 SCHEMA["properties"]["is_smoothing"]={"type":"boolean"}
 SCHEMA["required"].append("is_smoothing")
+for _field in ('action_purpose','expected_stop_state'):
+    SCHEMA['properties'][_field]={'type':['string','null'],'minLength':1,'maxLength':240}
+    SCHEMA['required'].append(_field)
+SCHEMA['properties']={k:SCHEMA['properties'][k] for k in
+                      ['action_purpose','expected_stop_state',*[k for k in SCHEMA['properties']
+                       if k not in ('action_purpose','expected_stop_state')]]}
 REPORTS_PREVIOUS_EFFECT = False
 
 
@@ -34,19 +42,26 @@ def validate(output, size, contextual):
     io.validate_plan({k:output[k] for k in io.ROTATION_SCHEMA["properties"]},size,require_grasp_rotation=True)
     if output["decision"]!="ACTION" and output["is_smoothing"]:
         raise ValueError("non-ACTION is_smoothing must be false")
+    for field in ('action_purpose','expected_stop_state'):
+        value=output[field]
+        if output['decision']=='ACTION' and (not isinstance(value,str) or not value.strip()):
+            raise ValueError('ACTION requires '+field)
+        if output['decision']!='ACTION' and value is not None:
+            raise ValueError('non-ACTION '+field+' must be null')
     return dict(output)
 
 
 def plan_round(root,folder,before,headers,timeout_s,direct,previous_context=None,*,view_change=False,rejection_feedback=None):
-    body=shared.make_payload(root,folder,before,PROMPT,SCHEMA,
+    body=shared.make_payload(root,folder,before,hem_sleeve_pull_rule.apply(root,PROMPT),SCHEMA,
         extra=('本次为抓点缺失深度后的换视角重规划：只移动了相机，尚未执行本轮衣物动作。必须在第一张新图中重新选择Pa/Pb，禁止复用旧像素；深度是否可用仍由Host检查。' if view_change else ''),
         previous_context=previous_context,assess_previous_effect=False)
-    geometry=geometry_report.build(before,root/'goal/target.png',folder)
-    body['input'][0]['content'].append(dict(type='input_text',text='Geometry Report（当前RGB-D自动计算；辅助证据，不是动作或DONE结论）：\n'+geometry_report.prompt_report(geometry)))
+    rgb_only=hem_sleeve_pull_rule.rgb_only(root)
+    geometry={'wall_s':0.,'status':'DISABLED_RGB_ONLY'} if rgb_only else geometry_report.build(before,root/'goal/target.png',folder)
+    if not rgb_only:body['input'][0]['content'].append(dict(type='input_text',text='Geometry Report（当前RGB-D自动计算；辅助证据，不是动作或DONE结论）：\n'+geometry_report.prompt_report(geometry)))
     structure_started=time.perf_counter()
     structure_metrics=None
     structure=dict(status='UNAVAILABLE',reason='no verified current/reference RGB-D')
-    if hasattr(before,'xyz') and geometry.get('reference',{}).get('source'):
+    if not rgb_only and hasattr(before,'xyz') and geometry.get('reference',{}).get('source'):
         structure_folder=folder/'structure_grounding'
         structure_folder.mkdir(parents=True,exist_ok=False)
         structure_body=shared.make_payload(root,structure_folder,before,geometry_report.STRUCTURE_PROMPT,
@@ -67,22 +82,24 @@ def plan_round(root,folder,before,headers,timeout_s,direct,previous_context=None
         structure=geometry_report.build_structure(before,root/'goal/target.png',landmarks,folder)
     structure['wall_s']=round(time.perf_counter()-structure_started,4)
     io.save(folder/'structure_report.json',structure)
-    body['input'][0]['content'].append(dict(type='input_text',text='结构直线距离与候选部位身份复核（视觉假设，不是真值）：\n'+json.dumps(structure,ensure_ascii=False)))
+    if not rgb_only:body['input'][0]['content'].append(dict(type='input_text',text='结构直线距离与候选部位身份复核（视觉假设，不是真值）：\n'+json.dumps(structure,ensure_ascii=False)))
     if rejection_feedback is not None:
         body['input'].append(dict(role='user',content=[dict(type='input_text',text=
             '上一个候选在执行前被Host拒绝，衣服动作没有执行。这不表示动作已产生效果。'
             '请根据新图与以下错误重新规划一次，修正违反约束的坐标，不要重复被拒绝动作；'
             '不可因拒绝而声称衣服已展开，无可行动作时ABSTAIN。\n'+json.dumps(rejection_feedback,ensure_ascii=False))]))
         io.save(folder/'rejection_feedback.json',rejection_feedback)
+    from cloth_agent.depth_image_input import append_image,enabled as depth_enabled
+    append_image(root,folder,before,body)
     body['text']['format']['name']='restricted_context_action'
     if previous_context:
         io.save(folder/'previous_action_context.json',{**previous_context,
             'before_image':str(previous_context['before_image']),'after_image':str(previous_context['after_image'])})
         shutil.copyfile(previous_context['before_image'],folder/'context_previous_before.png')
     io.save(folder/'request_manifest.json',dict(model=io.MODEL,effort=io.EFFORT,
-        input_image_count=3 if previous_context else 2,model_calls=2 if structure_metrics is not None else 1,topn_enabled=False,
+        input_image_count=(3 if previous_context else 2)+int(depth_enabled(root)),model_calls=2 if structure_metrics is not None else 1,topn_enabled=False,
         current_sha256=io.sha(before.image),goal_sha256=io.sha(root/'goal/target.png'),
-        output_mode='compact_action',previous_effect_enabled=False,geometry_report='geometry_report.json',
+        output_mode='compact_action',previous_effect_enabled=False,rgb_only=rgb_only,geometry_report=None if rgb_only else 'geometry_report.json',
         geometry_wall_s=geometry['wall_s'],structure_report='structure_report.json',structure_wall_s=structure['wall_s'],
         previous_action_context=bool(previous_context),grasp_regions=['visible_sleeve','visible_bottom_hem']))
     output,metrics=direct(folder,body,headers,timeout_s)
@@ -137,7 +154,7 @@ def render_round(folder):
         opposite=d['opposite_grasp']
         parts.append('<p><b>对向抓取：</b>'+html.escape(opposite['hidden_part']+' 不可见 → '+opposite['selected_part'])+'</p>')
         parts.append('<p><b>可见性依据：</b>'+html.escape(opposite['evidence'])+'</p>')
-    for key,label in [('decision','决定'),('is_smoothing','小幅整理'),('short_reason','选择理由'),('grasp_region','抓取部位'),
+    for key,label in [('decision','决定'),('action_purpose','动作目的'),('expected_stop_state','预期停止状态'),('is_smoothing','小幅整理'),('short_reason','选择理由'),('grasp_region','抓取部位'),
                       ('grounding_evidence','部位识别依据'),('expected_change','预计变化'),('failure_risk','风险'),
                       ('previous_effect','上一动作实际效果'),('completion_check','停止条件')]:
         if key in d:parts.append('<p><b>'+label+'：</b>'+html.escape(str(d[key]))+'</p>')

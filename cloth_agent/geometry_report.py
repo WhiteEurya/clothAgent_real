@@ -4,6 +4,7 @@ V1 is specialized to the existing purple garment on a dark table. Contours are
 visible silhouette candidates, NOT anatomical hem paths or hidden cloth lengths.
 """
 from pathlib import Path
+import os
 import hashlib
 import json
 import time
@@ -12,7 +13,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 VERSION='PURPLE_VISIBLE_GEOMETRY_V1'
-REFERENCE=Path(__file__).resolve().parents[1]/'reports/trajectory_memory_full_episode_v1_collection_aligned/round_006/after'
+REFERENCE=Path(os.environ.get('CLOTH_GEOMETRY_REFERENCE',
+    Path(__file__).resolve().parents[1]/'data/reference/deployment_example/observation')).expanduser().resolve()
 _REFERENCE_CACHE={}
 
 

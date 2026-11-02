@@ -61,7 +61,7 @@ class CollectionRuntime(SingleArmRuntime):
             live_feedback=False)}
         return config
 
-    def _tcp_segments(self, k, pose, q, *, allow_detour=False):
+    def _tcp_segments(self, k, pose, q, *, allow_detour=False, apply_joint_speed_cap=True):
         from .queued_motion import CartesianPositionSegment
         from .dual_arm.geometry import matrix_pose, pose_matrix
         segments, final = super()._tcp_segments(k, pose, q, allow_detour=False)
@@ -77,7 +77,7 @@ class CollectionRuntime(SingleArmRuntime):
             step = float(np.linalg.norm(np.asarray(b[:3])-a[:3]))
             distance += step
             joint_delta = float(np.max(np.abs(segment.end[k]-segment.start[k])))
-            if step > 1e-6 and joint_delta > 1e-6:
+            if apply_joint_speed_cap and step > 1e-6 and joint_delta > 1e-6:
                 speed = min(speed, step / joint_delta * segment.speed)
         target = matrix_pose(np.linalg.inv(self.config.arms[k].world_from_base) @
                             pose_matrix(np.r_[np.asarray(pose[:3])*1000,np.degrees(pose[3:])]))

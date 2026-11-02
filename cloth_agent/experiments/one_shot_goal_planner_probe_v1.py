@@ -116,7 +116,7 @@ def payload(current, target, size, *, right_view=None, allow_grasp_rotation=Fals
         store=False, stream=True)
 
 
-def validate_plan(plan, size, *, require_grasp_rotation=False):
+def validate_plan(plan, size, *, require_grasp_rotation=False, require_single_sentence=True):
     rotated = require_grasp_rotation or 'grasp_angle_deg' in plan
     jsonschema.validate(plan, ROTATION_SCHEMA if rotated else SCHEMA)
     if rotated:
@@ -136,7 +136,7 @@ def validate_plan(plan, size, *, require_grasp_rotation=False):
     if not plan["short_reason"].strip():
         raise ValueError("empty short_reason")
     import re
-    if len([s for s in re.split(r"[。！？!?]+", plan["short_reason"]) if s.strip()]) > 1:
+    if require_single_sentence and len([s for s in re.split(r"[。！？!?]+", plan["short_reason"]) if s.strip()]) > 1:
         raise ValueError("short_reason exceeds one sentence")
 
 

@@ -30,7 +30,7 @@ SCHEMA["properties"]["decision"]["enum"] = ["ACTION", "DONE", "ABSTAIN"]
 SCHEMA["properties"]["motion_type"] = {"type": ["string", "null"]}
 SCHEMA["properties"]["grasp_px"]["anyOf"][0]["items"] = {"type": "integer"}
 SCHEMA["properties"]["target_px"]["anyOf"][0]["items"] = {"type": "integer"}
-MOTION = dict(grasp_offset_mm=-15., approach_height_mm=50., lift_height_mm=50.,
+MOTION = dict(grasp_offset_mm=-15., approach_height_mm=50., lift_height_mm=20.,
               clearance_mm=30., place_offset_mm=5., min_translation_mm=10.,
               max_translation_mm=150., orientation="existing collection Home TCP orientation",
               placement_release="existing staged_place_release, 180 pulses")
@@ -409,7 +409,7 @@ def prepare_action(runtime, before, plan, folder, *, target_sampler=None, orient
     if orientation_resolver is not None:
         rpy = orientation_resolver(runtime, before, plan, a, rpy, folder)
     source = automatic_program(runtime, a, b, rpy, approach_height=50., grasp_offset=-15.,
-                               lift_height=10. if smoothing else 50., clearance=30., place_offset=5.)
+                               lift_height=10. if smoothing else 20., clearance=30., place_offset=5.)
     (folder/"motion.py").write_text(source)
     primitive = dict(MOTION)
     if smoothing:primitive.update(lift_height_mm=10.,max_translation_mm=30.)

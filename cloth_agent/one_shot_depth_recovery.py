@@ -12,8 +12,9 @@ from .unfolding_planners import ShadowPlannerRouter
 
 
 def recover(runtime,root,folder,observation,plan,error,headers,timeout_s,gate_timeout_s,
-            direct,prepare,previous_context,timing,*,history=None):
+            direct,prepare,previous_context,timing,*,history=None,planner_override=None):
     """Called only for missing measured Pa depth before dispatch; no grasp retries."""
+    active_planner=planner_override or planner
     recovery=folder/'depth_recovery'
     # Archive the original proposal before publishing a new view/plan as canonical.
     recovery.mkdir(exist_ok=False)
@@ -33,7 +34,7 @@ def recover(runtime,root,folder,observation,plan,error,headers,timeout_s,gate_ti
         active_attempt=attempt
         shutil.copytree(fresh.directory,attempt/'before')
         try:
-            new_plan,_=planner.plan_round(root,attempt,fresh,headers,timeout_s,direct,
+            new_plan,_=active_planner.plan_round(root,attempt,fresh,headers,timeout_s,direct,
                                          previous_context,view_change=True)
         finally:
             timing['depth_recovery_model_calls']+=1

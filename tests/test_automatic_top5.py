@@ -179,6 +179,34 @@ def test_batch_continues_first_episode_without_reset_or_press(tmp_path,monkeypat
     assert batch.base.json.loads((out/'protocol.json').read_text())['stateful_context'] is True
 
 
+@pytest.mark.parametrize('termination,expected',[('ROUND_LIMIT',3),('DONE',3),('SAFETY_STOP',1),('USER_STOP',1),('ABSTAIN',1)])
+def test_auto_next_runs_normal_trials_and_stops_on_failure(tmp_path,monkeypatch,termination,expected):
+    class Server:
+        def shutdown(self):pass
+        def server_close(self):pass
+    monkeypatch.setattr(batch,'serve',lambda *a:Server())
+    commands=[]
+    def launch(command,log,control):
+        commands.append(command)
+        assert command[command.index('--max-rounds')+1]=='13'
+        assert command[command.index('--max-actions')+1]=='12'
+        assert '--ggo-auto-anchors' in command
+        radius=float(command[command.index('--initialize-center-radius-mm')+1])
+        assert 20<=radius<=40
+        assert batch.base.json.loads((log.parent/(log.name.replace('.run.log','.reset_radius.json'))).read_text())['radius_mm']==radius
+        folder=__import__('pathlib').Path(command[command.index('--output')+1]);folder.mkdir()
+        batch.base.save(folder/'episode_summary.json',dict(termination_reason=termination,finished_at='test'))
+        return 0
+    monkeypatch.setattr(batch.base,'launch_episode',launch)
+    goal=tmp_path/'goal.png';Image.new('RGB',(100,100)).save(goal)
+    config=tmp_path/'config.json';config.write_text('{}')
+    batch.run(SimpleNamespace(output=tmp_path/'batch',episodes=3,max_rounds=13,max_actions=12,port=8770,
+                             goal_image=goal,config=config,auto_next=True,visible_sleeve_hem=True,
+                             ggo_auto_anchors=True,ggo_reference_annotations=config,ggo_port=8781,
+                             initialize_center_radius_range_mm=[20,40]))
+    assert len(commands)==expected
+
+
 def test_contextual_scoring_uses_previous_clean_image_and_records_effect(tmp_path,monkeypatch):
     from cloth_agent.experiments import one_shot_goal_planner_probe_v1 as io
     (tmp_path/'goal').mkdir()
@@ -277,13 +305,17 @@ def test_automatic_episode_no_human_or_learning_and_scene_guard(tmp_path,monkeyp
         assert episode.read(continued/'continuation.json')['source_episode']==str(out)
 
 
-def test_stateful_episode_uses_only_last_executed_action_on_next_round(tmp_path,monkeypatch):
+@pytest.mark.parametrize('no_reset',[False,True])
+@pytest.mark.parametrize('brightness_shift',[False,True])
+def test_stateful_episode_uses_only_last_executed_action_on_next_round(tmp_path,monkeypatch,no_reset,brightness_shift):
     from cloth_agent.experiments import one_shot_goal_full_episode_v1 as episode
     class Runtime:
         def __init__(self,*a):self.cancel=threading.Event();self.config=object()
         def capture_current(self,path):
-            path.mkdir();Image.new('RGB',(200,100),'purple').save(path/'rgb.png')
+            color=(100,0,100) if brightness_shift and path.parent.name=='round_001' else 'purple'
+            path.mkdir();Image.new('RGB',(200,100),color).save(path/'rgb.png')
             return SimpleNamespace(image=path/'rgb.png',meta={'calibration_id':'test'})
+        def observe(self,path):return self.capture_current(path)
         def arrival(self,*a):pass
         def _execute_operations(self,*a):return dict(status='EXECUTED')
         def move_to_perception(self,*a):pass
@@ -299,6 +331,7 @@ def test_stateful_episode_uses_only_last_executed_action_on_next_round(tmp_path,
         def __init__(self,*a):self.metrics=dict(gate_wall_s=0.,status='VALID')
         def evaluate(self,*a):return dict(decision='TRUST')
     def init(runtime,folder,*a,**kw):
+        assert not no_reset, 'manual state must not call initialization'
         folder.mkdir();episode.save(folder/'result.json',dict(physical_actions=0,robot_execution_s=0.))
     contexts=[]
     def score(root,folder,before,*a,**kw):
@@ -319,9 +352,13 @@ def test_stateful_episode_uses_only_last_executed_action_on_next_round(tmp_path,
     goal=tmp_path/'goal.png';Image.new('RGB',(200,100),'purple').save(goal)
     out=tmp_path/'episode'
     episode.run(SimpleNamespace(output=out,goal_image=goal,config=tmp_path/'unused',max_rounds=2,
-                                timeout_s=1,automatic_top5=True,stateful_context=True))
+                                timeout_s=1,automatic_top5=True,stateful_context=True,no_reset=no_reset))
+    assert (out/'startup_observation/rgb.png').exists()==no_reset
+    assert (out/'initialization').exists()==(not no_reset)
     assert len(contexts)==2 and contexts[0] is None
     assert contexts[1]['plan']['grasp_px']==rows()[0]['grasp_px']
     assert contexts[1]['before_image']==out/'round_000/before/rgb.png'
-    assert episode.read(out/'round_001/previous_context_continuity.json')['passed'] is True
+    diagnostic=episode.read(out/'round_001/previous_context_continuity.json')
+    assert diagnostic['passed'] is (not brightness_shift)
+    assert diagnostic['mode']=='DIAGNOSTIC_ONLY' and diagnostic['affects_execution'] is False
     assert episode.read(out/'episode_summary.json')['termination_reason']=='DONE'

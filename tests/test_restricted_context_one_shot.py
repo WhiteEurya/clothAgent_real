@@ -7,17 +7,24 @@ from cloth_agent import restricted_context_one_shot as r
 
 def output():
     return dict(decision='ACTION',grasp_px=[20,30],target_px=[50,30],motion_type='lift_pull_place',
-                grasp_angle_deg=90,short_reason='拉开衣袖',is_smoothing=False)
+                grasp_angle_deg=90,short_reason='拉开衣袖',is_smoothing=False,action_purpose='展开当前袖子',expected_stop_state='袖口与袖根间覆盖打开')
 
 
 def test_compact_contract_and_simple_done():
-    assert set(r.SCHEMA['properties'])=={'decision','grasp_px','target_px','motion_type','grasp_angle_deg','short_reason','is_smoothing'}
+    assert set(r.SCHEMA['properties'])=={'decision','grasp_px','target_px','motion_type','grasp_angle_deg','short_reason','is_smoothing','action_purpose','expected_stop_state'}
     assert r.validate(output(),(100,100),True)['decision']=='ACTION'
     d=output();d['decision']='DONE'
-    for k in ('grasp_px','target_px','motion_type','grasp_angle_deg'):d[k]=None
+    for k in ('grasp_px','target_px','motion_type','grasp_angle_deg','action_purpose','expected_stop_state'):d[k]=None
     assert r.validate(d,(100,100),False)['decision']=='DONE'
     d['primary_structure']={}
     with pytest.raises(Exception):r.validate(d,(100,100),False)
+
+
+@pytest.mark.parametrize('field',['action_purpose','expected_stop_state'])
+@pytest.mark.parametrize('value',[None,'', '   ',42])
+def test_action_requires_concrete_purpose_and_endpoint(field,value):
+    plan=output();plan[field]=value
+    with pytest.raises(Exception):r.validate(plan,(100,100),False)
 
 
 @pytest.mark.parametrize('contextual',[False,True])
@@ -38,6 +45,8 @@ def test_compact_request_retains_images_and_context(tmp_path,contextual):
     assert '请先判断上一动作的实际局部效果' not in str(calls[0])
     assert len([c for c in calls[0]['input'][0]['content'] if c['type']=='input_image'])==(3 if contextual else 2)
     assert (folder/'decision.html').exists()
+    assert '动作目的' in (folder/'decision.html').read_text()
+    assert '预期停止状态' in (folder/'decision.html').read_text()
     assert 'previous_effect' not in calls[0]['instructions']
     assert '只能抓当前图中可见的衣袖或者下摆' in calls[0]['instructions']
 
@@ -90,3 +99,26 @@ def test_failed_replan_preserves_original_plan(tmp_path):
         with pytest.raises(RuntimeError,match='model failed'):
             r.replan_rejected(tmp_path,folder,before,{},10,None,None,{})
     assert r.io.read(folder/'plan.json')=={'original':True}
+
+
+def test_rgb_only_keeps_context_and_rule_without_geometry(tmp_path,monkeypatch):
+    from cloth_agent import hem_sleeve_pull_rule as rule
+    (tmp_path/'goal').mkdir();folder=tmp_path/'round';folder.mkdir()
+    image=folder/'rgb.png';Image.new('RGB',(100,100)).save(image)
+    Image.new('RGB',(100,100)).save(tmp_path/'goal/target.png')
+    r.io.save(tmp_path/rule.CONFIG,{'rgb_only':True,'enabled':True})
+    def forbidden(*args,**kwargs):raise AssertionError('geometry must not run')
+    monkeypatch.setattr(r.geometry_report,'build',forbidden)
+    calls=[]
+    def direct(folder,body,headers,timeout):
+        calls.append(body);return output(),{'wall_latency_s':1}
+    context=dict(source_round='previous',before_image=image,after_image=image,plan=output(),completed_commands=7)
+    r.plan_round(tmp_path,folder,SimpleNamespace(image=image,xyz=None),{},10,direct,context)
+    assert len(calls)==1
+    assert rule.RULE in calls[0]['instructions']
+    assert 'Geometry Report' not in str(calls[0])
+    assert '结构距离报告' not in calls[0]['instructions']
+    assert sum(c['type']=='input_image' for c in calls[0]['input'][0]['content'])==3
+    assert r.io.read(folder/'decision_evidence.json')['decision']=='ACTION'
+    assert not (folder/'structure_grounding').exists()
+    assert r.io.read(folder/'request_manifest.json')['rgb_only'] is True

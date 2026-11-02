@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd -- "${REPO_ROOT}"
-CLOTH_PYTHON="${CLOTH_PYTHON:-/home/sja/miniconda3/envs/cali/bin/python}"
+CLOTH_PYTHON="${CLOTH_PYTHON:-python}"
 if [[ $# -eq 0 ]]; then
     cat <<'USAGE'
 Usage:

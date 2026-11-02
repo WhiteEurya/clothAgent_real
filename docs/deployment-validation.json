@@ -1,0 +1,38 @@
+{
+  "scope": "Portable source snapshot and core experiment checks; not a full-suite or physical deployment certification",
+  "base_commit": "15de1c4",
+  "validation_environment": "Existing cali Python 3.10 environment, isolated source checkout with no original reports or local experiment history",
+  "local_configuration": "Copied the incomplete deployment example to config/dual_arm.local.json for mocked tests; no commissioning or hardware connection",
+  "core_tests": {
+    "passed": 316,
+    "skipped": 4,
+    "subtests_passed": 7,
+    "command_output": "See deployment-artifacts/core-tests.txt in the originating workspace"
+  },
+  "excluded_from_core_rerun": {
+    "tests/test_gamepad_collect_runtime.py": "Several tests require the original measured and commissioned rig configuration, absent in a portable checkout",
+    "tests/test_rsi_exploration_01.py": "One test expects exactly 11 historical experiences from local reports, which are not portable source inputs"
+  },
+  "initial_broad_check": {
+    "passed": 319,
+    "skipped": 4,
+    "failed_including_subtests": 32,
+    "reason": "Missing config/dual_arm.local.json and original historical experience records; this was not a full repository suite"
+  },
+  "checks": [
+    "Python AST parse for selected sources",
+    "bash -n for selected shell launchers",
+    "JSON parsing for selected configuration files",
+    "git diff --check",
+    "offline deployment dependency/module/resource checks",
+    "minimal one-shot --dry-run",
+    "GGO annotation generation from bundled RGB-D reference",
+    "pip wheel --no-deps --no-build-isolation succeeded"
+  ],
+  "limitations": [
+    "New-machine package installation and drivers not tested",
+    "No model calls or physical robot actions performed",
+    "CV/GGO retain purple garment and T-shirt assumptions",
+    "Historical diagnostics retain original data references"
+  ]
+}

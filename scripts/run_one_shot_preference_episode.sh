@@ -21,7 +21,7 @@ fi
 # The portal owns no robot/camera and remains available between rounds and runs.
 # Help/usage never starts a service or connects hardware.
 if [[ " $* " == *" --execute "* && " $* " != *" --help "* && " $* " != *" -h "* ]]; then
-    (cd -- "${SCRIPT_DIR}/.." && "${CLOTH_PYTHON:-/home/sja/miniconda3/envs/cali/bin/python}" -B \
+    (cd -- "${SCRIPT_DIR}/.." && "${CLOTH_PYTHON:-python}" -B \
         -m cloth_agent.preference_dashboard --ensure)
 fi
 exec bash "${SCRIPT_DIR}/run_one_shot_goal_episode.sh" --human-preference --ranking-correction "$@"

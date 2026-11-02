@@ -17,7 +17,7 @@ import time
 import traceback
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_GOAL = ROOT / "reports/goal_only_full_episode_v1_restart02/goal/target.png"
+DEFAULT_GOAL = ROOT / "data/reference/deployment_example/goal.png"
 SOURCE_FILES = [
     "cloth_agent/experiments/one_shot_goal_continuous_v1.py",
     "cloth_agent/experiments/one_shot_goal_full_episode_v1.py",

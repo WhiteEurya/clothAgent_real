@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd -- "${REPO_ROOT}"
 
-CLOTH_PYTHON="${CLOTH_PYTHON:-/home/sja/miniconda3/envs/cali/bin/python}"
+CLOTH_PYTHON="${CLOTH_PYTHON:-python}"
 if [[ ! -x "${CLOTH_PYTHON}" ]]; then
     echo "Python interpreter unavailable: ${CLOTH_PYTHON}" >&2
     exit 1
@@ -36,5 +36,5 @@ OUTPUT_DIR="${REPO_ROOT}/reports/one_shot_goal_full_episode_v1_${RUN_STAMP}"
 # Explicit user --output/--goal-image arguments override these defaults.
 exec "${CLOTH_PYTHON}" -u -m cloth_agent.experiments.one_shot_goal_full_episode_v1 \
     --output "${OUTPUT_DIR}" \
-    --goal-image "${REPO_ROOT}/reports/goal_only_full_episode_v1_restart02/goal/target.png" \
+    --goal-image "${REPO_ROOT}/data/reference/deployment_example/goal.png" \
     "$@"

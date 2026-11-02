@@ -1,0 +1,49 @@
+{
+  "reference": {
+    "N": [
+      673,
+      386
+    ],
+    "AL": [
+      605,
+      205
+    ],
+    "AR": [
+      577,
+      573
+    ],
+    "SL": [
+      692,
+      124
+    ],
+    "SR": [
+      699,
+      663
+    ],
+    "HL": [
+      252,
+      244
+    ],
+    "HR": [
+      280,
+      624
+    ]
+  },
+  "current": {
+    "N": [
+      673,
+      386
+    ],
+    "AL": [
+      605,
+      205
+    ],
+    "AR": [
+      577,
+      573
+    ]
+  },
+  "reference_rgb_sha256": "4361872a7a6561806b419c15d803b899a94cbb1ab70d74f746d0294729063e40",
+  "current_rgb_sha256": "4361872a7a6561806b419c15d803b899a94cbb1ab70d74f746d0294729063e40",
+  "provenance": "assistant manually marked reference preview; not human-verified ground truth"
+}

@@ -37,6 +37,30 @@ def test_rotation_field_required_live_and_null_on_non_actions():
         wire.validate_plan(p, [1280, 720], require_grasp_rotation=True)
 
 
+@pytest.mark.parametrize('smoothing', [False, True])
+def test_orientation_accepts_smoothing_without_mutating_plan(tmp_path, smoothing):
+    image = tmp_path/'rgb.png'; Image.new('RGB', (1280, 720)).save(image)
+    plan = dict(proposal(None), is_smoothing=smoothing)
+    original = dict(plan)
+    result = orientation.resolve(None, SimpleNamespace(image=image), plan, None,
+                                 [180., 0., 0.], tmp_path)
+    np.testing.assert_array_equal(result, [180., 0., 0.])
+    assert plan == original
+
+
+@pytest.mark.parametrize('extra', [
+    {'is_smoothing': 'false'}, {'is_smoothing': 1},
+    {'is_smoothing': False, 'unexpected': True},
+    {'is_smoothing': False, 'grasp_angle_deg': 181},
+    {'is_smoothing': True, 'decision': 'DONE'},
+])
+def test_orientation_extension_preserves_validation(tmp_path, extra):
+    image = tmp_path/'rgb.png'; Image.new('RGB', (1280, 720)).save(image)
+    with pytest.raises((ValueError, wire.jsonschema.ValidationError)):
+        orientation.resolve(None, SimpleNamespace(image=image), dict(proposal(None), **extra),
+                            None, [180., 0., 0.], tmp_path)
+
+
 @pytest.mark.parametrize('angle', [None, 0., 45., 90., 180.])
 def test_live_preparation_rotates_before_closing_and_keeps_pose_through_place(tmp_path, monkeypatch, angle):
     k = np.array([[700., 0, 640], [0, 700, 360], [0, 0, 1]])
@@ -67,8 +91,8 @@ def test_live_preparation_rotates_before_closing_and_keeps_pose_through_place(tm
     def target_sample(*args):
         wire.save(tmp_path/'target_depth.json', {'source': 'MEASURED_DEPTH', 'measured_depth': True})
         return b
-    monkeypatch.setattr(episode.table_target_depth, 'sample_target', target_sample)
-    ops, initial = episode.prepare_action(runtime, before, proposal(angle), tmp_path)
+    monkeypatch.setattr(episode.table_target_depth, 'project_target', target_sample)
+    ops, initial = episode.prepare_action(runtime, before, dict(proposal(angle), is_smoothing=False,action_purpose='展开衣袖',expected_stop_state='袖子覆盖打开'), tmp_path)
     record = wire.read(tmp_path/'grasp_orientation.json')
     selected = np.array(record['selected_rpy_world_deg'])
     assert record['rotation_while_holding'] is False and abs(record['world_z_delta_deg']) <= 90

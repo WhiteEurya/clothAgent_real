@@ -47,7 +47,7 @@ class PreActionGate:
         try:
             with Image.open(current_rgb) as image:
                 size = list(image.size)
-            wire.validate_plan({k:v for k,v in proposed_action.items() if k!="is_smoothing"}, size)
+            wire.validate_plan({k:v for k,v in proposed_action.items() if k not in ("is_smoothing","action_purpose","expected_stop_state")}, size)
             if proposed_action["decision"] != "ACTION":
                 raise ValueError("PreActionGate only evaluates ACTION proposals")
             overlay = self.folder/"gate_input_overlay.png"
@@ -56,6 +56,8 @@ class PreActionGate:
             action = {k: proposed_action[k] for k in ("grasp_px", "target_px", "motion_type")}
             if 'grasp_angle_deg' in proposed_action:
                 action['grasp_angle_deg'] = proposed_action['grasp_angle_deg']
+            for field in ('action_purpose','expected_stop_state'):
+                if field in proposed_action:action[field]=proposed_action[field]
             if 'is_smoothing' in proposed_action:
                 action['is_smoothing']=proposed_action['is_smoothing']
                 action['motion_limits_mm']={'lift_above_surface':10,'max_xy':30} if proposed_action['is_smoothing'] else {'lift_above_surface':50,'max_xy':150}

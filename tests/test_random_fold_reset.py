@@ -133,3 +133,14 @@ def test_rotation_occurs_only_after_lift_and_before_offset_release(monkeypatch):
     assert calls[4][1]['left'][5]==pytest.approx(np.pi/6)
     assert calls[5][1]['left'][:3]==pytest.approx([.410,.030,.315])
     assert calls[-1][1]['action']=='open'
+
+
+@pytest.mark.parametrize('radius',[0.,1e-9])
+def test_zero_and_tiny_radius_use_only_validated_center(tmp_path,radius):
+    obs=observation(tmp_path);region=dict(center_px=[150,150],radius_px=50,confidence=.95)
+    result=reset.sample_grasp(obs,region,8,radius,1)
+    assert result['pixel_xy']==[150,150]
+    assert result['world_xyz_mm']==[150.,150.,40.]
+    def invalid(*args):raise DualArmError('no depth')
+    obs.sample=invalid
+    with pytest.raises(DualArmError):reset.sample_grasp(obs,region,8,radius,1)

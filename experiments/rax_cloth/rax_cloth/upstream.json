@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/robot-agent-exploration/rax",
+  "branch": "real/rainbow",
+  "commit": "36c926ca3cf15921c6fc746a4bf309c26b0aa3c4",
+  "commit_status": "PINNED_GIT_CHECKOUT_VERIFIED",
+  "full_checkout": true,
+  "reference_files": {
+    "backends.py": {
+      "url": "https://raw.githubusercontent.com/robot-agent-exploration/rax/real/rainbow/services/backends.py",
+      "sha256": "dd904985798af09642af5aaa0102dcc10f1290dd80db05d24490be587166d5fb",
+      "format": "web line-number extraction; final newline normalized"
+    },
+    "frontend.py": {
+      "url": "https://raw.githubusercontent.com/robot-agent-exploration/rax/real/rainbow/services/controller/frontend.py",
+      "sha256": "b3039f461e171a522232204d2927a2b77a719918597669cf74cc0bd5c1074744",
+      "format": "web line-number extraction; final newline normalized"
+    }
+  },
+  "modifications": "Official checkout unmodified; cloth registry/facts registration and offline workspace overrides live only in adaptation layer. Historical web snapshots retained for provenance.",
+  "reviewed_branches": [
+    "main",
+    "real/rainbow",
+    "real/franka"
+  ],
+  "checkout": "vendor/rax"
+}

@@ -75,5 +75,19 @@
     }
   },
   "robot_ip": "192.168.2.232",
-  "updated_at": "2026-09-14T13:50:01+08:00"
+  "updated_at": "2026-09-14T13:50:01+08:00",
+  "user_boundary_observations": [
+    {
+      "recorded_at": "2026-10-28T16:33:20.925810+08:00",
+      "source": "user_report",
+      "statement": "当前 gripper 所在位置是一个边界，从该位置向里面 20 mm 的区域也都属于边界区域。",
+      "inward_boundary_band_mm": 20,
+      "reference": "用户提出本条记录时的夹爪位置",
+      "reference_tcp_pose_mm_deg": null,
+      "inward_direction_base_frame": null,
+      "status": "recorded_pending_pose_and_direction",
+      "applied_to_numeric_bounds": false,
+      "note": "尚未采集该时刻夹爪的实测位姿，向里面的基座坐标方向也未确定；不以历史 Pa/Pb 或旧边界采样代替。此条为边界问题记录，未修改现有 boundary_mm、运行检查或模型 Prompt。"
+    }
+  ]
 }

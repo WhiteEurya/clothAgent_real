@@ -56,6 +56,24 @@ def test_literal_id(tmp_path):
     assert find_run(tmp_path, 'a[1]') == run
 
 
+def test_portable_override_is_relative_to_project(tmp_path, monkeypatch):
+    root = tmp_path / 'project'
+    configure(root, tmp_path / 'old/runs', required_mount=str(tmp_path / 'absent'))
+    portable = root / 'config/run_storage.portable.json'
+    portable.write_text('{"runs_root": "runs", "required_mount": null}')
+    monkeypatch.setenv('CLOTH_RUN_STORAGE_CONFIG', str(portable))
+    monkeypatch.chdir(tmp_path)
+    assert runs_root(root, prepare=True) == root / 'runs'
+    assert (root / 'runs').is_dir()
+
+
+def test_missing_storage_override_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLOTH_RUN_STORAGE_CONFIG', str(tmp_path / 'missing.json'))
+    with pytest.raises(FileNotFoundError, match='override'):
+        runs_root(tmp_path, prepare=True)
+    assert not (tmp_path / 'runs').exists()
+
+
 def test_session_external_storage_and_read_isolation(tmp_path):
     from cloth_agent.config import RobotConfig, WorkspaceBounds, ExperimentConfig
     from cloth_agent.session import AgentSession

@@ -8,12 +8,19 @@ from pathlib import Path
 
 
 def runs_root(project_root: Path, *, prepare: bool = False) -> Path:
-    config = project_root / 'config' / 'run_storage.json'
+    # Keep the existing machine's mount guard unless explicitly overridden.
+    config = Path(os.environ.get('CLOTH_RUN_STORAGE_CONFIG',
+                                 project_root / 'config' / 'run_storage.json'))
+    if 'CLOTH_RUN_STORAGE_CONFIG' in os.environ and not config.is_file():
+        raise FileNotFoundError(f'Run storage override does not exist: {config}')
     settings = json.loads(config.read_text()) if config.is_file() else {}
     mount = settings.get('required_mount')
     if mount and not Path(mount).is_mount():
         raise RuntimeError(f'Result disk is not mounted: {mount}')
-    root = Path(settings.get('runs_root', str(project_root / 'runs'))).expanduser().resolve()
+    root = Path(settings.get('runs_root', str(project_root / 'runs'))).expanduser()
+    if not root.is_absolute():
+        root = project_root / root
+    root = root.resolve()
     if prepare:
         root.mkdir(parents=True, exist_ok=True)
         if not os.access(root, os.W_OK):

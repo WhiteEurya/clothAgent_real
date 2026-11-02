@@ -4,6 +4,8 @@ import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import random
+import math
 from pathlib import Path
 import secrets
 import shutil
@@ -126,11 +128,30 @@ def serve(control,port):
 
 
 def run(args):
+    if getattr(args,"depth_image",False) and not getattr(args,"rgb_only",False):raise ValueError("--depth-image requires --rgb-only")
+    if getattr(args,"rgb_only",False) and (not getattr(args,"visible_sleeve_hem",False) or getattr(args,"cv_feedback",False) or getattr(args,"ggo_reference_annotations",None)):
+        raise ValueError("--rgb-only requires original sleeve/hem mode without CV feedback or GGO")
+    if getattr(args,'hem_sleeve_pull_rule',False) and not getattr(args,'visible_sleeve_hem',False):
+        raise ValueError('--hem-sleeve-pull-rule requires --visible-sleeve-hem')
+    radius_range=getattr(args,'initialize_center_radius_range_mm',None)
+    if radius_range is not None and not (len(radius_range)==2 and 0<=radius_range[0]<=radius_range[1]<=80):
+        raise ValueError('reset radius range must satisfy 0 <= min <= max <= 80 mm')
+    if getattr(args,'ggo_reference_annotations',None) and (not args.visible_sleeve_hem or (args.max_rounds!=1 and not getattr(args,'ggo_auto_anchors',False))):
+        raise ValueError('GGO batch requires sleeve/hem mode and one action per episode')
     if getattr(args,'visible_sleeve_hem',False):
         args.stateful_context=True
         if getattr(args,'resume_first_from',None):raise ValueError('sleeve/hem experiment must start a new episode')
+    if getattr(args,'max_actions',0) and args.max_rounds<args.max_actions+1:
+        raise ValueError('max-rounds must include final action assessment')
+    hours=getattr(args,'max_hours',0.)
+    min_free=getattr(args,'min_free_gb',0.)
+    if not math.isfinite(hours) or hours<0 or not math.isfinite(min_free) or min_free<0:raise ValueError('invalid duration or disk limit')
     root=args.output.resolve();root.mkdir(parents=True,exist_ok=False)
     control=Control(root,args.episodes,getattr(args,'stateful_context',False));server=serve(control,args.port)
+    if getattr(args,'ggo_reference_annotations',None) and not getattr(args,'ggo_auto_anchors',False):
+        control.page=PAGE.replace('<h1>自动展开 · 3次采集</h1>',f'<h1>GGO 几何辅助 · 3次单步实验</h1><p><a target="_blank" href="http://127.0.0.1:{args.ggo_port}">打开本轮锚点标注页（拍照后可用）</a></p>')
+    if getattr(args,'auto_next',False):
+        control.page=PAGE.replace('每次结束后，手动整理并确认才开始下一次随机初始化。','DONE或达到动作上限后自动reset；异常或人工停止会结束整批。').replace('自动展开 · 3次采集','自动连续展开 · 3次采集')
     resume_first=getattr(args,'resume_first_from',None)
     if resume_first is not None:
         resume_first=resume_first.resolve()
@@ -142,17 +163,30 @@ def run(args):
     (root/'goal').mkdir();shutil.copyfile(resume_first/'goal/target.png' if resume_first else args.goal_image,
                                           root/'goal/target.png')
     files=base.SOURCE_FILES+['cloth_agent/geometry_report.py','cloth_agent/one_shot_depth_recovery.py','cloth_agent/experiments/arm6_depth_recovery.py']+['cloth_agent/restricted_context_one_shot.py','cloth_agent/automatic_top5.py','cloth_agent/preference_one_shot.py','cloth_agent/action_preference.py','cloth_agent/experiments/automatic_top5_batch.py']
+    if getattr(args,'ggo_reference_annotations',None):
+        files += [str(p.relative_to(base.ROOT)) for p in (base.ROOT/'cloth_agent/ggo').glob('*.py')]
+    if getattr(args,'cv_feedback',False):
+        files += [str(p.relative_to(base.ROOT)) for sub in ('runtime','cv_harness') for p in (base.ROOT/'cloth_agent/cloth_harness'/sub).glob('*.py')]
+    if getattr(args,'systematic_report',False):files+=['cloth_agent/experiments/overnight_analysis.py']
+    files+=['cloth_agent/random_fold_reset.py','cloth_agent/hem_sleeve_pull_rule.py','cloth_agent/depth_image_input.py']
     hashes={str(base.ROOT/p):base.digest(base.ROOT/p) for p in files}
+    if getattr(args,'ggo_reference_annotations',None):hashes[str(args.ggo_reference_annotations.resolve())]=base.digest(args.ggo_reference_annotations)
     hashes[str(args.config.resolve())]=base.digest(args.config)
     hashes[str(root/'goal/target.png')]=base.digest(root/'goal/target.png')
     if resume_first is not None:
         hashes[str(source_summary)]=base.digest(source_summary)
-    base.save(root/'protocol.json',dict(created_at=base.utc(),episodes=args.episodes,max_rounds=args.max_rounds,
-        mode='context one-shot, visible sleeve/hem only, no TopN' if getattr(args,'visible_sleeve_hem',False) else 'automatic Top5, explicit GPT selection',between_episodes='operator confirmation required',
-        wait_before_first=getattr(args,'wait_before_first',False),
+    schedule_seed=getattr(args,'schedule_seed',None)
+    if schedule_seed is None:schedule_seed=secrets.randbits(63)
+    rng=random.Random(schedule_seed)
+    schedule=[dict(episode=i,radius_mm=rng.uniform(*radius_range) if radius_range else getattr(args,'initialize_center_radius_mm',20.),reset_seed=rng.getrandbits(63)) for i in range(1,args.episodes+1)]
+    base.save(root/'reset_schedule.json',dict(seed=schedule_seed,schedule=schedule,physical_state_reproducible_from_seed=False))
+    base.save(root/'protocol.json',dict(depth_image=getattr(args,'depth_image',False),rgb_only=getattr(args,'rgb_only',False),hem_sleeve_pull_rule=getattr(args,'hem_sleeve_pull_rule',False),cv_feedback=getattr(args,'cv_feedback',False),max_hours=hours,min_free_gb=min_free,schedule_seed=schedule_seed,systematic_report=getattr(args,'systematic_report',False),ggo_manual_geometry=bool(getattr(args,'ggo_reference_annotations',None)) and not getattr(args,'ggo_auto_anchors',False),ggo_auto_anchors=getattr(args,'ggo_auto_anchors',False),created_at=base.utc(),episodes=args.episodes,max_rounds=args.max_rounds,max_actions=getattr(args,'max_actions',0),
+        mode='context one-shot, visible sleeve/hem only, no TopN' if getattr(args,'visible_sleeve_hem',False) else 'automatic Top5, explicit GPT selection',between_episodes='automatic after normal completion; stop on error' if getattr(args,'auto_next',False) else 'operator confirmation required',
+        wait_before_first=getattr(args,'wait_before_first',False),reset_enabled=not getattr(args,'no_reset',False),
         resume_first_from=str(resume_first) if resume_first else None,
         stateful_context=bool(getattr(args,'stateful_context',False)),
         initialize_center_radius_mm=float(getattr(args,'initialize_center_radius_mm',20.)),
+        initialize_center_radius_range_mm=radius_range,
         press_after_drop=bool(getattr(args,'press_after_drop',False)),
         no_learning=True,source_sha256=hashes,control_url=f'http://127.0.0.1:{args.port}'))
     handlers={s:signal.getsignal(s) for s in (signal.SIGINT,signal.SIGTERM)}
@@ -166,7 +200,13 @@ def run(args):
             print('WAITING_READY: 尚未连接机器人；确认现场与控制器就绪后，从随机初始化开始第1次。',flush=True)
             while not control.ready.wait(.5):
                 if control.cancel.is_set():break
+        run_started=time.monotonic()
         for index in range(1,args.episodes+1):
+            if hours and time.monotonic()-run_started>=hours*3600:
+                control.last_stop='DURATION_LIMIT';control.event('BATCH_DURATION_LIMIT');break
+            free_gb=shutil.disk_usage(root).free/1024**3
+            if min_free and free_gb<min_free:
+                control.last_stop='DISK_RESERVE_STOP';control.event('DISK_RESERVE_STOP',free_gb=free_gb);break
             if control.cancel.is_set():break
             if any(base.digest(p)!=v for p,v in hashes.items()):raise RuntimeError('batch source/input changed; no next dispatch')
             control.episode_stop=False;control.stop_signal=None;control.transition('RUNNING',index);checkpoint()
@@ -174,25 +214,52 @@ def run(args):
             command=[sys.executable,'-u','-m','cloth_agent.experiments.one_shot_goal_full_episode_v1','--execute',
                 '--visible-sleeve-hem' if getattr(args,'visible_sleeve_hem',False) else '--automatic-top5','--output',str(folder),'--goal-image',str(root/'goal/target.png'),
                 '--config',str(args.config.resolve()),'--max-rounds',str(args.max_rounds)]
+            if getattr(args,'ggo_reference_annotations',None):
+                command+=['--ggo-reference-annotations',str(args.ggo_reference_annotations.resolve()),'--ggo-port',str(args.ggo_port)]
+            if getattr(args,'depth_image',False):command.append('--depth-image')
+            if getattr(args,'rgb_only',False):command.append('--rgb-only')
+            if getattr(args,'hem_sleeve_pull_rule',False):command.append('--hem-sleeve-pull-rule')
+            if getattr(args,'cv_feedback',False):command.append('--cv-feedback')
+            if getattr(args,'no_reset',False):command.append('--no-reset')
+            if getattr(args,'ggo_auto_anchors',False):command.append('--ggo-auto-anchors')
+            if getattr(args,'max_actions',0):command+=['--max-actions',str(args.max_actions)]
             if index==1 and resume_first is not None:command+=['--continue-from',str(resume_first)]
             if getattr(args,'stateful_context',False):command.append('--stateful-context')
-            command+=['--initialize-center-radius-mm',str(getattr(args,'initialize_center_radius_mm',20.))]
+            selected=schedule[index-1];radius=selected['radius_mm']
+            command+=['--initialize-seed',str(selected['reset_seed'])]
+            base.save(root/(name+'.reset_radius.json'),dict(enabled=not getattr(args,'no_reset',False),radius_mm=radius,range_mm=radius_range,reset_seed=selected['reset_seed'],
+                distribution='uniform radius bound' if radius_range else 'fixed radius bound'))
+            print('RESET disabled; using manually arranged state' if getattr(args,'no_reset',False) else f'RESET radius={radius:.2f} mm',flush=True)
+            command+=['--initialize-center-radius-mm',str(radius)]
             if getattr(args,'press_after_drop',False):command.append('--press-after-drop')
             # Handle a stop pressed between state publication and child creation.
             def watch_stop():
                 while control.phase in ('RUNNING','STOPPING') and control.child is None and not control.cancel.is_set():time.sleep(.02)
                 if control.episode_stop:control.forward_stop()
             threading.Thread(target=watch_stop,daemon=True).start()
+            episode_started=time.monotonic()
+            control.event('EPISODE_START',episode=index,radius_mm=radius,reset_seed=selected['reset_seed'],free_gb=free_gb)
             code=base.launch_episode(command,root/(name+'.run.log'),control)
             record=base.json.loads((folder/'episode_summary.json').read_text()) if (folder/'episode_summary.json').exists() else {}
             control.last_stop=record.get('termination_reason','MISSING_SUMMARY')
             control.records.append(dict(episode=index,termination=control.last_stop,detail=record.get('termination_detail'),
                 actions=record.get('physical_actions',0),rounds=record.get('total_rounds',0),returncode=code,
                 operator_stopped_current=control.episode_stop,cleanup_error=record.get('cleanup_error')))
+            control.records[-1].update(radius_mm=radius,reset_seed=selected['reset_seed'],elapsed_s=time.monotonic()-episode_started)
+            control.event('EPISODE_END',**control.records[-1])
             checkpoint()
+            if getattr(args,'systematic_report',False):
+                from .overnight_analysis import analyze
+                analyze(root)
             if control.cancel.is_set() or index==args.episodes:break
             if not record.get('finished_at') or record.get('cleanup_error'):
                 raise RuntimeError('episode cleanup not confirmed; batch stopped')
+            if getattr(args,'auto_next',False):
+                if code!=0 or control.episode_stop or control.last_stop not in ('ROUND_LIMIT','DONE'):
+                    print('AUTO BATCH STOP: '+str(control.last_stop),flush=True)
+                    break
+                print('AUTO NEXT: starting next random initialization',flush=True)
+                continue
             control.transition('WAITING_READY');checkpoint()
             print('WAITING_READY: 手动整理后，点击控制页开始下一次随机初始化。',flush=True)
             while not control.ready.wait(.5):
@@ -204,6 +271,11 @@ def run(args):
         raise
     finally:
         control.transition('FINISHED');checkpoint()
+        if getattr(args,'systematic_report',False):
+            try:
+                from .overnight_analysis import analyze
+                analyze(root)
+            except Exception as exc:base.save(root/'analysis_error.json',dict(error=f'{type(exc).__name__}: {exc}'))
         for s,h in handlers.items():signal.signal(s,h)
         server.shutdown();server.server_close()
         print('BATCH FINISHED '+str(root),flush=True)
@@ -213,18 +285,34 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true',required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--episodes',type=int,default=3);p.add_argument('--max-rounds',type=int,default=12)
+    p.add_argument('--max-hours',type=float,default=0.,help='do not start a new episode after this duration; finish current episode')
+    p.add_argument('--min-free-gb',type=float,default=0.)
+    p.add_argument('--schedule-seed',type=int)
+    p.add_argument('--systematic-report',action='store_true')
+    p.add_argument('--max-actions',type=int,default=0)
+    p.add_argument('--no-reset',action='store_true',help='skip random initialization in every episode; use --episodes 1 for a manual-state trial')
     p.add_argument('--wait-before-first',action='store_true',help='serve control page; do not connect robot until operator confirms first start')
     p.add_argument('--resume-first-from',type=Path,help='continue episode 1 from a stopped automatic Top5 run without another reset')
+    p.add_argument('--ggo-reference-annotations',type=Path)
+    p.add_argument('--depth-image',action='store_true')
+    p.add_argument('--rgb-only',action='store_true')
+    p.add_argument('--hem-sleeve-pull-rule',action='store_true')
+    p.add_argument('--cv-feedback',action='store_true')
+    p.add_argument('--ggo-auto-anchors',action='store_true')
+    p.add_argument('--auto-next',action='store_true',help='continue normal episodes automatically; stop batch on errors')
+    p.add_argument('--ggo-port',type=int,default=8781)
     p.add_argument('--visible-sleeve-hem',action='store_true',help='contextual single-action sleeve/hem experiment without TopN')
     p.add_argument('--stateful-context',action='store_true',help='give Ps and Pt the previous executed action and pre-action RGB from round 2')
     p.add_argument('--initialize-center-radius-mm',type=float,default=20.,
                    help='random initialization grasp radius around the visible cloth center (default 20 mm)')
+    p.add_argument('--initialize-center-radius-range-mm',type=float,nargs=2,metavar=('MIN','MAX'),
+                   help='sample the reset radius bound uniformly per episode; overrides fixed radius')
     p.add_argument('--press-after-drop',action='store_true')
     p.add_argument('--port',type=int,default=8769);p.add_argument('--goal-image',type=Path,default=base.DEFAULT_GOAL)
     p.add_argument('--config',type=Path,default=base.ROOT/'config/dual_arm.local.json')
     a=p.parse_args()
-    if not 1<=a.episodes<=10 or not 1<=a.max_rounds<=50 or not 1024<=a.port<=65535:p.error('invalid limits')
-    if not 0<a.initialize_center_radius_mm<=80:p.error('initialization center radius must be in (0,80] mm')
+    if not 1<=a.episodes<=1000 or not 1<=a.max_rounds<=50 or not 1024<=a.port<=65535:p.error('invalid limits')
+    if not 0<=a.initialize_center_radius_mm<=80:p.error('initialization center radius must be in [0,80] mm')
     if a.output.exists() or not a.goal_image.is_file() or not a.config.is_file():p.error('invalid output, goal or config')
     run(a)
 

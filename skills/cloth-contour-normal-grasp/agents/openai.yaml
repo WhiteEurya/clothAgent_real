@@ -1,0 +1,4 @@
+interface:
+  display_name: "衣物轮廓法线抓取"
+  short_description: "分割衣物轮廓，从不可见区域侧求法线交点，沿对侧向外拉动一次"
+  default_prompt: "使用 $cloth-contour-normal-grasp 为当前衣物的不可见区域计算对侧抓点和向外拉动方向。"

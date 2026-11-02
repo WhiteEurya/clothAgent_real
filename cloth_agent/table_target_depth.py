@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import os
 
 import numpy as np
 from PIL import Image
@@ -12,8 +13,10 @@ from .dual_arm.geometry import DualArmError
 from .dual_arm.observation import DepthUnavailableError, sha
 
 ROOT = Path(__file__).resolve().parents[1]
-APPEARANCE_CONFIG = ROOT / "config/perception.free_exploration.json"
-INTRINSICS_FILE = ROOT / "config/calibration/dual_arm_working_20261008/camA_intrinsics.yaml"
+APPEARANCE_CONFIG = Path(os.environ.get('CLOTH_TABLE_APPEARANCE_CONFIG',
+    ROOT / "config/perception.free_exploration.json")).expanduser().resolve()
+INTRINSICS_FILE = Path(os.environ.get('CLOTH_CAMERA_INTRINSICS',
+    ROOT / "config/calibration/dual_arm_working_20261008/camA_intrinsics.yaml")).expanduser().resolve()
 POLICY = "BARE_TABLE_TARGET_PLANE_V1"
 PROJECT_POLICY = "TABLE_TARGET_RAY_PLANE_V3"
 
@@ -23,14 +26,14 @@ def _require(condition, message):
         raise DualArmError("table-target fallback rejected: " + message)
 
 
-def _estimate(observation, pixel, grasp_pixel, audit, *, require_local_support=True):
+def _estimate(observation, pixel, grasp_pixel, audit, *, require_local_support=True, allow_reveal_surface=False):
     import yaml
     from .perception import (
         RGBDFrame, _camera_parallel_table, _table_background_candidates, _table_roi_masks,
     )
 
     meta, xyz = observation.meta, observation.xyz
-    _require(meta.get("camera_serial") == "317222073552", "unsupported camera")
+    _require(bool(meta.get("camera_serial")), "missing camera identity")
     _require(not any(meta.get(k) for k in (
         "support_height_patch", "world_tilt_correction",
         "corrected_world_from_camera_affine_mm")), "unsupported compensated cloud")
@@ -90,8 +93,9 @@ def _estimate(observation, pixel, grasp_pixel, audit, *, require_local_support=T
                      target_foreground_clearance_px=0,
                      plane_reference_clearance_px=settings.table_reference_clearance_px)
         _require(roi[y, x], "target outside bare-table ROI")
-        _require(target_contrast < appearance["applied_color_distance"],
-                 "target pixel itself is not classified as bare table")
+        if not allow_reveal_surface:
+            _require(target_contrast < appearance["applied_color_distance"],
+                     "target pixel itself is not classified as bare table")
     gx, gy = map(int, grasp_pixel)
     _require(0 <= gx < w and 0 <= gy < h, "grasp pixel outside image")
     appearance = stats["background"]
@@ -193,3 +197,39 @@ def project_target(observation, pixel, grasp_pixel, max_spread, audit_path):
         raise
     finally:
         Path(audit_path).write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n')
+
+
+def is_hem_reveal(plan):
+    """Explicit protocol marker, never infer permission from free-form prose."""
+    return bool(plan and plan.get("decision") == "ACTION"
+                and plan.get("motion_type") == "lift_pull_place"
+                and plan.get("is_smoothing") is False
+                and str(plan.get("action_purpose", "")).startswith("HEM_REVEAL:"))
+
+
+def project_reveal_target(observation, pixel, grasp_pixel, max_spread, audit_path):
+    """Reveal may place on observed foreground, using its measured surface height."""
+    audit = dict(policy="HEM_REVEAL_SURFACE_V1", role="target_only",
+                 target_px=list(pixel), grasp_px=list(grasp_pixel),
+                 status="CHECKING", source="UNRESOLVED", measured_depth=False,
+                 exception="explicit HEM_REVEAL purpose; foreground Pb permitted")
+    try:
+        result = _estimate(observation, pixel, grasp_pixel, audit,
+                           require_local_support=False, allow_reveal_surface=True)
+        if audit["target_table_rgb_distance"] >= audit["target_table_rgb_threshold"]:
+            result = observation.sample(pixel, max_spread)
+            _require(np.isfinite(result).all(), "invalid reveal target surface")
+            plane = np.asarray(audit["plane_z_equals_ax_by_c"])
+            _require(result[2] >= result[:2] @ plane[:2] + plane[2] - 6.,
+                     "reveal surface below measured support")
+            audit.update(source="MEASURED_REVEAL_SURFACE", measured_depth=True,
+                         target_depth_sampled=True, world_xyz_mm=result.tolist())
+        else:
+            audit["target_depth_sampled"] = False
+        audit["status"] = "PASS"
+        return result
+    except Exception as error:
+        audit.update(status="REJECT", error=f"{type(error).__name__}: {error}")
+        raise
+    finally:
+        Path(audit_path).write_text(json.dumps(audit, ensure_ascii=False, indent=2)+"\n")

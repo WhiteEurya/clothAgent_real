@@ -94,8 +94,19 @@ def test_remaining_depth_cannot_contradict_plane(scene):
 def test_calibration_mismatch_rejected(scene):
     scene.xyz[645:656, 795:806] = np.nan
     scene.meta["camera_serial"] = "other"
-    with pytest.raises(DualArmError, match="unsupported camera"):
+    with pytest.raises(DualArmError, match="intrinsics identity/size mismatch"):
         sample(scene)
+
+
+def test_replacement_camera_requires_matching_calibration(scene, monkeypatch):
+    calibration = yaml.safe_load(m.INTRINSICS_FILE.read_text())
+    calibration['serial'] = 'replacement-camera'
+    path = scene.directory / 'replacement_intrinsics.yaml'
+    path.write_text(yaml.safe_dump(calibration))
+    monkeypatch.setattr(m, 'INTRINSICS_FILE', path)
+    scene.meta['camera_serial'] = 'replacement-camera'
+    scene.xyz[645:656, 795:806] = np.nan
+    assert sample(scene)[2] == pytest.approx(30, abs=1e-5)
 
 
 def test_missing_grasp_stops_before_target_fallback(tmp_path):
@@ -212,3 +223,38 @@ def test_user_expanded_roi_accepts_saved_right_target(tmp_path):
     assert np.isfinite(result).all()
     audit=json.loads((tmp_path/'audit.json').read_text())
     assert audit['status']=='PASS' and audit['target_inside_table_roi']
+
+
+def test_reveal_surface_uses_cloth_height_and_keeps_roi(scene):
+    result = m.project_reveal_target(scene, [600,350], [600,300], 8, scene.directory/'reveal.json')
+    assert result[2] == pytest.approx(60.)
+    audit = json.loads((scene.directory/'reveal.json').read_text())
+    assert audit['measured_depth'] and audit['source'] == 'MEASURED_REVEAL_SURFACE'
+    with pytest.raises(DualArmError, match='outside bare-table ROI'):
+        m.project_reveal_target(scene, [1200,650], [600,300], 8, scene.directory/'reveal.json')
+
+
+def test_reveal_missing_depth_never_falls_back_to_table(scene):
+    scene.xyz[345:356,595:606] = np.nan
+    with pytest.raises(DepthUnavailableError):
+        m.project_reveal_target(scene,[600,350],[600,300],8,scene.directory/'reveal.json')
+    assert json.loads((scene.directory/'reveal.json').read_text())['status'] == 'REJECT'
+
+
+def test_reveal_requires_explicit_action_marker():
+    plan = dict(decision='ACTION', motion_type='lift_pull_place', is_smoothing=False,
+                action_purpose='HEM_REVEAL: 显露单侧隐藏下摆角')
+    assert m.is_hem_reveal(plan)
+    for change in [dict(decision='DONE'),dict(is_smoothing=True),
+                   dict(action_purpose='显露衣角'),dict(action_purpose='拉开衣袖')]:
+        assert not m.is_hem_reveal(dict(plan, **change))
+
+
+def test_reveal_routes_to_surface_sampler(monkeypatch):
+    plan = dict(decision='ACTION',motion_type='lift_pull_place',is_smoothing=False,
+                action_purpose='HEM_REVEAL: 显露衣角')
+    def prepare(*args, **kwargs):
+        assert kwargs['target_sampler'] is m.project_reveal_target
+        return 'checked'
+    monkeypatch.setattr(one_shot,'prepare_collection_action',prepare)
+    assert one_shot.prepare_action(None,None,plan,None) == 'checked'

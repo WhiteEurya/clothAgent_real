@@ -218,7 +218,8 @@ def test_startup_recovers_before_already_at_perception_branch(monkeypatch):
     assert runtime.prepared
 
 
-def test_cartesian_ik_waypoints_become_one_controller_line(monkeypatch):
+@pytest.mark.parametrize("speed_policy,expected_speed", [({},5), ({"apply_joint_speed_cap":False},10)])
+def test_cartesian_ik_waypoints_become_one_controller_line(monkeypatch,speed_policy,expected_speed):
     from types import SimpleNamespace
     from cloth_agent.codex_native_runtime import NativeRuntime
     from cloth_agent.dual_arm.sequential_home import PositionSegment
@@ -233,11 +234,11 @@ def test_cartesian_ik_waypoints_become_one_controller_line(monkeypatch):
         assert kw['allow_detour'] is False
         return segments, states[-1]
     monkeypatch.setattr(NativeRuntime, '_tcp_segments', continuation)
-    result, final = runtime._tcp_segments('left',[.01,0,0,0,0,0],states[0])
+    result, final = runtime._tcp_segments('left',[.01,0,0,0,0,0],states[0],**speed_policy)
     assert len(result) == 1 and isinstance(result[0], CartesianPositionSegment)
     assert result[0].segments == tuple(segments)
     assert result[0].target_pose == [10,0,0,0,0,0]
-    assert result[0].cartesian_speed == 5
+    assert result[0].cartesian_speed == expected_speed
     assert result[0].cartesian_acceleration == 30
     assert final is states[-1]
 

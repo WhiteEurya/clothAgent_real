@@ -1,5 +1,8 @@
 # ClothAgent
 
+[新机器部署与多衣服实验](docs/deployment.md)：当前实验源码安装、现场配置、
+RGB-only 基线、CV/GGO 对比及衣物/颜色先验限制。
+
 [冻结 DINO 双图点对应工具](docs/experiments/dino_point_correspondence.md)：加载参考图与当前图，
 点击参考抓点查看热力图、三个分离候选、反向误差；支持独立人工区域标注和结果导出。
 本机启动：`bash scripts/start_dino_correspondence.sh`。

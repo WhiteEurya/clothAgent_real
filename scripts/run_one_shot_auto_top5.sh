@@ -9,6 +9,6 @@ if [[ $# -eq 0 ]]; then
     exit 0
 fi
 RUN_STAMP="$(date +%Y%m%d_%H%M%S_%N)"
-exec "${CLOTH_PYTHON:-/home/sja/miniconda3/envs/cali/bin/python}" -u -B \
+exec "${CLOTH_PYTHON:-python}" -u -B \
     -m cloth_agent.experiments.automatic_top5_batch \
     --output "${REPO_ROOT}/reports/automatic_top5_batch_${RUN_STAMP}" "$@"

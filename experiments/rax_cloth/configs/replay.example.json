@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "observations": [
+    {
+      "directory": "/mnt/newssd/sja/clothAgent_real/reports/arm6_replay_20261018_201903/initial_observation",
+      "camera": "camA",
+      "sha256": {
+        "rgb.png": "9fe7e05e9c3c0e80452d1788152a26ab25880b3c2fab263b4c151460617e4a81",
+        "observation.json": "e15e54264afdb8221c3e2232501a3e373a6fd71c31ea7e521a386f852dffc2f1",
+        "world_xyz_mm.npy": "81054eb0afdda617f39987a760055db4fbfcf542e3c9016c15bed7dc5a443234"
+      }
+    }
+  ],
+  "recorded_actions": [],
+  "limitations": [
+    "One historical image; no action records imported, no counterfactual feedback, no task strategies"
+  ]
+}

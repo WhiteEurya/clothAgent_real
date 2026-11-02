@@ -10,8 +10,21 @@ from .experiments.one_shot_goal_planner_probe_v1 import save, validate_plan
 def resolve(runtime, observation, plan, start, home_rpy, folder):
     # Validate again at the physical preparation boundary, including null rules.
     from PIL import Image
+    orientation_plan = dict(plan)
+    if 'is_smoothing' in orientation_plan:
+        smoothing = orientation_plan.pop('is_smoothing')
+        if type(smoothing) is not bool:
+            raise ValueError('is_smoothing must be boolean')
+        if plan.get('decision') != 'ACTION' and smoothing:
+            raise ValueError('non-ACTION is_smoothing must be false')
+    for field in ('action_purpose','expected_stop_state'):
+        if field in orientation_plan:
+            value=orientation_plan.pop(field)
+            if plan.get('decision')=='ACTION':
+                if not isinstance(value,str) or not value.strip() or len(value)>240:raise ValueError('invalid '+field)
+            elif value is not None:raise ValueError('non-ACTION '+field+' must be null')
     with Image.open(observation.image) as image:
-        validate_plan(plan, image.size, require_grasp_rotation=True)
+        validate_plan(orientation_plan, image.size, require_grasp_rotation=True)
     angle = plan['grasp_angle_deg']
     selected = np.asarray(home_rpy, dtype=float).copy()
     delta = 0.

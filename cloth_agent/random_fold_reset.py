@@ -52,10 +52,13 @@ def validate_region(region, size):
 
 def sample_grasp(observation, region, max_spread, radius_mm, seed):
     with Image.open(observation.image) as im: validate_region(region,im.size)
-    if not np.isfinite(radius_mm) or not 0 < radius_mm <= 80:
-        raise ValueError('random center radius must be in (0,80] mm')
+    if not np.isfinite(radius_mm) or not 0 <= radius_mm <= 80:
+        raise ValueError('random center radius must be in [0,80] mm')
     center=np.asarray(region['center_px'],dtype=float)
     origin=observation.sample(center.astype(int).tolist(),max_spread)
+    if radius_mm==0:
+        return dict(pixel_xy=center.astype(int).tolist(),world_xyz_mm=np.asarray(origin).tolist(),
+                    center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm,sampling='CENTER_ZERO_RADIUS')
     rng=np.random.default_rng(seed)
     # Uniform disk sampling in image coordinates, bounded again in measured world XY.
     for _ in range(200):
@@ -67,7 +70,10 @@ def sample_grasp(observation, region, max_spread, radius_mm, seed):
         if np.linalg.norm(np.asarray(xyz)[:2]-np.asarray(origin)[:2])<=radius_mm:
             return dict(pixel_xy=pixel.tolist(),world_xyz_mm=np.asarray(xyz).tolist(),
                         center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm)
-    raise DualArmError('中心区域内未找到有效深度的随机抓取点；不执行重置')
+    # The measured center was already validated; near-zero bounds may have no other pixel.
+    return dict(pixel_xy=center.astype(int).tolist(),world_xyz_mm=np.asarray(origin).tolist(),
+                center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm,
+                sampling='VALIDATED_CENTER_AFTER_200_REJECTIONS')
 
 
 def validate_randomization(lift_height, height_jitter, yaw_range, drop_radius, max_retries):
@@ -143,8 +149,8 @@ def run_reset(runtime, folder, *, radius_mm=80., lift_height=300., grasp_offset=
               seed=None, backend=None, recorder=None, height_jitter=50., yaw_range=45.,
               drop_radius=40., max_retries=1):
     validate_randomization(lift_height,height_jitter,yaw_range,drop_radius,max_retries)
-    if not np.isfinite(radius_mm) or not 0 < radius_mm <= 80:
-        raise ValueError('random center radius must be in (0,80] mm')
+    if not np.isfinite(radius_mm) or not 0 <= radius_mm <= 80:
+        raise ValueError('random center radius must be in [0,80] mm')
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     seed=secrets.randbits(63) if seed is None else seed
     report=dict(status='PREPARING',kind='random_fold_reset',seed=seed,lift_height_mm=lift_height,

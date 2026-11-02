@@ -1,0 +1,14 @@
+{
+  "profile_id": "short_stroke_shake_v1",
+  "scope": "suspended_world_z_shake_only",
+  "max_stroke_mm": 30.0,
+  "target_speed_mm_s": 150.0,
+  "max_cycles": 3,
+  "validation": {
+    "source": "user_instruction",
+    "statement": "User requested 150 mm/s for the 30 mm short-stroke shake; this speed has not yet been validated by a completed run.",
+    "joint_speed_deg_s": null,
+    "stop_excursion_deg": null
+  },
+  "preserve_existing_stop_checks": true
+}

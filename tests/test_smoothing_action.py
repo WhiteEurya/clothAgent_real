@@ -7,7 +7,7 @@ from cloth_agent.dual_arm.geometry import DualArmError
 from cloth_agent import restricted_context_one_shot as r
 
 
-@pytest.mark.parametrize('smoothing,distance,lift,limit',[(True,20,10,30),(True,30,10,30),(False,100,50,150)])
+@pytest.mark.parametrize('smoothing,distance,lift,limit',[(True,20,10,30),(True,30,10,30),(False,100,20,150)])
 def test_profile_reaches_motion_generator(monkeypatch,tmp_path,smoothing,distance,lift,limit):
     from cloth_agent import gamepad_collect as motion
     calls=[]
@@ -37,7 +37,7 @@ def test_smoothing_rejects_distance_before_motion(tmp_path,distance):
 
 
 def test_smoothing_required_boolean_and_nonaction_false():
-    plan=dict(decision='ACTION',grasp_px=[20,20],target_px=[40,20],motion_type='lift_pull_place',grasp_angle_deg=None,short_reason='整理下摆',is_smoothing=True)
+    plan=dict(decision='ACTION',grasp_px=[20,20],target_px=[40,20],motion_type='lift_pull_place',grasp_angle_deg=None,short_reason='整理下摆',is_smoothing=True,action_purpose='整理可见下摆',expected_stop_state='下摆局部翘起放平')
     assert r.validate(plan,(100,100),False)['is_smoothing']
     for value in ['true',1,None]:
         with pytest.raises(Exception):r.validate({**plan,'is_smoothing':value},(100,100),False)

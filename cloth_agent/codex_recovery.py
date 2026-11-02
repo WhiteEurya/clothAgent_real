@@ -64,7 +64,9 @@ def recovery_category(exc, phase, physical_execution):
                            "recovery repeats a rejected action")):
         return "PROPOSAL_GEOMETRY"
     if message.startswith("table-target fallback rejected:") and any(s in message for s in (
-        "target is outside", "near foreground", "garment/table appearance ambiguous",
+        "target is outside", "target outside bare-table roi",
+        "target pixel itself is not classified as bare table",
+        "near foreground", "garment/table appearance ambiguous",
         "hole exceeds", "nearby measured", "existing target depth contradicts",
         "surrounding measured support", "fewer than 100 nearby",
     )):
