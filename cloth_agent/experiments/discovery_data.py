@@ -24,7 +24,7 @@ def file_hash(path):
 
 def read(path):
     p=Path(path)
-    return json.loads(p.read_text()) if p.is_file() else {}
+    return json.loads(p.read_text(encoding='utf-8')) if p.is_file() else {}
 
 
 def save(path, value, *, immutable=False):
@@ -33,7 +33,7 @@ def save(path, value, *, immutable=False):
     if immutable and p.exists():
         if read(p)!=value:raise ValueError(f'refusing to overwrite frozen artifact: {p}')
         return
-    tmp=p.with_suffix(p.suffix+'.tmp');tmp.write_text(text);tmp.replace(p)
+    tmp=p.with_suffix(p.suffix+'.tmp');tmp.write_text(text, encoding='utf-8');tmp.replace(p)
 
 
 def choose_rgb(folder, record, when):

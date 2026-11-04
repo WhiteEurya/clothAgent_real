@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Current dual-xArm7 / fixed ZED; defaults to offline graph validation.
 set -euo pipefail
+# CLI output and legacy text I/O must also work under an ASCII login locale.
+export PYTHONUTF8=1
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 cd -- "$REPO_ROOT"

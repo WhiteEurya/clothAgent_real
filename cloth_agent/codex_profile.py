@@ -17,8 +17,8 @@ def profile_settings():
     if not path.is_file():
         raise RuntimeError(f'Codex profile missing: {path}')
     base_path = home / 'config.toml'
-    base = tomllib.loads(base_path.read_text()) if base_path.is_file() else {}
-    selected = tomllib.loads(path.read_text())
+    base = tomllib.loads(base_path.read_text(encoding='utf-8')) if base_path.is_file() else {}
+    selected = tomllib.loads(path.read_text(encoding='utf-8'))
     # Exclude project paths, MCPs, hooks, instructions, trust and tool settings.
     settings = {k: selected.get(k, base.get(k)) for k in
                 ('model', 'model_provider', 'model_reasoning_effort', 'service_tier')
@@ -57,7 +57,7 @@ def _toml_table(values, prefix=()):
 def isolated_profile_mount(workspace):
     """Mount only model/provider settings, never the user's full config directory."""
     path = Path(workspace) / f'{PROFILE}.config.toml'
-    path.write_text('\n'.join(_toml_table(profile_settings())) + '\n')
+    path.write_text('\n'.join(_toml_table(profile_settings())) + '\n', encoding='utf-8')
     return ['--ro-bind', str(path.resolve()), f'/home/agent/.codex/{PROFILE}.config.toml']
 
 

@@ -71,7 +71,7 @@ class CodexMultimodal:
             auth=Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))/'auth.json'
             command=isolated_command(self.binary,work,auth)+cmd
             started=time.monotonic()
-            with (work/'events.jsonl').open('w') as events,(work/'stderr.txt').open('w') as errors:
+            with (work/'events.jsonl').open('w', encoding='utf-8') as events,(work/'stderr.txt').open('w', encoding='utf-8') as errors:
                 timeline=None
                 if self.timing_output is not None:
                     from .model_timing import EventTimeline
@@ -79,7 +79,7 @@ class CodexMultimodal:
                     timeline.start()
                 try:
                     p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=events,stderr=errors,
-                                       text=True,start_new_session=True,env=isolated_environment())
+                                       text=True,encoding='utf-8',start_new_session=True,env=isolated_environment())
                 except BaseException:
                     if timeline is not None:timeline.finish()
                     raise
@@ -103,7 +103,7 @@ class CodexMultimodal:
                             event_timing=observed, summary=summarize(observed,process_wall_s)))
             events_parsed=[]
             usage={};tool_calls=0;visual_tool_calls=0;completed_turns=0
-            for line in (work/'events.jsonl').read_text().splitlines():
+            for line in (work/'events.jsonl').read_text(encoding='utf-8').splitlines():
                 try:event=json.loads(line)
                 except ValueError:continue
                 events_parsed.append(event)
@@ -118,7 +118,7 @@ class CodexMultimodal:
                     for k,v in event.get('usage',{}).items():
                         if isinstance(v,(int,float)):usage[k]=usage.get(k,0)+v
             if p.returncode:
-                stderr=(work/'stderr.txt').read_text()[-1600:]
+                stderr=(work/'stderr.txt').read_text(encoding='utf-8')[-1600:]
                 failures=[e for e in events_parsed if e.get('type') in ('error','turn.failed')]
                 details=dict(returncode=p.returncode,stderr=stderr,failure_events=failures[-4:])
                 # Retry only the isolated model invocation, never a robot dispatch.
@@ -130,8 +130,8 @@ class CodexMultimodal:
             if completion['errors'] or not completion['final_turn_completed']:
                 raise RuntimeError('Codex turn failed or incomplete: '+json.dumps(completion,ensure_ascii=False))
             answer=work/'answer.txt'
-            if not answer.is_file() or not answer.read_text().strip():raise RuntimeError('No model answer')
-            return dict(text=answer.read_text(),usage=usage,elapsed_s=time.monotonic()-started,
+            if not answer.is_file() or not answer.read_text(encoding='utf-8').strip():raise RuntimeError('No model answer')
+            return dict(text=answer.read_text(encoding='utf-8'),usage=usage,elapsed_s=time.monotonic()-started,
                         recovered_errors=completion['recovered_errors'],
                         tool_calls=tool_calls,visual_tool_calls=visual_tool_calls,completed_turns=completed_turns,
                         image_count=len(local_images),isolation='bubblewrap-allowlist',model=self.model,profile=PROFILE)
