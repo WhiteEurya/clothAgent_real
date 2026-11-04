@@ -41,7 +41,7 @@ class PartitionedReplayRuntime:
     preview = None
     planning_policy = '输出逻辑 right 的单夹爪 grasp 和搬运；宿主按两夹爪中点选择物理臂。'
     motion_contract = '只允许一个 motion.grasp(right=[x,y,z,roll,pitch,yaw])，随后使用 right 的 move_tcp，保持 roll/pitch；单位 m/rad。'
-    preparation_description = '固定 ZED 采图；读取两台控制器的实际静止姿态，不自动回位。'
+    preparation_description = '启动时双臂依次回 Home，再用固定 ZED 采图。'
 
     def __init__(self, config_path, *, planning_only=False):
         from .dual_arm.config import DualConfig
@@ -62,6 +62,46 @@ class PartitionedReplayRuntime:
         self._routing_lock = threading.Lock()
         self._lease = None
         self._startup_checked = False
+        self._startup_home_complete = False
+
+    def _home_startup(self, directory, before, snapshots):
+        from .experiment import ExperimentRunner
+        from .experiments.full_grasp_adapter import build_robot_config
+        from .robot_collision import RobotCollision
+        if self.planning_only:
+            raise DualArmError('planning-only adapter cannot execute motion')
+        tolerance = self.config.limits['stationary_tolerance_deg']
+        predicted = {k: np.asarray(v['joints']).copy() for k, v in before.items()}
+        pending = []
+        # Validate both sequential legs before dispatching either arm.
+        for key in ('left', 'right'):
+            home = self.config.arms[key].home_joints
+            if np.max(np.abs(predicted[key] - home)) <= tolerance:
+                continue
+            pose = self.models[key].forward(home)
+            config = build_robot_config(self.config.raw, {}, key, *pose[3:5], config_path=self.config_path)
+            checker = RobotCollision(self.config_path, predicted, key, root=self.config.root)
+            checker.require_execution(config, [{'name': 'home', 'args': {}}])
+            pending.append((key, config))
+            predicted[key] = home.copy()
+        for key, config in pending:
+            print(f'Startup Home: {key}', flush=True)
+            initial = {k: v['joints'] for k, v in before.items()}
+            checker = RobotCollision(self.config_path, initial, key, root=self.config.root)
+            runner = ExperimentRunner(Path(directory) / key, config, collision_checker=checker)
+            path = runner.workspace / 'startup_home.py'
+            path.write_text('def run():\n    home()\n', encoding='utf-8')
+            result = runner.run_experiment(path, real=True, confirmed=True)
+            if not result['execution_completed']:
+                raise DualArmError(f'{key}: startup Home failed; graph replay not started')
+            after = snapshots()
+            if np.max(np.abs(np.asarray(after[key]['joints']) - self.config.arms[key].home_joints)) > tolerance:
+                raise DualArmError(f'{key}: startup Home not reached')
+            other = 'right' if key == 'left' else 'left'
+            if np.max(np.abs(np.asarray(after[other]['joints']) - before[other]['joints'])) > tolerance:
+                raise DualArmError(f'{other}: inactive arm moved during startup Home')
+            before = after
+        return before
 
     def observe(self, directory):
         if self.planning_only:
@@ -90,7 +130,12 @@ class PartitionedReplayRuntime:
         perception = PerceptionConfig.load(ROOT, perception_path)
         startup = not self._startup_checked
         self._startup_checked = True  # No recovery retry within this run.
+        if not startup and not self._startup_home_complete:
+            raise DualArmError('startup Home failed; start a new run after resolving the failure')
         before = snapshots(startup=startup)
+        if startup:
+            before = self._home_startup(Path(directory).parent / 'startup_home', before, snapshots)
+            self._startup_home_complete = True
         frames = capture_two_view_rgbd(perception)
         after = snapshots()
         for key in self.models:

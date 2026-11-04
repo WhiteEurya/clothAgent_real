@@ -142,3 +142,60 @@ def test_graph_compiles_to_original_experiment_api_for_either_arm(tmp_path, arm)
                                                     'move', 'open_gripper', 'move', 'home']
     np.testing.assert_allclose(preflight.actions[2]['actual_ee_pose'][:3], runtime.models[arm].forward(joints[arm])[:3])
     runtime.close()
+
+
+@pytest.mark.parametrize('failure', [None, 'plan_right', 'execute_left'])
+def test_startup_home_checks_both_legs_and_runs_sequentially(tmp_path, monkeypatch, failure):
+    runtime = PartitionedReplayRuntime('config/dual_arm.zed_dual_xarm7_20261103.json')
+    actual = {k: a.home_joints.copy() + .5 for k, a in runtime.config.arms.items()}
+    original_right = actual['right'].copy()
+    events = []
+    class Checker:
+        def __init__(self, path, initial, key, **kw):
+            self.key = key
+            self.initial = {k: np.asarray(q).copy() for k, q in initial.items()}
+        def require_execution(self, config, actions):
+            events.append(('plan', self.key))
+            if self.key == 'right':
+                np.testing.assert_array_equal(self.initial['left'], runtime.config.arms['left'].home_joints)
+            if failure == 'plan_right' and self.key == 'right':
+                raise DualArmError('blocked right path')
+    class Runner:
+        def __init__(self, folder, config, collision_checker):
+            self.workspace = folder
+            folder.mkdir(parents=True)
+            self.checker = collision_checker
+        def run_experiment(self, path, **kw):
+            assert path.read_text() == 'def run():\n    home()\n'
+            assert kw == dict(real=True, confirmed=True)
+            key = self.checker.key
+            events.append(('execute', key))
+            for k in actual:
+                np.testing.assert_array_equal(self.checker.initial[k], actual[k])
+            if key == 'left':
+                np.testing.assert_array_equal(actual['right'], original_right)
+            if failure == 'execute_left':
+                return dict(execution_completed=False)
+            actual[key] = runtime.config.arms[key].home_joints.copy()
+            return dict(execution_completed=True)
+    def snapshots():
+        events.append(('snapshot', None))
+        return {k: {'joints': q.tolist()} for k, q in actual.items()}
+    before = snapshots(); events.clear()
+    monkeypatch.setattr('cloth_agent.robot_collision.RobotCollision', Checker)
+    monkeypatch.setattr('cloth_agent.experiment.ExperimentRunner', Runner)
+    try:
+        if failure:
+            with pytest.raises(DualArmError):
+                runtime._home_startup(tmp_path / 'home', before, snapshots)
+            assert ('execute', 'right') not in events
+            if failure == 'plan_right':
+                assert not any(kind == 'execute' for kind, _ in events)
+        else:
+            after = runtime._home_startup(tmp_path / 'home', before, snapshots)
+            assert events == [('plan', 'left'), ('plan', 'right'), ('execute', 'left'),
+                              ('snapshot', None), ('execute', 'right'), ('snapshot', None)]
+            for key in actual:
+                np.testing.assert_array_equal(after[key]['joints'], runtime.config.arms[key].home_joints)
+    finally:
+        runtime.close()
