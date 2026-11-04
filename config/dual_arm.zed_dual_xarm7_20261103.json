@@ -540,8 +540,8 @@
     }
   },
   "limits": {
-    "cartesian_speed_mm_s": 30,
-    "cartesian_accel_mm_s2": 60,
+    "cartesian_speed_mm_s": 15,
+    "cartesian_accel_mm_s2": 30,
     "joint_speed_deg_s": 5,
     "joint_accel_deg_s2": 10,
     "clearance_mm": 0.0,

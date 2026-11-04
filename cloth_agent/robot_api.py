@@ -666,15 +666,10 @@ class XArmBackend:
         live = self._guard_check()
         plan = self.collision.plan_action(config, name, args, initial=live)
         key = self.collision.active_arm
-        model = self.collision.models[key]
-        # Conservative Cartesian speed/acceleration caps for joint motion.
-        # The second term also bounds the rotational curvature acceleration.
-        reach = max(1., float(sum(model.tcp_reaches)))
-        speed = min(config.home_speed_deg_s, math.degrees(config.speed_mm_s / reach),
-                    math.degrees(math.sqrt(config.acceleration_mm_s2 / (2 * reach * model.config.axis))))
-        accel = min(config.home_acceleration_deg_s2, math.degrees(config.acceleration_mm_s2 / (2 * reach)))
-        if name in {'home', 'perception_position'}:
-            speed, accel = config.home_speed_deg_s, config.home_acceleration_deg_s2
+        # Match the original Arm7 joint-position executor: these fields map
+        # to the scene's joint_speed_deg_s / joint_accel_deg_s2. Cartesian
+        # limits belong to set_position, not these explicit joint commands.
+        speed, accel = config.home_speed_deg_s, config.home_acceleration_deg_s2
         for start, target in zip(plan['path'], plan['path'][1:]):
             self._guard_check()
             with self._guard_lock:

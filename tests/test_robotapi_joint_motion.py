@@ -101,6 +101,10 @@ def test_cartesian_target_is_sent_as_the_solved_joint_target(hardware, monkeypat
         np.testing.assert_allclose(calls[-1][0], expected)
         commands = [c for c in controllers['right'].commands if isinstance(c, dict)]
         np.testing.assert_allclose(commands[-1]['angle'], goal)
+        for command in commands:
+            assert command['speed'] == checker.config.limits['joint_speed_deg_s']
+            assert command['mvacc'] == checker.config.limits['joint_accel_deg_s2']
+            assert command['radius'] == -1 and command['wait'] is True
         assert not controllers['left'].commands
     finally:
         backend.close()
