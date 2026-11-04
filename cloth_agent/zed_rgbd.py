@@ -6,6 +6,19 @@ import numpy as np
 from .perception import PerceptionError
 
 
+def load_zed_sdk():
+    """Import only; expose loader errors without opening a camera or robot."""
+    import sys
+    try:
+        import pyzed.sl as sl
+    except ImportError as exc:
+        raise PerceptionError(
+            f'ZED SDK import failed in {sys.executable}: {exc}. '
+            'Check SDK library paths and directory access; /usr/local/zed may require the zed group.'
+        ) from exc
+    return sl
+
+
 class ZEDRGBD:
     def __init__(self, spec, width, height, fps):
         self.spec, self.width, self.height, self.fps = spec, width, height, fps
@@ -30,10 +43,7 @@ class ZEDRGBD:
         if any(v is not None for v in (self.spec.color_exposure, self.spec.color_white_balance,
                                       self.spec.depth_exposure_us, self.spec.depth_gain)):
             raise PerceptionError('RealSense exposure controls cannot be applied to ZED')
-        try:
-            import pyzed.sl as sl
-        except ImportError as exc:
-            raise PerceptionError('ZED SDK and pyzed are required for live capture') from exc
+        sl = load_zed_sdk()
         self.sl = sl
         params = sl.InitParameters()
         params.set_from_serial_number(int(self.spec.serial))

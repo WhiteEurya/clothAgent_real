@@ -18,6 +18,20 @@ from cloth_agent.site_observation import (
 from cloth_agent.zed_rgbd import ZEDRGBD
 
 
+def test_sdk_import_keeps_loader_error_and_interpreter(monkeypatch):
+    import builtins
+    from cloth_agent.zed_rgbd import load_zed_sdk
+    original = builtins.__import__
+    def failing(name, *args, **kwargs):
+        if name == 'pyzed.sl':
+            raise ImportError('libsl_zed.so: cannot open shared object file')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', failing)
+    with pytest.raises(perception.PerceptionError, match='libsl_zed.so') as error:
+        load_zed_sdk()
+    assert sys.executable in str(error.value)
+
+
 @pytest.fixture
 def fake_sdk(monkeypatch):
     status = NS(open=0, grab=0, retrieve=0, closed=0, serial=11483267)
