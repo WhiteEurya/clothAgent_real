@@ -188,7 +188,18 @@ class RobotCollision:
             target = config.init_joints_deg if name == 'home' else config.perception_joints_deg
             row = {k: v.copy() for k, v in states[-1].items()}
             row[key] = target
-            states.append(checker.joints(row))
+            goal = checker.joints(row)
+            start = states[0][key]
+            delta = goal[key] - start
+            count = max(1, int(np.ceil(np.max(np.abs(delta)) / 5.)))
+            # These are actual stop-at-waypoint commands, not just samples
+            # used to approve one large controller move. The existing backend
+            # dispatches every segment with radius=-1, wait=True and checks
+            # arrival. Validate the full joint box of each segment below.
+            for i in range(1, count + 1):
+                row = {k: v.copy() for k, v in goal.items()}
+                row[key] = goal[key].copy() if i == count else start + delta * i / count
+                states.append(row)
         elif name not in {'open_gripper', 'close_gripper'}:
             raise SafetyError(f'{name}: no checked joint path implementation')
         report = checker.validate_joint_path(states, robot_config=config, tolerance_deg=tolerance)

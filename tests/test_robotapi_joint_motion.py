@@ -160,6 +160,34 @@ def test_gripper_and_home_need_no_ik_solver(hardware, monkeypatch):
         assert all(row['left'] == checker.initial['left'].tolist() for row in plan['path'])
 
 
+def test_large_replay_return_dispatches_every_checked_home_waypoint(hardware):
+    config, checker, controllers = hardware
+    # Recorded end of the first sleeve fold, before returning to Home.
+    start = np.array([-35.47830402251608, -4.05068316208708, 22.996835459506574,
+                      38.96433846085815, 3.063172689608528, 42.952760766342415,
+                      63.248069670726764])
+    checker.initial['right'] = start.copy()
+    controllers['right'].q = start.copy()
+    plan = checker.plan_action(config, 'home', {})
+    assert len(plan['path']) == 15
+    assert plan['checked_cells'] < 8192
+    joints = np.array([row['right'] for row in plan['path']])
+    assert np.max(np.abs(np.diff(joints, axis=0))) <= 5.
+    np.testing.assert_array_equal(joints[-1], config.init_joints_deg)
+    backend = XArmBackend(config, collision_checker=checker)
+    try:
+        backend.home(config)
+        commands = [c for c in controllers['right'].commands if isinstance(c, dict)]
+        assert len(commands) == len(plan['path']) - 1
+        for command, row in zip(commands, plan['path'][1:]):
+            np.testing.assert_array_equal(command['angle'], row['right'])
+            assert command['radius'] == -1 and command['wait'] is True
+            np.testing.assert_array_equal(row['left'], checker.initial['left'])
+        assert not controllers['left'].commands
+    finally:
+        backend.close()
+
+
 def test_monitor_stops_during_blocking_joint_command(hardware):
     config, checker, controllers = hardware
     backend = XArmBackend(config, collision_checker=checker)
