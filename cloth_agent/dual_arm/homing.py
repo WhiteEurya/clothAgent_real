@@ -248,10 +248,6 @@ def gripper_home(config_path=None, *, output=None, simulated=False,
 
 
 def plan_configured_home(initial, config, models):
-    if [config.arms[key].axis for key in ('left', 'right')] == [7, 7]:
-        from .pyroki_home import plan_home as plan_pyroki_home
-        program, segments, attempts = plan_pyroki_home(initial, config, models)
-        return program, attempts, 'PyRoki / checked sequential Home'
     from .motion.home import HomePlanner
     program, attempts = HomePlanner(initial, config, models).plan()
     return program, attempts, 'motion.PathPlanner/OMPL'

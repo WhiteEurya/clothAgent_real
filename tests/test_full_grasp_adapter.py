@@ -85,7 +85,9 @@ def test_native_gates_are_not_promoted_or_required(inputs):
     before = copy.deepcopy(execution)
     config, source, mapping = compile_proposal(plan, profile, execution, state)
     assert execution == before
-    assert execution['collision_geometry_verified'] is False
+    assert 'safety' not in execution
+    assert 'collision_geometry_verified' not in execution
+    assert execution['geometry_provenance']['collision_geometry_verified'] is False
     assert config.speed_mm_s == 15
     assert config.acceleration_mm_s2 == 30
     assert config.gripper_close == 5

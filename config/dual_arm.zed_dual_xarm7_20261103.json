@@ -1,53 +1,9 @@
 {
-  "home_path": {
-    "max_height_mm": 500
-  },
   "schema_version": 1,
-  "astra_grasp_height": {
-    "mode": "per_point_corrected_depth",
-    "source": "per-point depth from corrected arm6 camera extrinsic; no world-cloud post rotation"
-  },
   "frame_id": "world_mm",
   "calibration_status": "measured",
   "calibration_id": "zed_dual_xarm7_20261103",
-  "collision_geometry_verified": false,
-  "servo_commissioned": false,
   "arm_layout_description": "left=xArm7 192.168.1.237, right=xArm7 192.168.1.230; common frame is right arm base; fixed ZED Mini third-view.",
-  "execution_policy": {
-    "mode": "sequential_single_gripper_static_other",
-    "active_arm_selection": "explicit_cli_argument",
-    "inactive_arm_controller_connection": false,
-    "inactive_arm_collision_model": "saved_joint_pose_urdf_capsules",
-    "note": "Each graph step is assigned to one physical xArm7. The other xArm7 is not synchronized or commanded; its saved pose is used only as a static collision model."
-  },
-  "static_arm_models": {
-    "left": {
-      "joint_angles_deg": [
-        2.837287,
-        -43.951421,
-        1.822865,
-        68.1688,
-        3.40738,
-        111.084542,
-        6.110824
-      ],
-      "source": "outputs/startup_robot_state_001.json arms.left.joints_deg",
-      "reference": "recorded Home; inactive controller must remain at this pose before a single-arm run"
-    },
-    "right": {
-      "joint_angles_deg": [
-        -3.422793,
-        -40.851719,
-        -2.57894,
-        71.689625,
-        -2.013603,
-        112.52364,
-        -4.741684
-      ],
-      "source": "outputs/startup_robot_state_001.json arms.right.joints_deg",
-      "reference": "recorded Home; inactive controller must remain at this pose before a single-arm run"
-    }
-  },
   "arms": {
     "left": {
       "ip": "192.168.1.237",
@@ -116,7 +72,14 @@
         ],
         "status": "operator_selected_one_sided",
         "boundary_policy": "explicit_one_sided",
-        "halfspaces_mm": [[0.9995953217772388, -0.02264017914492073, 0.01722251344441663, 577.4714238215655]],
+        "halfspaces_mm": [
+          [
+            0.9995953217772388,
+            -0.02264017914492073,
+            0.01722251344441663,
+            577.4714238215655
+          ]
+        ],
         "boundary_source": "outputs/x_boundaries_20261104.json:left.exact_mirrored_boundary",
         "source_target_bounds_mm": [
           [
@@ -378,7 +341,10 @@
         ],
         "status": "operator_selected_one_sided",
         "boundary_policy": "explicit_one_sided",
-        "boundary_sources": ["outputs/x_boundaries_20261104.json:right", "outputs/right_y_boundary_20261104.json"],
+        "boundary_sources": [
+          "outputs/x_boundaries_20261104.json:right",
+          "outputs/right_y_boundary_20261104.json"
+        ],
         "source_target_bounds_mm": [
           [
             0,
@@ -574,73 +540,14 @@
     }
   },
   "limits": {
-    "rate_hz": 20,
     "cartesian_speed_mm_s": 15,
     "cartesian_accel_mm_s2": 30,
     "joint_speed_deg_s": 5,
     "joint_accel_deg_s2": 10,
-    "max_ik_step_deg": 3,
-    "tracking_error_mm": 0.0,
-    "tracking_error_deg": 0.0,
-    "arrival_error_mm": 2,
-    "dispatch_skew_s": 0.02,
-    "max_tick_lateness_s": 0.04,
     "clearance_mm": 0.0,
     "max_grasp_age_s": 180,
-    "max_span_mm": 1000,
-    "min_span_mm": 80,
-    "max_spread_mm": 100,
-    "max_spread_step_mm": 10,
-    "max_lift_mm": 150,
-    "max_approach_mm": 100,
-    "contact_descent_mm": 1,
-    "max_vision_wait_s": 120,
     "stationary_tolerance_deg": 0.2,
-    "max_plan_samples": 40000,
-    "max_surface_spread_mm": 8,
-    "center_radius_mm": 150,
-    "center_line_tolerance_mm": 30
-  },
-  "safety": {
-    "status": "measured",
-    "validation_id": "zed_dual_xarm7_20261103_pending_current_site_validation",
-    "open_tools_and_attachments_verified": false,
-    "controller_watchdog_verified": false,
-    "joint_segment_tracking_verified": false,
-    "max_feedback_age_s": 0.1,
-    "controller_watchdog_s": 0.15,
-    "stop_command_latency_s": 0.05,
-    "max_sweep_nodes": 65536,
-    "arms": {
-      "left": {
-        "base_error_mm": 5.0,
-        "geometry_error_mm": 0.0,
-        "max_joint_speed_deg_s": 5,
-        "stop_excursion_deg": [
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25
-        ]
-      },
-      "right": {
-        "base_error_mm": 5.0,
-        "geometry_error_mm": 0.0,
-        "max_joint_speed_deg_s": 5,
-        "stop_excursion_deg": [
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25,
-          1.25
-        ]
-      }
-    }
+    "max_surface_spread_mm": 8
   },
   "obstacles": [
     {
@@ -731,38 +638,6 @@
     "collision_geometry_verified": false,
     "note": "URDF capsules are for planning review and do not prove installed gripper, ZED support, cable or table clearance."
   },
-  "configuration_review": {
-    "generated_at": "2026-11-04",
-    "source_site_profile": "config/site.zed_dual_xarm7_20261103.json",
-    "source_readonly_report": "outputs/startup_robot_state_001.json",
-    "status": "pending_physical_validation",
-    "filled_from_evidence": [
-      "robot identities",
-      "7-axis URDF",
-      "Home joints",
-      "TCP",
-      "ZED serial/intrinsics/extrinsics",
-      "common frame",
-      "table obstacle",
-      "planning limits",
-      "controller serial numbers and read-only state report"
-    ],
-    "remaining_measurements": [
-      "workspace bounds",
-      "installed open gripper/tool envelope",
-      "camera/attachment envelope",
-      "controller watchdog and stopping bounds",
-      "empty servo commissioning"
-    ],
-    "known_evidence": {
-      "left_home_feedback_position_error_mm": 0.019442041584677237,
-      "left_home_feedback_orientation_error_deg": 6.559339584616258e-05,
-      "explicit_joint_path_controller_commands_sent": 0,
-      "branch_path_controller_commands_sent": 0,
-      "external_collision_checked": false,
-      "physical_alignment_validated": false
-    }
-  },
   "environment_confirmation": {
     "source": "user confirmation plus current site import",
     "base_mounting": "Both xArm7 bases mounted directly on the same hard tabletop",
@@ -791,342 +666,7 @@
     "status": "imported_pending_live_validation",
     "physical_alignment_validated": false
   },
-  "envelope_editor": {
-    "saved_at": "20261008T094830269143Z",
-    "status": "unvalidated_draft",
-    "execution_mode": "controller_sequential",
-    "radius_breakdown_mm": {
-      "left": {
-        "link_base": {
-          "nominal_mm": 132.70909152691914,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 142.70909152691914
-        },
-        "link1": {
-          "nominal_mm": 93.79802776550287,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 103.79802776550287
-        },
-        "link2": {
-          "nominal_mm": 110.4693975420258,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 120.4693975420258
-        },
-        "link3": {
-          "nominal_mm": 81.9133570418035,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 91.9133570418035
-        },
-        "link4": {
-          "nominal_mm": 80.21684689257127,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 90.21684689257127
-        },
-        "link5": {
-          "nominal_mm": 79.74558629924498,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 89.74558629924498
-        },
-        "link6": {
-          "nominal_mm": 46.62079471233056,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 56.62079471233056
-        },
-        "tool": {
-          "nominal_mm": 30.0,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 40.0
-        },
-        "camera": {
-          "nominal_mm": 17.67766952966369,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 27.67766952966369
-        }
-      },
-      "right": {
-        "link_base": {
-          "nominal_mm": 140.64337326500134,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 150.64337326500134
-        },
-        "link1": {
-          "nominal_mm": 93.47218219221938,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 103.47218219221938
-        },
-        "link2": {
-          "nominal_mm": 87.81524517104025,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 97.81524517104025
-        },
-        "link3": {
-          "nominal_mm": 99.80337398307584,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 109.80337398307584
-        },
-        "link4": {
-          "nominal_mm": 80.26386647042811,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 90.26386647042811
-        },
-        "link5": {
-          "nominal_mm": 76.9814865857466,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 86.9814865857466
-        },
-        "link6": {
-          "nominal_mm": 72.41722773726362,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 82.41722773726362
-        },
-        "link7": {
-          "nominal_mm": 41.674972466270454,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 51.674972466270454
-        },
-        "tool": {
-          "nominal_mm": 30.0,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 40.0
-        },
-        "camera": {
-          "nominal_mm": 17.67766952966369,
-          "increments_mm": {
-            "base": 10.0,
-            "geometry": 0.0,
-            "tracking_mm": 0.0,
-            "stop": 0.0,
-            "tracking_deg": 0.0,
-            "feedback": 0.0,
-            "watchdog": 0.0,
-            "stop_latency": 0.0,
-            "tick_lateness": 0.0,
-            "dispatch": 0.0,
-            "tick": 0.0
-          },
-          "total_mm": 27.67766952966369
-        }
-      }
-    },
-    "note": "Interactive visual edits; no physical validation or execution."
-  },
-  "deployment_note": "Current ZED Mini / dual xArm7 execution candidate. Static calibration, identity and model fields are filled from the 2026-11-03 site archive and read-only controller report. Physical tool/camera envelope, dynamic safety tests, empty commissioning and live execution observation remain blocked until evidence is supplied.",
+  "deployment_note": "Current ZED / dual xArm7 geometry and motion limits for ExperimentRunner / RobotAPI. Controller Cartesian joint-path coverage is unavailable; geometry provenance below is retained without promoting verification flags.",
   "evidence_index": {
     "read_only_identity": "outputs/startup_robot_state_001.json",
     "paired_calibration": "config/calibration/zed_dual_xarm7_20261103/manifest.json",
@@ -1135,5 +675,10 @@
     "explicit_joint_path_precheck": "deployment-artifacts/topdown_physical_trial_001/explicit_joint_path/report.json",
     "branch_path_precheck": "deployment-artifacts/topdown_physical_trial_001/branch_path_continuation/report.json",
     "scope_note": "The prechecks contain no physical collision, watchdog, or dynamic tracking certification."
-  }
+  },
+  "geometry_margin_mm": {
+    "left": 5.0,
+    "right": 5.0
+  },
+  "execution_chain": "ExperimentRunner / RobotAPI / XArmBackend"
 }

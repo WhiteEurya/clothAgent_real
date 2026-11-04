@@ -6,11 +6,11 @@
 [双臂分工折叠预览](docs/partitioned_folding.md)：按衣服中心线选择左臂或右臂，每步只用一只夹爪；
 离线检查：`python -m cloth_agent.experiments.partitioned_folding`。
 
-[当前现场：ZED Mini + 双 xArm7](docs/zed_current_site.md)：已接入本机标定、RGB-D、公共坐标和正式入口；
-每一步只运行一条选定的 xArm7，另一条只作为静态碰撞模型。入口仍受物理安全门禁保护：
-`bash scripts/run_zed_dual_arm7.sh --active-arm left --manual-execute --max-rounds 1`。
-最后现场验证记录模板：`python scripts/create_zed_validation_record.py --output deployment-artifacts/zed_validation_001.json`。
-完成现场记录后自动应用：`python scripts/apply_zed_validation_record.py --record deployment-artifacts/zed_validation_001.json`。
+[当前现场：ZED Mini + 双 xArm7](docs/zed_current_site.md)：当前执行链统一为
+`Graph/动作提案 → ExperimentRunner → RobotAPI → XArmBackend`。
+按两个夹爪 TCP 中点选臂，每步只有一臂运动，每次 run 独立。
+离线检查：`bash scripts/run_arm7_partitioned_replay.sh --dry-run`。
+原控制器 Cartesian 插补的关节路径尚未被覆盖，真实动作保持阻断；不再依赖 NativeRuntime 准入声明。
 
 [Arm6 折叠 Graph 部署](docs/arm6_folding_deployment.md)：10 月 18 日的小型折叠图，
 9 个节点 / 8 条边，Camera A；离线检查：`bash scripts/run_arm6_folding_graph.sh --dry-run`。

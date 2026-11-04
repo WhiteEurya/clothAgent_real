@@ -10,10 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_current_zed_site_reports_both_real_xarm7_models():
-    config = DualConfig.load(
+    config = DualConfig.load_geometry(
         ROOT / 'config/dual_arm.zed_dual_xarm7_20261103.json',
         root=ROOT,
-        homing_only=True,
     )
     models = {key: ArmModel(arm) for key, arm in config.arms.items()}
     report = build_capabilities(config, models)
@@ -23,18 +22,20 @@ def test_current_zed_site_reports_both_real_xarm7_models():
     assert all(row['axis'] == 7 for row in report['arms'].values())
 
 
-def test_current_zed_workspace_only_binds_measured_minimum_z():
-    config = DualConfig.load(
+def test_current_zed_workspace_preserves_operator_selected_planes():
+    config = DualConfig.load_geometry(
         ROOT / 'config/dual_arm.zed_dual_xarm7_20261103.json',
         root=ROOT,
-        homing_only=True,
     )
     assert all(a.workspace['min_mm'][0] == float('-inf') for a in config.arms.values())
     assert all(a.workspace['min_mm'][1] == float('-inf') for a in config.arms.values())
-    assert all(a.workspace['max_mm'][0] == float('inf') for a in config.arms.values())
-    assert all(a.workspace['max_mm'][1] == float('inf') for a in config.arms.values())
+    assert config.arms['left'].workspace['max_mm'][0] == float('inf')
+    assert config.arms['left'].raw['workspace']['halfspaces_mm']
+    assert config.arms['right'].workspace['max_mm'][0] == 577.506409
+    assert config.arms['right'].workspace['max_mm'][1] == 127.638359
     assert config.arms['left'].workspace['min_mm'][2] == 8
     assert config.arms['right'].workspace['min_mm'][2] == -20
     raw = config.raw
-    assert raw['execution_policy']['mode'] == 'sequential_single_gripper_static_other'
-    assert set(raw['static_arm_models']) == {'left', 'right'}
+    assert raw['execution_chain'] == 'ExperimentRunner / RobotAPI / XArmBackend'
+    assert 'static_arm_models' not in raw
+    assert 'safety' not in raw

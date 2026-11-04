@@ -28,6 +28,7 @@ class ControllerTrajectoryValidation:
     tcp_offset_mm_deg: tuple[float, ...]
     validated_sample_count: int
     shake_open_diagonal_scales: dict[int, float] = field(default_factory=dict)
+    controller_interpolation_covered: bool = False
 
 
 def _timestamp() -> str:
@@ -219,12 +220,10 @@ def _controller_trajectory_with_arm(
 
     live_tcp_offset = _validated_live_tcp_offset(arm, config)
     err_warn = arm.get_err_warn_code()
-    error_code = 0
-    warning_code = 0
-    if isinstance(err_warn, tuple) and len(err_warn) >= 2 and int(err_warn[0]) == 0:
-        values = err_warn[1]
-        if isinstance(values, (list, tuple)) and len(values) >= 2:
-            error_code, warning_code = int(values[0]), int(values[1])
+    if (not isinstance(err_warn, (tuple, list)) or len(err_warn) != 2 or err_warn[0] != 0
+            or not isinstance(err_warn[1], (tuple, list)) or len(err_warn[1]) < 2):
+        raise RobotExecutionError('controller fault feedback unavailable; cannot validate trajectory')
+    error_code, warning_code = int(err_warn[1][0]), int(err_warn[1][1])
     if error_code != 0:
         raise RobotExecutionError(f"xArm controller has active error code {error_code}")
 
@@ -540,6 +539,9 @@ class XArmBackend:
     """
 
     def __init__(self, config: RobotConfig):
+        if config.collision_scene_path:
+            raise RobotExecutionError(
+                'CONTROLLER_PATH_UNCOVERED: set_position backend has no joint-path coverage for the other arm; use ExperimentRunner diagnostics')
         try:
             from xarm.wrapper import XArmAPI
         except ImportError as exc:  # pragma: no cover - depends on robot host
@@ -551,6 +553,10 @@ class XArmBackend:
             if not getattr(self.arm, "connected", True):
                 raise RobotExecutionError(f"unable to connect to xArm at {config.robot_ip}")
             _validated_live_tcp_offset(self.arm, config)
+            feedback = self.arm.get_err_warn_code()
+            if (not isinstance(feedback, (tuple, list)) or len(feedback) != 2 or feedback[0] != 0
+                    or not isinstance(feedback[1], (tuple, list)) or not feedback[1] or feedback[1][0] != 0):
+                raise RobotExecutionError(f'controller fault/unavailable feedback before enable: {feedback}')
             self._check("motion_enable", self.arm.motion_enable(enable=True))
             self._check("set_mode", self.arm.set_mode(0))
             self._check("set_state", self.arm.set_state(0))
@@ -586,6 +592,17 @@ class XArmBackend:
             "error_warn": self.arm.get_err_warn_code(),
             "gripper_feedback": _read_gripper_feedback(self.arm),
         }
+        for name in ('state', 'error_warn'):
+            response = state[name]
+            if not isinstance(response, (tuple, list)) or len(response) != 2 or response[0] != 0:
+                raise RobotExecutionError(f'controller {name} feedback unavailable: {response}')
+        faults = state['error_warn'][1]
+        if not isinstance(faults, (tuple, list)) or not faults or faults[0] != 0:
+            raise RobotExecutionError(f'controller fault after command: {faults}')
+        if state['state'][1] in (4, 5):
+            raise RobotExecutionError(f'controller stopped after command: {state["state"][1]}')
+        if pose is None or len(pose) != 6 or not all(math.isfinite(v) for v in pose):
+            raise RobotExecutionError('controller TCP feedback unavailable after command')
         angles = self.arm.get_servo_angle(is_radian=False)
         if (
             isinstance(angles, tuple)
@@ -814,6 +831,10 @@ class XArmBackend:
         state["perception_position_max_joint_error_deg"] = max_error
         return actual
 
+    def stop(self) -> None:
+        """Stop outstanding motion on failure; do not clear faults or move Home."""
+        self._check('set_state(stop)', self.arm.set_state(4))
+
     def close(self) -> None:
         if getattr(self.arm, "connected", False):
             self.arm.disconnect()
@@ -903,6 +924,16 @@ class RobotAPI:
         if hasattr(exc, 'gripper_completion'):
             record.gripper_result = {'completion': exc.gripper_completion}
         self.halted = True
+        try:
+            self.stop()
+        except BaseException as stop_error:
+            record.error += f'; stop failed: {type(stop_error).__name__}: {stop_error}'
+
+    def stop(self) -> None:
+        self.halted = True
+        stop = getattr(self.backend, 'stop', None)
+        if stop is not None:
+            stop()
 
     @timed_stage('robot_api.RobotAPI.move')
     def move(self, x: float, y: float, z: float, yaw: float) -> None:

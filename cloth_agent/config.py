@@ -194,6 +194,9 @@ class RobotConfig:
     init_pose_mm_deg: tuple[float, ...]
     orientation_roll_deg: float
     orientation_pitch_deg: float
+    # Current two-arm site: the original executor must receive its scene checker.
+    collision_scene_path: str | None = None
+    collision_active_arm: str | None = None
     perception_joints_deg: tuple[float, ...] | None = None
     perception_pose_mm_deg: tuple[float, ...] | None = None
     expected_tcp_offset_mm_deg: tuple[float, ...] = (0.0, 0.0, 172.0, 0.0, 0.0, 0.0)
@@ -407,6 +410,9 @@ class RobotConfig:
         )
         return cls(
             robot_ip=str(raw.get("robot_ip", boundary_doc.get("robot_ip", "192.168.2.232"))),
+            collision_scene_path=(str((project_root / raw['collision_scene_path']).resolve())
+                                  if raw.get('collision_scene_path') else None),
+            collision_active_arm=raw.get('collision_active_arm'),
             boundaries=boundaries,
             init_joints_deg=joints,
             init_pose_mm_deg=pose,

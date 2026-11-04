@@ -1642,27 +1642,10 @@ def run_growth_episodes(args, output):
                 cli_failed=cli_failed(results[-1]) if results else False)
 
 
-def home(config, output, *, execute=False):
-    """Return both configured arms Home, independently of replay/camera setup."""
-    from cloth_agent.dual_arm.homing import gripper_home
-    from cloth_agent.dual_arm.geometry import DualArmError
-    try:
-        return gripper_home(config, output=output, simulated=not execute)
-    except DualArmError as exc:
-        result = dict(status='BLOCKED', error=str(exc), execution_requested=execute,
-                      completion_confirmed=False)
-        if output is not None:
-            folder = Path(output)
-            folder.mkdir(parents=True, exist_ok=True)
-            save(folder / 'home_failure.json', result)
-        return result
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     start = parser.add_mutually_exclusive_group(required=True)
     start.add_argument('--graph', type=Path)
-    start.add_argument('--home-only', action='store_true', help='return both arms Home without replay or camera preparation')
     start.add_argument('--from-scratch', action='store_true', help='start with zero nodes/actions; online growth only')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
@@ -1710,10 +1693,6 @@ def main(argv=None):
     parser.add_argument('--retrieval-top-k',type=int,default=10)
     parser.add_argument('--retrieval-timeout-s',type=float,default=120.,help='local worker startup/query timeout')
     args = parser.parse_args(argv)
-    if args.home_only:
-        result = home(args.config, args.output, execute=args.execute)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result['status'] == 'COMPLETED' else 1
     if args.graph is not None and load_frozen(args.graph).get('protocol') == GROWTH_PROTOCOL and not args.online_growth:
         from .independent_graph_replay import run_cli
         return run_cli(args, parser)

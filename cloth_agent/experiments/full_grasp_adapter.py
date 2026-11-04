@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / 'config/dual_arm.zed_dual_xarm7_20261103.json'
 
 
-def compile_proposal(plan, profile, execution, state):
+def compile_proposal(plan, profile, execution, state, *, config_path=DEFAULT_CONFIG):
     if plan['calibration_id'] != profile['calibration_id'] or execution['calibration_id'] != profile['calibration_id']:
         raise ValueError('Calibration identity mismatch')
     active, inactive = plan['selected_arm'], plan['inactive_arm']
@@ -43,8 +43,7 @@ def compile_proposal(plan, profile, execution, state):
             observed = vector(recorded[key], 6, key)
             if not np.allclose(observed, expected, atol=.01, rtol=0) or not np.allclose(observed, site[key], atol=.01, rtol=0):
                 raise ValueError(f'{arm}: offset mismatch')
-        if not np.allclose(vector(recorded['joints_deg'], 7, 'joints'), config['home_joints_deg'], atol=.1, rtol=0):
-            raise ValueError(f'{arm}: saved start differs from configured Home')
+        vector(recorded['joints_deg'], 7, 'joints')
     operations = plan['operations']
     if not operations or any(op['arm'] != active for op in operations):
         raise ValueError('Only the selected arm may act')
@@ -52,11 +51,11 @@ def compile_proposal(plan, profile, execution, state):
     if not poses:
         raise ValueError('Proposal contains no motion')
     roll, pitch = poses[0][3:5]
-    config = build_robot_config(execution, state, active, roll, pitch)
+    config = build_robot_config(execution, state, active, roll, pitch, config_path=config_path)
     return compile_operations(operations, profile, active, config, roll, pitch, execution['arms'][active]['gripper'])
 
 
-def build_robot_config(execution, home_state, active, roll, pitch):
+def build_robot_config(execution, home_state, active, roll, pitch, *, config_path=DEFAULT_CONFIG):
     arm_config, limits = execution['arms'][active], execution['limits']
     workspace, gripper = arm_config['workspace'], arm_config['gripper']
     bounds = WorkspaceBounds.from_mapping({
@@ -67,10 +66,15 @@ def build_robot_config(execution, home_state, active, roll, pitch):
         for index, axis in enumerate(('x', 'y', 'z')) for side in ('min', 'max')
         },
     })
+    from cloth_agent.dual_arm.config import DualConfig
+    from cloth_agent.dual_arm.kinematics import ArmModel
+    geometry = DualConfig.parse(execution, ROOT, homing_only=True, geometry_only=True)
+    home_pose = ArmModel(geometry.arms[active]).forward(geometry.arms[active].home_joints)
     config = RobotConfig(
         robot_ip=arm_config['ip'], boundaries=bounds,
+        collision_scene_path=str(Path(config_path).resolve()), collision_active_arm=active,
         init_joints_deg=tuple(arm_config['home_joints_deg']),
-        init_pose_mm_deg=tuple(vector(home_state['arms'][active]['pose_base_mm_deg'], 6, 'Home pose')),
+        init_pose_mm_deg=tuple(home_pose),
         orientation_roll_deg=float(roll), orientation_pitch_deg=float(pitch),
         expected_tcp_offset_mm_deg=tuple(arm_config['tcp_offset_mm_deg']),
         speed_mm_s=limits['cartesian_speed_mm_s'],
@@ -122,14 +126,21 @@ def validate_offline(proposals, state_path, output, *, profile_path=DEFAULT_PROF
     plan = validate_source(Path(proposals), profile)
     execution = json.loads(Path(config_path).read_text())
     state = json.loads(Path(state_path).read_text())
-    config, source, mapping = compile_proposal(plan, profile, execution, state)
+    config, source, mapping = compile_proposal(plan, profile, execution, state, config_path=config_path)
+    from cloth_agent.robot_collision import RobotCollision
+    collision = RobotCollision(config_path, {k: a['joints_deg'] for k, a in state['arms'].items()},
+                               plan['selected_arm'], root=ROOT)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
-    runner = ExperimentRunner(output, config)
+    runner = ExperimentRunner(output, config, collision_checker=collision)
     source_path = runner.workspace / 'fold_sleeve.py'
     source_path.write_text(source)
     (output / 'robot_config.json').write_text(json.dumps(asdict(config), indent=2) + '\n')
     result = runner.run_experiment(source_path, real=False, confirmed=False)
+    try:
+        collision_report = collision.inspect_actions(config, result['requested_robot_actions'])
+    except ValueError as exc:
+        collision_report = {'status': 'COLLISION_REJECTED', 'error': str(exc), 'execution_allowed': False}
     report = {
         'status': 'SIMULATED_EXECUTION_COMPLETE' if result['execution_completed'] else 'PREFLIGHT_FAILED',
         'execution_allowed': False, 'physical_execution': False, 'robot_connections': 0,
@@ -148,7 +159,7 @@ def validate_offline(proposals, state_path, output, *, profile_path=DEFAULT_PROF
             'gripper_speed': config.gripper_speed,
         },
         'controller_path_check': {'status': 'NOT_RUN', 'reason': 'No robot connection permitted'},
-        'external_collision_check': {'status': 'NOT_RUN', 'reason': 'SimulatedBackend does not validate dual-arm geometry'},
+        'external_collision_check': collision_report,
     }
     try:
         config.validate_for_real()

@@ -54,7 +54,7 @@ def test_deployed_model_matches_stationary_controller_snapshot(arm,joints,feedba
     from cloth_agent.dual_arm.geometry import pose_error
     from cloth_agent.dual_arm.kinematics import ArmModel
     root=Path(__file__).resolve().parents[1]
-    config=DualConfig.load(root/'config/dual_arm.zed_dual_xarm7_20261103.json',root=root)
+    config=DualConfig.load_geometry(root/'config/dual_arm.zed_dual_xarm7_20261103.json',root=root)
     distance,angle=pose_error(ArmModel(config.arms[arm]).forward(joints),feedback)
     assert distance < .1
     assert angle < .02

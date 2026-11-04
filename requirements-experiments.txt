@@ -1,6 +1,7 @@
 # Core live RGB-D experiments; install the repository itself with pip install -e .
 # GPU correspondence / Molmo models are optional and installed separately.
--r requirements-motion.txt
+# Geometry uses the core numpy/scipy/yourdfpy dependencies.
+# Legacy motion/IK experiments may separately install requirements-motion.txt.
 opencv-python>=4.8
 pyrealsense2>=2.54
 xarm-python-sdk>=1.13

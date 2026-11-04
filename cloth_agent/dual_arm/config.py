@@ -88,7 +88,14 @@ class DualConfig:
         )
 
     @classmethod
-    def parse(cls, raw, root, *, homing_only=False):
+    def load_geometry(cls, path, *, root=None):
+        """Load calibrated models/obstacles, not a native execution admission."""
+        path = Path(path).resolve()
+        return cls.parse(json.loads(path.read_text()), Path(root or path.parent).resolve(),
+                         homing_only=True, geometry_only=True)
+
+    @classmethod
+    def parse(cls, raw, root, *, homing_only=False, geometry_only=False):
         if raw.get("schema_version") != 1 or raw.get("frame_id") != "world_mm":
             raise DualArmError("schema_version=1 and frame_id=world_mm required")
         if raw.get("calibration_status") not in {"measured", "synthetic"}:
@@ -193,11 +200,16 @@ class DualConfig:
             "center_radius_mm": (20, 1000),
             "center_line_tolerance_mm": (1, 100),
         }
+        if geometry_only:
+            bounds = {key: value for key, value in bounds.items() if key in {
+                'cartesian_speed_mm_s', 'cartesian_accel_mm_s2', 'joint_speed_deg_s',
+                'joint_accel_deg_s2', 'clearance_mm', 'stationary_tolerance_deg',
+                'max_grasp_age_s', 'max_surface_spread_mm'}}
         limits = {
             key: number(raw["limits"][key], key, *limits)
             for key, limits in bounds.items()
         }
-        if limits["min_span_mm"] >= limits["max_span_mm"]:
+        if not geometry_only and limits["min_span_mm"] >= limits["max_span_mm"]:
             raise DualArmError("min span must be below max span")
         obstacles = raw["obstacles"]
         for box in obstacles:
@@ -230,8 +242,9 @@ class DualConfig:
                 )
         from .safety import validate_safety
 
-        validate_safety(raw.get("safety"), arms, limits)
-        if (
+        if not geometry_only:
+            validate_safety(raw.get("safety"), arms, limits)
+        if (not geometry_only and
             raw["calibration_status"] == "measured"
             and raw["safety"]["status"] != "measured"
         ):
@@ -240,9 +253,12 @@ class DualConfig:
             )
         from ..depth_level import bind_support_height_patch
         raw = bind_support_height_patch(raw, root)
-        return cls(root, arms, limits, obstacles, raw)
+        return cls(root, arms, limits, obstacles, raw,
+                   execution_mode='geometry_only' if geometry_only else 'servo_stream')
 
     def require_real(self, *, commissioning=False, homing=False):
+        if self.execution_mode == 'geometry_only':
+            raise DualArmError('geometry data cannot authorize native execution; use RobotAPI')
         from .safety import validate_safety
 
         if not homing and any(a.grasp_rpy is None for a in self.arms.values()):

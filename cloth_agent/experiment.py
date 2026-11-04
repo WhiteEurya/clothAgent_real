@@ -309,11 +309,12 @@ def format_speed_profile(config: RobotConfig) -> str:
 
 
 class ExperimentRunner:
-    def __init__(self, run_dir: Path, config: RobotConfig):
+    def __init__(self, run_dir: Path, config: RobotConfig, *, collision_checker=None):
         self.run_dir = run_dir.resolve()
         self.workspace = (self.run_dir / "workspace").resolve()
         self.results_dir = (self.run_dir / "results").resolve()
         self.config = config
+        self.collision_checker = collision_checker
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -362,6 +363,10 @@ class ExperimentRunner:
         if real:
             self.config.validate_for_real()
             try:
+                if self.config.collision_scene_path and self.collision_checker is None:
+                    raise ExperimentValidationError('dual-arm scene requires its RobotAPI collision checker')
+                if self.collision_checker is not None:
+                    self.collision_checker.require_execution(self.config, preflight.actions)
                 validate_controller_trajectory(self.config, preflight.actions)
                 backend = XArmBackend(self.config)
             except BaseException as exc:
@@ -380,17 +385,21 @@ class ExperimentRunner:
             backend = SimulatedBackend(self.config)
         robot = RobotAPI(self.config, backend)
         interrupted: KeyboardInterrupt | None = None
+        interruption_stop_error = None
         try:
             output, error = _execute(
-                preflight.source_path.read_text(encoding="utf-8"),
+                preflight.source,
                 preflight.source_path,
                 robot,
                 action_callback=action_callback,
             )
         except KeyboardInterrupt as exc:
-            # Persist the partial action trace before re-raising.  AgentSession
-            # will then attempt its mandatory post-rollout Home in ``finally``.
+            # Persist the partial trace and stop; never mask the interruption.
             interrupted = exc
+            try:
+                robot.stop()
+            except BaseException as stop_error:
+                interruption_stop_error = f'{type(stop_error).__name__}: {stop_error}'
             output = ""
             error = "KeyboardInterrupt: rollout interrupted by operator"
         result = self._result(
@@ -402,6 +411,8 @@ class ExperimentRunner:
             actual_actions=robot.action_dicts(),
             stdout=output,
         )
+        if interruption_stop_error:
+            result['stop_error'] = interruption_stop_error
         try:
             self._save_result(result)
         finally:
@@ -508,6 +519,11 @@ class ExperimentRunner:
         if real:
             self.config.validate_for_real()
             try:
+                if self.config.collision_scene_path and self.collision_checker is None:
+                    raise ExperimentValidationError('dual-arm scene requires its RobotAPI collision checker')
+                if self.collision_checker is not None:
+                    self.collision_checker.require_execution(self.config, preflight.actions)
+                    self.collision_checker.require_execution(self.config, abort_path)
                 validate_controller_trajectory(self.config, preflight.actions)
                 validate_controller_trajectory(self.config, abort_path)
                 backend = XArmBackend(self.config)
@@ -602,6 +618,11 @@ class ExperimentRunner:
         except BaseException as exc:
             error = f"{type(exc).__name__}: {exc}"
         finally:
+            if interrupted is not None:
+                try:
+                    robot.stop()
+                except BaseException as stop_error:
+                    error += f'; stop failed: {stop_error}'
             gripper_failed = any(
                 (a.get('gripper_result') or {}).get('completion', {}).get('status') == 'FAILED'
                 for a in robot.action_dicts())
@@ -613,29 +634,12 @@ class ExperimentRunner:
                     'home_completed': False, 'reason': 'gripper completion unconfirmed; operator inspection required',
                     'errors': []}
             elif error is not None:
-                emergency_cleanup = {
-                    "attempted": True,
-                    "released": False,
-                    "home_completed": False,
-                    "errors": [],
-                }
+                emergency_cleanup = {'attempted': False, 'released': False, 'home_completed': False,
+                    'reason': 'execution failed; stop only, no unvalidated cleanup motion', 'errors': []}
                 try:
-                    backend.open_gripper(self.config)
-                    emergency_cleanup["released"] = True
-                except BaseException as exc:
-                    emergency_cleanup["errors"].append(
-                        f"open_gripper: {type(exc).__name__}: {exc}"
-                    )
-                    emergency_cleanup['gripper_completion_failed'] = True
-                    emergency_cleanup['gripper_completion'] = getattr(exc, 'gripper_completion', None)
-                else:
-                    try:
-                        backend.home(self.config)
-                        emergency_cleanup["home_completed"] = True
-                    except BaseException as exc:
-                        emergency_cleanup["errors"].append(
-                            f"home: {type(exc).__name__}: {exc}"
-                        )
+                    robot.stop()
+                except BaseException as stop_error:
+                    emergency_cleanup['errors'].append(f'stop: {stop_error}')
 
         result = self._result(
             preflight,

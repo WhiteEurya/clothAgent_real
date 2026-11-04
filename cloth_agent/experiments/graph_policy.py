@@ -640,15 +640,15 @@ def replay_report(output, metrics):
 
 def make_runtime(config, port):
     # A fixed-ZED dual-xArm7 site routes the historical logical Arm7 slot.
-    from cloth_agent.codex_arm7_runtime import Arm7Runtime
-    from cloth_agent.trajectory_preview import TrajectoryPreview
     raw = json.loads(Path(config).read_text())
     if (raw.get('camera', {}).get('backend') == 'zed'
             and all(raw.get('arms', {}).get(k, {}).get('axis') == 7 for k in ('left', 'right'))):
         from cloth_agent.replay_dual_arm_runtime import PartitionedReplayRuntime
-        runtime = PartitionedReplayRuntime(config)
+        return PartitionedReplayRuntime(config)
     else:
+        from cloth_agent.codex_arm7_runtime import Arm7Runtime
         runtime = Arm7Runtime(config)
+    from cloth_agent.trajectory_preview import TrajectoryPreview
     try: runtime.preview = TrajectoryPreview(runtime.config, port=port, wait=False)
     except BaseException:
         runtime.close(); raise

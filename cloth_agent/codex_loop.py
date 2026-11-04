@@ -292,8 +292,7 @@ def main(argv=None, *, reasoning_effort='high'):
         from .codex_arm7_runtime import Arm7Runtime
         runtime=Arm7Runtime(args.config)
     elif args.active_arm:
-        from .codex_dual_runtime import ZedSingleArmRuntime
-        runtime=ZedSingleArmRuntime(args.config,args.active_arm)
+        parser.error('retired ZED native executor; use scripts/run_arm7_partitioned_replay.sh')
     else:
         from .codex_dual_runtime import DualArmRuntime
         runtime=DualArmRuntime(args.config)

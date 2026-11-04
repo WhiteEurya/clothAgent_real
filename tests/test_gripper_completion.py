@@ -375,7 +375,7 @@ def test_runner_does_not_lift_release_or_home_after_unconfirmed_close(
     assert (tmp_path / 'results' / 'test.trace.json').is_file()
 
 
-def test_failed_emergency_release_also_blocks_home(tmp_path, config, backend, monkeypatch):
+def test_motion_failure_stops_without_emergency_release_or_home(tmp_path, config, backend, monkeypatch):
     from cloth_agent.experiment import ExperimentRunner
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
@@ -392,10 +392,10 @@ def test_failed_emergency_release_also_blocks_home(tmp_path, config, backend, mo
         checkpoint_action_index=1, abort_actions=[{'name': 'open_gripper', 'args': {}},
                                                  {'name': 'home', 'args': {}}],
         checkpoint_callback=lambda: pytest.fail('checkpoint must not be reached'))
-    assert result['gripper_completion_failed']
-    assert runner.gripper_completion_failed
+    assert not result['emergency_cleanup']['attempted']
+    assert not result['emergency_cleanup']['released']
     assert not result['emergency_cleanup']['home_completed']
-    assert result['emergency_cleanup']['gripper_completion']['status'] == 'FAILED'
+    assert len(result['actual_robot_actions']) == 1
 
 
 @pytest.mark.parametrize('route', ['fold_pipeline', 'replay_script'])
