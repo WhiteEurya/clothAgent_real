@@ -117,7 +117,7 @@ class LiveGraph:
         return image
 
     def _write(self,name,content):
-        p=self.folder/name;t=p.with_suffix(p.suffix+'.tmp');t.write_text(content);t.replace(p)
+        p=self.folder/name;t=p.with_suffix(p.suffix+'.tmp');t.write_text(content, encoding='utf-8');t.replace(p)
 
     def close(self):
         if self.server:

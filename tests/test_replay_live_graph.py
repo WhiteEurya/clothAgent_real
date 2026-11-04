@@ -8,6 +8,24 @@ from cloth_agent.experiments import graph_policy_replay as pr
 from tests.test_graph_policy_replay import policy, Model, Runtime
 
 
+def test_snapshot_write_uses_utf8_under_ascii_locale(tmp_path):
+    import os
+    import subprocess
+    import sys
+    code = r'''
+import locale, sys
+from pathlib import Path
+from cloth_agent.experiments.replay_live_graph import LiveGraph
+assert locale.getpreferredencoding(False).lower() in ('ascii', 'ansi_x3.4-1968')
+live = object.__new__(LiveGraph)
+live.folder = Path(sys.argv[1])
+live._write('state.json', '{"error":"\u6df1\u5ea6\u4e0d\u8db3"}')
+assert '\u6df1\u5ea6' in (live.folder / 'state.json').read_text(encoding='utf-8')
+'''
+    env = dict(os.environ, LC_ALL='C', LANG='C', PYTHONUTF8='0', PYTHONCOERCECLOCALE='0')
+    subprocess.run([sys.executable, '-c', code, str(tmp_path)], env=env, check=True)
+
+
 def test_live_read_only_and_persistent_snapshot(tmp_path):
     graph=dict(nodes=[dict(node_id='S0',task_context='</script>cloth')],edges=[])
     original=copy.deepcopy(graph)

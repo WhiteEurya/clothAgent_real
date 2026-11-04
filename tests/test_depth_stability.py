@@ -81,7 +81,11 @@ def test_depth_threshold_rejects_change_beyond_roundoff(dtype, change_mm):
 def test_missing_cloth_depth_cannot_hide_in_stable_background():
     frames = np.full((5, 240, 320), .7)
     frames[:, 65:110, 130:180] = 0
-    assert not depth_window_report(frames, 3.)['stable']
+    report = depth_window_report(frames, 3.)
+    assert not report['stable']
+    assert report['reason'] == 'insufficient_local_depth'
+    assert report['valid_coverage'] < report['required_coverage']
+    assert 0 <= report['tile_row'] < 6 and 0 <= report['tile_col'] < 6
 
 
 def test_fixed_depth_settings_restored_on_close_and_partial_failure(tmp_path):

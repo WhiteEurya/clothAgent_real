@@ -24,11 +24,14 @@ def depth_window_report(depths, max_range_mm):
     scores = []
     # Central work surface; separate tiles prevent a stable background from
     # masking a locally drifting garment. Invalid tiles fail the check.
-    for ys in np.array_split(np.arange(int(h*.15), int(h*.85)), 6):
-        for xs in np.array_split(np.arange(int(w*.25), int(w*.8)), 6):
+    for row, ys in enumerate(np.array_split(np.arange(int(h*.15), int(h*.85)), 6)):
+        for col, xs in enumerate(np.array_split(np.arange(int(w*.25), int(w*.8)), 6)):
             mask = common[np.ix_(ys, xs)]
             if not mask.size or mask.mean() < .7:
-                return dict(stable=False, reason='insufficient_local_depth')
+                return dict(stable=False, reason='insufficient_local_depth',
+                    tile_row=row, tile_col=col,
+                    valid_coverage=float(mask.mean()) if mask.size else 0.,
+                    required_coverage=.7, frames=len(stack))
             scores.append(float(np.median(spread[np.ix_(ys, xs)][mask])*1000))
     worst = max(scores)
     return dict(stable=worst <= max_range_mm + _COMPARISON_ATOL_MM,
