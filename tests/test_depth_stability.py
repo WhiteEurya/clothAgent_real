@@ -6,6 +6,30 @@ from cloth_agent.depth_stability import depth_window_report
 from cloth_agent.perception import CameraSpec, RealSenseRGBD
 
 
+def test_table_roi_ignores_missing_background_but_checks_table():
+    from cloth_agent.depth_stability import table_depth_mask
+    polygon = [[80, 100], [240, 100], [280, 230], [40, 230]]
+    roi = table_depth_mask((240, 320), polygon)
+    frames = np.full((10, 240, 320), np.nan)
+    frames[:, roi] = .7
+    assert depth_window_report(frames, 3., table_polygon_px=polygon)['stable']
+    assert not depth_window_report(frames, 3.)['stable']
+    frames[:, 140:180, 140:190] = np.nan
+    missing = depth_window_report(frames, 3., table_polygon_px=polygon)
+    assert missing['reason'] == 'insufficient_local_depth'
+    frames[:, roi] = .7
+    frames[5:, 140:180, 140:190] += .006
+    changed = depth_window_report(frames, 3., table_polygon_px=polygon)
+    assert not changed['stable'] and changed['worst_tile_range_mm'] > 3.
+
+
+@pytest.mark.parametrize('polygon', [[], [[1, 1], [2, 2], [3, 3]],
+    [[-1, 0], [30, 0], [20, 20]], [[0, 0], [320, 0], [20, 20]]])
+def test_invalid_table_roi_is_not_silently_ignored(polygon):
+    with pytest.raises(ValueError, match='table_polygon_px'):
+        depth_window_report(np.full((10, 240, 320), .7), 3., table_polygon_px=polygon)
+
+
 @pytest.mark.parametrize('unstable', [False, True])
 @pytest.mark.parametrize('camera_b', [False, True])
 def test_capture_waits_for_depth_or_rejects_observation(tmp_path, monkeypatch, unstable, camera_b):

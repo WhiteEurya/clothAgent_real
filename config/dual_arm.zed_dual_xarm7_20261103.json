@@ -612,7 +612,29 @@
       "max_frames": 150,
       "window_frames": 15,
       "stable_windows": 2,
-      "max_range_mm": 2.0
+      "max_range_mm": 2.0,
+      "table_polygon_px": [
+        [
+          320,
+          238
+        ],
+        [
+          957,
+          230
+        ],
+        [
+          1155,
+          535
+        ],
+        [
+          1080,
+          719
+        ],
+        [
+          85,
+          719
+        ]
+      ]
     },
     "status": "calibrated_observation_only_until_workspace_collision_commissioning"
   },

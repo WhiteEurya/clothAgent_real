@@ -214,7 +214,8 @@ def capture(directory, config, models, snapshot, *, camera=None, check_each_fram
                 window = stability['window_frames']
                 rgb_frames, depths = rgb_frames[-2*window:], depths[-2*window:]
                 if len(depths) == 2*window and (index+1) % window == 0:
-                    stability_report = depth_window_report(depths, stability['max_range_mm'])
+                    stability_report = depth_window_report(depths, stability['max_range_mm'],
+                        table_polygon_px=stability.get('table_polygon_px'))
                     stable_windows = stable_windows + 1 if stability_report['stable'] else 0
                     if stable_windows >= stability['stable_windows']:
                         stability_report.update(frames_checked=index+1, consecutive_windows=stable_windows)
