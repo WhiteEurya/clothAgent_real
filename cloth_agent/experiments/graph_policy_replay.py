@@ -173,6 +173,13 @@ Preserve the command's chosen TCP heights as evidence; do not replace its grasp 
 The template is a one-shot hypothesis, not a validated policy. Only describe the supplied action."""
 
 GARMENT_TRANSFER = '''Cross-garment transfer policy:
+The recognition target is the garment's current SHAPE AND STRUCTURE, not garment identity.
+Compare the arrangement of garment parts, outward versus inward sleeves, exposed versus
+covered torso, fold boundaries, relative collar-to-hem layout and visible overlap/layer order.
+Align the garment frame for comparison; absolute image position, scale and in-plane rotation
+are not state changes. Preserve garment-relative left/right without mirroring.
+Exact wrinkle patterns and small edge curls need not match unless they change a required
+structural relation or obscure the evidence needed to distinguish the states.
 The recorded garment and the current garment may be different physical garments.
 Color, print/logo, texture appearance and absolute image size/position in historical node text
 are incidental descriptions, not required matches. A color/print/texture difference alone
