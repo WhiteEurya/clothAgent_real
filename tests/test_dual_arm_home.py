@@ -12,8 +12,8 @@ from .test_dual_arm_runtime import scene, coordinator
 def test_home_readiness_lists_all_missing_and_ignores_visual_fields():
     from cloth_agent.dual_arm.readiness import home_missing_fields
     missing = home_missing_fields({})
-    assert 'arms.left.workspace.min_mm' in missing
-    assert 'arms.right.workspace.max_mm' in missing
+    assert 'arms.left.workspace.min_mm[2]' in missing
+    assert 'arms.right.workspace.min_mm[2]' in missing
     assert 'safety.arms.right.stop_excursion_deg' in missing
     assert 'calibration_status' in missing
     assert not any('camera' in key or 'grasp_rpy' in key for key in missing)

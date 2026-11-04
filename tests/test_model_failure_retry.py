@@ -32,6 +32,7 @@ def test_interrupt_never_retries(tmp_path):
 
 @pytest.mark.parametrize('stderr,retryable',[('Reading prompt from stdin...',True),('bwrap: namespace setup failed',False)])
 def test_backend_preserves_failure_event_details(tmp_path,monkeypatch,stderr,retryable):
+    monkeypatch.setattr('cloth_agent.codex_profile.profile_settings',lambda:dict(model_provider='openai'))
     from cloth_agent.experiments import discovery_model as dm
     monkeypatch.setattr(dm,'build_command',lambda *a,**k:['fake','--model','fixture','-'])
     monkeypatch.setattr(dm,'isolated_command',lambda *a:[])

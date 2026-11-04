@@ -1,5 +1,48 @@
 # 独立 Frozen Graph-as-Policy Replay
 
+## 当前 ZED 双 xArm7 分工 replay（2026-11-04）
+
+当执行配置是固定 ZED 和两台七轴时，Arm7 replay 自动使用
+`PartitionedReplayRuntime`。保留 Graph 的识别、选边、grounding 和单夹爪动作序列；
+模板中的 `right` 为逻辑槽位，执行前映射到物理左臂或右臂。
+
+每步使用当前观测中两臂实测关节状态和标定 FK，计算两个 TCP 的公共坐标。
+以两者 XY 连线的垂直平分线为界，抓点在左夹爪侧则左臂负责，右侧则右臂负责；
+恰在线上归右臂。这里使用夹爪中点，不使用衣物中心线、图像中线或基座中点。
+整步只选一次臂，落点跨界不换臂。沿用抓取、搬运、分段释放、退离、回 Home，
+完成后才重新观测和执行下一步，不强制左右交替。另一臂提供实时姿态，不沿用旧 Arm6
+停车记录。并发动作调用被拒绝；规划及派发均要求另一臂保持不动。
+
+Release 数据应隔离恢复到 `data/reproduction_arm7/workspace` 和
+`data/reproduction_arm7/ssd`，不要覆盖当前设备配置。`CLOTH_REPLAY_EVIDENCE_ROOT`
+将原 `/home/sja/clothAgent_real` 和 `/mnt/newssd` 路径映射到这两个目录，原始 JSON
+及其哈希不变。目录准备好后：
+
+首次恢复可使用原下载校验脚本，将其目标指向隔离目录：
+
+```bash
+mkdir -p data/reproduction_arm7/workspace/reproduction
+cp reproduction/manifest.json data/reproduction_arm7/workspace/reproduction/manifest.json
+python scripts/restore_reproduction.py --cache /tmp/arm7-repro-cache \
+  --root data/reproduction_arm7/workspace --ssd-root data/reproduction_arm7/ssd
+```
+
+```bash
+conda activate cloth-real
+bash scripts/run_arm7_partitioned_replay.sh --dry-run
+# 实际执行（沿用现有控制器、配置和路径检查）
+bash scripts/run_arm7_partitioned_replay.sh --execute
+```
+
+入口以 `INDEPENDENT_FIXED_GRAPH` 模式直接读取 Release 中固定的 `growth_000096.json`。
+文件名中的 growth 仅表示历史采集来源。本入口不启用 online-growth，不读取或写入
+`latest.json`，不生成新增长快照、不增加节点或动作、不修复原边，也不调用 frontier。
+每个 run 新建独立目录，重新拍照识别，从零统计本轮动作；不续接任何先前 run。
+匹配不到、无可用动作或动作后仍处于原节点时停止；达到步数上限后仍完成最后一次拍照匹配。
+每步保存 `arm_assignment.json`（两 TCP、中点、抓点、选臂）和 `routed_motion.py`；
+`graph_used.json` 保存只读参考图，`final_metrics.json` 仅包含本轮结果；实时画布继续可用。
+离线 dry-run 只验证图和证据，不表示机器人配置或实机动作已经通过验证。
+
 Arm6 现支持独立的 DINO Top-10 + GPT matcher；启动、完整图库预计算及离线检查见
 [Arm6 retrieval matcher](arm6_retrieval_matcher.md)。它通过 `--matcher retrieval_gpt_rerank`
 显式启用，默认仍使用原匹配流程。

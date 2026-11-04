@@ -20,6 +20,53 @@ def runtime_for(scene):
     return r
 
 
+def test_terminal_joint_route_preserves_exact_endpoints_and_static_arm(scene,monkeypatch):
+    from cloth_agent.dual_arm.motion.home import pack
+    runtime=runtime_for(scene)
+    runtime.plan_stats={}
+    initial={arm:config.home_joints.copy() for arm,config in scene.config.arms.items()}
+    goal={arm:values.copy() for arm,values in initial.items()}
+    goal['left'][0]+=10
+    standoff={arm:values.copy() for arm,values in goal.items()}
+    standoff['left'][2]+=20
+    searches=[]
+    def search(start,end,**kwargs):
+        searches.append((start.copy(),end.copy()))
+        if np.allclose(end,pack(goal)):
+            raise DualArmError('multi-joint stop range reaches table')
+        return [start,end]
+    monkeypatch.setattr(runtime.paths,'joint_path',search)
+    monkeypatch.setattr(runtime,'_endpoint_joint_standoffs',
+        lambda endpoint,arm,deadline: [standoff] if endpoint is goal else [])
+    try:
+        path=runtime._endpoint_joint_route(initial,goal,'left',timeout_s=5)
+        np.testing.assert_allclose(path[0],pack(initial))
+        np.testing.assert_allclose(path[-1],pack(goal))
+        np.testing.assert_allclose(path[-2],pack(standoff))
+        for state in path:
+            np.testing.assert_allclose(state[6:],pack(initial)[6:])
+        assert len(searches)==2
+        assert runtime.plan_stats['single_joint_terminal_routes']==1
+        assert all(not connection.commands for connection in scene.connections.values())
+    finally:runtime.close()
+
+
+def test_terminal_standoffs_require_full_certificate(scene,monkeypatch):
+    import time
+    runtime=runtime_for(scene)
+    initial={arm:config.home_joints.copy() for arm,config in scene.config.arms.items()}
+    attempts=[]
+    def reject(start,end,**kwargs):
+        attempts.append((start,end))
+        raise DualArmError('unverified stopping box')
+    monkeypatch.setattr(runtime.paths.validator,'certify',reject)
+    try:
+        assert runtime._endpoint_joint_standoffs(initial,'left',time.monotonic()+5)==[]
+        assert attempts
+        assert all(not connection.commands for connection in scene.connections.values())
+    finally:runtime.close()
+
+
 def test_ik_failure_preserves_step_target_candidate_and_effective_code(scene,tmp_path,monkeypatch):
     r=runtime_for(scene)
     def reject(*args):
@@ -413,7 +460,8 @@ def test_tcp_failed_detour_never_dispatches_prior_commands(scene,tmp_path,monkey
         assert result['status']=='PLANNING_FAILED'
         assert result['failure_context']['route']=='tcp_rrtconnect'
         assert 'direct proof incomplete' in result['failure_context']['direct_failure']
-        assert len(searches)==1
+        assert 1<=len(searches)<=10
+        assert all(search['order']=='left_first' for search in searches)
         assert not any(c.commands for c in scene.connections.values())
     finally:r.close()
 
@@ -429,6 +477,31 @@ def test_tcp_valid_direct_path_does_not_search_rrt(scene,monkeypatch):
         assert np.allclose(goal['right'],initial['right'])
         assert r.planning_context['route']=='tcp_direct'
     finally:r.close()
+
+
+def test_formal_tcp_mode_preserves_explicit_waypoints_and_rejects_cartesian_dispatch(scene, tmp_path):
+    from cloth_agent.queued_motion import CartesianPositionSegment
+    from cloth_agent.dual_arm.sequential_home import PositionSegment
+    r=runtime_for(scene)
+    r.plan_stats={'tcp_joint_waypoint_moves': 1}
+    initial={k:a.home_joints.copy() for k,a in scene.config.arms.items()}
+    end={k:v.copy() for k,v in initial.items()}
+    end['left']=end['left']+0.01
+    first=PositionSegment('left',initial,end,5,10,30)
+    second=PositionSegment('left',end,end,5,10,30)
+    try:
+        joined=r._join_moves([('move',first),('move',second)])
+        assert [item[1] for item in joined] == [first,second]
+        cart=CartesianPositionSegment('left',initial,end,5,10,30,(),[260,-120,180,0,0,0],5,10)
+        with pytest.raises(DualArmError, match='explicit joint waypoints'):
+            r._execute_operations([('move',cart)],tmp_path)
+    finally:r.close()
+
+
+def test_collection_runtime_keeps_its_explicit_cartesian_exception():
+    from cloth_agent.gamepad_collect_runtime import CollectionRuntime
+    assert CollectionRuntime.explicit_joint_waypoint_tcp is False
+    assert NativeRuntime.explicit_joint_waypoint_tcp is True
 
 
 def test_execution_timings_report_real_stages(scene,tmp_path):

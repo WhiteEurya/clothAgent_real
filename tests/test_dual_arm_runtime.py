@@ -853,7 +853,8 @@ def test_directional_projection_covers_independent_rotations(scene,arm_id,index)
             assert projection.max()<=hi+1e-8
 
 
-def test_persistent_camera_stays_open_between_captures(scene, monkeypatch):
+@pytest.mark.parametrize('common_frame', [None, 'right_arm_base'])
+def test_persistent_camera_stays_open_between_captures(scene, monkeypatch, common_frame):
     from cloth_agent.dual_arm import observation
     class Camera:
         started=False
@@ -873,9 +874,20 @@ def test_persistent_camera_stays_open_between_captures(scene, monkeypatch):
     camera=Camera()
     monkeypatch.setitem(scene.config.raw["camera"],"mount_arm",None)
     monkeypatch.setitem(scene.config.raw["camera"],"world_from_camera_mm",np.eye(4).tolist())
-    monkeypatch.setattr(observation,'save_observation',lambda *a,**kw:None)
+    monkeypatch.setitem(scene.config.raw, 'base_transform_provenance',
+                        {'common_frame': common_frame} if common_frame else {})
+    captured_metadata = []
+    monkeypatch.setattr(observation, 'save_observation',
+                        lambda *args, **kwargs: captured_metadata.append(kwargs['extra']))
     def snapshot():return {k:arm.snapshot() for k,arm in scene.connections.items()}
     for index in range(2):
         observation.capture(scene.directory/f'capture_{index}',scene.config,scene.models,snapshot,camera=camera)
     assert camera.starts==1 and camera.stops==0 and camera.reads==30
     assert camera.started
+    assert len(captured_metadata) == 2
+    for metadata in captured_metadata:
+        if common_frame:
+            assert metadata['common_frame'] == common_frame
+        else:
+            assert 'common_frame' not in metadata
+        assert metadata['camera_serial'] == scene.config.raw['camera']['serial']

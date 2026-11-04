@@ -1,0 +1,137 @@
+{
+  "source_root": "/home/CNS2026330003/agentAuto/RobotCamCalib",
+  "files": {
+    "left/session.yaml": {
+      "source": "outputs/zed_left_20261103_184404_354524/session.yaml",
+      "sha256": "6d64328f3207bca2f5e66fa96c1d2c74219f3e20011cae4331b1af525e3216a2"
+    },
+    "left/intrinsics_left.yaml": {
+      "source": "outputs/zed_left_20261103_184404_354524/intrinsics_left.yaml",
+      "sha256": "7cf07c2470b03354bd4099df2219a68b95bebf47b27fd1612ae9099e76841fc8"
+    },
+    "left/extrinsics.yaml": {
+      "source": "outputs/zed_left_20261103_184404_354524/extrinsics.yaml",
+      "sha256": "6abbaf441dc03d6dc1ef900050582f7bc3d0d910bac4a98d8c621e7ff9ac4627"
+    },
+    "left/point_task_source.yaml": {
+      "source": "config/point_task_left.yaml",
+      "sha256": "6ad77747175eba2b6d63ed0f5f2ddda26e6c6481d92b35ba06bd5b788be26600"
+    },
+    "left/validation_20261103_184808_013003/summary.yaml": {
+      "source": "outputs/zed_left_20261103_184404_354524/validation_20261103_184808_013003/summary.yaml",
+      "sha256": "c7d7ec55967f73717d0fad3d49186c10e849ba5687ef5d0c4c3443c5defd03d2"
+    },
+    "robot_model/xarm7_wo_ee.urdf": {
+      "source": "assets/robots/xarm7/xarm7_wo_ee.urdf",
+      "sha256": "2df825c40dc9b8a1aaca4f3f1f5a2a618f0aa822db261c1d9b60c93861ed8265"
+    },
+    "robot_model/meshes/visual/link_base.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link_base.stl",
+      "sha256": "cf52275a913a0977595f5d12373f06583513e26fe18b8cf2827c74da94a4f0be"
+    },
+    "robot_model/meshes/collision/link_base.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link_base.obj",
+      "sha256": "0de9e89d4d98e24789d5a15f7956312c60873828549c8578b5efa5d3116a7ad7"
+    },
+    "robot_model/meshes/visual/link1.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link1.stl",
+      "sha256": "34b541122df84d2ef5fcb91b715eb19659dc15ad8d44a191dde481f780265636"
+    },
+    "robot_model/meshes/collision/link1.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link1.obj",
+      "sha256": "45d4d84b3f3395e6d7007a09400eef2318544deb9e3cb982f5e6465389a8f473"
+    },
+    "robot_model/meshes/visual/link2.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link2.stl",
+      "sha256": "61e641cd47c169ecef779683332e00e4914db729bf02dfb61bfbe69351827455"
+    },
+    "robot_model/meshes/collision/link2.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link2.obj",
+      "sha256": "9f2c9aacc8272d67085a54a3281119ba56a2f1e657ed50230f52a1875935d35b"
+    },
+    "robot_model/meshes/visual/link3.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link3.stl",
+      "sha256": "9e2798e7946dd70046c95455d5ba96392d0b54a6069caba91dc4ca66e1379b42"
+    },
+    "robot_model/meshes/collision/link3.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link3.obj",
+      "sha256": "4d5b7a721c001e6acc21d82237b98c02033bbfac589e50a3646df9afcdad562f"
+    },
+    "robot_model/meshes/visual/link4.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link4.stl",
+      "sha256": "c757fee95f873191a0633c355c07a360032960771cabbd7593a6cdb0f1ffb089"
+    },
+    "robot_model/meshes/collision/link4.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link4.obj",
+      "sha256": "b386cc99694e56b80ab3f95214c79844eaa5ad7ddce56418985de02594754c2e"
+    },
+    "robot_model/meshes/visual/link5.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link5.stl",
+      "sha256": "715ad5787c5dab57589937fd47289882707b5e1eb997e340d567785b02f4ec90"
+    },
+    "robot_model/meshes/collision/link5.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link5.obj",
+      "sha256": "4d0c372ffef74925e06eb0a951b23ebd9a55047de40ed3c7f441cdef10bced4e"
+    },
+    "robot_model/meshes/visual/link6.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link6.stl",
+      "sha256": "85b320aa420497827223d16d492bba8de091173374e361396fc7a5dad7bdb0cb"
+    },
+    "robot_model/meshes/collision/link6.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link6.obj",
+      "sha256": "540e798af13547319b38743bc2599a2e14bfb1f89bfdd9e466a7ca5bfa051c33"
+    },
+    "robot_model/meshes/visual/link7.stl": {
+      "source": "assets/robots/xarm7/meshes/visual/link7.stl",
+      "sha256": "97115d848fbf802cb770cd9be639ae2af993103b9d9bbb0c50c943c738a36f18"
+    },
+    "robot_model/meshes/collision/link7.obj": {
+      "source": "assets/robots/xarm7/meshes/collision/link7.obj",
+      "sha256": "ca1df6aafcbf938893530645be3b2e1291497b4286c3b6992a884dd40ef21997"
+    },
+    "right/session.yaml": {
+      "source": "outputs/zed_20261103_165353_896076/session.yaml",
+      "sha256": "f5550cc457d39468d5048d6c78e79ad1da1d34799054b7f26a86b58408129feb"
+    },
+    "right/intrinsics_left.yaml": {
+      "source": "outputs/zed_20261103_165353_896076/intrinsics_left.yaml",
+      "sha256": "93b1ace944b3cb62a6ebf1568e344f20132311dda5dc6d9dd87d2a6d8bb1d102"
+    },
+    "right/extrinsics.yaml": {
+      "source": "outputs/zed_20261103_165353_896076/extrinsics.yaml",
+      "sha256": "4623b683e2e9b0c54c8f0a780216f04ce815c71e4c1a80a980caf03aa13ae054"
+    },
+    "right/point_task_source.yaml": {
+      "source": "config/point_task_right.yaml",
+      "sha256": "05acdf3f8e1e923f84b4d4a38a8ac7901d9fc376f3ec1c7636e44c73f43434ef"
+    },
+    "right/validation_20261103_165906_961999/summary.yaml": {
+      "source": "outputs/zed_20261103_165353_896076/validation_20261103_165906_961999/summary.yaml",
+      "sha256": "e14c3577e7ba52da4d15cba74000655634c491e740b5d144bb44a53dfa778837"
+    },
+    "dual_arm_home_source.yaml": {
+      "source": "config/dual_arm_home.yaml",
+      "sha256": "3fd7cb7f362bae27b1d8d9296f4c32fffc60db347c958f047da47b7d3b5b3444"
+    },
+    "evidence/alignment_validation_20261103/RESULTS.md": {
+      "source": "outputs/alignment_validation_20261103/RESULTS.md",
+      "sha256": "62e5f5d5c3618d936dd2049cdee98c062f42b9bd66fb6e716297902a911c9553"
+    },
+    "evidence/alignment_validation_20261103/report.json": {
+      "source": "outputs/alignment_validation_20261103/report.json",
+      "sha256": "82c29929f4cac00e44aef195584b6ce224c52f9ed72a912b4cc396f183eeb03a"
+    },
+    "evidence/left_home_20261103/RESULTS.md": {
+      "source": "outputs/left_home_20261103/RESULTS.md",
+      "sha256": "0e1f6df9c2669ef51a3dbffa5f45289dcd44d767863fd02ea8f0a475fb5bc526"
+    },
+    "evidence/left_home_20261103/execution.json": {
+      "source": "outputs/left_home_20261103/execution.json",
+      "sha256": "9183773459f3bb24a22a924ea8cea2990a4306ab178d680f394dd5468469354e"
+    },
+    "evidence/dual_parameter_scan_20261103/RESULTS.md": {
+      "source": "outputs/dual_parameter_scan_20261103/RESULTS.md",
+      "sha256": "b40c80c7b038fac4bb72570efd0681c37554f6090c75118c27f81a1e57f59b28"
+    }
+  }
+}

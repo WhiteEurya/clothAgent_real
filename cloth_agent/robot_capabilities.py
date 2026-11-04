@@ -57,7 +57,7 @@ def build_capabilities(config,models,active_arms=('left','right')):
             j=model.urdf.joint_map[name]
             joints.append(dict(name=name,lower_deg=float(np.degrees(j.limit.lower)),
                 upper_deg=float(np.degrees(j.limit.upper)),origin_xyz_mm=(j.origin[:3,3]*1000).tolist()))
-        report['arms'][key]=dict(robot='arm6' if key=='left' else 'arm7',axis=arm.axis,
+        report['arms'][key]=dict(robot=f'xArm{arm.axis}',axis=arm.axis,
             urdf=str(arm.urdf),urdf_sha256=hashlib.sha256(arm.urdf.read_bytes()).hexdigest(),
             world_from_base_mm=arm.world_from_base.tolist(),tcp_offset_mm_deg=arm.tcp_offset.tolist(),
             workspace_base_mm=dict(min=_boundaries(arm.workspace['min_mm']),max=_boundaries(arm.workspace['max_mm'])),

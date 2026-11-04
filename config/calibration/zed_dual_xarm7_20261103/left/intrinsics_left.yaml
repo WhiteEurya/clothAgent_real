@@ -1,0 +1,30 @@
+source: zed_sdk_rectified_left
+serial: '11483267'
+device_name: ZED-M
+sdk_version: 5.5.1
+stream: left_rectified
+image_size:
+- 1280
+- 720
+fps: 30.0
+K:
+- - 729.5574340820312
+  - 0.0
+  - 642.8673706054688
+- - 0.0
+  - 729.5574340820312
+  - 354.7128601074219
+- - 0.0
+  - 0.0
+  - 1.0
+dist:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+distortion_model: rectified_pinhole
+coordinate_system: 'IMAGE: x right, y down, z forward'
+translation_units: meters
+self_calibration_enabled: true
+depth_mode: NONE

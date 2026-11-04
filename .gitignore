@@ -37,6 +37,7 @@ logs/
 /graph_reproduction_export_*/
 /data/demonstrations/
 /data/experiments/
+/data/reproduction_arm7/
 /data/garments/
 /deployment-artifacts/
 experiments/*/validation/

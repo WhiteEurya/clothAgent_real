@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from .run_storage import runs_root
+from .codex_profile import PROFILE
 import shutil
 import signal
 import subprocess
@@ -27,7 +28,7 @@ def build_prompt(task: str) -> str:
 
 def build_command(binary: str, workspace: Path, output: Path, *, read_only: bool, session_id: str | None = None,
                   reasoning_effort: str = EFFORT) -> list[str]:
-    command = [binary, 'exec', '--model', MODEL, '-c', f'model_reasoning_effort="{reasoning_effort}"',
+    command = [binary, '-p', PROFILE, 'exec', '--model', MODEL, '-c', f'model_reasoning_effort="{reasoning_effort}"',
                '--cd', str(workspace), '--json', '--color', 'never',
                '--output-last-message', str(output / 'answer.txt')]
     command += ['--sandbox', 'read-only'] if read_only else ['--approve-for-me']
@@ -78,7 +79,7 @@ def run(task: str, *, workspace: Path = ROOT, output: Path | None = None,
         if not image.is_file():
             raise ValueError(f'image is missing: {image}')
         command[-1:-1] = ['--image', str(image)]
-    request = dict(model=MODEL, reasoning_effort=reasoning_effort, task=task, prompt=prompt,
+    request = dict(model=MODEL, profile=PROFILE, reasoning_effort=reasoning_effort, task=task, prompt=prompt,
                    workspace=str(workspace), command=command, timeout_s=timeout_s,
                    read_only=read_only, dry_run=dry_run, requested_session_id=session_id)
     (output / 'request.json').write_text(json.dumps(request, ensure_ascii=False, indent=2)+'\n')

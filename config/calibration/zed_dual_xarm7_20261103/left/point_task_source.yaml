@@ -1,0 +1,9 @@
+arm: left
+robot_ip: 192.168.1.237
+robot_axis: 7
+calibration_session: outputs/zed_left_20261103_184404_354524
+installation_confirmed: true
+tcp_offset_mm_deg: [0, 0, 172, 0, 0, 0]
+world_offset_mm_deg: [0, 0, 0, 0, 0, 0]
+grasp_rpy_deg: [-179.948912, 3.013586, 6.937258]
+target_bounds_mm: [[300, 340], [523, 564], [8, 29]]

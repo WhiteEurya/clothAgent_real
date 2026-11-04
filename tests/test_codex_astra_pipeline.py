@@ -14,6 +14,7 @@ import json,sys
 from pathlib import Path
 prompt=sys.stdin.read()
 assert prompt
+assert sys.argv[sys.argv.index('-p')+1]=='rbs'
 assert sys.argv[sys.argv.index('--model')+1]=='gpt-6-astra'
 assert 'model_reasoning_effort="high"' in sys.argv
 Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('motion.move_joints(left=[0,0,0,0,0,0])')

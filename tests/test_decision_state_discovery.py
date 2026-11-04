@@ -186,6 +186,7 @@ def test_experiment_imports_no_robot_runtime():
 
 
 def test_isolated_multimodal_command_has_no_host_data_or_session(tmp_path,monkeypatch):
+    monkeypatch.setattr('cloth_agent.codex_profile.profile_settings',lambda:dict(model_provider='openai'))
     from cloth_agent.experiments.discovery_model import isolated_command
     import cloth_agent.experiments.discovery_model as module
     monkeypatch.setattr(module.shutil,'which',lambda _: '/usr/bin/bwrap')
@@ -196,6 +197,7 @@ def test_isolated_multimodal_command_has_no_host_data_or_session(tmp_path,monkey
 
 
 def test_backend_reuses_multimodal_flags_and_sanitizes_pixels(tmp_path,monkeypatch):
+    monkeypatch.setattr('cloth_agent.codex_profile.profile_settings',lambda:dict(model_provider='openai'))
     from cloth_agent.experiments.discovery_model import CodexMultimodal
     import cloth_agent.experiments.discovery_model as module
     from PIL.PngImagePlugin import PngInfo
@@ -205,7 +207,7 @@ def test_backend_reuses_multimodal_flags_and_sanitizes_pixels(tmp_path,monkeypat
     class Process:
         returncode=0
         def __init__(self,command,stdin,stdout,stderr,**kwargs):
-            assert kwargs['env']=={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'}
+            assert kwargs['env']['PATH']=='/usr/bin:/bin' and kwargs['env']['LANG']=='C.UTF-8'
             captured.append(command);self.work=Path(command[command.index('--bind')+1]);self.stdout=stdout
         def communicate(self,prompt,timeout):
             assert prompt=='stage1-only'
@@ -218,7 +220,9 @@ def test_backend_reuses_multimodal_flags_and_sanitizes_pixels(tmp_path,monkeypat
     command=captured[0]
     assert '--image' in command and command[command.index('--image')+1]=='/work/image_000.png'
     assert 'resume' not in command and '--ephemeral' in command
-    assert '--ignore-user-config' in command and 'features.shell_tool=false' in command
+    assert '--ignore-user-config' not in command and 'features.shell_tool=false' in command
+    assert command[command.index('-p')+1]=='rbs'
+    assert '/home/agent/.codex/rbs.config.toml' in command
     assert str(img) not in command and result['image_count']==1
 
 

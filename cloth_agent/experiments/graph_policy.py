@@ -16,6 +16,7 @@ from .discovery_data import canonical, digest, file_hash, read, save
 from .discovery_goal import task_contract
 from .graph_policy_schema import COMMON, PROMPTS, SCHEMAS
 from .model_errors import ModelInvocationError
+from .replay_evidence_paths import resolve_evidence_path
 from .graph_evidence import builder_steps, compact_evidence, compiler_steps
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,7 +29,7 @@ def frozen(path, value):
 
 
 def load_frozen(path):
-    path = Path(path)
+    path = resolve_evidence_path(path)
     if read(str(path) + '.sha256.json').get('sha256') != file_hash(path):
         raise ValueError(f'frozen artifact hash mismatch: {path}')
     return read(path)
@@ -40,7 +41,7 @@ def evidence_file(path):
 
 
 def checked_file(record):
-    path = Path(record['path'])
+    path = resolve_evidence_path(record['path'])
     if file_hash(path) != record['sha256']:
         raise ValueError(f'evidence modified: {path}')
     return path
@@ -638,10 +639,16 @@ def replay_report(output, metrics):
 
 
 def make_runtime(config, port):
-    # The same runtime, camera, calibration, offsets, IK and execution as arm7.
+    # A fixed-ZED dual-xArm7 site routes the historical logical Arm7 slot.
     from cloth_agent.codex_arm7_runtime import Arm7Runtime
     from cloth_agent.trajectory_preview import TrajectoryPreview
-    runtime = Arm7Runtime(config)
+    raw = json.loads(Path(config).read_text())
+    if (raw.get('camera', {}).get('backend') == 'zed'
+            and all(raw.get('arms', {}).get(k, {}).get('axis') == 7 for k in ('left', 'right'))):
+        from cloth_agent.replay_dual_arm_runtime import PartitionedReplayRuntime
+        runtime = PartitionedReplayRuntime(config)
+    else:
+        runtime = Arm7Runtime(config)
     try: runtime.preview = TrajectoryPreview(runtime.config, port=port, wait=False)
     except BaseException:
         runtime.close(); raise

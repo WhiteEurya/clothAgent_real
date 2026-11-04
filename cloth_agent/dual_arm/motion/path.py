@@ -18,28 +18,34 @@ class PathPlanner:
         self.scene, self.checker, self.validator = scene, checker, validator
         self.lower = np.r_[scene.models["left"].lower, scene.models["right"].lower]
         self.upper = np.r_[scene.models["left"].upper, scene.models["right"].upper]
+        self.left_axis = len(scene.models['left'].lower)
+        self.total_axis = len(self.lower)
 
     def joint_path(self, start, goal, *, order="simultaneous", timeout_s=10):
         start, goal = np.asarray(start), np.asarray(goal)
+        if (start.shape != (self.total_axis,) or goal.shape != (self.total_axis,)
+                or not np.isfinite(start).all() or not np.isfinite(goal).all()):
+            raise DualArmError('path joint dimensions do not match configured arms')
         deadline = time.monotonic() + timeout_s
-        for q in (start, goal):
-            if not self.checker.check(q[:6], q[6:])["safe"]:
-                raise DualArmError("path start or goal is unsafe")
+        for label,q in (('start',start),('goal',goal)):
+            report=self.checker.check(q[:self.left_axis], q[self.left_axis:])
+            if not report['safe']:
+                raise DualArmError(f"path {label} is unsafe: " + report.get('reason','collision/clearance'))
         if order != "simultaneous":
             if order not in {"left_first", "right_first"}:
                 raise DualArmError("unknown arm execution order")
             mid = start.copy()
-            sl = slice(0, 6) if order == "left_first" else slice(6, 13)
+            sl = slice(0, self.left_axis) if order == "left_first" else slice(self.left_axis, self.total_axis)
             mid[sl] = goal[sl]
             first = self._rrt(start, mid, sl, deadline)
             second = self._rrt(
                 mid,
                 goal,
-                slice(6, 13) if order == "left_first" else slice(0, 6),
+                slice(self.left_axis, self.total_axis) if order == "left_first" else slice(0, self.left_axis),
                 deadline,
             )
             return first + second[1:]
-        return self._rrt(start, goal, slice(0, 13), deadline)
+        return self._rrt(start, goal, slice(0, self.total_axis), deadline)
 
     def _rrt(self, start, goal, active, deadline):
         rejected = Counter()
@@ -50,7 +56,7 @@ class PathPlanner:
         for label,q in (('start',start),('goal',goal)):
             if time.monotonic() >= deadline:
                 raise DualArmError('path planning time budget exhausted before endpoint validation')
-            report = self.checker.check(q[:6],q[6:])
+            report = self.checker.check(q[:self.left_axis],q[self.left_axis:])
             if not report['safe']:
                 raise DualArmError(f'path leg {label} is unsafe: '+report.get('reason','collision/clearance'))
         # Reserve most of the remaining budget for a detour, rather than spend
@@ -71,7 +77,7 @@ class PathPlanner:
             raise DualArmError(
                 "OMPL is required for detours; install requirements-motion.txt"
             ) from exc
-        indices = np.arange(13)[active]
+        indices = np.arange(self.total_axis)[active]
         space = ob.RealVectorStateSpace(len(indices))
         bounds = ob.RealVectorBounds(len(indices))
         for i, j in enumerate(indices):
@@ -89,7 +95,7 @@ class PathPlanner:
             # State validity is geometry, not the wall clock. OMPL's solve
             # termination and the edge validator enforce the time budget.
             q = unpack(state)
-            report = self.checker.check(q[:6], q[6:])
+            report = self.checker.check(q[:self.left_axis], q[self.left_axis:])
             counts['state_checks'] += 1
             if not report['safe']:
                 rejected['state: '+report.get('reason','collision/clearance')] += 1
@@ -144,7 +150,7 @@ class PathPlanner:
 
     def cartesian(self, start, targets, *, step_m=0.005, timeout_s=30):
         q = np.asarray(start).copy()
-        origin = self.scene.tcp_world(q[:6], q[6:])
+        origin = self.scene.tcp_world(q[:self.left_axis], q[self.left_axis:])
         steps = max(
             1,
             int(
@@ -175,7 +181,7 @@ class PathPlanner:
             def residual(candidate, desired=desired, seed=q):
                 if time.monotonic() >= deadline:
                     raise DualArmError("Cartesian IK time budget exceeded")
-                frames = self.scene.tcp_world(candidate[:6], candidate[6:])
+                frames = self.scene.tcp_world(candidate[:self.left_axis], candidate[self.left_axis:])
                 values = []
                 for k, f in frames.items():
                     values.extend((f[:3, 3] - desired[k][:3, 3]) * 20)

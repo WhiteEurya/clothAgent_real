@@ -10,9 +10,12 @@ def settings(config):
     raw=config.raw.get('home_path',{})
     if not isinstance(raw,dict):
         raise DualArmError('home_path must be an object')
-    return {key:number(raw.get(key,default),f'home_path.{key}',0,500)
+    result = {key:number(raw.get(key,default),f'home_path.{key}',0,500)
             for key,default in [('extra_height_mm',20.),('corridor_radius_mm',100.),
                                 ('extra_path_length_mm',100.),('separation_distance_mm',50.)]}
+    if 'max_height_mm' in raw:
+        result['max_height_mm'] = number(raw['max_height_mm'], 'home_path.max_height_mm', 0, 500)
+    return result
 
 
 def world_pose(model,arm,q):
@@ -25,7 +28,7 @@ def corridor(initial,config,models):
     for key,arm in config.arms.items():
         start=world_pose(models[key],arm,initial[key])[:3]
         end=world_pose(models[key],arm,arm.home_joints)[:3]
-        result[key]={'start':start,'end':end,'height':max(start[2],end[2])+limits['extra_height_mm'],
+        result[key]={'start':start,'end':end,'height':limits.get('max_height_mm', max(start[2],end[2])+limits['extra_height_mm']),
                      'radius':limits['corridor_radius_mm'],
                      'length':float(np.linalg.norm(end-start))+limits['extra_path_length_mm']}
     return result
@@ -48,7 +51,7 @@ def check_program_path(program,config,models):
         length=float(np.linalg.norm(np.diff(points,axis=0),axis=1).sum())
         height=float(points[:,2].max());offset=float(deviation(points,bounds[key]).max())
         if height>bounds[key]['height']+1e-6:
-            raise DualArmError(f'{key}: Home path exceeds height limit')
+            raise DualArmError(f'{key}: Home path exceeds height limit ({height:.3f} mm > {bounds[key]["height"]:.3f} mm)')
         if offset>bounds[key]['radius']+1e-6 or length>bounds[key]['length']+1e-6:
             raise DualArmError(f'{key}: Home path exceeds detour limit')
         metrics[key]={'max_height_mm':height,'height_limit_mm':bounds[key]['height'],

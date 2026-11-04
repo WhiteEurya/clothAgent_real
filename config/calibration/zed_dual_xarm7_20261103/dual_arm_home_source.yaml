@@ -1,0 +1,167 @@
+version: 1
+created_utc: '2026-11-03T14:33:26.461877+00:00'
+common_frame: right_arm_base
+pose_units: mm/degrees; RPY extrinsic xyz
+matrix_translation_units: meters
+definition: Project home poses; not controller zero positions. Execute only after
+  fresh path and scene checks.
+table_normal_common:
+- 0.003308757849739795
+- 0.034384986685357305
+- 0.9994031843115867
+base_connection_direction_common:
+- 0.9999256252118865
+- -0.009968805407375839
+- 0.007026162776902068
+mirror_plane:
+  point_common_m:
+  - 0.5292869051820946
+  - -0.005276750619641751
+  - 0.003719132561188332
+  normal_common:
+  - 0.9999424538069076
+  - -0.010312746858400917
+  - -0.0029557278046305835
+  definition: Plane through midpoint of base origins, perpendicular to their tabletop-projected
+    connection and containing the tabletop normal.
+orientation_convention: Tool +Z faces the table; tool Y is the jaw opening axis. Mirror
+  swaps the two equivalent fingers to retain a proper rotation.
+T_common_base:
+  right:
+  - - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  left:
+  - - -0.9999339616997183
+    - 0.0020166374381134196
+    - -0.01131394771722193
+    - 1.0585738103641893
+  - - -0.002017003992765015
+    - -0.9999979656251283
+    - 2.0988052848662674e-05
+    - -0.010553501239283503
+  - - -0.011313882375117552
+    - 4.380694455311006e-05
+    - 0.9999359950249578
+    - 0.007438265122376664
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+original_right_pose_backup: outputs/home_initial_snapshot.json
+right_orientation_execution: outputs/right_heading_20261103/execution_slow.json
+arms:
+  right:
+    robot_ip: 192.168.1.230
+    robot_axis: 7
+    calibration_session: /home/CNS2026330003/agentAuto/RobotCamCalib/outputs/zed_20261103_165353_896076
+    tcp_offset_mm_deg:
+    - 0
+    - 0
+    - 172
+    - 0
+    - 0
+    - 0
+    world_offset_mm_deg:
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    pose_base_mm_deg:
+    - 207.821487
+    - -39.306442
+    - 454.290466
+    - 178.02767
+    - 0.169366
+    - -0.590548
+    reference_joints_deg:
+    - -3.422793
+    - -40.851719
+    - -2.57894
+    - 71.689625
+    - -2.013603
+    - 112.52364
+    - -4.741684
+    reference_joints_source: measured
+    physically_reached: true
+    endpoint_validated: true
+    path_from_arbitrary_start_validated: false
+  left:
+    robot_ip: 192.168.1.237
+    robot_axis: 7
+    calibration_session: /home/CNS2026330003/agentAuto/RobotCamCalib/outputs/zed_left_20261103_184404_354524
+    tcp_offset_mm_deg:
+    - 0
+    - 0
+    - 172
+    - 0
+    - 0
+    - 0
+    world_offset_mm_deg:
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    pose_base_mm_deg: &id001
+    - 200.95768097807286
+    - 35.00729781807109
+    - 447.2468875998312
+    - -178.02218083538645
+    - -0.8175691288535885
+    - -0.7068381999163064
+    reference_joints_deg:
+    - 2.837287
+    - -43.951421
+    - 1.822865
+    - 68.1688
+    - 3.40738
+    - 111.084542
+    - 6.110824
+    physically_reached: true
+    endpoint_validated: true
+    status: mirrored_home_reached_and_verified
+    endpoint_validation_method: Explicit IK branch, FK, and controller joint-path checks; measured after execution.
+    tcp_limit_query_after_reaching: [0, false]
+    path_from_arbitrary_start_validated: false
+    reference_joints_source: measured_at_mirrored_home
+    measured_pose_base_mm_deg:
+    - 200.968857
+    - 34.991394
+    - 447.24649
+    - -178.022227
+    - -0.817611
+    - -0.706858
+    verified_start_to_home_execution: outputs/left_home_20261103/execution.json
+initial_left_endpoint_candidates:
+- pose_base_mm_deg: *id001
+  tcp_limit_query:
+  - 0
+  - true
+- pose_base_mm_deg:
+  - 200.95768097807286
+  - 35.00729781807109
+  - 447.2468875998312
+  - 178.02218083538648
+  - 0.8175691288536012
+  - 179.29316180008368
+  tcp_limit_query:
+  - 0
+  - true
+updated_utc: '2026-11-03T14:38:39.945719+00:00'

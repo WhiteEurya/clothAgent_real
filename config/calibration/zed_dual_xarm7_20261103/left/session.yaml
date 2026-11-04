@@ -1,0 +1,40 @@
+source: zed_sdk_rectified_left
+serial: '11483267'
+device_name: ZED-M
+sdk_version: 5.5.1
+stream: left_rectified
+image_size:
+- 1280
+- 720
+fps: 30.0
+K:
+- - 729.5574340820312
+  - 0.0
+  - 642.8673706054688
+- - 0.0
+  - 729.5574340820312
+  - 354.7128601074219
+- - 0.0
+  - 0.0
+  - 1.0
+dist:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+distortion_model: rectified_pinhole
+coordinate_system: 'IMAGE: x right, y down, z forward'
+translation_units: meters
+self_calibration_enabled: true
+depth_mode: NONE
+mode: thirdview
+robot_ip: 192.168.1.237
+robot_axis: 7
+robot_urdf: /home/CNS2026330003/agentAuto/RobotCamCalib/assets/robots/xarm7/xarm7_wo_ee.urdf
+cammount_link: link_base
+tagmount_link: link_eef
+board_path: /home/CNS2026330003/agentAuto/RobotCamCalib/assets/apriltag_grid/compact_apriltag_grid_4x4_tag48mm.yaml
+board_scale: 0.70710678
+robot_access: joint feedback only; move manually and stop before appending
+robot_arm: left

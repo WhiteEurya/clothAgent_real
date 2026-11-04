@@ -36,6 +36,31 @@ def test_invalid_home_path_limit_fails(scene):
         settings(scene.config)
 
 
+def test_absolute_home_height_is_not_added_to_endpoint(scene):
+    from cloth_agent.dual_arm.home_path import corridor
+    scene.config.raw['home_path'] = {'max_height_mm': 500}
+    initial = {key: arm.home_joints.copy() for key, arm in scene.config.arms.items()}
+    bounds = corridor(initial, scene.config, scene.models)
+    assert all(bound['height'] == 500 for bound in bounds.values())
+    initial['right'][2] += 10
+    assert corridor(initial, scene.config, scene.models)['right']['height'] == 500
+
+
+def test_absolute_home_height_still_rejects_excess(scene):
+    candidate = program(scene, [0, 0, 0])
+    _, metrics = check_program_path(candidate, scene.config, scene.models)
+    scene.config.raw['home_path'] = {'max_height_mm': metrics['left']['max_height_mm'] + 1}
+    with pytest.raises(DualArmError, match='height limit'):
+        check_program_path(program(scene, [0, 0, 2]), scene.config, scene.models)
+
+
+@pytest.mark.parametrize('value', [None, True, -1, float('nan')])
+def test_invalid_absolute_home_height(scene, value):
+    scene.config.raw['home_path'] = {'max_height_mm': value}
+    with pytest.raises(DualArmError, match='max_height_mm'):
+        settings(scene.config)
+
+
 def test_redundant_joint_is_guided_to_home_without_final_large_swing(scene,monkeypatch):
     from cloth_agent.dual_arm.home_path import coordinated_return
     scene.config.execution_mode='controller_sequential'

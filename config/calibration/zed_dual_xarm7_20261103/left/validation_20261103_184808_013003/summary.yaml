@@ -1,0 +1,20 @@
+valid_frames: 30
+total_frames: 30
+scope: One stationary pose; repeat at unseen poses. Does not independently verify
+  board scale or TCP accuracy.
+translation_mm:
+  mean: 2.7656940876752585
+  median: 2.762250602636673
+  max: 2.853966352807755
+rotation_deg:
+  mean: 0.2769249597603122
+  median: 0.27641289515969003
+  max: 0.2914129079438815
+prediction_rms_px:
+  mean: 1.6272827863693238
+  median: 1.626577079296112
+  max: 1.632872462272644
+pnp_rms_px:
+  mean: 0.36898204187552136
+  median: 0.36895015835762024
+  max: 0.3745228350162506

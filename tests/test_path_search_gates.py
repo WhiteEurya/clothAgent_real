@@ -48,3 +48,29 @@ def test_direct_proof_reserves_budget_for_search():
     began=time.monotonic()
     p._rrt(np.zeros(13),np.ones(13),slice(0,13),began+20)
     assert 4.9 < deadlines[0]-began < 5.1
+
+
+@pytest.mark.parametrize('order', ['left_first', 'right_first'])
+def test_two_seven_axis_arms_keep_sequential_joint_partition(order):
+    models={arm:SimpleNamespace(lower=np.full(7,-2.),upper=np.full(7,2.))
+            for arm in ('left','right')}
+    checked=[]
+    def check(left,right):
+        assert len(left)==len(right)==7
+        checked.append((left.copy(),right.copy()))
+        return dict(safe=True)
+    paths=PathPlanner(SimpleNamespace(models=models),SimpleNamespace(check=check),
+                      SimpleNamespace(certify=lambda *args,**kwargs:None))
+    start=np.zeros(14)
+    goal=np.arange(14)/20
+    path=paths.joint_path(start,goal,order=order)
+    boundary=7
+    if order=='left_first':
+        np.testing.assert_array_equal(path[1][:boundary],goal[:boundary])
+        np.testing.assert_array_equal(path[1][boundary:],start[boundary:])
+    else:
+        np.testing.assert_array_equal(path[1][:boundary],start[:boundary])
+        np.testing.assert_array_equal(path[1][boundary:],goal[boundary:])
+    assert checked
+    with pytest.raises(DualArmError,match='dimensions'):
+        paths.joint_path(np.zeros(13),goal)

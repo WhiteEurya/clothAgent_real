@@ -1,0 +1,62 @@
+{
+  "requested_scope": "Visual check for obvious displacement; user did not request a millimeter acceptance threshold.",
+  "physical_alignment_validated": false,
+  "visual_inspection_completed": true,
+  "reference_pixel": [
+    627,
+    498
+  ],
+  "hover_clearance_each_base_z_mm": 50,
+  "reference_capture": "outputs/zed_rgbd_20261103_215507_640602",
+  "calibration_modified": false,
+  "tcp_offset_both_mm_deg": [
+    0,
+    0,
+    172,
+    0,
+    0,
+    0
+  ],
+  "gripper_closure_command_sent": false,
+  "observations": "Both arms reached the bottle neighborhood. Visible housing silhouettes show residual image offsets relative to the calibrated CAD projection: right to image left, left to image right. No recurrence of the previous gross TCP-offset mismatch was observed. This is not a zero-error or metric-accuracy pass.",
+  "limitations": [
+    "Real grasp centers are occluded by the fingers; image silhouette differences are not TCP measurements.",
+    "Housing shape, rotation, occlusion, and segmentation affect the image residual.",
+    "Reference depth neighborhood range is about 6.16 mm.",
+    "Single reference location and original locked orientations only; no full-workspace acceptance.",
+    "Commands and feedback share calibration transforms, so their agreement is not independent accuracy evidence."
+  ],
+  "arms": {
+    "right": {
+      "capture": "outputs/zed_rgbd_20261103_220202_577458",
+      "execution": "execution_20261103_220055_800865.json",
+      "hover_pose_mm_deg": [
+        493.869781,
+        -96.282997,
+        118.509766,
+        -177.912391,
+        0.475498,
+        -4.887559
+      ],
+      "image_housing_residual_median_px": -11.5,
+      "return_position_feedback_error_mm": 0.001157259262202876,
+      "final_state": 2
+    },
+    "left": {
+      "capture": "outputs/zed_rgbd_20261103_221942_480815",
+      "execution": "execution_20261103_221854_202016.json",
+      "hover_pose_mm_deg": [
+        564.148743,
+        84.593201,
+        117.454796,
+        -179.948912,
+        3.013586,
+        6.937258
+      ],
+      "image_housing_residual_median_px": 6.0,
+      "return_position_feedback_error_mm": 0.001117186645059392,
+      "final_state": 2
+    }
+  },
+  "final_snapshot": "final_snapshot.json"
+}

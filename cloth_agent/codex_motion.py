@@ -6,10 +6,11 @@ from pathlib import Path
 import numpy as np
 
 CONTRACT = '''最终回答只输出 Python 动作代码，不加 Markdown。只允许以下调用，参数使用数字列表/字符串字面量：
-motion.move_joints(left=[6个关节弧度], right=[7个关节弧度])
+motion.move_joints(left=[按当前左臂轴数填写关节弧度], right=[按当前右臂轴数填写关节弧度])
 motion.move_tcp(left=[x,y,z,roll,pitch,yaw], right=[x,y,z,roll,pitch,yaw])
 motion.gripper(arm="left", action="open")
 移动可省略保持不动的一侧；TCP 使用场景 World 坐标中的米/弧度，夹爪 arm 为 left/right，action 为 open/close。
+正式运行时会将 move_tcp 采样为连续 IK 关节路点后执行，不调用控制器笛卡尔插补。
 可以按任务需要重复调用；不要输出 import、直接 SDK 指令或执行运动。宿主会把代码交给现有规划器。缺少观测或坐标依据时输出 motion.blocked(reason="具体原因")，不要编造坐标。'''
 
 
@@ -34,9 +35,9 @@ def parse_code(source, *, allow_complete=False, allow_grasp=False):
             if not kw or set(kw)-{'left','right'}:
                 raise ValueError('move requires left and/or right')
             for arm,value in kw.items():
-                size=7 if name=='move_joints' and arm=='right' else 6
                 a=np.asarray(value,dtype=float)
-                if a.shape!=(size,) or not np.isfinite(a).all():
+                shapes=((6,), (7,)) if name=='move_joints' else ((6,),)
+                if a.shape not in shapes or not np.isfinite(a).all():
                     raise ValueError('invalid motion target')
         elif name=='gripper':
             if set(kw)!={'arm','action'} or kw['arm'] not in ('left','right') or kw['action'] not in ('open','close'):

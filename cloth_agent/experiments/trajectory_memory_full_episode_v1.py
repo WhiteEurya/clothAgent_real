@@ -1,6 +1,7 @@
 """One real closed-loop memory episode, using existing Host motion and checks."""
 from __future__ import annotations
 
+from cloth_agent.codex_profile import PROFILE, isolated_environment
 import argparse
 from collections import Counter
 import copy
@@ -284,11 +285,11 @@ def agent_round(root, folder, before, history, manifest, timeout, *,
             cmd += ["--ro-bind", str(goal_directory.resolve()), "/goal"]
         cmd += ["--ro-bind", str(before.directory.resolve()), "/observation",
                 "--ro-bind", str(episode), "/episode",
-                "/opt/codex-package/bin/codex", "exec", "--model", MODEL,
+                "/opt/codex-package/bin/codex", "-p", PROFILE, "exec", "--model", MODEL,
                 "-c", f'model_reasoning_effort="{EFFORT}"', "--cd", "/work",
                 "--json", "--color", "never", "--sandbox", "workspace-write",
                 "-c", "sandbox_workspace_write.network_access=false", "-c", 'approval_policy="never"',
-                "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+                "--skip-git-repo-check", "--ephemeral", "--ignore-rules",
                 "-c", 'web_search="disabled"', "-c", "features.multi_agent=false",
                 "-c", "features.shell_tool=true", "-c", "features.code_mode_host=true",
                 "--output-schema", "/work/schema.json", "--output-last-message", "/work/final_answer.json",
@@ -318,7 +319,7 @@ def agent_round(root, folder, before, history, manifest, timeout, *,
         try:
             with (events_dir/"events.jsonl").open("w") as out, (events_dir/"stderr.txt").open("w") as err:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=out, stderr=err,
-                     text=True, start_new_session=True, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+                     text=True, start_new_session=True, env=isolated_environment())
                 try:
                     proc.communicate(prompt, timeout=timeout)
                 except BaseException:

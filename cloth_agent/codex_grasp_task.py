@@ -17,7 +17,8 @@ motion.move_tcp(left=[x,y,z,roll,pitch,yaw], right=[x,y,z,roll,pitch,yaw])
 motion.move_tcp(...)
 第一条 grasp 只声明真实抓点和夹爪方向，不是抓点上方的接近点。
 后续 move_tcp / move_transfer 列表只描述抓住衣物后，从抓点到最终放置目标的必要动作；最后的位置应适合松开衣物。
-move_tcp 保持指定的笛卡尔路径，用于折叠关键段。
+move_tcp 用于表达折叠关键段；宿主沿该笛卡尔路径逐点求解连续 IK，
+再以显式关节路点执行，避免控制器重新选择不兼容的 TCP 逆解分支。
 motion.move_transfer(left=[x,y,z,roll,pitch,yaw], right=[x,y,z,roll,pitch,yaw])
 move_transfer 只约束终点位姿，中间允许关节路径绕行及改变姿态；仅用于衣物允许自由转移的段，不用于必须保持形状或双爪相对距离的段。两臂仍先后运动。
 工作区边缘不要强制竖直抬升或保持竖直姿态：可写向各自基座收回并抬升的可达转移点，必要时改变该点倾角。指定终点仍须通过 IK，宿主不会偷偷移动抓点或折叠关键点。
@@ -65,7 +66,7 @@ def _joint_goal(runtime,arm,goal,q):
     path=runtime.paths.joint_path(pack(q),pack(goal),order=arm+'_first',timeout_s=120)
     operations=[]
     for a,b in zip(path,path[1:]):
-        operations.extend(('move',s) for s in runtime._segments(unpack(a),unpack(b)))
+        operations.extend(('move',s) for s in runtime._segments(unpack(a,runtime.config),unpack(b,runtime.config)))
     return operations,goal
 
 

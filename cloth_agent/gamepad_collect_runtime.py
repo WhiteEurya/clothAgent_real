@@ -15,6 +15,10 @@ def _arm6_text(text):
 
 
 class CollectionRuntime(SingleArmRuntime):
+    # Collection is a separate, manually supervised path.  It intentionally
+    # retains its existing controller-linear TCP command; formal folding uses
+    # NativeRuntime.explicit_joint_waypoint_tcp instead.
+    explicit_joint_waypoint_tcp = False
     arm_key = 'left'
     other_key = 'right'
     active_arms = ('left',)

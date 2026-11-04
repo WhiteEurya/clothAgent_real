@@ -30,6 +30,9 @@ class WorkspaceBounds:
     to the xArm controller's read-only inverse-kinematics validation and final
     motion command. Real execution requires lower-X/Y/Z limits, or a pair of
     lateral XY points defining a fixed strip together with a Z floor; a Z ceiling is optional.
+    ``explicit_one_sided`` instead requires a Z floor and an explicit lateral
+    bound or unit-normal halfspace. Missing sides delegate reachability to the
+    controller, not collision clearance. Selected planes are never yaw-expanded.
     """
 
     x_min: float | None = None
@@ -39,11 +42,22 @@ class WorkspaceBounds:
     z_min: float | None = None
     z_max: float | None = None
     lateral_points_mm: tuple[tuple[float, float], tuple[float, float]] | None = None
+    boundary_policy: str = "legacy_complete"
+    halfspaces_mm: tuple[tuple[float, float, float, float], ...] = ()
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "WorkspaceBounds":
         names = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
         parsed: dict[str, Any] = {}
+        parsed["boundary_policy"] = values.get("boundary_policy", "legacy_complete")
+        planes = values.get("halfspaces_mm", ())
+        if not isinstance(planes, (list, tuple)) or any(
+            not isinstance(plane, (list, tuple)) or len(plane) != 4 for plane in planes
+        ):
+            raise ConfigError("halfspaces_mm requires [nx, ny, nz, limit_mm] planes")
+        parsed["halfspaces_mm"] = tuple(
+            tuple(_number(value, "halfspace") for value in plane) for plane in planes
+        )
         for name in names:
             value = values.get(name)
             parsed[name] = None if value is None else _number(value, name)
@@ -61,6 +75,15 @@ class WorkspaceBounds:
         return bounds
 
     def validate_order(self) -> None:
+        if self.boundary_policy not in ("legacy_complete", "explicit_one_sided"):
+            raise ConfigError("unknown workspace boundary_policy")
+        for plane in self.halfspaces_mm:
+            if len(plane) != 4:
+                raise ConfigError("halfspace requires four numbers")
+            for value in plane:
+                _number(value, "halfspace")
+            if not math.isclose(math.sqrt(sum(value * value for value in plane[:3])), 1.0, abs_tol=1e-6):
+                raise ConfigError("halfspace normal must have unit length")
         if self.lateral_points_mm is not None:
             self.lateral_geometry()
         for axis in ("x", "y", "z"):
@@ -70,6 +93,12 @@ class WorkspaceBounds:
 
     @property
     def complete(self) -> bool:
+        if self.boundary_policy == "explicit_one_sided":
+            return self.z_min is not None and (
+                bool(self.halfspaces_mm) or self.lateral_points_mm is not None or any(
+                    getattr(self, name) is not None for name in ("x_min", "x_max", "y_min", "y_max")
+                )
+            )
         if self.lateral_points_mm is not None:
             return self.z_min is not None
         return all(
@@ -116,6 +145,7 @@ class WorkspaceBounds:
         The default remains the calibrated static workspace.
         """
 
+        self.validate_order()
         if require_complete and not self.complete:
             raise ConfigError("real execution requires x_min, y_min, y_max, z_min or lateral points with z_min")
         margin = _number(margin_mm, "workspace margin")
@@ -133,10 +163,14 @@ class WorkspaceBounds:
             raise ConfigError("Y workspace extension must be non-negative")
         target = {"x": _number(x, "x"), "y": _number(y, "y"), "z": _number(z, "z")}
         self.validate_lateral(target["x"], target["y"], margin)
+        for index, plane in enumerate(self.halfspaces_mm):
+            projection = sum(normal * target[axis] for normal, axis in zip(plane[:3], ("x", "y", "z")))
+            if projection > plane[3] - margin + 1e-6:
+                raise SafetyError(f"TCP projection {projection:g} exceeds halfspace {index} limit {plane[3] - margin:g}")
         for axis, value in target.items():
             low = getattr(self, f"{axis}_min")
             high = getattr(self, f"{axis}_max")
-            if axis == "y":
+            if axis == "y" and self.boundary_policy == "legacy_complete":
                 # The TCP center may use a yaw-dependent allowance for the
                 # physical gripper span.  X/Z remain the calibrated limits.
                 if low is not None:

@@ -61,6 +61,14 @@ class ArmConfig:
         p = finite(point, (3,), "base point")
         if np.any(p < self.workspace["min_mm"]) or np.any(p > self.workspace["max_mm"]):
             raise DualArmError(f"{self.arm_id}: target outside measured workspace")
+        from ..config import WorkspaceBounds, ConfigError, SafetyError
+        workspace = self.raw['workspace']
+        try:
+            WorkspaceBounds.from_mapping({
+                'halfspaces_mm': workspace.get('halfspaces_mm', []),
+            }).validate(*p)
+        except (ConfigError, SafetyError) as exc:
+            raise DualArmError(f'{self.arm_id}: {exc}') from exc
 
 
 @dataclass

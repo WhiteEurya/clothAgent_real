@@ -1,7 +1,8 @@
 """Existing Codex multimodal command interface, enclosed in a data-blind namespace.
 
 No host root, project files, run folders, tools, session history or MCP config is
-mounted. Each request gets only its stage-filtered images, prompt and schema.
+mounted. Each request gets stage-filtered images, prompt, schema and an allowlisted
+rbs model/provider profile. Only the provider's named credential is inherited.
 Bubblewrap failure is fatal: never fall back to a leaky host workspace.
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 from PIL import Image
 from cloth_agent.codex_astra_pipeline import build_command, MODEL
+from cloth_agent.codex_profile import PROFILE, isolated_profile_mount, isolated_environment
 from .discovery_data import read, save
 from .model_errors import ModelInvocationError
 
@@ -34,7 +36,8 @@ def isolated_command(binary, workspace, auth=None):
     for name in ('/etc/ssl','/etc/resolv.conf','/etc/hosts'):
         if Path(name).exists():command+=['--ro-bind',str(Path(name).resolve()),name]
     if auth and Path(auth).is_file():command+=['--ro-bind',str(Path(auth).resolve()),'/home/agent/.codex/auth.json']
-    # Never inherit proxy variables, project/environment instructions or other secrets.
+    command += isolated_profile_mount(workspace)
+    # Never inherit proxy variables, project/environment instructions or unrelated secrets.
     return command
 
 
@@ -60,7 +63,9 @@ class CodexMultimodal:
                 local_images.append(Path('/work')/p.name)
             cmd=build_command('/opt/codex',Path('/work'),Path('/work'),read_only=True)
             cmd[cmd.index('--model')+1]=self.model
-            cmd[-1:-1]=['--skip-git-repo-check','--ephemeral','--ignore-user-config','--ignore-rules',
+            # This CLI also suppresses named profiles with --ignore-user-config.
+            # The namespace has no base config; only our allowlisted rbs profile.
+            cmd[-1:-1]=['--skip-git-repo-check','--ephemeral','--ignore-rules',
                         '-c','features.shell_tool=false','-c','web_search="disabled"']
             for image in local_images:cmd[-1:-1]=['--image',str(image)]
             auth=Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))/'auth.json'
@@ -74,7 +79,7 @@ class CodexMultimodal:
                     timeline.start()
                 try:
                     p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=events,stderr=errors,
-                                       text=True,start_new_session=True,env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+                                       text=True,start_new_session=True,env=isolated_environment())
                 except BaseException:
                     if timeline is not None:timeline.finish()
                     raise
@@ -129,4 +134,4 @@ class CodexMultimodal:
             return dict(text=answer.read_text(),usage=usage,elapsed_s=time.monotonic()-started,
                         recovered_errors=completion['recovered_errors'],
                         tool_calls=tool_calls,visual_tool_calls=visual_tool_calls,completed_turns=completed_turns,
-                        image_count=len(local_images),isolation='bubblewrap-allowlist',model=self.model)
+                        image_count=len(local_images),isolation='bubblewrap-allowlist',model=self.model,profile=PROFILE)

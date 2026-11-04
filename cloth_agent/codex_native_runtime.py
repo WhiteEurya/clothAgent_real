@@ -16,21 +16,28 @@ from .dual_arm.geometry import DualArmError, matrix_pose, pose_matrix, pose_erro
 from .dual_arm.motion.home import HomeValidator, pack, unpack
 from .dual_arm.motion.path import PathPlanner
 from .dual_arm.planning import validate_sample
-from .dual_arm.stop_sweep import ProofIncompleteError, complete_proof
+from .dual_arm.stop_sweep import ProofIncompleteError, complete_proof, search_proof_budget
 from .dual_arm.sequential_home import (PositionSegment, certify_segment, command_limits,
                                       check_feedback, wait_operation)
 
 
 class NativeRuntime:
     physical=True
+    # Cartesian task targets are sampled into continuous IK joint waypoints.
+    # The controller must receive position-mode joint commands: its own TCP
+    # interpolation can select a different local IK branch on xArm7 firmware.
+    explicit_joint_waypoint_tcp = True
 
-    def __init__(self, config_path):
+    def __init__(self, config_path, *, planning_only=False):
         from .dual_arm.config import DualConfig
         from .dual_arm.kinematics import ArmModel
         self.config=self.load_config(config_path)
         self.config.execution_mode='controller_sequential'
         self.config.home_recover_stopped=True
-        self.config.require_real(homing=True)
+        self.planning_only = planning_only
+        self.physical = not planning_only
+        if not planning_only:
+            self.config.require_real(homing=True)
         self.calibration_id=self.config.raw['calibration_id']
         self.models={k:ArmModel(a) for k,a in self.config.arms.items()}
         self.cancel=threading.Event();self.coordinator=None;self._lease=None
@@ -57,6 +64,10 @@ class NativeRuntime:
         """Load the recorded pose by camera/robot identity, trimming SDK padding."""
         camera=self.config.raw['camera']
         owner=camera['mount_arm']
+        # A fixed third-view camera needs no camera-arm repositioning.  The
+        # observation capture still checks that both robots remain stationary.
+        if owner is None:
+            return None, None
         if owner not in self.config.arms:
             raise DualArmError('perception transition requires a configured camera arm')
         arm=self.config.arms[owner]
@@ -79,6 +90,15 @@ class NativeRuntime:
         owner,target=self.perception_target()
         snapshot=self.coordinator.snapshots()
         initial={k:np.asarray(v['joints']) for k,v in snapshot.items()}
+        if owner is None:
+            folder=Path(directory);folder.mkdir(parents=True,exist_ok=False)
+            final={k:a.home_joints.copy() for k,a in self.config.arms.items()}
+            self.arrival(initial)
+            result=dict(status='FIXED_CAMERA_STATIONARY', physical_execution=False,
+                        owner=None, note='fixed third-view camera; no perception move')
+            (folder/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+            self.perception_initialized=True
+            return
         final,source=self._preparation_program(initial,owner,target)
         folder=Path(directory);folder.mkdir(parents=True,exist_ok=False)
         if (not getattr(self, 'open_at_home_on_return', False)
@@ -125,13 +145,18 @@ class NativeRuntime:
     def check(self,left,right):
         try:
             for k,q in [('left',left),('right',right)]:
+                q=np.asarray(q,dtype=float)
+                if q.shape!=(self.config.arms[k].axis,) or not np.isfinite(q).all():
+                    raise DualArmError('joint state does not match configured axis count')
                 if np.any(q<self.models[k].lower) or np.any(q>self.models[k].upper):
                     raise DualArmError('joint target exceeds URDF limits')
-            validate_sample(self.config,self.models,unpack(np.r_[left,right]),holding=False)
+            validate_sample(self.config,self.models,unpack(np.r_[left,right],self.config),holding=False)
             return {'safe':True}
         except DualArmError as exc:return {'safe':False,'reason':str(exc)}
 
     def observe(self,directory):
+        if getattr(self,'planning_only',False):
+            raise DualArmError('planning-only runtime cannot connect hardware')
         from .dual_arm.cli import connect
         from .dual_arm.execution import DualArmCoordinator
         from .dual_arm.observation import capture, create_camera
@@ -146,6 +171,8 @@ class NativeRuntime:
         return self.capture_current(directory)
 
     def capture_current(self,directory):
+        if getattr(self,'planning_only',False):
+            raise DualArmError('planning-only runtime cannot capture live observations')
         """Capture at the actual current pose without moving back to perception."""
         from .dual_arm.observation import capture, create_camera
         directory=Path(directory)
@@ -208,6 +235,11 @@ class NativeRuntime:
         self.planning_context={'stage':'parse_motion'}
         self.plan_stats={'checked_segments':0,'dispatched_segments':0}
         calls=parse_code(source,allow_grasp=True)
+        for name, targets in calls:
+            if name == 'move_joints':
+                for arm, target in targets.items():
+                    if len(target) != self.config.arms[arm].axis:
+                        raise DualArmError(f'{arm}: joint target does not match configured axis count')
         if calls[0][0]=='blocked':
             self.planning_context={'stage':'model_blocked'}
             raise DualArmError(calls[0][1]['reason'])
@@ -257,7 +289,7 @@ class NativeRuntime:
                             raise DualArmError('PATH_SEARCH_BUDGET_EXHAUSTED: 路径搜索两轮仍未找到通过碰撞验证的完整路径；不是 IK 失败。'+ '; '.join(failures))
                         print(f'路径搜索第 {attempt}/2 轮未完成，最后再试一轮（不是 IK 求解）：'+ '; '.join(failures),flush=True)
                     for a,b in zip(path,path[1:]):
-                        operations.extend(('move',s) for s in self._segments(unpack(a),unpack(b)))
+                        operations.extend(('move',s) for s in self._segments(unpack(a,self.config),unpack(b,self.config)))
                 q=goal
             else:
                 for k in ('left','right'):
@@ -276,7 +308,14 @@ class NativeRuntime:
             self.preview_failures.append(dict(context=dict(self.planning_context),report=report))
 
     def _tcp_segments(self,k,pose,q,*,allow_detour=True):
-        """Try Cartesian continuation, then replan this entire TCP move by RRT.
+        """Sample a TCP target into explicit joint waypoints.
+
+        The sampled poses retain the requested Cartesian path at the host IK
+        level, while dispatch remains joint position mode. This avoids letting
+        the controller's TCP planner select a different local IK branch.
+
+        If the direct sampled route fails and detours are allowed, replan this
+        entire move in joint space by RRT; no failed Cartesian prefix is kept.
 
         Never keep the prefix of a failed straight approach: its last point may
         itself have no stopping clearance. Nothing is dispatched during search.
@@ -294,20 +333,25 @@ class NativeRuntime:
             slerp=Slerp([0,1],rotation)
             for fraction in np.linspace(0,1,steps+1)[1:]:
                 if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
-                self.planning_context.update(arm=k,route='tcp_direct',cartesian_fraction=float(fraction),cartesian_steps=steps)
+                self.planning_context.update(arm=k,route='tcp_direct',
+                    dispatch='explicit_joint_waypoint',
+                    cartesian_fraction=float(fraction),cartesian_steps=steps)
                 frame=start.copy();frame[:3,3]=start[:3,3]+fraction*(target[:3,3]-start[:3,3])
                 frame[:3,:3]=slerp(fraction).as_matrix()
                 goal={a:v.copy() for a,v in q.items()}
                 goal[k]=self._inverse_target(k,matrix_pose(np.linalg.inv(arm.world_from_base)@frame),q[k],'tcp_direct_ik')
-                checked=self.check(pack(goal)[:6],pack(goal)[6:])
+                checked=self.check(np.radians(goal['left']),np.radians(goal['right']))
                 if not checked['safe']:raise DualArmError(checked['reason'])
                 segments.extend(self._segments(q,goal));q=goal
+            self.plan_stats['tcp_joint_waypoint_moves'] = self.plan_stats.get(
+                'tcp_joint_waypoint_moves', 0) + 1
             return segments,q
         except DualArmError as exc:
             if not allow_detour:raise
             direct_failure=f'{type(exc).__name__}: {exc}'
         if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
         self.planning_context.update(arm=k,route='tcp_rrtconnect',direct_failure=direct_failure)
+        self.planning_context['dispatch'] = 'explicit_joint_waypoint'
         self.planning_context.pop('cartesian_fraction',None)
         print(f'{k}: TCP 直达路径未通过，先求绕行终点 IK：{direct_failure}',flush=True)
         goal={a:v.copy() for a,v in initial.items()}
@@ -317,13 +361,89 @@ class NativeRuntime:
         try:goal[k]=self._inverse_target(k,target_base,q[k],'rrt_goal_ik')
         except DualArmError:goal[k]=self._inverse_target(k,target_base,initial[k],'rrt_goal_ik')
         print(f'{k}: 终点 IK 通过，开始 RRTConnect 绕行搜索',flush=True)
-        path=self.paths.joint_path(pack(initial),pack(goal),order=k+'_first',timeout_s=120)
+        path=self._endpoint_joint_route(initial,goal,k,timeout_s=120)
         segments=[]
         for a,b in zip(path,path[1:]):
             if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
-            segments.extend(self._segments(unpack(a),unpack(b)))
+            segments.extend(self._segments(unpack(a,self.config),unpack(b,self.config)))
         self.plan_stats['tcp_rrt_detours']=self.plan_stats.get('tcp_rrt_detours',0)+1
         return segments,goal
+
+    def _endpoint_joint_standoffs(self, endpoint, arm, deadline):
+        """Certify optional single-joint terminal legs without changing endpoints."""
+        model=self.models[arm]
+        origin=model.forward(endpoint[arm])[:3]
+        candidates=[]
+        for joint_index in range(self.config.arms[arm].axis):
+            for delta in (-20.,-10.,10.,20.):
+                candidate={key:value.copy() for key,value in endpoint.items()}
+                candidate[arm][joint_index]+=delta
+                radians=np.radians(candidate[arm])
+                if np.any(radians<model.lower) or np.any(radians>model.upper):
+                    continue
+                position=model.forward(candidate[arm])[:3]
+                lift=position[2]-origin[2]
+                if lift<10.:
+                    continue
+                candidates.append((float(lift),joint_index,delta,candidate))
+        accepted=[]
+        for lift,joint_index,delta,candidate in sorted(candidates,key=lambda row:-row[0]):
+            if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
+            remaining=deadline-time.monotonic()
+            if remaining<=0:break
+            try:
+                with search_proof_budget(min(.5,remaining)):
+                    self.paths.validator.certify(pack(endpoint),pack(candidate),
+                        deadline=min(deadline,time.monotonic()+.5))
+            except DualArmError:
+                continue
+            accepted.append(candidate)
+            if len(accepted)==2:break
+        return accepted
+
+    def _endpoint_joint_route(self, initial, goal, arm, *, timeout_s):
+        """Try certified terminal single-joint legs around a joint-space detour.
+
+        Near a surface, simultaneous joint stopping ranges can reject an edge
+        whose endpoint is clear. A single-joint terminal leg uses the unchanged
+        stopping bounds for that joint and the existing idle bounds for others.
+        This remains a detour and is never used for strict Cartesian segments.
+        """
+        deadline=time.monotonic()+timeout_s
+        failures=[]
+        try:
+            return self.paths.joint_path(pack(initial),pack(goal),order=arm+'_first',
+                                         timeout_s=min(2.,timeout_s))
+        except DualArmError as exc:
+            failures.append(str(exc))
+        starts=[initial]+self._endpoint_joint_standoffs(initial,arm,deadline)
+        ends=[goal]+self._endpoint_joint_standoffs(goal,arm,deadline)
+        pairs=[(start_index,end_index) for start_index in range(len(starts))
+               for end_index in range(len(ends)) if start_index or end_index]
+        pairs.sort(key=lambda pair:sum(pair))
+        for start_index,end_index in pairs:
+            if self.cancel.is_set():raise KeyboardInterrupt('planning cancelled')
+            remaining=deadline-time.monotonic()
+            if remaining<=0:break
+            start,end=starts[start_index],ends[end_index]
+            try:
+                bridge=self.paths.joint_path(pack(start),pack(end),order=arm+'_first',
+                                             timeout_s=min(10.,remaining))
+                path=([pack(initial)] if start_index else [])+bridge
+                if end_index:path.append(pack(goal))
+                self.plan_stats['single_joint_terminal_routes']=self.plan_stats.get(
+                    'single_joint_terminal_routes',0)+1
+                return path
+            except DualArmError as exc:
+                failures.append(str(exc))
+        remaining=deadline-time.monotonic()
+        if remaining>0:
+            try:
+                return self.paths.joint_path(pack(initial),pack(goal),order=arm+'_first',
+                                             timeout_s=remaining)
+            except DualArmError as exc:
+                failures.append(str(exc))
+        raise DualArmError('No certified joint route including single-joint terminal legs: '+failures[-1])
 
     def _inverse_target(self,arm,target_base,seed,phase):
         self.planning_context.pop('ik_failure',None)
@@ -355,6 +475,19 @@ class NativeRuntime:
         """
         if not getattr(self.config, 'path_validation_enabled', True):
             self.plan_stats.update(path_validation='disabled_by_user',scope='all_collection',rrt=False)
+            return operations
+        # Keep every host IK vertex for a TCP fold.  Compacting these vertices
+        # into one larger joint segment would discard the exact branch-
+        # continuity checks that make the firmware workaround effective.
+        if (getattr(self, 'explicit_joint_waypoint_tcp', False)
+                and self.plan_stats.get('tcp_joint_waypoint_moves', 0)):
+            self.plan_stats.update(dispatch='explicit_joint_waypoint',
+                                   preserved_tcp_waypoints=True,
+                                   checked_segments=len([1 for kind, _ in operations
+                                                         if kind == 'move']),
+                                   dispatched_segments=len([1 for kind, _ in operations
+                                                           if kind == 'move']),
+                                   removed_stops=0)
             return operations
         output=[];pending=[]
         for index,(kind,data) in enumerate(operations):
@@ -435,6 +568,8 @@ class NativeRuntime:
         return source
 
     def execute(self,source,observation,folder):
+        if getattr(self,'planning_only',False):
+            raise DualArmError('planning-only runtime cannot execute motion')
         from .trajectory_preview import record_preview
         self.preview_candidates=[];self.preview_failures=[]
         self.planning_context={'stage':'validate_observation_and_height_policy'}
@@ -501,7 +636,20 @@ class NativeRuntime:
         return result
 
     def _execute_operations(self,operations,folder):
+        if getattr(self,'planning_only',False):
+            raise DualArmError('planning-only runtime cannot dispatch motion')
         folder=Path(folder)
+        # Formal folding must never silently fall back to controller TCP
+        # interpolation. PositionSegment is the only accepted motion payload;
+        # a target_pose would invoke set_position() and can reselect the bad
+        # firmware IK branch diagnosed on xArm7.
+        if getattr(self, 'explicit_joint_waypoint_tcp', False):
+            cartesian = [data for kind, data in operations
+                         if kind == 'move' and hasattr(data, 'target_pose')]
+            if cartesian:
+                raise DualArmError(
+                    'formal folding requires explicit joint waypoints; '
+                    'controller Cartesian interpolation is disabled')
         (folder/'planning_stats.json').write_text(json.dumps(getattr(self,'plan_stats',{}),indent=2)+'\n')
         (folder/'native_plan.json').write_text(json.dumps([
             dict(kind=kind,data=data.to_dict() if kind=='move' else data) for kind,data in operations],indent=2))

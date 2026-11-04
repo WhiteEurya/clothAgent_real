@@ -21,10 +21,11 @@ def audit(raw):
             'After measured bounds are available, complete supervised empty commissioning.')
     for arm in ('left', 'right'):
         a = raw.get('arms', {}).get(arm, {})
-        for key in ('min_mm', 'max_mm'):
-            require(a.get('workspace', {}).get(key) is not None,
-                    f'arms.{arm}.workspace.{key}',
-                    'Measure permitted TCP bounds in this robot base frame; route extrema are not safety bounds.')
+        workspace = a.get('workspace', {})
+        minimum = workspace.get('min_mm')
+        require(isinstance(minimum, list) and len(minimum) == 3 and minimum[2] is not None,
+                f'arms.{arm}.workspace.min_mm[2]',
+                'Record the measured minimum table-side Z in this robot base frame.')
     s = raw.get('safety', {})
     require(s.get('status') == 'measured', 'safety.status', 'Supply measured safety bounds with evidence.')
     require(bool(s.get('validation_id')), 'safety.validation_id', 'Link the measurement record.')

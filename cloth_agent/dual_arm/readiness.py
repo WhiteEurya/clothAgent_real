@@ -26,9 +26,13 @@ def home_missing_fields(raw, *, execution_mode='servo_stream'):
             missing.append('safety.' + key)
     for arm in ('left', 'right'):
         data = (raw.get('arms') or {}).get(arm) or {}
-        for key in ('min_mm', 'max_mm'):
-            if (data.get('workspace') or {}).get(key) is None:
-                missing.append(f'arms.{arm}.workspace.{key}')
+        workspace = data.get('workspace') or {}
+        # The current ZED site intentionally records only a measured table
+        # floor.  Null X/Y and upper bounds mean "no artificial box"; they are
+        # checked by IK, joint limits and collision geometry instead.
+        minimum = workspace.get('min_mm')
+        if not isinstance(minimum, list) or len(minimum) != 3 or minimum[2] is None:
+            missing.append(f'arms.{arm}.workspace.min_mm[2]')
         bounds = (safety.get('arms') or {}).get(arm) or {}
         for key in ('base_error_mm', 'geometry_error_mm',
                     'max_joint_speed_deg_s', 'stop_excursion_deg'):

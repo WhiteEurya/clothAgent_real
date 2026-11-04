@@ -1,0 +1,36 @@
+{
+  "cameras": [
+    {
+      "backend": "zed",
+      "label": "A",
+      "serial": "11483267",
+      "mount_arm": null,
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "depth_mode": "ULTRA",
+      "confidence_threshold": 50,
+      "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml"
+    }
+  ],
+  "active_cameras": [
+    "A"
+  ],
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "warmup_frames": 10,
+  "temporal_median_frames": 5,
+  "min_depth_m": 0.15,
+  "max_depth_m": 2.0,
+  "table_appearance_mode": "border_background",
+  "table_plane_mode": "background_fit",
+  "table_roi_xyxy": [
+    0.0,
+    0.0,
+    1.0,
+    1.0
+  ],
+  "manual_base_y_offset_mm": 0.0,
+  "table_roi_status": "pending_current_scene"
+}

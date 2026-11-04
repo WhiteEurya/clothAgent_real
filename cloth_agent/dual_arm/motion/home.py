@@ -58,9 +58,11 @@ def endpoint_diagnostics(config, models, joints, report):
     return result
 
 
-def unpack(q):
-    q = np.degrees(finite(q, (13,), 'Home joint radians'))
-    return {'left': q[:6], 'right': q[6:]}
+def unpack(q, config=None):
+    left_axis = config.arms['left'].axis if config is not None else 6
+    right_axis = config.arms['right'].axis if config is not None else 7
+    q = np.degrees(finite(q, (left_axis + right_axis,), 'Home joint radians'))
+    return {'left': q[:left_axis], 'right': q[left_axis:]}
 
 
 def pack(joints):
@@ -73,7 +75,7 @@ class HomeChecker:
 
     def check(self, left, right):
         try:
-            joints = unpack(np.r_[left, right])
+            joints = unpack(np.r_[left, right], self.config)
             validate_sample(self.config, self.models, joints, holding=False)
             for key, arm in self.config.arms.items():
                 point = world_pose(self.models[key], arm, joints[key])[:3]
@@ -90,7 +92,7 @@ class HomeValidator:
         self.config, self.models, self.bounds = config, models, bounds
 
     def certify_box(self, start, end, *, deadline=None, max_nodes=None):
-        a, b = unpack(start), unpack(end)
+        a, b = unpack(start, self.config), unpack(end, self.config)
         if deadline is None:
             context=complete_proof(cancel=getattr(self,'cancel',None),progress=getattr(self,'progress',None))
         else:

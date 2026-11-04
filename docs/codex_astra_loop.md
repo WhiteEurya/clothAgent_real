@@ -1,18 +1,21 @@
-# Astra 持续双臂 pipeline
+# Astra 持续折叠 pipeline（单臂执行、另一臂静态避障）
 
 当前动作接口已更新为 **GPT 声明抓点＋持布动作列表，宿主规划前后接近、抓取、释放与回 Home**，详见 [抓点与持布动作接口](codex_grasp_task.md)。下文旧 `move_tcp`/`gripper` 流程仍兼容历史代码；新模型输出遵守上述分工。
 
 ```bash
-cd /home/sja/clothAgent_real
-/home/sja/miniconda3/envs/cali/bin/python scripts/codex_astra_pipeline.py
+cd /home/CNS2026330003/agentAuto/exp/clothAgent_real
+conda activate cloth-real
+bash scripts/run_zed_dual_arm7.sh --active-arm left --manual-execute --max-rounds 1
 ```
 
-默认执行完整实机循环，使用 `config/dual_arm.local.json`，无需手工准备 scene/state 文件：
+默认执行完整实机循环；当前 ZED Mini 现场使用
+`config/dual_arm.zed_dual_xarm7_20261103.json`，无需手工准备 scene/state 文件。包装器自动使用仓库内
+portable runs 目录；安全门禁未完成时会在连接/运动前拒绝启动：
 
-1. 读取双臂状态，先打开双侧夹爪并确认完成，通过规划器回 Home，再让相机臂到保存的 perception 关节位姿，到位后采集 RGB-D；保存 RGB、World XYZ 和关节/TCP 状态。
+1. 读取 active arm 状态，打开当前夹爪并确认完成；固定 third-view ZED 不移动相机，另一条机械臂不连接，只以保存的静态姿态参与碰撞检查；随后采集 RGB-D，并保存 RGB、World XYZ 和当前 arm 状态。
 2. 将本轮 obs 和五张顺序参考图交给本机 Codex（`gpt-6-astra`、`high`），只调用一次模型，输出本轮 `motion.py`。不注入历史经验，不另调模型反思或总结。
 3. 动作代码输出后，全部动作先规划并验证，通过后交给原生位置执行器，按顺序移动机械臂及操作夹爪。
-4. 执行结束进入下一轮，重新经过 Home → perception 采集一次 obs，再规划。不再额外采集 `after` 或生成 `reflection.json`。
+4. 执行结束进入下一轮，active arm 按当前固定相机状态采集一次 obs，再规划。不再额外采集 `after` 或生成 `reflection.json`。
 5. 同一次规划若从当前 obs 判断已整齐叠好，单独输出 `motion.complete()`，宿主结束循环、不下发动作；`motion.blocked(reason="...")` 也单独输出，但仅跳过本轮，重新观测后继续规划。上一轮结果会传入下一轮提示词。完成声明不能与动作混写，必须基于执行后的下一轮观测。
 
 默认持续迭代直到 `motion.complete()`，可用 `--max-rounds 50` 显式设置轮数上限；模型每次调用默认 900 秒，可用 `--timeout-s` 修改。
@@ -24,9 +27,9 @@ cd /home/sja/clothAgent_real
 
 复用昨天 Home 使用的 `PathPlanner`、本地碰撞包络、停止范围证明、速度配置、同帧反馈和位置执行监控。
 关节目标先尝试左先/右先；TCP 目标优先按不超过 5 mm/2° 的步长进行单臂 IK，并认证实际位置指令完整关节区间。若直达插值碰撞、证明 UNKNOWN 或中间 IK 失败，则丢弃本条 TCP 指令的整个插值前缀，从原起点到最终 TCP 位姿的 IK 目标调用 OMPL RRTConnect 搜索绕行（120 秒搜索窗口，另一臂保持不动），随后逐段重新认证全部停止范围。只接受精确路径；搜索或最终证明失败均不下发。TCP 目标位姿不变，但绕行不保证沿原笛卡尔直线；终点本身不安全或 IK 无解时仍会失败。日志 `route=tcp_rrtconnect` 和 `direct_failure` 保留切换原因，成功绕行次数记录为 `tcp_rrt_detours`。
-细分点用于 IK 和检查，不再全部作为停车点。同一机械臂相邻的移动会尝试合并为一条原生运动，允许跨越相邻 `move_tcp` / `move_joints` 代码语句，因此被合并的途经点不再停车。合并前保留全部原始 IK 节点，将合并关节弦与这些节点的 FK 差异限制在 2 mm/1°，重新认证完整关节区间、工作空间及停止范围；证明失败或 UNKNOWN 则保留已验证短段。不跨夹爪、机械臂切换、关节反向或 Home/观测准备的到位边界。速度、加速度及全部安全余量不变；段数及消除的停车点数 `removed_stops` 记录在 `planning_stats.json`。不使用 SDK 圆角融合：尚未证明其拐角路径与既有区间验证的对应关系。未能合并的拐角或短段之间仍停稳。
+细分点用于连续 IK 和检查；正式折叠会保留这些关节路点，不合并成控制器 TCP 插补，也不使用 SDK 圆角融合。每个位置命令前后都检查反馈、关节范围、工作空间和停止范围；证明失败或 UNKNOWN 即停止。速度、加速度及全部安全余量不变；`planning_stats.json` 记录 `dispatch=explicit_joint_waypoint`、路点数和 `removed_stops=0`。未能通过检查的拐角或短段不会下发。
 验证器采用 SAFE / UNSAFE / UNKNOWN 三态：仅完整严格证明返回 SAFE；快速搜索到的碰撞见证须经原几何检查器复核后返回 UNSAFE，附对象、关节配置、段端点及带余量间隙；预算耗尽返回 UNKNOWN。默认单次验证最多 120 秒，本机 `max_sweep_nodes` 已提高到 65536，候选检查可使用更小预算。保留进度与主动取消；旧调用通过异常适配拒绝 UNSAFE/UNKNOWN，交还原上层重规划，不下发未通过动作。几何缓存只在一次证明内有效，使用精确姿态/区间键，不缓存安全判定。包络、安全余量、停止角范围及执行器均保持原值。详见 `trajectory_validation_optimization.md`。
-双臂按顺序执行，不把参考笛卡尔插值宣称为控制器严格直线运动。每次采集前先检查是否已在准备终点；已到位则直接采集，否则执行 Home → perception；模型收到此约定，须先放稳衣物并松开夹爪，宿主在每次实际回 Home 前先打开双侧夹爪并确认完成，未确认则不移动。
+active arm 按顺序执行。参考笛卡尔路径由宿主连续 IK 采样为显式关节路点；控制器只接收经过碰撞和关节范围预检的关节位置命令，不调用固件 TCP 直线插补。每次采集前先检查 active arm 是否已在准备终点；固定 third-view 下已到位则直接采集，否则只准备 active arm；模型收到此约定，须先放稳衣物并松开当前夹爪，未确认则不移动。
 观察位姿默认读取 `data/robot/xarm_perception_pose.json`，可在相机配置中用 `perception_pose_file` 指定；按相机序列号、机械臂 IP/轴数/控制箱序列号及 TCP 校验，六轴记录的 SDK 第七轴补位被裁掉。相机臂以外的机械臂停在 Home。每次采集旁的 `before_perception/` 保存动作代码、规划和结果；回位失败不会拍照。
 全部动作在首次下发前完成检查；后一个目标不通过时，前面的夹爪动作也不会执行。
 Astra 入口不再按观测年龄触发过期：GPT 推理及离线路径验证耗时不会使本轮快照失效。仍检查真实采集标记、标定一致性和下发前关节状态；每轮重新拍照。关节状态检查不能检测衣物被外部移动，因此观测到执行期间需保持现场不被外部改变。其他入口的观测时限保持原行为。
@@ -43,9 +46,9 @@ Ctrl+C/SIGTERM 会停止当前执行。此入口的文件锁避免同时启动�
 
 每轮模型输入只有任务、当前 obs、动作接口约定和顺序参考图。没有额外反思调用、历史经验注入或前后图像评审调用。既有经验文件不删除，也不再读取或写入。
 
-## 双臂分工与参考图
+## 单臂分工与参考图
 
-模型自主选择单臂或双臂、不同抓点和动作顺序，不强制两爪一起抓；执行器仍按顺序一次移动一臂。允许夹爪闭合后继续尝试折叠，在整轮结束拍照后判断效果，不要求中途持布确认。GPT 根据当前 obs 直接规划。宿主原有路径检查与执行故障停机保持启用。
+当前 ZED 现场按衣服中心线将每一步交给一条物理 xArm7；同一步不要求双爪同步，也不把另一条机械臂当作协作夹爪。启动时通过 `--active-arm left` 或 `--active-arm right` 明确当前执行臂；另一条机械臂不连接、不使能、不接受命令，只用保存的关节姿态和 URDF 胶囊作为静态障碍参与每个路径证明。允许夹爪闭合后继续尝试折叠，在整轮结束拍照后判断效果，不要求中途持布确认。GPT 根据当前 obs 直接规划。宿主原有路径检查与执行故障停机保持启用。
 
 默认将 `data/reference/fold_states/active/` 中 `state_01` 至 `state_05` 的五张图，按左袖、右袖、左侧衣身、右侧衣身、下摆的折叠顺序，传给每轮唯一一次规划调用。它们是各步完成后的状态示例，GPT 自行判断当前阶段和下一步，程序不另设阶段判断。左右以衣领在上、下摆在下且不镜像的衣物方向为准。参考图并非当前现场，不能照搬像素坐标、尺寸和动作目标。抓点仍依据本轮 RGB-D。
 
@@ -85,7 +88,7 @@ Ctrl+C/SIGTERM 会停止当前执行。此入口的文件锁避免同时启动�
 
 旧 run 没有完整预览记录时，只显示已保存的路径段、目标和碰撞见证，并标注其配置来自当前本机配置；不伪造缺失路径。独立回放没有执行按钮。pipeline 退出后，其内嵌预览服务也退出，可用上述命令回放。
 
-相机在同一个 run 中保持连接，每轮复用同一个 RealSense 流并丢弃前 10 帧后采集 5 帧。仅在完成、人工中断或异常退出时关闭。执行失败、模型调用失败和采集异常仍会结束运行并清理连接。
+相机在同一个 run 中保持连接；当前 ZED third-view 配置复用同一 ZED 流，丢弃预热帧后按深度稳定策略采集，旧 RealSense 配置仍按原策略丢弃前 10 帧后采集 5 帧。仅在完成、人工中断或异常退出时关闭。执行失败、模型调用失败和采集异常仍会结束运行并清理连接。
 
 ## 双臂同步更新
 
@@ -95,9 +98,9 @@ Viser 新增“当前位置 → 所选目标（示意）”：在“选择目标
 
 离线 IK 已切换为 PyRoki，双臂及 arm7 入口共用。安装、坐标适配和对照测试见 [PyRoki IK](pyroki_ik.md)。原 FK 误差复核、关节限位及路径碰撞证明继续保留。
 
-双臂入口 `scripts/codex_astra_loop.py` 默认自动执行、持续循环并记录每轮与各阶段耗时。首次及后续采集若已在准备终点（arm7 perception、arm6 Home，沿用关节到位容差），直接采集，不操作夹爪、不回 Home。未到位则按原准备流程移动。
+双臂入口 `scripts/codex_astra_loop.py` 默认自动执行、持续循环并记录每轮与各阶段耗时。固定 third-view ZED 配置下不移动相机臂；两臂保持静止后直接采集。腕部相机配置仍按原流程准备 perception 位姿。未到位则按原准备流程移动。
 
-当前仅启动 arm7 的 Camera B（233622079809），两臂抓点都来自这台相机的 RGB 和 World 点云。复用 arm7 已校验的 Camera B 外参和 perception 位置，深度曝光 4000 us、增益 16；不继承 Camera A 的倾角修正。双臂均连接并允许参与动作，不加载 arm7-only 的 arm6 固定障碍模式。
+当前 ZED 现场使用固定 third-view Camera A（11483267），两臂抓点都来自这台相机的 RGB 和 World 点云；外参与 intrinsics 来自 `config/calibration/zed_dual_xarm7_20261103/`。执行入口使用 `ZedSingleArmRuntime`，每轮只连接 `--active-arm` 指定的 xArm7，并加载另一臂的保存姿态静态模型。
 
 同步单臂抓取偏移：每只夹爪闭合前最后一个显式 TCP 目标额外下降 10 mm；接近、抬升、运输和松开目标不变。提示词要求原始观测高度，宿主统一偏移，实际代码与偏移记录保存为 `effective_motion.py` 和 `grasp_height_policy.json`。修改后的目标仍经过原有 IK、路径与碰撞验证。
 

@@ -1,0 +1,336 @@
+{
+  "schema_version": 1,
+  "profile_kind": "calibrated_observation_only",
+  "calibration_id": "zed_dual_xarm7_20261103",
+  "common_frame": "right_arm_base",
+  "camera": {
+    "backend": "zed",
+    "label": "A",
+    "serial": "11483267",
+    "mount_arm": null,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "depth_mode": "ULTRA",
+    "confidence_threshold": 50,
+    "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml"
+  },
+  "arms": {
+    "left": {
+      "arm": "left",
+      "robot_ip": "192.168.1.237",
+      "robot_axis": 7,
+      "calibration_session": "config/calibration/zed_dual_xarm7_20261103/left",
+      "installation_confirmed": true,
+      "tcp_offset_mm_deg": [
+        0,
+        0,
+        172,
+        0,
+        0,
+        0
+      ],
+      "world_offset_mm_deg": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "grasp_rpy_deg": [
+        -179.948912,
+        3.013586,
+        6.937258
+      ],
+      "target_bounds_mm": [
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          8,
+          null
+        ]
+      ],
+      "source_target_bounds_mm": [[300, 340], [523, 564], [8, 29]],
+      "workspace_policy": "minimum_base_z_only",
+      "urdf": "config/calibration/zed_dual_xarm7_20261103/robot_model/xarm7_wo_ee.urdf",
+      "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/left/extrinsics.yaml",
+      "home": {
+        "robot_ip": "192.168.1.237",
+        "robot_axis": 7,
+        "calibration_session": "config/calibration/zed_dual_xarm7_20261103/left",
+        "tcp_offset_mm_deg": [
+          0,
+          0,
+          172,
+          0,
+          0,
+          0
+        ],
+        "world_offset_mm_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "pose_base_mm_deg": [
+          200.95768097807286,
+          35.00729781807109,
+          447.2468875998312,
+          -178.02218083538645,
+          -0.8175691288535885,
+          -0.7068381999163064
+        ],
+        "reference_joints_deg": [
+          2.837287,
+          -43.951421,
+          1.822865,
+          68.1688,
+          3.40738,
+          111.084542,
+          6.110824
+        ],
+        "physically_reached": true,
+        "endpoint_validated": true,
+        "status": "mirrored_home_reached_and_verified",
+        "endpoint_validation_method": "Explicit IK branch, FK, and controller joint-path checks; measured after execution.",
+        "tcp_limit_query_after_reaching": [
+          0,
+          false
+        ],
+        "path_from_arbitrary_start_validated": false,
+        "reference_joints_source": "measured_at_mirrored_home",
+        "measured_pose_base_mm_deg": [
+          200.968857,
+          34.991394,
+          447.24649,
+          -178.022227,
+          -0.817611,
+          -0.706858
+        ],
+        "verified_start_to_home_execution": "outputs/left_home_20261103/execution.json"
+      },
+      "common_from_base_m": [
+        [
+          -0.9999339616997183,
+          0.0020166374381134196,
+          -0.01131394771722193,
+          1.0585738103641893
+        ],
+        [
+          -0.002017003992765015,
+          -0.9999979656251283,
+          2.0988052848662674e-05,
+          -0.010553501239283503
+        ],
+        [
+          -0.011313882375117552,
+          4.380694455311006e-05,
+          0.9999359950249578,
+          0.007438265122376664
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "identity_verification": {
+        "source": "outputs/startup_robot_state_001.json",
+        "status": "READ_ONLY_CHECKS_PASS",
+        "axis": 7,
+        "tcp_offset_mm_deg": [
+          0.0,
+          0.0,
+          172.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "world_offset_mm_deg": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "joint_drift_deg": 0.0,
+        "errors_warnings": [
+          0,
+          0
+        ],
+        "motion_commands_sent": 0,
+        "configuration_commands_sent": 0,
+        "control_box_sn": "AC130409A6006A",
+        "robot_sn": "XS130509P67A14"
+      }
+    },
+    "right": {
+      "arm": "right",
+      "robot_ip": "192.168.1.230",
+      "robot_axis": 7,
+      "calibration_session": "config/calibration/zed_dual_xarm7_20261103/right",
+      "installation_confirmed": true,
+      "tcp_offset_mm_deg": [
+        0,
+        0,
+        172,
+        0,
+        0,
+        0
+      ],
+      "world_offset_mm_deg": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "grasp_rpy_deg": [
+        180,
+        0,
+        0
+      ],
+      "target_bounds_mm": [
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          -20,
+          null
+        ]
+      ],
+      "source_target_bounds_mm": [[0, 600], [-700, 0], [-20, 100]],
+      "workspace_policy": "minimum_base_z_only",
+      "urdf": "config/calibration/zed_dual_xarm7_20261103/robot_model/xarm7_wo_ee.urdf",
+      "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml",
+      "home": {
+        "robot_ip": "192.168.1.230",
+        "robot_axis": 7,
+        "calibration_session": "config/calibration/zed_dual_xarm7_20261103/right",
+        "tcp_offset_mm_deg": [
+          0,
+          0,
+          172,
+          0,
+          0,
+          0
+        ],
+        "world_offset_mm_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "pose_base_mm_deg": [
+          207.821487,
+          -39.306442,
+          454.290466,
+          178.02767,
+          0.169366,
+          -0.590548
+        ],
+        "reference_joints_deg": [
+          -3.422793,
+          -40.851719,
+          -2.57894,
+          71.689625,
+          -2.013603,
+          112.52364,
+          -4.741684
+        ],
+        "reference_joints_source": "measured",
+        "physically_reached": true,
+        "endpoint_validated": true,
+        "path_from_arbitrary_start_validated": false
+      },
+      "common_from_base_m": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "identity_verification": {
+        "source": "outputs/startup_robot_state_001.json",
+        "status": "READ_ONLY_CHECKS_PASS",
+        "axis": 7,
+        "tcp_offset_mm_deg": [
+          0.0,
+          0.0,
+          172.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "world_offset_mm_deg": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "joint_drift_deg": 0.0,
+        "errors_warnings": [
+          0,
+          0
+        ],
+        "motion_commands_sent": 0,
+        "configuration_commands_sent": 0,
+        "control_box_sn": "AC130411A50009",
+        "robot_sn": "XS130502F56A1C"
+      }
+    }
+  },
+  "robot_connection_enabled": false,
+  "physical_alignment_validated": false,
+  "home_source": "config/calibration/zed_dual_xarm7_20261103/dual_arm_home_source.yaml",
+  "source_root": "/home/CNS2026330003/agentAuto/RobotCamCalib",
+  "pending_robot_integration": [
+    "controller identities",
+    "fresh state and TCP checks",
+    "full task workspace and collision geometry",
+    "home/perception path commissioning",
+    "six-axis graph action adaptation to seven-axis robots"
+  ],
+  "manifest": "config/calibration/zed_dual_xarm7_20261103/manifest.json",
+  "execution_readiness": "identity_read_only_verified; physical_safety_validation_pending"
+}

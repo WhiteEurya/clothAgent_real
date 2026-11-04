@@ -58,6 +58,8 @@ class Observation:
         if self.meta["calibration_id"] != config.raw["calibration_id"]:
             raise DualArmError("observation uses a different calibration")
         if live:
+            if self.meta.get("execution_allowed") is False:
+                raise DualArmError("observation-only deployment: robot integration is deferred")
             if self.meta.get("synthetic") is not False:
                 raise DualArmError(
                     "real execution requires a real captured observation"
@@ -142,7 +144,7 @@ def save_observation(
 
 
 def create_camera(config):
-    from ..perception import CameraSpec, RealSenseRGBD
+    from ..perception import CameraSpec, create_rgbd_camera
 
     camera_config = config.raw["camera"]
     spec = CameraSpec(
@@ -153,8 +155,11 @@ def create_camera(config):
         camera_config.get("color_white_balance"),
         depth_exposure_us=camera_config.get('depth_exposure_us'),
         depth_gain=camera_config.get('depth_gain'),
+        backend=camera_config.get('backend', 'realsense'),
+        depth_mode=camera_config.get('depth_mode', 'ULTRA'),
+        confidence_threshold=camera_config.get('confidence_threshold', 50),
     )
-    return RealSenseRGBD(
+    return create_rgbd_camera(
         spec, camera_config["width"], camera_config["height"], camera_config["fps"]
     )
 
@@ -258,6 +263,8 @@ def capture(directory, config, models, snapshot, *, camera=None):
         config,
         {k: v["joints"] for k, v in before.items()},
         extra={
+            **({"common_frame": config.raw["base_transform_provenance"]["common_frame"]}
+               if config.raw.get("base_transform_provenance", {}).get("common_frame") else {}),
             "world_from_camera_mm": world_camera.tolist(),
             "camera_serial": camera_config["serial"],
             "depth_capture_policy": {k: camera_config[k] for k in

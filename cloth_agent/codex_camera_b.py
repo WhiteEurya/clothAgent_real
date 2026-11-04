@@ -10,6 +10,19 @@ from .dual_arm.geometry import DualArmError
 
 def with_arm7_camera(config):
     raw=deepcopy(config.raw)
+    # Current ZED third-view deployments carry their own fixed-camera
+    # calibration in the execution config.  Keep that calibration intact;
+    # the legacy fallback below is only for the old wrist Camera-B setup.
+    if raw.get('camera', {}).get('backend') == 'zed':
+        camera = deepcopy(raw['camera'])
+        camera.setdefault('label', 'A')
+        camera['serial'] = str(camera['serial'])
+        camera.setdefault('depth_mode', 'ULTRA')
+        camera.setdefault('confidence_threshold', 50)
+        raw['camera'] = camera
+        # Keep the imported site calibration ID unchanged so live ZED
+        # observations and the execution config share the same provenance.
+        return DualConfig.parse(raw, config.root, homing_only=True)
     pose_file=config.root/'data/robot/xarm7_perception_pose.json'
     extrinsic_file=config.root/'config/calibration/dual_arm_working_20261008/camB_extrinsics.yaml'
     pose=json.loads(pose_file.read_text())

@@ -7,6 +7,7 @@ Physical initialization is a separate, explicitly authorized existing script.
 """
 from __future__ import annotations
 
+from cloth_agent.codex_profile import PROFILE, isolated_environment, isolated_profile_mount
 import argparse
 from collections import Counter
 import ctypes
@@ -289,6 +290,7 @@ def isolated_command(work, memory=None):
     auth = Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))/"auth.json"
     if auth.exists():
         cmd += ["--ro-bind", str(auth.resolve()), "/home/agent/.codex/auth.json"]
+    cmd += isolated_profile_mount(work)
     if memory is not None:
         cmd += ["--ro-bind", str(memory.resolve()), "/memory"]
     return cmd
@@ -352,11 +354,11 @@ def run_session(root, query, condition, timeout):
         work = Path(tmp)
         shutil.copyfile(root/query["path"], work/"query.png")
         save(work/"schema.json", SCHEMA)
-        cmd = isolated_command(work, memory) + ["/opt/codex-package/bin/codex", "exec", "--model", MODEL,
+        cmd = isolated_command(work, memory) + ["/opt/codex-package/bin/codex", "-p", PROFILE, "exec", "--model", MODEL,
             "-c", f'model_reasoning_effort="{EFFORT}"', "--cd", "/work", "--json", "--color", "never",
             "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=false",
             "-c", 'approval_policy="never"',
-            "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "--skip-git-repo-check", "--ephemeral", "--ignore-rules",
             "-c", 'web_search="disabled"', "-c", "features.multi_agent=false",
             "-c", "features.shell_tool=true", "-c", "features.code_mode_host=true",
             "--output-schema", "/work/schema.json", "--output-last-message", "/work/final_answer.json",
@@ -375,7 +377,7 @@ def run_session(root, query, condition, timeout):
         try:
             with (attempt/"events.jsonl").open("w") as events, (attempt/"stderr.txt").open("w") as errors:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=events, stderr=errors,
-                    text=True, start_new_session=True, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+                    text=True, start_new_session=True, env=isolated_environment())
                 try:
                     proc.communicate(prompt, timeout=timeout)
                 except BaseException:

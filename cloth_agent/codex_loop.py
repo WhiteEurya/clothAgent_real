@@ -258,6 +258,8 @@ def main(argv=None, *, reasoning_effort='high'):
     arms=parser.add_mutually_exclusive_group()
     arms.add_argument('--arm7-only',action='store_true',help='仅连接 arm7/right；arm6 使用保存的固定位置参与碰撞检查')
     arms.add_argument('--arm6-only',action='store_true',help='仅 arm6/left 运动；arm7 保持原位并参与碰撞检查')
+    arms.add_argument('--active-arm',choices=('left','right'),
+                      help='当前 ZED 固定 third-view 模式：只连接并运动选定的 xArm7，另一臂使用保存姿态的静态碰撞模型')
     parser.add_argument('--config',type=Path,default=ROOT/'config/dual_arm.local.json')
     parser.add_argument('--output',type=Path)
     parser.add_argument('--max-rounds',type=int,default=None,help='可选轮数上限；默认持续运行直到 complete')
@@ -272,7 +274,7 @@ def main(argv=None, *, reasoning_effort='high'):
     args=parser.parse_args(argv)
     if args.auto_execute is None:args.auto_execute=True
     if (args.max_rounds is not None and args.max_rounds<1) or args.timeout_s<=0:parser.error('rounds/timeout must be positive')
-    if args.unfold and not (args.arm6_only or args.arm7_only):parser.error('--unfold requires --arm6-only or --arm7-only')
+    if args.unfold and not (args.arm6_only or args.arm7_only or args.active_arm):parser.error('--unfold requires a single-arm runtime')
     references=[(p,f'用户指定的第 {i+1} 张顺序参考图') for i,p in enumerate(args.reference)] if args.reference else DEFAULT_REFERENCES
     if args.unfold:
         if args.reference and len(args.reference)!=1:parser.error('--unfold requires exactly one --reference')
@@ -280,7 +282,7 @@ def main(argv=None, *, reasoning_effort='high'):
                      '复原目标：human demonstration 最初的展开状态')]
     for path,_ in references:
         if not path.is_file():parser.error(f'reference image is missing: {path}')
-    prefix='loop_arm6_' if args.arm6_only else ('loop_arm7_' if args.arm7_only else 'loop_')
+    prefix='loop_arm6_' if args.arm6_only else ('loop_arm7_' if args.arm7_only else (f'loop_{args.active_arm}_only_' if args.active_arm else 'loop_'))
     if args.unfold:prefix=prefix.replace('loop_','unfold_')
     output=args.output or runs_root(ROOT)/'codex_astra'/datetime.now(timezone.utc).strftime(prefix+'%Y%m%dT%H%M%S%fZ')
     if args.arm6_only:
@@ -289,6 +291,9 @@ def main(argv=None, *, reasoning_effort='high'):
     elif args.arm7_only:
         from .codex_arm7_runtime import Arm7Runtime
         runtime=Arm7Runtime(args.config)
+    elif args.active_arm:
+        from .codex_dual_runtime import ZedSingleArmRuntime
+        runtime=ZedSingleArmRuntime(args.config,args.active_arm)
     else:
         from .codex_dual_runtime import DualArmRuntime
         runtime=DualArmRuntime(args.config)
@@ -299,7 +304,7 @@ def main(argv=None, *, reasoning_effort='high'):
     def terminate(*_):raise KeyboardInterrupt('SIGTERM')
     signal.signal(signal.SIGTERM,terminate)
     try:
-        task=args.task or ('只使用 arm6 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm6_only else '只使用 arm7 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm7_only else DEFAULT_TASK)
+        task=args.task or ('只使用 arm6 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm6_only else '只使用 arm7 单臂整理并按顺序整齐折叠桌上的衣服。' if args.arm7_only else f'只使用 {args.active_arm} 单臂整理并按顺序整齐折叠桌上的衣服；另一条机械臂保持静态并只参与碰撞检查。' if args.active_arm else DEFAULT_TASK)
         if args.unfold and args.task is None:task='将被揉乱的衣服展开，恢复到 human demonstration 最开始图片的样子。'
         result=loop(task,runtime,output,max_rounds=args.max_rounds,memory=args.memory,timeout_s=args.timeout_s,
                     references=references,unfold=args.unfold,remember_iterations=args.remember_iterations,

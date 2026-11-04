@@ -98,7 +98,8 @@ class LiveGraph:
         if isinstance(evidence,dict):evidence=evidence.get('path')
         if not evidence:return image
         try:
-            path=Path(evidence).resolve();stat=path.stat()
+            from .replay_evidence_paths import resolve_evidence_path
+            path=resolve_evidence_path(evidence).resolve();stat=path.stat()
             key=(str(path),stat.st_mtime_ns,stat.st_size)
             if key not in self.image_cache:
                 from PIL import Image, ImageOps

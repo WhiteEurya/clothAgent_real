@@ -247,6 +247,16 @@ def gripper_home(config_path=None, *, output=None, simulated=False,
     return _run_home(args)
 
 
+def plan_configured_home(initial, config, models):
+    if [config.arms[key].axis for key in ('left', 'right')] == [7, 7]:
+        from .pyroki_home import plan_home as plan_pyroki_home
+        program, segments, attempts = plan_pyroki_home(initial, config, models)
+        return program, attempts, 'PyRoki / checked sequential Home'
+    from .motion.home import HomePlanner
+    program, attempts = HomePlanner(initial, config, models).plan()
+    return program, attempts, 'motion.PathPlanner/OMPL'
+
+
 def _run_home(args):
     """Read both robots, finish all planning, then optionally execute together."""
     import signal
@@ -292,8 +302,7 @@ def _run_home(args):
         # Preserve the state that actually failed, even when no plan is produced.
         write_json(directory/'config.json', config.raw)
         write_json(directory/'initial_state.json', state)
-        from .motion.home import HomePlanner
-        program, attempts = HomePlanner(initial, config, models).plan()
+        program, attempts, planner = plan_configured_home(initial, config, models)
         validate_home_program(program, config)
         from .sequential_home import prepare_segments, execute_sequential_home
         segments = prepare_segments(program, config, models)
@@ -302,7 +311,7 @@ def _run_home(args):
         write_json(directory/'config.json', config.raw)
         write_json(directory/'plan.json', {
             'kind': 'dual_joint_home', 'attempts': attempts,
-            'planner': 'motion.PathPlanner/OMPL',
+            'planner': planner,
             'collision_backend': 'installed_runtime_envelopes_and_native_joint_boxes',
             'reference_timing': 'shared_knot_velocity; not a controller interpolation claim',
             'controller_interpolation': 'native_position_nonblended',

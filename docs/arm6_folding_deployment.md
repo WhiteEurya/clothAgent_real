@@ -1,5 +1,8 @@
 # Arm6：只运行折叠 Graph
 
+当前本机是固定 ZED Mini + 两台 xArm7，参见 [当前现场接入](zed_current_site.md)。
+以下六轴 Arm6 入口目前只用于离线 Graph 检查；实机执行需另行适配七轴机器人。
+
 使用已经随仓库发布的 `data/graphs/arm6_replay_goal_n007/graph.json`。
 这是 2026-10-18 的 Arm6 / Camera A 折叠示范图，协议为
 `arm6-traj-experience-graph-v1`。共 **9 个节点、8 条边**；从展开状态开始的

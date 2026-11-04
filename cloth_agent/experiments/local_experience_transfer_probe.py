@@ -7,6 +7,7 @@ report --dataset DATASET --output RUN
 No robot, graph, planner, matcher, retrieval, crop or depth dependencies.
 Only the existing isolated Codex transport's namespace helper is reused.
 """
+from cloth_agent.codex_profile import PROFILE, isolated_environment
 import argparse
 import csv
 import fcntl
@@ -199,16 +200,16 @@ def invoke_once(prompt, images, folder, timeout):
         for i, path in enumerate(images):
             with Image.open(path) as im: im.convert('RGB').save(work/f'image_{i}.png')
         auth = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))/'auth.json'
-        cmd = isolated_command(binary, work, auth) + ['/opt/codex', 'exec', '--model', MODEL,
+        cmd = isolated_command(binary, work, auth) + ['/opt/codex', '-p', PROFILE, 'exec', '--model', MODEL,
             '-c', f'model_reasoning_effort="{EFFORT}"', '--cd', '/work', '--json', '--color', 'never',
-            '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config',
+            '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral',
             '--ignore-rules', '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"',
             '--output-schema', '/work/schema.json', '--output-last-message', '/work/answer.txt']
         for i in range(len(images)): cmd += ['--image', f'/work/image_{i}.png']
         cmd += ['-']
         with (folder/'events.jsonl').open('w') as events, (folder/'stderr.txt').open('w') as errors:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=events, stderr=errors,
-                text=True, start_new_session=True, env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+                text=True, start_new_session=True, env=isolated_environment())
             try: proc.communicate(prompt, timeout=timeout)
             except BaseException:
                 os.killpg(proc.pid, signal.SIGTERM)

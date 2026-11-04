@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "camera_serial": "11483267",
+  "image_size_wh": [1280, 720],
+  "table_polygon_px": [[320, 238], [957, 230], [1155, 535], [1080, 719], [85, 719]],
+  "plane_fit_polygons_px": [
+    [[345, 280], [430, 280], [430, 355], [345, 355]],
+    [[800, 280], [900, 280], [900, 360], [800, 360]],
+    [[210, 625], [325, 625], [325, 710], [210, 710]],
+    [[915, 605], [1050, 605], [1050, 710], [915, 710]]
+  ],
+  "resolution_mm": 1.0,
+  "garment_mask": "red_hsv_largest_component",
+  "note": "Garment ROI from RobotCamCalib. Plane fit uses visible tabletop patches around four printed markers, reviewed in topdown_physical_trial_001. Recheck if camera or table framing changes; RANSAC reliability thresholds unchanged."
+}

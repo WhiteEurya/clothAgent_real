@@ -53,6 +53,13 @@ def certify_segment(start, end, config, models, *, max_nodes=None, path_bounds=N
         center = models[k].forward(midpoint[k])[:3]
         arm.validate_point(center - radius)
         arm.validate_point(center + radius)
+        planes = arm.raw.get('workspace', {}).get('halfspaces_mm', [])
+        if planes:
+            from ..config import WorkspaceBounds, ConfigError, SafetyError
+            try:
+                WorkspaceBounds.from_mapping({'halfspaces_mm': planes}).validate(*center, margin_mm=radius)
+            except (ConfigError, SafetyError) as exc:
+                raise DualArmError(f'{k}: controller segment violates workspace halfspace: {exc}') from exc
         if path_bounds is not None:
             from .home_path import deviation
             world=arm.world_from_base[:3,:3]@center+arm.world_from_base[:3,3]

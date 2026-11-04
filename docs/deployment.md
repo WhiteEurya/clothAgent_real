@@ -1,6 +1,8 @@
 # 新机器部署与多衣服实验
 
-**只做 Arm6 折叠 Graph 时，使用 [Arm6 折叠部署入口](arm6_folding_deployment.md)。**
+**当前本机 ZED Mini + 双 xArm7 使用 [当前现场接入](zed_current_site.md)，机器人接入暂缓。**
+
+**旧 Arm6 折叠 Graph 使用 [Arm6 折叠部署入口](arm6_folding_deployment.md)。**
 下文的依赖安装和现场配置仍适用；后面的 RGB-only / CV / GGO 命令是展开实验，
 不是这份折叠图的启动命令。
 

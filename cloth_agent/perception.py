@@ -97,6 +97,9 @@ class CameraSpec:
     color_white_balance: float | None = None
     depth_exposure_us: float | None = None
     depth_gain: float | None = None
+    backend: str = "realsense"
+    depth_mode: str = "ULTRA"
+    confidence_threshold: int = 50
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,8 @@ class PerceptionConfig:
                 raise PerceptionError("camera labels/serials must be non-empty and unique")
             if not extrinsics.is_file():
                 raise FileNotFoundError(extrinsics)
+            if item.get("backend", "realsense") not in ("realsense", "zed"):
+                raise PerceptionError("camera backend must be realsense or zed")
             serials.add(serial)
             labels.add(label)
             color_exposure_raw = item.get("color_exposure")
@@ -264,6 +269,9 @@ class PerceptionConfig:
                     float(color_white_balance_raw)
                     if color_white_balance_raw is not None
                     else None,
+                    backend=item.get("backend", "realsense"),
+                    depth_mode=item.get("depth_mode", "ULTRA"),
+                    confidence_threshold=item.get("confidence_threshold", 50),
                 )
             )
 
@@ -620,22 +628,21 @@ class RealSenseRGBD:
                     self.started = False
 
 
+def create_rgbd_camera(spec: CameraSpec, width: int, height: int, fps: int):
+    if spec.backend == "zed":
+        from .zed_rgbd import ZEDRGBD
+        return ZEDRGBD(spec, width, height, fps)
+    if spec.backend != "realsense":
+        raise PerceptionError(f"Unknown camera backend: {spec.backend}")
+    return RealSenseRGBD(spec, width, height, fps)
+
+
 @timed_stage('perception.capture_two_view_rgbd')
 def capture_two_view_rgbd(config: PerceptionConfig) -> list[RGBDFrame]:
     numpy = _require_numpy()
     active_labels = set(config.active_camera_labels)
     active_specs = [spec for spec in config.cameras if spec.label in active_labels]
-    cameras = [RealSenseRGBD(spec, config.width, config.height, config.fps) for spec in active_specs]
-    available = {
-        device.get_info(cameras[0].rs.camera_info.serial_number)
-        for device in cameras[0].rs.context().query_devices()
-    }
-    active_serials = {camera.spec.serial for camera in cameras}
-    missing = sorted(active_serials - available)
-    if missing:
-        raise PerceptionError(
-            f"configured RealSense serials are not connected: {missing}; available={sorted(available)}"
-        )
+    cameras = [create_rgbd_camera(spec, config.width, config.height, config.fps) for spec in active_specs]
     try:
         for camera in cameras:
             camera.start()

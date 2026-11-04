@@ -4,6 +4,7 @@ prepare --source reports/local_experience_transfer_probe_20261020 --output NEW_D
 run --experiment NEW_DIR
 report --experiment NEW_DIR
 """
+from cloth_agent.codex_profile import PROFILE, isolated_environment
 import argparse
 import csv
 import fcntl
@@ -192,16 +193,16 @@ def invoke_once(prompt,images,folder,timeout):
         for i,path in enumerate(images):
             with Image.open(path) as im:im.convert('RGB').save(work/f'image_{i}.png')
         auth=Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))/'auth.json'
-        command=isolated_command(binary,work,auth)+['/opt/codex','exec','--model',MODEL,
+        command=isolated_command(binary,work,auth)+['/opt/codex','-p',PROFILE,'exec','--model',MODEL,
             '-c',f'model_reasoning_effort="{EFFORT}"','--cd','/work','--json','--color','never',
-            '--sandbox','read-only','--skip-git-repo-check','--ephemeral','--ignore-user-config','--ignore-rules',
+            '--sandbox','read-only','--skip-git-repo-check','--ephemeral','--ignore-rules',
             '-c','features.shell_tool=false','-c','web_search="disabled"',
             '--output-schema','/work/schema.json','--output-last-message','/work/answer.txt']
         for i in range(len(images)):command+=['--image',f'/work/image_{i}.png']
         command+=['-']
         with (folder/'events.jsonl').open('w') as events,(folder/'stderr.txt').open('w') as errors:
             proc=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=events,stderr=errors,text=True,
-                start_new_session=True,env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+                start_new_session=True,env=isolated_environment())
             try:proc.communicate(prompt,timeout=timeout)
             except BaseException:
                 os.killpg(proc.pid,signal.SIGTERM)
