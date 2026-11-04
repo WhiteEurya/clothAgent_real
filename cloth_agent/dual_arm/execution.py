@@ -228,14 +228,11 @@ class XArmConnection(XArmBackend):
         if getattr(self, 'recover_stopped', False):
             state = self.checked_value(self.arm.get_state(), 'state before recovery')
             if state == 4:
-                if self.cancel.is_set() or list(self.checked_value(self.arm.get_err_warn_code(), 'recovery faults')) != [0, 0]:
-                    raise DualArmError('cannot recover a cancelled or faulted controller')
-                self._check('motion_enable', self.arm.motion_enable(enable=True))
-                self._check('set_state(normal)', self.arm.set_state(0))
-                deadline = time.monotonic() + 2.
-                while self.checked_value(self.arm.get_state(), 'recovered state') not in (0, 2):
-                    if self.cancel.wait(.02) or time.monotonic() >= deadline:
-                        raise DualArmError('controller did not leave STOP')
+                from ..site_robot_check import recover_stopped_controller
+                try:
+                    recover_stopped_controller(self.arm, self.cancel)
+                except RuntimeError as exc:
+                    raise DualArmError(str(exc)) from exc
             self.recover_stopped = False
             self.snapshot()
         self._check('set_gripper_mode', self.arm.set_gripper_mode(0))

@@ -61,6 +61,7 @@ class PartitionedReplayRuntime:
         self.physical = not planning_only
         self._routing_lock = threading.Lock()
         self._lease = None
+        self._startup_checked = False
 
     def observe(self, directory):
         if self.planning_only:
@@ -73,10 +74,10 @@ class PartitionedReplayRuntime:
         if self._lease is None:
             self._lease = open('/tmp/clothagent_codex_dual_arm.lock', 'w')
             fcntl.flock(self._lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        def snapshots():
+        def snapshots(*, startup=False):
             result = {}
             for key in self.models:
-                row = read_arm(self.profile, key)
+                row = read_arm(self.profile, key, **({'recover_stopped': True} if startup else {}))
                 if row['status'] != 'READ_ONLY_CHECKS_PASS':
                     raise DualArmError(f'{key}: controller not stationary/ready: {row["checks"]}')
                 if row['control_box_sn'] != self.config.arms[key].serial:
@@ -87,7 +88,9 @@ class PartitionedReplayRuntime:
         # after capture, not by reconnecting controllers for every video frame.
         perception_path = ROOT / 'config/perception.zed_dual_xarm7_20261103.json'
         perception = PerceptionConfig.load(ROOT, perception_path)
-        before = snapshots()
+        startup = not self._startup_checked
+        self._startup_checked = True  # No recovery retry within this run.
+        before = snapshots(startup=startup)
         frames = capture_two_view_rgbd(perception)
         after = snapshots()
         for key in self.models:

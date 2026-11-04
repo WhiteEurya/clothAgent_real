@@ -1,6 +1,7 @@
 """Read-only controller diagnostics for the calibrated ZED / dual-xArm7 site.
 
-Connect/getters only: no enable, mode/state change, gripper or motion commands.
+CLI/default reads use getters only. Replay may explicitly opt into fault-free
+STOP recovery; this never changes mode, clears faults or sends motion commands.
 This is a commissioning report, not execution authorization or collision proof.
 """
 from __future__ import annotations
@@ -24,7 +25,30 @@ def value(response, name):
     return response[1]
 
 
-def read_arm(profile, arm, *, factory=None):
+def recover_stopped_controller(robot, cancel):
+    """Original position-mode STOP recovery; never clear faults or send motion."""
+    if (cancel.is_set() or robot.mode != 0
+            or value(robot.get_state(), 'state before recovery') != 4
+            or list(value(robot.get_err_warn_code(), 'recovery faults')) != [0, 0]
+            or robot.get_is_moving()
+            or value(robot.get_cmdnum(), 'command queue') != 0):
+        raise RuntimeError('STOP recovery requires fault-free stationary position mode and an empty queue')
+    for name, command in (
+        ('motion_enable', lambda: robot.motion_enable(enable=True)),
+        ('set_state(normal)', lambda: robot.set_state(0)),
+    ):
+        if cancel.is_set():
+            raise RuntimeError('STOP recovery cancelled')
+        code = command()
+        if code != 0:
+            raise RuntimeError(f'{name} failed: {code}')
+    deadline = time.monotonic() + 2.
+    while value(robot.get_state(), 'recovered state') not in (0, 2):
+        if cancel.wait(.02) or time.monotonic() >= deadline:
+            raise RuntimeError('controller did not leave STOP')
+
+
+def read_arm(profile, arm, *, factory=None, recover_stopped=False):
     config = profile['arms'][arm]
     if factory is None:
         # Bound the unreachable-IP case before constructing the SDK connection.
@@ -88,10 +112,23 @@ def read_arm(profile, arm, *, factory=None):
         report['identity_binding'] = ('Compared with the site profile identity evidence.'
             if (expected_box or expected_robot) else
             'Observed identity only; site profile has not yet bound an expected controller serial.')
+        if recover_stopped and report['state'] == report['final_state'] == 4:
+            identity = config['identity_verification']
+            if (not all(v for k, v in checks.items() if k != 'idle_position_mode')
+                    or report['control_box_sn'] != identity['control_box_sn']
+                    or report['robot_sn'] != identity['robot_sn']):
+                raise RuntimeError('STOP recovery requires valid identity, offsets, stationary feedback and no faults')
+            recover_stopped_controller(robot, threading.Event())
+            report['stop_recovered'] = True
     except Exception as exc:
         report.update(status='READ_FAILED', error=f'{type(exc).__name__}: {exc}')
     finally:
         robot.disconnect()
+    if report.get('stop_recovered'):
+        fresh = read_arm(profile, arm, factory=factory)
+        fresh.update(stop_recovered=True, configuration_commands_sent=2,
+                     state_before_recovery=4)
+        return fresh
     return report
 
 

@@ -87,7 +87,8 @@ def test_fixed_camera_reads_arms_only_before_and_after_capture(tmp_path, monkeyp
             return np.zeros((16, 16, 3), dtype=np.uint8), depth
         def stop(self): self.started = False
     camera = Camera()
-    def read(profile, key):
+    def read(profile, key, **kwargs):
+        assert kwargs == ({'recover_stopped': True} if len(calls) < 2 else {})
         calls.append(key)
         q = runtime.config.arms[key].home_joints.copy()
         if moved and len(calls) > 2:

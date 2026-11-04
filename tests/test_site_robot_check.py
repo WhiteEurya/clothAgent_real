@@ -1,4 +1,5 @@
 import copy
+import pytest
 
 from cloth_agent.site_observation import load_site
 from cloth_agent.site_robot_check import read_arm
@@ -56,3 +57,40 @@ def test_fault_and_disconnect():
     robot.get_state = lambda: (7, None)
     result = read_arm(profile, 'right', factory=lambda *args, **kwargs: robot)
     assert result['status'] == 'READ_FAILED' and robot.closed
+
+
+@pytest.mark.parametrize('blocked', [None, 'fault', 'queued', 'moving', 'identity', 'mode', 'disabled'])
+def test_explicit_startup_stop_recovery(blocked):
+    profile = load_site()
+    robot = ReadOnlyRobot(profile['arms']['right'])
+    identity = profile['arms']['right']['identity_verification']
+    robot.control_box_sn, robot.sn = identity['control_box_sn'], identity['robot_sn']
+    state = [4]
+    writes = []
+    robot.get_state = lambda: (0, state[0])
+    robot.get_cmdnum = lambda: (0, int(blocked == 'queued'))
+    robot.get_is_moving = lambda: blocked == 'moving'
+    robot.get_err_warn_code = lambda: (0, [int(blocked == 'fault'), 0])
+    robot.motion_enable = lambda **kw: writes.append(('enable', True)) or 0
+    def normal(value):
+        writes.append(('state', value)); state[0] = 2
+        return 0
+    robot.set_state = normal
+    if blocked == 'identity': robot.sn = 'wrong-device'
+    if blocked == 'mode': robot.mode = 1
+    if blocked == 'disabled': robot.motor_enable_states[0] = 0
+    factory = lambda *a, **kw: robot
+    # Ordinary diagnostics must remain read-only, even in STOP.
+    assert read_arm(profile, 'right', factory=factory)['status'] == 'NEEDS_ATTENTION'
+    assert writes == []
+    result = read_arm(profile, 'right', factory=factory, recover_stopped=True)
+    if blocked:
+        assert result['status'] != 'READ_ONLY_CHECKS_PASS'
+        assert writes == []
+    else:
+        assert result['status'] == 'READ_ONLY_CHECKS_PASS'
+        assert result['stop_recovered'] and result['state'] == 2
+        assert result['configuration_commands_sent'] == 2
+        assert result['motion_commands_sent'] == 0
+        assert writes == [('enable', True), ('state', 0)]
+    assert robot.closed
