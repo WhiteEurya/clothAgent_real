@@ -101,10 +101,11 @@ def test_cartesian_target_is_sent_as_the_solved_joint_target(hardware, monkeypat
         np.testing.assert_allclose(calls[-1][0], expected)
         commands = [c for c in controllers['right'].commands if isinstance(c, dict)]
         np.testing.assert_allclose(commands[-1]['angle'], goal)
-        for command in commands:
+        for index, command in enumerate(commands):
             assert command['speed'] == checker.config.limits['joint_speed_deg_s']
             assert command['mvacc'] == checker.config.limits['joint_accel_deg_s2']
-            assert command['radius'] == -1 and command['wait'] is True
+            assert command['radius'] == -1
+            assert command['wait'] is (index == len(commands) - 1)
         assert not controllers['left'].commands
     finally:
         backend.close()
@@ -183,9 +184,10 @@ def test_large_replay_return_dispatches_every_checked_home_waypoint(hardware):
         backend.home(config)
         commands = [c for c in controllers['right'].commands if isinstance(c, dict)]
         assert len(commands) == len(plan['path']) - 1
-        for command, row in zip(commands, plan['path'][1:]):
+        for index, (command, row) in enumerate(zip(commands, plan['path'][1:])):
             np.testing.assert_array_equal(command['angle'], row['right'])
-            assert command['radius'] == -1 and command['wait'] is True
+            assert command['radius'] == -1
+            assert command['wait'] is (index == len(commands) - 1)
             np.testing.assert_array_equal(row['left'], checker.initial['left'])
         assert not controllers['left'].commands
     finally:
@@ -232,3 +234,51 @@ def test_runner_uses_joint_chain_without_legacy_controller_ik(hardware, monkeypa
     assert (runner.results_dir / 'joint_plan.json').is_file()
     assert not controllers['left'].commands
     assert all(not controller.connected for controller in controllers.values())
+
+
+def test_queue_buffers_intermediate_points_and_verifies_final_arrival(hardware, monkeypatch):
+    config, checker, controllers = hardware
+    backend = XArmBackend(config, collision_checker=checker)
+    start = {k: q.copy() for k, q in checker.initial.items()}
+    middle = {k: q.copy() for k, q in start.items()}
+    end = {k: q.copy() for k, q in start.items()}
+    middle['right'][0] += .5
+    end['right'][0] += 1.
+    path = [{k: q.tolist() for k, q in s.items()} for s in (start, middle, end)]
+    checker.validate_joint_path([start, middle, end], robot_config=config,
+                               tolerance_deg=checker.config.limits['stationary_tolerance_deg'])
+    monkeypatch.setattr(checker, 'plan_action', lambda *a, **kw: {'path': path})
+    sent = []
+    def queued(**kw):
+        sent.append(kw)
+        if not kw['wait']:
+            # SDK has accepted the point; hardware has not reached it yet.
+            backend._guard_check()
+        else:
+            controllers['right'].q = np.array(kw['angle'])
+        return 0
+    monkeypatch.setattr(controllers['right'], 'set_servo_angle', queued)
+    try:
+        backend.home(config)
+        assert [c['wait'] for c in sent] == [False, True]
+        assert backend._guard_ranges is None
+        np.testing.assert_array_equal(controllers['right'].q, end['right'])
+    finally:
+        backend.close()
+
+
+def test_queue_guard_does_not_accept_gaps_between_checked_boxes(hardware):
+    config, checker, controllers = hardware
+    backend = XArmBackend(config, collision_checker=checker)
+    try:
+        initial = {k: q.copy() for k, q in checker.initial.items()}
+        far = {k: q.copy() for k, q in initial.items()}
+        far['right'][0] += 2.
+        with backend._guard_lock:
+            backend._guard_ranges = [({k: q-.1 for k,q in row.items()},
+                                      {k: q+.1 for k,q in row.items()}) for row in (initial, far)]
+            controllers['right'].q[0] += 1.
+        with pytest.raises(RobotExecutionError, match='range'):
+            backend._guard_check()
+    finally:
+        backend.close()

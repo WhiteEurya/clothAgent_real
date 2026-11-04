@@ -586,6 +586,7 @@ class XArmBackend:
                 checked.validate_joint_path([live], robot_config=config, tolerance_deg=self._guard_tolerance)
                 self._guard_lower = {k: q - self._guard_tolerance for k, q in live.items()}
                 self._guard_upper = {k: q + self._guard_tolerance for k, q in live.items()}
+                self._guard_ranges = None
                 self._stationary_reference = live[self._inactive].copy()
             self._check("motion_enable", self.arm.motion_enable(enable=True))
             self._motion_enabled = True
@@ -644,9 +645,12 @@ class XArmBackend:
             live = self._joint_feedback()
             if np.max(np.abs(live[self._inactive] - self._stationary_reference)) > self._guard_tolerance:
                 raise RobotExecutionError('static other-arm obstacle moved')
-            for key, q in live.items():
-                if np.any(q < self._guard_lower[key]) or np.any(q > self._guard_upper[key]):
-                    raise RobotExecutionError(f'{key}: joints left the checked range / stationary obstacle moved')
+            ranges = self._guard_ranges or [(self._guard_lower, self._guard_upper)]
+            # A queued command may still be on any previously submitted leg.
+            # Use the union of checked boxes, never their larger bounding box.
+            if not any(all(np.all(q >= low[key]) and np.all(q <= high[key])
+                           for key, q in live.items()) for low, high in ranges):
+                raise RobotExecutionError('joints left the checked range / stationary obstacle moved')
         return live
 
     def _watch_joints(self):
@@ -670,22 +674,36 @@ class XArmBackend:
         # to the scene's joint_speed_deg_s / joint_accel_deg_s2. Cartesian
         # limits belong to set_position, not these explicit joint commands.
         speed, accel = config.home_speed_deg_s, config.home_acceleration_deg_s2
-        for start, target in zip(plan['path'], plan['path'][1:]):
-            self._guard_check()
+        segments = list(zip(plan['path'], plan['path'][1:]))
+        if segments:
+            ranges = [({k: np.minimum(start[k], target[k]) - self._guard_tolerance for k in start},
+                       {k: np.maximum(start[k], target[k]) + self._guard_tolerance for k in start})
+                      for start, target in segments]
+            # Same exact, non-blended queue semantics as XArmConnection's
+            # move_joint_queue: buffer all legs and wait only at the final one.
+            # The background watcher continues checking both arms throughout.
+            timeout = sum(max(30., 3 * (float(np.max(np.abs(np.array(target[key]) - start[key])))
+                                       / speed + speed / accel)) for start, target in segments)
             with self._guard_lock:
-                self._guard_lower = {k: np.minimum(start[k], target[k]) - self._guard_tolerance for k in start}
-                self._guard_upper = {k: np.maximum(start[k], target[k]) + self._guard_tolerance for k in start}
-            distance = float(np.max(np.abs(np.array(target[key]) - start[key])))
-            self._check('set_servo_angle(checked joint path)', self.arm.set_servo_angle(
-                angle=target[key], speed=speed, mvacc=accel, radius=-1,
-                relative=False, is_radian=False, wait=True,
-                timeout=max(30., 3 * (distance / speed + speed / accel))))
+                self._guard_ranges = ranges
+            began = time.monotonic()
+            for index, (_, target) in enumerate(segments):
+                if self._guard_error is not None:
+                    raise RobotExecutionError(self._guard_error)
+                remaining = timeout - (time.monotonic() - began)
+                if remaining <= 0:
+                    raise RobotExecutionError('checked joint queue timeout')
+                self._check('set_servo_angle(checked joint queue)', self.arm.set_servo_angle(
+                    angle=target[key], speed=speed, mvacc=accel, radius=-1,
+                    relative=False, is_radian=False, wait=index == len(segments)-1,
+                    timeout=remaining))
             actual = self._guard_check()
             completed_state = self.arm.get_state()
             if (np.max(np.abs(actual[key] - target[key])) > self._guard_tolerance
                     or completed_state[0] != 0 or completed_state[1] != 2):
                 raise RobotExecutionError('joint waypoint not reached and idle; no following command sent')
             with self._guard_lock:
+                self._guard_ranges = None
                 self._guard_lower = {k: np.array(q) - self._guard_tolerance for k, q in target.items()}
                 self._guard_upper = {k: np.array(q) + self._guard_tolerance for k, q in target.items()}
         pose, state = self._state()
