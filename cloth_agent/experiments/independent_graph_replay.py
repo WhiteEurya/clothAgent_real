@@ -48,7 +48,8 @@ def replay_snapshot(path, output, runtime, requests, *, max_steps=20, threshold=
     result = dict(status='STARTED', mode='INDEPENDENT_FIXED_GRAPH', steps=[], physical_actions=0,
                   source_graph=str(path), source_sha256=original_hash, graph_modified=False)
     save(output / 'runner_config.json', dict(mode=result['mode'], max_steps=max_steps,
-         match_threshold=threshold, online_growth=False, resume=False, recovery=False))
+         match_threshold=threshold, online_growth=False, resume=False, recovery=False,
+         garment_transfer=getattr(requests, 'garment_transfer', False)))
     live = create_live_graph(output, live_graph_port)
     pending = None
     try:
@@ -150,7 +151,7 @@ def run_cli(args, parser):
         signal.signal(signal.SIGTERM, terminate)
         try:
             requests = policy_requests(output / 'model', CodexMultimodal(args.model, args.timeout_s),
-                                       max_calls=args.max_calls, no_cache=args.no_cache)
+                                       max_calls=args.max_calls, no_cache=args.no_cache, garment_transfer=True)
             runtime = make_runtime(args.config, args.viser_port)
             result = replay_snapshot(args.graph, output, runtime, requests, max_steps=args.max_steps,
                                      threshold=args.match_threshold,

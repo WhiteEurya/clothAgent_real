@@ -147,3 +147,43 @@ def test_genuine_contradiction_cannot_pass_by_high_confidence(tmp_path):
     g,t,o=graph_fixture(tmp_path);bad=result('S2');bad['unresolved_conditions']=['selected fold layer is occluded']
     with pytest.raises(ValueError,match='Contradictory MATCH'):
         tm.topology_match(g,t,o,Requests([bad]),tmp_path/'audit',{},candidate_override=['S1','S2'])
+
+
+def test_transfer_policy_changes_request_not_graph_or_legacy_prompts(tmp_path):
+    import json
+    from cloth_agent.experiments.graph_policy_replay import policy_requests, GARMENT_TRANSFER, PROMPTS
+    g, t, o = graph_fixture(tmp_path)
+    g['match_nodes'][0]['observation_condition']['positive_evidence'].append('Purple printed shirt, sleeves spread')
+    original = copy.deepcopy(g)
+    prompts_before = copy.deepcopy(PROMPTS)
+    class Backend:
+        model = 'offline-fixture'
+        def __init__(self): self.calls = []
+        def invoke(self, prompt, images, schema):
+            self.calls.append(prompt)
+            return dict(text=json.dumps(result('S0')))
+    backend = Backend()
+    req = policy_requests(tmp_path/'transfer', backend, garment_transfer=True)
+    tm.topology_match(g,t,o,req,tmp_path/'audit',{},candidate_override=['S0'])
+    assert GARMENT_TRANSFER in backend.calls[0]
+    assert 'Purple printed shirt' in backend.calls[0]
+    assert GARMENT_TRANSFER in req.prompts['ground_edge']
+    assert g == original and PROMPTS == prompts_before
+    legacy = policy_requests(tmp_path/'legacy', Backend())
+    assert GARMENT_TRANSFER not in legacy.prompts['node_match']
+    assert req.prompts['node_match'] != legacy.prompts['node_match']  # Different request/cache key.
+
+
+def test_transfer_does_not_override_structural_rejection(tmp_path):
+    import json
+    from cloth_agent.experiments.graph_policy_replay import policy_requests
+    g,t,o = graph_fixture(tmp_path)
+    rejected = result()
+    rejected['violated_conditions'] = ['required inward sleeve overlap is absent']
+    class Backend:
+        model = 'offline-fixture'
+        def invoke(self, *args): return dict(text=json.dumps(rejected))
+    req = policy_requests(tmp_path/'transfer', Backend(), garment_transfer=True)
+    out = tm.topology_match(g,t,o,req,tmp_path/'audit',{},candidate_override=['S0'])
+    assert out['status'] == 'NO_MATCH'
+    assert out['violated_conditions'] == rejected['violated_conditions']

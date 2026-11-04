@@ -170,15 +170,39 @@ relations, the executed grasp/transport height strategy, orientation rule, and c
 Preserve the command's chosen TCP heights as evidence; do not replace its grasp strategy with a mandatory surface-height rule.
 The template is a one-shot hypothesis, not a validated policy. Only describe the supplied action."""
 
-def policy_requests(output, backend, *, grounding_mode='full', grounding_templates=None, **kwargs):
+GARMENT_TRANSFER = '''Cross-garment transfer policy:
+The recorded garment and the current garment may be different physical garments.
+Color, print/logo, texture appearance and absolute image size/position in historical node text
+are incidental descriptions, not required matches. A color/print/texture difference alone
+must not cause NO_MATCH, AMBIGUOUS or BLOCKED, even when embedded in positive_evidence.
+Compare action-relevant structure: collar/hem identities, sleeve and torso arrangement,
+folded versus unfolded parts, overlap/layer order and visibility of required grasp regions.
+Printed marks may support orientation when visible, but their absence alone is not a mismatch.
+Do not infer matching material mechanics from appearance or assume all garment types transfer.
+A genuinely incompatible construction, missing required part, conflicting fold relation or
+unlocalizable required anchor must still be reported; never force a match or invent evidence.
+Ground every action on the CURRENT garment and its current RGB-D anchors, preserving the
+selected action's relative garment-side semantics. Never copy reference pixels or XYZ targets.
+This policy changes the interpretation of incidental appearance only; do not change graph
+nodes, edges, action order, critical structural conditions or host motion constraints.
+'''
+
+
+def policy_requests(output, backend, *, grounding_mode='full', grounding_templates=None,
+                    garment_transfer=False, **kwargs):
     from .graph_minimal_grounding import SCHEMA, PROMPT, MinimalGrounder
     if grounding_mode not in ('full','minimal'):raise ValueError('unknown grounding mode')
     from .edge_applicability import SCHEMAS as AS, PROMPTS as AP
     from .recapture_consistency import SCHEMA as PAIR_SCHEMA, PROMPT as PAIR_PROMPT
+    prompts = {**PROMPTS,**AP,'node_match_pair':PAIR_PROMPT,'ground_edge_minimal':PROMPT}
+    if garment_transfer:
+        for kind in ('node_match', 'node_match_pair', 'ground_edge', 'ground_edge_minimal'):
+            prompts[kind] += '\n' + GARMENT_TRANSFER
     requests = Requests(output, backend, schemas={**SCHEMAS,**AS,'node_match_pair':PAIR_SCHEMA,'ground_edge_minimal':SCHEMA},
-                    prompts={**PROMPTS,**AP,'node_match_pair':PAIR_PROMPT,'ground_edge_minimal':PROMPT},
+                    prompts=prompts,
                     common=COMMON, protocol=PROTOCOL, **kwargs)
     requests.grounding_mode=grounding_mode
+    requests.garment_transfer=garment_transfer
     requests.minimal_grounder=None
     if grounding_mode=='minimal':
         if grounding_templates is None:raise ValueError('minimal mode requires compiled Host templates')
