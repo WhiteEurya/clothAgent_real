@@ -106,6 +106,8 @@ node from numbering, chronology, or task order. Do not answer what to do next. M
 single supported node with positive visible evidence and no violated or unresolved critical condition.
 Match decision conditions for action reuse, not merely similar color, silhouette or texture.
 For status MATCH, violated_conditions and unresolved_conditions refer ONLY to the selected node_id.
+candidate_nodes lists still-plausible matches, NOT all nodes examined. For MATCH it must contain
+only the selected node_id. If multiple nodes remain plausible, return AMBIGUOUS with empty node_id.
 Do NOT put reasons for rejecting OTHER candidate nodes in either field. Such reference comparisons
 belong in matched_evidence. If a critical condition of the selected node is actually violated or
 unresolved, return NO_MATCH or AMBIGUOUS instead of MATCH. A valid MATCH has both arrays empty.

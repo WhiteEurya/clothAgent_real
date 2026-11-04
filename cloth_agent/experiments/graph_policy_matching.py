@@ -9,6 +9,8 @@ from .graph_policy_schema import MATCH
 
 def validate_match_response(value, subset, threshold):
     jsonschema.validate(value,MATCH)
+    if value['status'] == 'MATCH' and set(value['candidate_nodes']) - {value['node_id']}:
+        raise ValueError('Contradictory MATCH: candidate_nodes means still-plausible matches, not every node examined. For a unique MATCH return only the selected node_id in candidate_nodes. If multiple nodes remain plausible, return AMBIGUOUS with empty node_id. Recheck the images; do not erase genuine uncertainty just to pass validation.')
     reliable_match(value,subset,threshold)
     if value['status']=='MATCH' and (value['violated_conditions'] or value['unresolved_conditions']):
         raise ValueError('Contradictory MATCH: violated_conditions/unresolved_conditions describe ONLY the selected node. If these are reasons for rejecting OTHER nodes, put them in matched_evidence. If they actually contradict the selected node, return AMBIGUOUS or NO_MATCH with empty node_id. Recheck the images; do not erase genuine uncertainty just to pass validation.')

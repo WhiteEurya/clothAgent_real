@@ -187,3 +187,35 @@ def test_transfer_does_not_override_structural_rejection(tmp_path):
     out = tm.topology_match(g,t,o,req,tmp_path/'audit',{},candidate_override=['S0'])
     assert out['status'] == 'NO_MATCH'
     assert out['violated_conditions'] == rejected['violated_conditions']
+
+
+def test_all_examined_nodes_in_match_triggers_contract_repair(tmp_path):
+    import json
+    from cloth_agent.experiments.graph_policy_replay import policy_requests
+    g,t,o = graph_fixture(tmp_path)
+    bad = result('S0'); bad['candidate_nodes'] = ['S0', 'S1']
+    class Backend:
+        model = 'offline-fixture'
+        def __init__(self): self.calls = []
+        def invoke(self, prompt, images, schema):
+            self.calls.append(prompt)
+            return dict(text=json.dumps(bad if len(self.calls) == 1 else result('S0')))
+    backend = Backend()
+    req = policy_requests(tmp_path/'model', backend, garment_transfer=True)
+    out = tm.topology_match(g,t,o,req,tmp_path/'audit',{},candidate_override=['S0', 'S1'])
+    assert out['candidate_nodes'] == ['S0'] and len(backend.calls) == 2
+    assert 'still-plausible matches' in backend.calls[-1]
+
+
+def test_repeated_nonunique_match_is_not_silently_accepted(tmp_path):
+    import json
+    from cloth_agent.experiments.graph_policy_replay import policy_requests
+    g,t,o = graph_fixture(tmp_path)
+    bad = result('S0'); bad['candidate_nodes'] = ['S0', 'S1']
+    class Backend:
+        model = 'offline-fixture'
+        def invoke(self, *args): return dict(text=json.dumps(bad))
+    req = policy_requests(tmp_path/'model', Backend(), garment_transfer=True)
+    with pytest.raises(ValueError, match='Contradictory MATCH'):
+        tm.topology_match(g,t,o,req,tmp_path/'audit',{},candidate_override=['S0', 'S1'])
+    assert req.model_calls == 2
