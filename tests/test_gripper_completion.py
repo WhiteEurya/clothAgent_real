@@ -61,6 +61,8 @@ def backend(monkeypatch):
     monkeypatch.setattr('cloth_agent.robot_api._gripper_log', lambda message: None)
     def build(samples):
         result = XArmBackend.__new__(XArmBackend)
+        result.collision = None
+        result._other_arm = None
         result.arm = Arm(samples)
         result._state = lambda: ([300, 0, 100, 180, 0, 0], {})
         return result

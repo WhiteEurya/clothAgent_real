@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .pipeline_timing import timed_stage
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import math
 import io
@@ -538,10 +538,15 @@ class XArmBackend:
     machine without the vendor package or a connected robot.
     """
 
-    def __init__(self, config: RobotConfig):
-        if config.collision_scene_path:
+    def __init__(self, config: RobotConfig, *, collision_checker=None):
+        if config.collision_scene_path and collision_checker is None:
             raise RobotExecutionError(
-                'CONTROLLER_PATH_UNCOVERED: set_position backend has no joint-path coverage for the other arm; use ExperimentRunner diagnostics')
+                'dual-arm joint execution requires its collision checker')
+        self.collision = collision_checker
+        self._other_arm = None
+        self._guard_thread = None
+        self._guard_error = None
+        self._motion_enabled = False
         try:
             from xarm.wrapper import XArmAPI
         except ImportError as exc:  # pragma: no cover - depends on robot host
@@ -557,17 +562,142 @@ class XArmBackend:
             if (not isinstance(feedback, (tuple, list)) or len(feedback) != 2 or feedback[0] != 0
                     or not isinstance(feedback[1], (tuple, list)) or not feedback[1] or feedback[1][0] != 0):
                 raise RobotExecutionError(f'controller fault/unavailable feedback before enable: {feedback}')
+            if self.collision is not None:
+                import threading
+                import numpy as np
+                scene = self.collision
+                if config.robot_ip != scene.config.arms[scene.active_arm].ip or config.collision_active_arm != scene.active_arm:
+                    raise RobotExecutionError('RobotAPI arm differs from collision scene')
+                self._inactive = 'right' if scene.active_arm == 'left' else 'left'
+                self._other_arm = XArmAPI(scene.config.arms[self._inactive].ip)
+                _validated_live_tcp_offset(self._other_arm, replace(config,
+                    expected_tcp_offset_mm_deg=tuple(scene.config.arms[self._inactive].tcp_offset)))
+                self._controllers = {scene.active_arm: self.arm, self._inactive: self._other_arm}
+                self._guard_lock = threading.Lock()
+                self._guard_done = threading.Event()
+                self._guard_tolerance = scene.config.limits['stationary_tolerance_deg']
+                live = self._joint_feedback(require_idle=True, identities=True)
+                if any(np.max(np.abs(live[k] - scene.initial[k])) > self._guard_tolerance for k in live):
+                    raise RobotExecutionError('robot moved since observation/planning; acquire a fresh observation')
+                # No motion, including gripper setup, before both live arms and
+                # the complete tolerance neighbourhood pass the geometry check.
+                from copy import copy
+                checked = copy(scene); checked.initial = live
+                checked.validate_joint_path([live], robot_config=config, tolerance_deg=self._guard_tolerance)
+                self._guard_lower = {k: q - self._guard_tolerance for k, q in live.items()}
+                self._guard_upper = {k: q + self._guard_tolerance for k, q in live.items()}
+                self._stationary_reference = live[self._inactive].copy()
             self._check("motion_enable", self.arm.motion_enable(enable=True))
+            self._motion_enabled = True
             self._check("set_mode", self.arm.set_mode(0))
             self._check("set_state", self.arm.set_state(0))
             # These are the concrete gripper APIs used by the existing project.
             self._check("set_gripper_mode", self.arm.set_gripper_mode(0))
             self._check("set_gripper_enable", self.arm.set_gripper_enable(True))
             self._check("set_gripper_speed", self.arm.set_gripper_speed(config.gripper_speed))
-        except BaseException:
+            if self.collision is not None:
+                self._guard_thread = threading.Thread(target=self._watch_joints, daemon=True)
+                self._guard_thread.start()
+        except BaseException as exc:
+            if self._motion_enabled:
+                try:
+                    self.stop()
+                except BaseException as stop_error:
+                    exc.args = (f'{exc}; stop failed: {stop_error}',)
+            if self._other_arm is not None:
+                self._other_arm.disconnect()
             if getattr(self.arm, "connected", False):
                 self.arm.disconnect()
             raise
+
+    def _joint_feedback(self, *, require_idle=False, identities=False):
+        import numpy as np
+        from .site_robot_check import value
+        states = {}
+        for key, controller in self._controllers.items():
+            if not controller.connected:
+                raise RobotExecutionError(f'{key}: controller disconnected')
+            fault = value(controller.get_err_warn_code(), 'controller fault')
+            state = value(controller.get_state(), 'controller state')
+            if fault[0] != 0 or state in (3, 4, 5) or controller.mode != 0:
+                raise RobotExecutionError(f'{key}: controller not ready: state={state}, faults={fault}')
+            if (require_idle or key == self._inactive) and state != 2:
+                raise RobotExecutionError(f'{key}: must be stationary')
+            if identities:
+                expected = self.collision.config.arms[key]
+                value(controller.get_robot_sn(), 'identity')
+                if (controller.axis != expected.axis or controller.control_box_sn != expected.serial
+                        or controller.sn != expected.raw['robot_sn']
+                        or not np.allclose(controller.tcp_offset, expected.tcp_offset, atol=.1, rtol=0)
+                        or not np.allclose(controller.world_offset, np.zeros(6), atol=.01, rtol=0)):
+                    raise RobotExecutionError(f'{key}: identity or TCP/world offset mismatch')
+            states[key] = value(controller.get_servo_angle(is_radian=False), 'joint feedback')
+        return self.collision.joints(states)
+
+    def _guard_check(self):
+        import numpy as np
+        if self._guard_error is not None:
+            raise RobotExecutionError(self._guard_error)
+        with self._guard_lock:
+            # Serialize the reads with an envelope change: an old sample must
+            # not be compared to the next segment's envelope.
+            live = self._joint_feedback()
+            if np.max(np.abs(live[self._inactive] - self._stationary_reference)) > self._guard_tolerance:
+                raise RobotExecutionError('static other-arm obstacle moved')
+            for key, q in live.items():
+                if np.any(q < self._guard_lower[key]) or np.any(q > self._guard_upper[key]):
+                    raise RobotExecutionError(f'{key}: joints left the checked range / stationary obstacle moved')
+        return live
+
+    def _watch_joints(self):
+        while not self._guard_done.wait(.02):
+            try:
+                self._guard_check()
+            except BaseException as exc:
+                self._guard_error = f'joint monitor: {type(exc).__name__}: {exc}'
+                try:
+                    self.stop()
+                except BaseException as stop_error:
+                    self._guard_error += f'; stop failed: {stop_error}'
+                return
+
+    def _joint_action(self, config, name, args):
+        import numpy as np
+        live = self._guard_check()
+        plan = self.collision.plan_action(config, name, args, initial=live)
+        key = self.collision.active_arm
+        model = self.collision.models[key]
+        # Conservative Cartesian speed/acceleration caps for joint motion.
+        # The second term also bounds the rotational curvature acceleration.
+        reach = max(1., float(sum(model.tcp_reaches)))
+        speed = min(config.home_speed_deg_s, math.degrees(config.speed_mm_s / reach),
+                    math.degrees(math.sqrt(config.acceleration_mm_s2 / (2 * reach * model.config.axis))))
+        accel = min(config.home_acceleration_deg_s2, math.degrees(config.acceleration_mm_s2 / (2 * reach)))
+        if name in {'home', 'perception_position'}:
+            speed, accel = config.home_speed_deg_s, config.home_acceleration_deg_s2
+        for start, target in zip(plan['path'], plan['path'][1:]):
+            self._guard_check()
+            with self._guard_lock:
+                self._guard_lower = {k: np.minimum(start[k], target[k]) - self._guard_tolerance for k in start}
+                self._guard_upper = {k: np.maximum(start[k], target[k]) + self._guard_tolerance for k in start}
+            distance = float(np.max(np.abs(np.array(target[key]) - start[key])))
+            self._check('set_servo_angle(checked joint path)', self.arm.set_servo_angle(
+                angle=target[key], speed=speed, mvacc=accel, radius=-1,
+                relative=False, is_radian=False, wait=True,
+                timeout=max(30., 3 * (distance / speed + speed / accel))))
+            actual = self._guard_check()
+            completed_state = self.arm.get_state()
+            if (np.max(np.abs(actual[key] - target[key])) > self._guard_tolerance
+                    or completed_state[0] != 0 or completed_state[1] != 2):
+                raise RobotExecutionError('joint waypoint not reached and idle; no following command sent')
+            with self._guard_lock:
+                self._guard_lower = {k: np.array(q) - self._guard_tolerance for k, q in target.items()}
+                self._guard_upper = {k: np.array(q) + self._guard_tolerance for k, q in target.items()}
+        pose, state = self._state()
+        state['checked_joint_path'] = plan
+        state['joint_speed_deg_s'] = speed
+        state['joint_acceleration_deg_s2'] = accel
+        return pose, state
 
     @staticmethod
     def _code(value: Any) -> int:
@@ -614,6 +744,8 @@ class XArmBackend:
         return pose, state
 
     def _checked_gripper_feedback(self):
+        if self.collision is not None:
+            self._guard_check()
         feedback = _read_gripper_feedback(self.arm)
         # A failed read is not a hardware fault or completion. Keep polling.
         # Only successfully decoded fault feedback stops the command here.
@@ -748,6 +880,8 @@ class XArmBackend:
             raise
 
     def move(self, x: float, y: float, z: float, yaw: float, config: RobotConfig):
+        if self.collision is not None:
+            return self._joint_action(config, 'move', dict(x=x, y=y, z=z, yaw=yaw))
         code = self.arm.set_position(
             x=x,
             y=y,
@@ -770,6 +904,8 @@ class XArmBackend:
         return self._command_gripper(config, target='close')
 
     def shake(self, config: RobotConfig):
+        if self.collision is not None:
+            raise RobotExecutionError('shake has no checked joint path')
         from .shake_once import shake
 
         shake_result = shake(self.arm, config)
@@ -779,6 +915,8 @@ class XArmBackend:
         return pose, state
 
     def shake_open(self, config: RobotConfig):
+        if self.collision is not None:
+            raise RobotExecutionError('shake_open has no checked joint path')
         from .shake_open import shake_open
 
         shake_open_result = shake_open(self.arm, config)
@@ -788,6 +926,8 @@ class XArmBackend:
         return pose, state
 
     def home(self, config: RobotConfig):
+        if self.collision is not None:
+            return self._joint_action(config, 'home', {})
         code = self.arm.set_servo_angle(
             angle=list(config.init_joints_deg),
             speed=config.home_speed_deg_s,
@@ -799,6 +939,8 @@ class XArmBackend:
         return self._state()
 
     def perception_position(self, config: RobotConfig):
+        if self.collision is not None:
+            return self._joint_action(config, 'perception_position', {})
         target = config.perception_joints_deg
         if target is None or len(target) != 7:
             raise RobotExecutionError(
@@ -833,9 +975,22 @@ class XArmBackend:
 
     def stop(self) -> None:
         """Stop outstanding motion on failure; do not clear faults or move Home."""
-        self._check('set_state(stop)', self.arm.set_state(4))
+        errors = []
+        for controller in (self.arm, self._other_arm):
+            if controller is not None:
+                try:
+                    self._check('set_state(stop)', controller.set_state(4))
+                except BaseException as exc:
+                    errors.append(str(exc))
+        if errors:
+            raise RobotExecutionError('; '.join(errors))
 
     def close(self) -> None:
+        if self._guard_thread is not None:
+            self._guard_done.set()
+            self._guard_thread.join(timeout=3)
+        if self._other_arm is not None:
+            self._other_arm.disconnect()
         if getattr(self.arm, "connected", False):
             self.arm.disconnect()
 

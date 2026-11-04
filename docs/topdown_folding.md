@@ -10,8 +10,8 @@
 
 提案经 `full_grasp_adapter` 转成原 RobotAPI 的 move/open/close 命令，由 ExperimentRunner 运行。
 当前双臂配置只提供设备、标定、几何和运动限制；NativeRuntime 的停止包络与验证标志不再是该链的前提。
-实机仍受实际路径覆盖约束：采样 IK 不能证明 set_position 的控制器插补关节分支，
-因此当前输出仅能作离线模拟和几何审查。详见[当前执行链](zed_current_site.md)。
+当前双臂入口以 PyRoki 求解插值点，检查完整关节范围并通过原 XArmBackend 逐段下发关节目标；
+本适配器命令只做离线检查，添加 `--plan-joints` 可求解并检查完整路径。详见[当前执行链](zed_current_site.md)。
 
 ```text
 同一份 ZED RGB-D（带标定与哈希）

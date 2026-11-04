@@ -10,7 +10,8 @@
 `Graph/动作提案 → ExperimentRunner → RobotAPI → XArmBackend`。
 按两个夹爪 TCP 中点选臂，每步只有一臂运动，每次 run 独立。
 离线检查：`bash scripts/run_arm7_partitioned_replay.sh --dry-run`。
-原控制器 Cartesian 插补的关节路径尚未被覆盖，真实动作保持阻断；不再依赖 NativeRuntime 准入声明。
+当前 move 使用 PyRoki 求解插值点并检查完整关节范围，经原 XArmBackend 逐段下发关节目标；
+对侧臂作为静态障碍并监测其是否移动，不再依赖 NativeRuntime 准入声明。
 
 [Arm6 折叠 Graph 部署](docs/arm6_folding_deployment.md)：10 月 18 日的小型折叠图，
 9 个节点 / 8 条边，Camera A；离线检查：`bash scripts/run_arm6_folding_graph.sh --dry-run`。

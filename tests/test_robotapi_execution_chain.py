@@ -31,16 +31,19 @@ def test_real_path_rejection_happens_before_sdk_connection(tmp_path, monkeypatch
     from cloth_agent.robot_collision import RobotCollision
     from tests.test_robot_collision import scene
     c = scene()
+    def rejected(*args, **kwargs):
+        raise SafetyError('joint sweep collides')
+    monkeypatch.setattr(c, 'plan_action', rejected)
     config = replace(robot_config(), robot_ip='left', collision_scene_path='scene', collision_active_arm='left')
     runner = ExperimentRunner(tmp_path, config, collision_checker=c)
     source = runner.workspace / 'fold.py'
     source.write_text('def run():\n    move(300, 0, 100, 0)\n')
     monkeypatch.setattr('cloth_agent.experiment.validate_controller_trajectory', lambda *a: pytest.fail('connected'))
     monkeypatch.setattr('cloth_agent.experiment.XArmBackend', lambda *a: pytest.fail('connected'))
-    with pytest.raises(SafetyError, match='CONTROLLER_PATH_UNCOVERED'):
+    with pytest.raises(SafetyError, match='joint sweep collides'):
         runner.run_experiment(source, real=True, confirmed=True)
     assert not json.loads((runner.results_dir / 'fold.json').read_text())['actual_robot_actions']
-    with pytest.raises(RobotExecutionError, match='CONTROLLER_PATH_UNCOVERED'):
+    with pytest.raises(RobotExecutionError, match='requires its collision checker'):
         XArmBackend(config)
 
 

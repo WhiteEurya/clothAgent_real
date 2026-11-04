@@ -121,7 +121,8 @@ def compile_operations(operations, profile, active, config, roll, pitch, gripper
     return config, '\n'.join(lines) + '\n', mapping
 
 
-def validate_offline(proposals, state_path, output, *, profile_path=DEFAULT_PROFILE, config_path=DEFAULT_CONFIG):
+def validate_offline(proposals, state_path, output, *, profile_path=DEFAULT_PROFILE, config_path=DEFAULT_CONFIG,
+                     plan_joints=False):
     profile = load_site(profile_path)
     plan = validate_source(Path(proposals), profile)
     execution = json.loads(Path(config_path).read_text())
@@ -170,6 +171,15 @@ def validate_offline(proposals, state_path, output, *, profile_path=DEFAULT_PROF
             'boundaries': asdict(config.boundaries),
         }
     (output / 'integration_report.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+    if plan_joints:
+        try:
+            plans = collision.require_execution(config, result['requested_robot_actions'])
+            (output / 'joint_plan.json').write_text(json.dumps(plans, indent=2, allow_nan=False) + '\n')
+            report['joint_plan'] = dict(status='JOINT_PLAN_READY',
+                segments=sum(len(p['path']) - 1 for p in plans), file=str(output / 'joint_plan.json'))
+        except (ValueError, RuntimeError) as exc:
+            report['joint_plan'] = dict(status='JOINT_PLAN_REJECTED', error=str(exc))
+        (output / 'integration_report.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     return report
 
 
@@ -178,10 +188,12 @@ def main(argv=None):
     parser.add_argument('--proposals', type=Path, required=True)
     parser.add_argument('--robot-state', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--plan-joints', action='store_true', help='Offline PyRoki and complete joint-sweep checks; never connects hardware')
     args = parser.parse_args(argv)
-    report = validate_offline(args.proposals, args.robot_state, args.output)
+    report = validate_offline(args.proposals, args.robot_state, args.output, plan_joints=args.plan_joints)
     print(json.dumps(report, indent=2))
-    return 0 if report['status'] == 'SIMULATED_EXECUTION_COMPLETE' else 2
+    return 0 if (report['status'] == 'SIMULATED_EXECUTION_COMPLETE'
+                 and report.get('joint_plan', {}).get('status') != 'JOINT_PLAN_REJECTED') else 2
 
 
 if __name__ == '__main__':

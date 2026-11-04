@@ -352,6 +352,20 @@ class ArmModel:
             self.capsule_reaches[capsule["name"]] = weights
             self.capsule_ancestors[capsule['name']] = ancestors
 
+        self.tcp_reaches = np.zeros(config.axis)
+        reach = np.linalg.norm(config.tcp_offset[:3])
+        frame = self.flange
+        while frame != 'link_base':
+            joint = parents[frame]
+            if joint.name in self.names:
+                self.tcp_reaches[self.names.index(joint.name)] = reach
+            if joint.origin is not None:
+                reach += np.linalg.norm(joint.origin[:3, 3]) * 1000
+            frame = joint.parent
+
+    def tcp_motion_bound(self, delta_deg):
+        return float(self.tcp_reaches @ np.radians(np.abs(delta_deg)))
+
     def capsule_motion_bounds(self, delta_deg):
         from .geometry import finite
 

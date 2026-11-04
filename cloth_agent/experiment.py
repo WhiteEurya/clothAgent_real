@@ -209,12 +209,14 @@ def _execute(
             exec(compile(tree, str(source_path), "exec"), namespace, namespace)
             namespace["run"]()
     except KeyboardInterrupt:
-        # Ctrl-C is a control signal, not a rollout result.  Let the caller
-        # close the backend and perform its mandatory return-Home cleanup
-        # instead of converting the interrupt into a normal failed experiment.
+        # The caller records the partial trace, stops and closes the backend.
         raise
     except BaseException as exc:  # record the failure and stop; never retry here
         error = f"{type(exc).__name__}: {exc}"
+        try:
+            robot.stop()
+        except BaseException as stop_error:
+            error += f'; stop failed: {type(stop_error).__name__}: {stop_error}'
         traceback.print_exc(file=stderr)
     output = stdout.getvalue()
     if stderr.getvalue():
@@ -366,9 +368,12 @@ class ExperimentRunner:
                 if self.config.collision_scene_path and self.collision_checker is None:
                     raise ExperimentValidationError('dual-arm scene requires its RobotAPI collision checker')
                 if self.collision_checker is not None:
-                    self.collision_checker.require_execution(self.config, preflight.actions)
-                validate_controller_trajectory(self.config, preflight.actions)
-                backend = XArmBackend(self.config)
+                    plans = self.collision_checker.require_execution(self.config, preflight.actions)
+                    (self.results_dir / 'joint_plan.json').write_text(json.dumps(plans, indent=2))
+                    backend = XArmBackend(self.config, collision_checker=self.collision_checker)
+                else:
+                    validate_controller_trajectory(self.config, preflight.actions)
+                    backend = XArmBackend(self.config)
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 result = self._result(
@@ -524,9 +529,11 @@ class ExperimentRunner:
                 if self.collision_checker is not None:
                     self.collision_checker.require_execution(self.config, preflight.actions)
                     self.collision_checker.require_execution(self.config, abort_path)
-                validate_controller_trajectory(self.config, preflight.actions)
-                validate_controller_trajectory(self.config, abort_path)
-                backend = XArmBackend(self.config)
+                    backend = XArmBackend(self.config, collision_checker=self.collision_checker)
+                else:
+                    validate_controller_trajectory(self.config, preflight.actions)
+                    validate_controller_trajectory(self.config, abort_path)
+                    backend = XArmBackend(self.config)
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 result = self._result(
