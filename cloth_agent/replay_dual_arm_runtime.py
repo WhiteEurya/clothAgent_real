@@ -81,7 +81,9 @@ class PartitionedReplayRuntime:
                     raise DualArmError(f'{key}: controller identity mismatch')
                 result[key] = dict(joints=row['joints_deg'])
             return result
-        return capture(directory, self.config, self.models, snapshots)
+        # Fixed camera, sequential observe/execute: query both arms before and
+        # after capture, not by reconnecting controllers for every video frame.
+        return capture(directory, self.config, self.models, snapshots, check_each_frame=False)
 
     def compile(self, source, observation):
         from .experiments.full_grasp_adapter import build_robot_config

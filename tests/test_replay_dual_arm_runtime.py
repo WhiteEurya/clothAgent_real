@@ -67,6 +67,43 @@ def test_factory_selects_partitioned_runtime_for_current_site(monkeypatch):
     assert calls == [path]
 
 
+@pytest.mark.parametrize('moved', [False, True])
+def test_fixed_camera_reads_arms_only_before_and_after_capture(tmp_path, monkeypatch, moved):
+    runtime = PartitionedReplayRuntime('config/dual_arm.zed_dual_xarm7_20261103.json')
+    runtime.config.raw['camera'].pop('depth_stability', None)
+    calls = []
+    class Camera:
+        started = False
+        intrinsics = np.eye(3)
+        frames = 0
+        def start(self): self.started = True
+        def read(self):
+            self.frames += 1
+            return np.zeros((4, 4, 3), dtype=np.uint8), np.ones((4, 4))
+        def stop(self): self.started = False
+    camera = Camera()
+    def read(profile, key):
+        calls.append(key)
+        q = runtime.config.arms[key].home_joints.copy()
+        if moved and len(calls) > 2:
+            q[0] += 1.
+        return dict(status='READ_ONLY_CHECKS_PASS', joints_deg=q.tolist(),
+                    control_box_sn=runtime.config.arms[key].serial)
+    monkeypatch.setattr('cloth_agent.site_robot_check.read_arm', read)
+    monkeypatch.setattr('cloth_agent.dual_arm.observation.create_camera', lambda config: camera)
+    try:
+        if moved:
+            with pytest.raises(DualArmError, match='arm moved'):
+                runtime.observe(tmp_path / 'capture')
+        else:
+            runtime.observe(tmp_path / 'capture')
+        assert calls == ['left', 'right', 'left', 'right']
+        assert camera.frames == 15
+        assert not camera.started
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize('arm', ['left', 'right'])
 def test_graph_compiles_to_original_experiment_api_for_either_arm(tmp_path, arm):
     from cloth_agent.dual_arm.geometry import matrix_pose, pose_matrix

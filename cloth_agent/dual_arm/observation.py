@@ -164,7 +164,7 @@ def create_camera(config):
     )
 
 
-def capture(directory, config, models, snapshot, *, camera=None):
+def capture(directory, config, models, snapshot, *, camera=None, check_each_frame=True):
     """Capture stationary frames; a supplied camera stays open for its owner."""
 
     camera_config = config.raw["camera"]
@@ -173,6 +173,8 @@ def capture(directory, config, models, snapshot, *, camera=None):
         raise DualArmError(
             "camera mount_arm must name an arm or be null for a fixed camera"
         )
+    if not check_each_frame and owner is not None:
+        raise DualArmError('frame-by-frame state checks are required for an arm-mounted camera')
     before = snapshot()
     owns_camera = camera is None
     if owns_camera:
@@ -198,11 +200,13 @@ def capture(directory, config, models, snapshot, *, camera=None):
             camera.start()
         for _ in range(stability['warmup_frames'] if stability else 10):
             camera.read()
-            stationary()
+            if check_each_frame:
+                stationary()
         stable_windows = 0
         for index in range(stability['max_frames'] if stability else 5):
             rgb, depth = camera.read()
-            stationary()
+            if check_each_frame:
+                stationary()
             rgb_frames.append(rgb)
             depths.append(depth)
             if stability:
