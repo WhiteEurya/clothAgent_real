@@ -70,16 +70,21 @@ def test_factory_selects_partitioned_runtime_for_current_site(monkeypatch):
 @pytest.mark.parametrize('moved', [False, True])
 def test_fixed_camera_reads_arms_only_before_and_after_capture(tmp_path, monkeypatch, moved):
     runtime = PartitionedReplayRuntime('config/dual_arm.zed_dual_xarm7_20261103.json')
-    runtime.config.raw['camera'].pop('depth_stability', None)
     calls = []
     class Camera:
         started = False
-        intrinsics = np.eye(3)
+        intrinsics = np.diag([1000., 1000., 1.])
         frames = 0
         def start(self): self.started = True
         def read(self):
             self.frames += 1
-            return np.zeros((4, 4, 3), dtype=np.uint8), np.ones((4, 4))
+            depth = np.full((16, 16), .7)
+            depth[:5, :5] = np.nan  # Missing background must not reject capture.
+            if self.frames == 13:
+                depth[8, 8] = 1.5  # Existing temporal median removes an outlier.
+            if self.frames == 14:
+                depth[8, 8] = 0.  # Existing invalid-depth filtering excludes zero.
+            return np.zeros((16, 16, 3), dtype=np.uint8), depth
         def stop(self): self.started = False
     camera = Camera()
     def read(profile, key):
@@ -90,13 +95,23 @@ def test_fixed_camera_reads_arms_only_before_and_after_capture(tmp_path, monkeyp
         return dict(status='READ_ONLY_CHECKS_PASS', joints_deg=q.tolist(),
                     control_box_sn=runtime.config.arms[key].serial)
     monkeypatch.setattr('cloth_agent.site_robot_check.read_arm', read)
-    monkeypatch.setattr('cloth_agent.dual_arm.observation.create_camera', lambda config: camera)
+    def create(spec, *args):
+        camera.spec = spec
+        return camera
+    monkeypatch.setattr('cloth_agent.perception.create_rgbd_camera', create)
     try:
         if moved:
             with pytest.raises(DualArmError, match='arm moved'):
                 runtime.observe(tmp_path / 'capture')
         else:
-            runtime.observe(tmp_path / 'capture')
+            observation = runtime.observe(tmp_path / 'capture')
+            matrix = np.asarray(runtime.config.raw['camera']['world_from_camera_mm'])
+            expected = matrix[:3, :3] @ np.array([5.6, 5.6, 700.]) + matrix[:3, 3]
+            np.testing.assert_allclose(observation.xyz[8, 8], expected, atol=1e-4)
+            assert np.isfinite(observation.sample([8, 8], 20.)).all()
+            with pytest.raises(DualArmError, match='insufficient measured depth'):
+                observation.sample([2, 2], 20.)
+            observation.validate_for(runtime.config, live=True)
         assert calls == ['left', 'right', 'left', 'right']
         assert camera.frames == 15
         assert not camera.started

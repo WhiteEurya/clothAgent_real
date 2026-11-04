@@ -67,7 +67,9 @@ class PartitionedReplayRuntime:
             raise DualArmError('planning-only adapter cannot connect hardware')
         import fcntl
         from .site_robot_check import read_arm
-        from .dual_arm.observation import capture
+        from .dual_arm.observation import save_observation
+        from .perception import PerceptionConfig, capture_two_view_rgbd
+        from .site_observation import ROOT, world_xyz_mm
         if self._lease is None:
             self._lease = open('/tmp/clothagent_codex_dual_arm.lock', 'w')
             fcntl.flock(self._lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -83,7 +85,33 @@ class PartitionedReplayRuntime:
             return result
         # Fixed camera, sequential observe/execute: query both arms before and
         # after capture, not by reconnecting controllers for every video frame.
-        return capture(directory, self.config, self.models, snapshots, check_each_frame=False)
+        perception_path = ROOT / 'config/perception.zed_dual_xarm7_20261103.json'
+        perception = PerceptionConfig.load(ROOT, perception_path)
+        before = snapshots()
+        frames = capture_two_view_rgbd(perception)
+        after = snapshots()
+        for key in self.models:
+            if np.max(np.abs(np.asarray(before[key]['joints']) - after[key]['joints'])) > self.config.limits['stationary_tolerance_deg']:
+                raise DualArmError('arm moved during RGB-D capture; observation discarded')
+        if len(frames) != 1 or str(frames[0].serial) != str(self.config.raw['camera']['serial']):
+            raise DualArmError('replay requires the configured fixed ZED observation')
+        frame = frames[0]
+        world_camera = np.array(frame.X_base_camera, copy=True)
+        world_camera[:3, 3] *= 1000.
+        if not np.allclose(world_camera, self.config.raw['camera']['world_from_camera_mm'], atol=1e-6, rtol=0):
+            raise DualArmError('perception and replay camera calibration differ')
+        return save_observation(directory, frame.rgb, world_xyz_mm(frame), self.config,
+                                {k: v['joints'] for k, v in before.items()}, extra={
+            'common_frame': self.profile['common_frame'],
+            'world_from_camera_mm': world_camera.tolist(),
+            'camera_serial': frame.serial,
+            'snapshot_before': before, 'snapshot_after': after,
+            'depth_capture_policy': {
+                'config': str(perception_path.relative_to(ROOT)),
+                'warmup_frames': perception.warmup_frames,
+                'temporal_median_frames': perception.temporal_median_frames,
+            },
+        })
 
     def compile(self, source, observation):
         from .experiments.full_grasp_adapter import build_robot_config
