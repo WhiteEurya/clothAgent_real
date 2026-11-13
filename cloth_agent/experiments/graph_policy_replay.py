@@ -200,14 +200,16 @@ nodes, edges, action order, critical structural conditions or host motion constr
 def policy_requests(output, backend, *, grounding_mode='full', grounding_templates=None,
                     garment_transfer=False, **kwargs):
     from .graph_minimal_grounding import SCHEMA, PROMPT, MinimalGrounder
-    if grounding_mode not in ('full','minimal'):raise ValueError('unknown grounding mode')
+    if grounding_mode not in ('full','minimal','two_point'):raise ValueError('unknown grounding mode')
+    from .graph_two_point_grounding import SCHEMA as TWO_POINT_SCHEMA, PROMPT as TWO_POINT_PROMPT
     from .edge_applicability import SCHEMAS as AS, PROMPTS as AP
     from .recapture_consistency import SCHEMA as PAIR_SCHEMA, PROMPT as PAIR_PROMPT
     prompts = {**PROMPTS,**AP,'node_match_pair':PAIR_PROMPT,'ground_edge_minimal':PROMPT}
+    prompts['ground_edge_two_point'] = TWO_POINT_PROMPT
     if garment_transfer:
-        for kind in ('node_match', 'node_match_pair', 'ground_edge', 'ground_edge_minimal'):
+        for kind in ('node_match', 'node_match_pair', 'ground_edge', 'ground_edge_minimal', 'ground_edge_two_point'):
             prompts[kind] += '\n' + GARMENT_TRANSFER
-    requests = Requests(output, backend, schemas={**SCHEMAS,**AS,'node_match_pair':PAIR_SCHEMA,'ground_edge_minimal':SCHEMA},
+    requests = Requests(output, backend, schemas={**SCHEMAS,**AS,'node_match_pair':PAIR_SCHEMA,'ground_edge_minimal':SCHEMA,'ground_edge_two_point':TWO_POINT_SCHEMA},
                     prompts=prompts,
                     common=COMMON, protocol=PROTOCOL, **kwargs)
     requests.grounding_mode=grounding_mode
@@ -234,6 +236,9 @@ def grounded_side_check(candidate,edge,before):
 
 def selected_edge_grounding(requests,graph,edge,before,folder,hem_frame=None):
     """Both replay runners share opt-in grounding; downstream validators are unchanged."""
+    if getattr(requests, 'grounding_mode', 'full') == 'two_point':
+        from .graph_two_point_grounding import ground
+        return ground(requests, graph, edge, before, folder)
     minimal=getattr(requests,'minimal_grounder',None)
     if minimal is not None:return minimal.ground(requests,edge,before,folder)
     payload=grounding_payload(graph,edge,before)
@@ -1433,7 +1438,7 @@ def growth_ground(runtime, requests, graph, trajectory, action, before, folder, 
     hem=None
     if getattr(requests,'minimal_grounder',None) is not None:
         requests.minimal_grounder.template(edge)
-    elif edge['action_family']=='bottom_hem_toward_collar_fold':
+    elif getattr(requests, 'grounding_mode', 'full') != 'two_point' and edge['action_family']=='bottom_hem_toward_collar_fold':
         hem=verify_hem_frame(requests,trajectory,before,initial_image,previous_image,folder)
     candidate=selected_edge_grounding(requests,graph,edge,before,folder,hem)
     validate_grounding(candidate); save(folder/'grounding.json',candidate)
@@ -1711,7 +1716,7 @@ def main(argv=None):
     parser.add_argument('--max-calls', type=int, default=64)
     parser.add_argument('--timeout-s', type=float, default=900)
     parser.add_argument('--no-cache', action='store_true')
-    parser.add_argument('--grounding-mode',choices=['full','minimal'],default='full',
+    parser.add_argument('--grounding-mode',choices=['full','minimal','two_point'],default='full',
                         help='minimal: two visual anchors; requires a compiled Host template for every selected edge')
     parser.add_argument('--grounding-templates',type=Path,help='frozen minimal-mode Host template bundle')
     parser.add_argument('--arm6-expanded-graph', action='store_true',

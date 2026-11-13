@@ -57,6 +57,9 @@ def compile_proposal(plan, profile, execution, state, *, config_path=DEFAULT_CON
 
 def build_robot_config(execution, home_state, active, roll, pitch, *, config_path=DEFAULT_CONFIG):
     arm_config, limits = execution['arms'][active], execution['limits']
+    stream = limits.get('continuous_joint_stream', False)
+    if not isinstance(stream, bool):
+        raise ValueError('continuous_joint_stream must be boolean')
     workspace, gripper = arm_config['workspace'], arm_config['gripper']
     bounds = WorkspaceBounds.from_mapping({
         'boundary_policy': workspace.get('boundary_policy', 'legacy_complete'),
@@ -79,6 +82,7 @@ def build_robot_config(execution, home_state, active, roll, pitch, *, config_pat
         expected_tcp_offset_mm_deg=tuple(arm_config['tcp_offset_mm_deg']),
         speed_mm_s=limits['cartesian_speed_mm_s'],
         acceleration_mm_s2=limits['cartesian_accel_mm_s2'],
+        continuous_joint_stream=stream,
         home_speed_deg_s=limits['joint_speed_deg_s'],
         home_acceleration_deg_s2=limits['joint_accel_deg_s2'],
         gripper_open=gripper['open'], gripper_close=gripper['close'],

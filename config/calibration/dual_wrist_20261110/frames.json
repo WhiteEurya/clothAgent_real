@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "common_frame": "right_arm_base",
+  "translation_units": "mm",
+  "transform_convention": "destination_from_source; column vectors",
+  "chain": "common_from_base @ base_from_eef(actual_joints) @ eef_from_color",
+  "base_transform_source": "config/dual_arm.zed_dual_xarm7_20261103.json",
+  "base_transform_note": "Reuse existing dual-arm base calibration; no controller world_offset changes.",
+  "arms": {
+    "left": {
+      "robot_ip": "192.168.1.237",
+      "camera_serial": "263622075308",
+      "mount_link": "link_eef",
+      "common_from_base_mm": [
+        [
+          -0.9999339616997183,
+          0.0020166374381134196,
+          -0.01131394771722193,
+          1058.5738103641893
+        ],
+        [
+          -0.002017003992765015,
+          -0.9999979656251283,
+          2.0988052848662674e-05,
+          -10.553501239283502
+        ],
+        [
+          -0.011313882375117552,
+          4.380694455311006e-05,
+          0.9999359950249578,
+          7.438265122376664
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "eef_from_color_mm": [
+        [
+          0.01671586691123661,
+          0.9993622681496342,
+          0.03155371281203584,
+          75.13580461463455
+        ],
+        [
+          -0.9998255363690257,
+          0.01697004250330647,
+          -0.0078047730156711285,
+          35.51888223101258
+        ],
+        [
+          -0.00833526351089153,
+          -0.03141774428972556,
+          0.9994715847516373,
+          22.583739438561373
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "hand_eye_source": "config/calibration/realsense_left_wrist_20261110/extrinsics.json",
+      "hand_eye_sha256": "17e0ee1d45fbb6e9805703f0005827052c02b57d131de88a4afc43eb7bcf6021"
+    },
+    "right": {
+      "robot_ip": "192.168.1.230",
+      "camera_serial": "254522070945",
+      "mount_link": "link_eef",
+      "common_from_base_mm": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "eef_from_color_mm": [
+        [
+          -0.029038905488602385,
+          -0.9976496579492187,
+          0.06206369278274641,
+          85.06114401029652
+        ],
+        [
+          0.9992014028126814,
+          -0.03067680453525451,
+          -0.02560254441799753,
+          -29.777449419733568
+        ],
+        [
+          0.027446285453477312,
+          0.06127065902463352,
+          0.9977437585660425,
+          20.470564362407853
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "hand_eye_source": "config/calibration/realsense_right_wrist_20261110/extrinsics.json",
+      "hand_eye_sha256": "75bec99a3b2ede49776d166e41471fe16f92ad735684fcecb0658da9c6841343"
+    }
+  }
+}

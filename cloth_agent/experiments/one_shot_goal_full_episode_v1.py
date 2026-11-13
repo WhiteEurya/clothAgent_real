@@ -59,6 +59,31 @@ def sample_initialization_release(seed):
     return release
 
 
+def validate_response_protocol(response, body):
+    """Validate fields RBS actually reports without inventing missing metadata."""
+    requested_model = body.get('model', planner.MODEL)
+    requested_effort = body.get('reasoning', {}).get('effort', planner.EFFORT)
+    returned_model = response.get('model')
+    returned_reasoning = response.get('reasoning')
+    returned_effort = (returned_reasoning.get('effort')
+                       if isinstance(returned_reasoning, dict) else None)
+    if returned_model != requested_model:
+        raise ValueError(
+            f'returned model differs from request: {returned_model!r} != {requested_model!r}')
+    if returned_effort is not None and returned_effort != requested_effort:
+        raise ValueError(
+            f'returned reasoning effort differs from request: '
+            f'{returned_effort!r} != {requested_effort!r}')
+    return dict(
+        requested_model=requested_model,
+        requested_effort=requested_effort,
+        returned_model=returned_model,
+        returned_reasoning=returned_reasoning,
+        reasoning_effort_confirmation=(
+            'MATCH' if returned_effort == requested_effort else 'NOT_REPORTED_BY_RBS'),
+    )
+
+
 def direct_once(folder, body, headers, timeout_s):
     """Exactly one HTTP dispatch. Persist attempt before dispatch; never retry."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -73,7 +98,7 @@ def direct_once(folder, body, headers, timeout_s):
         with planner.requests.Session() as session:
             session.trust_env = False
             session.mount('https://', planner.requests.adapters.HTTPAdapter(max_retries=0))
-            with session.post(planner.ENDPOINT, headers=headers, data=payload, stream=True,
+            with session.post(planner.endpoint(), headers=headers, data=payload, stream=True,
                               timeout=(30, timeout_s), allow_redirects=False) as response:
                 result['http_status'] = response.status_code
                 if response.status_code != 200:
@@ -92,9 +117,8 @@ def direct_once(folder, body, headers, timeout_s):
         response, text = planner.parse_events(events)
         save(folder/'raw_response.json', response)
         (folder/'raw_output.txt').write_text(text)
-        if response.get('model') != planner.MODEL or response.get('reasoning', {}).get('effort') != planner.EFFORT:
-            raise ValueError('returned model/effort differs from frozen protocol')
-        result.update(returned_model=response['model'], reasoning=response['reasoning'], usage=response.get('usage'))
+        protocol_report = validate_response_protocol(response, body)
+        result.update(protocol_report, reasoning=response.get('reasoning'), usage=response.get('usage'))
         value = json.loads(text)
         planner.jsonschema.validate(value, body['text']['format']['schema'])
         result['status'] = 'VALID_JSON'

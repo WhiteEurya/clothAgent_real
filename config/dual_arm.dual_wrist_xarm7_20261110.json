@@ -1,0 +1,741 @@
+{
+  "schema_version": 1,
+  "frame_id": "world_mm",
+  "calibration_status": "measured",
+  "calibration_id": "zed_dual_xarm7_20261103",
+  "arm_layout_description": "left=xArm7 192.168.1.237, right=xArm7 192.168.1.230; common frame is right arm base; fixed ZED Mini third-view.",
+  "arms": {
+    "left": {
+      "ip": "192.168.1.237",
+      "axis": 7,
+      "control_box_sn": "AC130409A6006A",
+      "home_joints_deg": [
+        2.837287,
+        -43.951421,
+        1.822865,
+        68.1688,
+        3.40738,
+        111.084542,
+        6.110824
+      ],
+      "tcp_offset_mm_deg": [
+        0,
+        0,
+        172,
+        0,
+        0,
+        0
+      ],
+      "urdf": "config/calibration/zed_dual_xarm7_20261103/robot_model/xarm7_left_factory.urdf",
+      "flange_link": "link_eef",
+      "world_from_base_mm": [
+        [
+          -0.9999339616997183,
+          0.0020166374381134196,
+          -0.01131394771722193,
+          1058.5738103641893
+        ],
+        [
+          -0.002017003992765015,
+          -0.9999979656251283,
+          2.0988052848662674e-05,
+          -10.553501239283502
+        ],
+        [
+          -0.011313882375117552,
+          4.380694455311006e-05,
+          0.9999359950249578,
+          7.438265122376664
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "grasp_rpy_world_deg": [
+        -179.948912,
+        3.013586,
+        6.937258
+      ],
+      "workspace": {
+        "min_mm": [
+          null,
+          null,
+          8
+        ],
+        "max_mm": [
+          null,
+          null,
+          null
+        ],
+        "status": "operator_selected_one_sided",
+        "boundary_policy": "explicit_one_sided",
+        "halfspaces_mm": [
+          [
+            0.9995953217772388,
+            -0.02264017914492073,
+            0.01722251344441663,
+            577.4714238215655
+          ]
+        ],
+        "boundary_source": "outputs/x_boundaries_20261104.json:left.exact_mirrored_boundary",
+        "source_target_bounds_mm": [
+          [
+            300,
+            340
+          ],
+          [
+            523,
+            564
+          ],
+          [
+            8,
+            29
+          ]
+        ],
+        "note": "Legacy full-grasp adapter enforces the exact mirrored X halfspace and existing Z floor. No opposite plane or Y limits were selected. Controller reachability remains required; this is not collision clearance."
+      },
+      "collision_capsules": [
+        {
+          "name": "link_base",
+          "frame": "link_base",
+          "start_mm": [
+            -93.10594909949579,
+            4.887665030816144,
+            21.495878455576886
+          ],
+          "end_mm": [
+            60.28465104422334,
+            -4.009144437182431,
+            26.558489066477875
+          ],
+          "radius_mm": 140.64337326500134
+        },
+        {
+          "name": "link1",
+          "frame": "link1",
+          "start_mm": [
+            1.0816875682234568,
+            14.069541167328781,
+            -116.73161645290115
+          ],
+          "end_mm": [
+            0.4967529756953842,
+            -9.573079274314418,
+            48.167493309863914
+          ],
+          "radius_mm": 93.47218219221938
+        },
+        {
+          "name": "link2",
+          "frame": "link2",
+          "start_mm": [
+            -4.298554050065392,
+            -208.53588235464235,
+            -10.729630992823424
+          ],
+          "end_mm": [
+            -0.04580554789983937,
+            34.41361060860662,
+            120.94295160703115
+          ],
+          "radius_mm": 87.81524517104025
+        },
+        {
+          "name": "link3",
+          "frame": "link3",
+          "start_mm": [
+            71.69195462769525,
+            30.066694011152705,
+            37.07906441727872
+          ],
+          "end_mm": [
+            -27.931605350076214,
+            -17.12862886804522,
+            -108.51459327109251
+          ],
+          "radius_mm": 99.80337398307582
+        },
+        {
+          "name": "link4",
+          "frame": "link4",
+          "start_mm": [
+            -14.34836421710505,
+            27.148953128108033,
+            109.69287743045514
+          ],
+          "end_mm": [
+            128.19632874629917,
+            -162.9528473752621,
+            -15.96769583277355
+          ],
+          "radius_mm": 80.2638664704281
+        },
+        {
+          "name": "link5",
+          "frame": "link5",
+          "start_mm": [
+            0.9007633836941804,
+            -8.668128442928051,
+            -186.98852830974607
+          ],
+          "end_mm": [
+            1.2279002167453847,
+            81.72345379546144,
+            29.49549241048615
+          ],
+          "radius_mm": 76.98148658574658
+        },
+        {
+          "name": "link6",
+          "frame": "link6",
+          "start_mm": [
+            -33.41367535035398,
+            -8.451830161729276,
+            46.16288155326647
+          ],
+          "end_mm": [
+            118.99167940050665,
+            17.20428609555643,
+            -14.720162711587786
+          ],
+          "radius_mm": 72.41722773726362
+        },
+        {
+          "name": "link7",
+          "frame": "link7",
+          "start_mm": [
+            -0.5154479090107988,
+            37.37811062817241,
+            -13.855041470913033
+          ],
+          "end_mm": [
+            0.74533966338,
+            -51.69377927468528,
+            -14.324543924520478
+          ],
+          "radius_mm": 41.674972466270454
+        },
+        {
+          "name": "tool",
+          "frame": "link_eef",
+          "start_mm": [
+            0,
+            0,
+            0
+          ],
+          "end_mm": [
+            0.0,
+            0.0,
+            127.0
+          ],
+          "radius_mm": 45.0
+        },
+        {
+          "name": "wrist_camera_support_envelope",
+          "frame": "link_eef",
+          "start_mm": [
+            0,
+            0,
+            0
+          ],
+          "end_mm": [
+            0,
+            0,
+            0
+          ],
+          "radius_mm": 165.0
+        }
+      ],
+      "gripper": {
+        "open": 850,
+        "close": 5,
+        "speed": 2000,
+        "open_tolerance": 15,
+        "timeout_s": 20
+      },
+      "identity_source": "outputs/startup_robot_state_001.json",
+      "calibration_session": "config/calibration/zed_dual_xarm7_20261103/left",
+      "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/left/extrinsics.yaml",
+      "robot_sn": "XS130509P67A14",
+      "identity_verification": {
+        "source": "outputs/startup_robot_state_001.json",
+        "status": "READ_ONLY_CHECKS_PASS",
+        "axis": 7,
+        "tcp_offset_mm_deg": [
+          0.0,
+          0.0,
+          172.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "world_offset_mm_deg": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "joint_drift_deg": 0.0,
+        "errors_warnings": [
+          0,
+          0
+        ],
+        "motion_commands_sent": 0,
+        "configuration_commands_sent": 0
+      },
+      "perception_position": {
+        "name": "perception",
+        "joints_deg": [
+          32.162814,
+          -35.644277,
+          -1.229797,
+          86.443861,
+          -2.692615,
+          109.821399,
+          -9.153058
+        ],
+        "pose_base_mm_deg": [
+          224.15625,
+          116.971611,
+          536.149292,
+          176.37801,
+          -11.756693,
+          39.427231
+        ],
+        "pose_common_mm_deg": [
+          828.6022875335623,
+          -127.96574559675535,
+          541.0222876230532,
+          176.79976102497437,
+          -11.257251115409398,
+          -140.54134499304894
+        ],
+        "control_box_sn": "AC130409A6006A",
+        "robot_sn": "XS130509P67A14",
+        "recorded_at": "2026-11-09T14:06:43.188121+00:00",
+        "source_record": "reports/perception_position_20261109/left_220643.json",
+        "note": "User-recorded left-arm observation position; return before every runtime RGB-D observation, using existing checked joint motion."
+      }
+    },
+    "right": {
+      "ip": "192.168.1.230",
+      "axis": 7,
+      "control_box_sn": "AC130411A50009",
+      "home_joints_deg": [
+        -3.422793,
+        -40.851719,
+        -2.57894,
+        71.689625,
+        -2.013603,
+        112.52364,
+        -4.741684
+      ],
+      "tcp_offset_mm_deg": [
+        0,
+        0,
+        172,
+        0,
+        0,
+        0
+      ],
+      "urdf": "config/calibration/zed_dual_xarm7_20261103/robot_model/xarm7_right_factory.urdf",
+      "flange_link": "link_eef",
+      "world_from_base_mm": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "grasp_rpy_world_deg": [
+        180,
+        0,
+        0
+      ],
+      "workspace": {
+        "min_mm": [
+          null,
+          null,
+          -20
+        ],
+        "max_mm": [
+          577.506409,
+          127.638359,
+          null
+        ],
+        "status": "operator_selected_one_sided",
+        "boundary_policy": "explicit_one_sided",
+        "boundary_sources": [
+          "outputs/x_boundaries_20261104.json:right",
+          "outputs/right_y_boundary_20261104.json"
+        ],
+        "source_target_bounds_mm": [
+          [
+            0,
+            600
+          ],
+          [
+            -700,
+            0
+          ],
+          [
+            -20,
+            100
+          ]
+        ],
+        "note": "X <= 577.506409 mm and Y <= 127.638359 mm; opposite sides have no artificial limits. Y uses the previously stated candidate interpretation, not a new measurement. Existing Z floor and controller reachability remain required."
+      },
+      "collision_capsules": [
+        {
+          "name": "link_base",
+          "frame": "link_base",
+          "start_mm": [
+            -93.10594909949579,
+            4.887665030816144,
+            21.495878455576886
+          ],
+          "end_mm": [
+            60.28465104422334,
+            -4.009144437182431,
+            26.558489066477875
+          ],
+          "radius_mm": 140.64337326500134
+        },
+        {
+          "name": "link1",
+          "frame": "link1",
+          "start_mm": [
+            1.0816875682234568,
+            14.069541167328781,
+            -116.73161645290115
+          ],
+          "end_mm": [
+            0.4967529756953842,
+            -9.573079274314418,
+            48.167493309863914
+          ],
+          "radius_mm": 93.47218219221938
+        },
+        {
+          "name": "link2",
+          "frame": "link2",
+          "start_mm": [
+            -4.298554050065392,
+            -208.53588235464235,
+            -10.729630992823424
+          ],
+          "end_mm": [
+            -0.04580554789983937,
+            34.41361060860662,
+            120.94295160703115
+          ],
+          "radius_mm": 87.81524517104025
+        },
+        {
+          "name": "link3",
+          "frame": "link3",
+          "start_mm": [
+            71.69195462769525,
+            30.066694011152705,
+            37.07906441727872
+          ],
+          "end_mm": [
+            -27.931605350076214,
+            -17.12862886804522,
+            -108.51459327109251
+          ],
+          "radius_mm": 99.80337398307582
+        },
+        {
+          "name": "link4",
+          "frame": "link4",
+          "start_mm": [
+            -14.34836421710505,
+            27.148953128108033,
+            109.69287743045514
+          ],
+          "end_mm": [
+            128.19632874629917,
+            -162.9528473752621,
+            -15.96769583277355
+          ],
+          "radius_mm": 80.2638664704281
+        },
+        {
+          "name": "link5",
+          "frame": "link5",
+          "start_mm": [
+            0.9007633836941804,
+            -8.668128442928051,
+            -186.98852830974607
+          ],
+          "end_mm": [
+            1.2279002167453847,
+            81.72345379546144,
+            29.49549241048615
+          ],
+          "radius_mm": 76.98148658574658
+        },
+        {
+          "name": "link6",
+          "frame": "link6",
+          "start_mm": [
+            -33.41367535035398,
+            -8.451830161729276,
+            46.16288155326647
+          ],
+          "end_mm": [
+            118.99167940050665,
+            17.20428609555643,
+            -14.720162711587786
+          ],
+          "radius_mm": 72.41722773726362
+        },
+        {
+          "name": "link7",
+          "frame": "link7",
+          "start_mm": [
+            -0.5154479090107988,
+            37.37811062817241,
+            -13.855041470913033
+          ],
+          "end_mm": [
+            0.74533966338,
+            -51.69377927468528,
+            -14.324543924520478
+          ],
+          "radius_mm": 41.674972466270454
+        },
+        {
+          "name": "tool",
+          "frame": "link_eef",
+          "start_mm": [
+            0,
+            0,
+            0
+          ],
+          "end_mm": [
+            0.0,
+            0.0,
+            127.0
+          ],
+          "radius_mm": 45.0
+        },
+        {
+          "name": "wrist_camera_support_envelope",
+          "frame": "link_eef",
+          "start_mm": [
+            0,
+            0,
+            0
+          ],
+          "end_mm": [
+            0,
+            0,
+            0
+          ],
+          "radius_mm": 165.0
+        }
+      ],
+      "gripper": {
+        "open": 850,
+        "close": 5,
+        "speed": 2000,
+        "open_tolerance": 15,
+        "timeout_s": 60
+      },
+      "identity_source": "outputs/startup_robot_state_001.json",
+      "calibration_session": "config/calibration/zed_dual_xarm7_20261103/right",
+      "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml",
+      "robot_sn": "XS130502F56A1C",
+      "identity_verification": {
+        "source": "outputs/startup_robot_state_001.json",
+        "status": "READ_ONLY_CHECKS_PASS",
+        "axis": 7,
+        "tcp_offset_mm_deg": [
+          0.0,
+          0.0,
+          172.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "world_offset_mm_deg": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "joint_drift_deg": 0.0,
+        "errors_warnings": [
+          0,
+          0
+        ],
+        "motion_commands_sent": 0,
+        "configuration_commands_sent": 0
+      }
+    }
+  },
+  "limits": {
+    "cartesian_speed_mm_s": 30,
+    "cartesian_accel_mm_s2": 60,
+    "joint_speed_deg_s": 20,
+    "continuous_joint_stream": true,
+    "joint_accel_deg_s2": 40,
+    "clearance_mm": 0.0,
+    "max_grasp_age_s": 180,
+    "stationary_tolerance_deg": 0.2,
+    "max_surface_spread_mm": 8
+  },
+  "obstacles": [
+    {
+      "name": "table_z0_user_confirmed",
+      "min_mm": [
+        -10000,
+        -10000,
+        -10000
+      ],
+      "max_mm": [
+        10000,
+        10000,
+        0
+      ],
+      "excluded_capsules": [
+        "left/link_base",
+        "right/link_base"
+      ],
+      "source": "User confirmed both bases mounted directly on hard tabletop. Slab models nominal hard tabletop only; sponge extent/height pending."
+    }
+  ],
+  "camera": {
+    "backend": "zed",
+    "label": "A",
+    "serial": "11483267",
+    "mount_arm": null,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "depth_mode": "ULTRA",
+    "confidence_threshold": 50,
+    "world_from_camera_mm": [
+      [
+        -0.9998157286789779,
+        0.017066894478089966,
+        0.008788048645642787,
+        471.9005510889704
+      ],
+      [
+        0.004373203941896446,
+        0.6482555342541086,
+        -0.7614102950421695,
+        314.8845523038928
+      ],
+      [
+        -0.01869181032984861,
+        -0.7612315570322831,
+        -0.648210716360659,
+        585.437676889579
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "extrinsics_file": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml",
+    "calibration_session": "config/calibration/zed_dual_xarm7_20261103/right",
+    "status": "calibrated_observation_only_until_workspace_collision_commissioning"
+  },
+  "base_transform_provenance": {
+    "source": "config/calibration/zed_dual_xarm7_20261103/*/extrinsics.yaml",
+    "common_frame": "right_arm_base",
+    "status": "imported_from_paired_thirdview_calibration",
+    "source_units": "m",
+    "runtime_units": "mm",
+    "left_common_from_base": "config/calibration/zed_dual_xarm7_20261103/left/extrinsics.yaml",
+    "right_common_from_base": "config/calibration/zed_dual_xarm7_20261103/right/extrinsics.yaml",
+    "manifest": "config/calibration/zed_dual_xarm7_20261103/manifest.json",
+    "physical_alignment_validated": false,
+    "note": "Paired calibration transforms are present; independent full-workspace accuracy validation remains pending."
+  },
+  "geometry_provenance": {
+    "status": "generated_conservative_review_geometry",
+    "urdf_source": "config/calibration/zed_dual_xarm7_20261103/robot_model/xarm7_wo_ee.urdf",
+    "envelope_generator": "cloth_agent.dual_arm envelopes --tool-radius-mm 45 --tcp-offset-mm-deg 0 0 172 0 0 0",
+    "installed_tool_geometry": "pending_physical_measurement",
+    "fixed_zed_support_geometry": "pending_physical_measurement",
+    "wrist_camera_capsules": "Temporary 165 mm flange-centered envelope for both wrist cameras and supports; reuses conservative envelope from right-wrist calibration.",
+    "collision_geometry_verified": false,
+    "note": "URDF capsules are for planning review and do not prove installed gripper, ZED support, cable or table clearance."
+  },
+  "environment_confirmation": {
+    "source": "user confirmation plus current site import",
+    "base_mounting": "Both xArm7 bases mounted directly on the same hard tabletop",
+    "other_obstacles": "No other obstacles reported in Home movement space; must be checked before execution",
+    "support_layer": {
+      "type": "sponge under garment",
+      "thickness_mm": null,
+      "footprint_world_mm": null,
+      "status": "pending_current_scene_measurement"
+    },
+    "table_model": {
+      "type": "hard tabletop",
+      "world_z_mm": 0,
+      "status": "modeled_for_planning_pending_physical_clearance"
+    },
+    "fixed_camera_support": "ZED Mini mount geometry pending physical measurement",
+    "frame_note": "Common frame is right_arm_base; imported paired thirdview transforms retained."
+  },
+  "camera_calibration_provenance": {
+    "source_directory": "/home/CNS2026330003/agentAuto/RobotCamCalib",
+    "archive": "config/calibration/zed_dual_xarm7_20261103",
+    "camera": "ZED Mini 11483267 fixed thirdview left rectified stream",
+    "left_session": "config/calibration/zed_dual_xarm7_20261103/left",
+    "right_session": "config/calibration/zed_dual_xarm7_20261103/right",
+    "manifest": "config/calibration/zed_dual_xarm7_20261103/manifest.json",
+    "status": "imported_pending_live_validation",
+    "physical_alignment_validated": false
+  },
+  "deployment_note": "Current ZED / dual xArm7 geometry and motion limits for ExperimentRunner / RobotAPI. Controller Cartesian joint-path coverage is unavailable; geometry provenance below is retained without promoting verification flags.",
+  "evidence_index": {
+    "read_only_identity": "outputs/startup_robot_state_001.json",
+    "paired_calibration": "config/calibration/zed_dual_xarm7_20261103/manifest.json",
+    "alignment_visual_check": "config/calibration/zed_dual_xarm7_20261103/evidence/alignment_validation_20261103/report.json",
+    "home_execution": "config/calibration/zed_dual_xarm7_20261103/evidence/left_home_20261103/execution.json",
+    "explicit_joint_path_precheck": "deployment-artifacts/topdown_physical_trial_001/explicit_joint_path/report.json",
+    "branch_path_precheck": "deployment-artifacts/topdown_physical_trial_001/branch_path_continuation/report.json",
+    "scope_note": "The prechecks contain no physical collision, watchdog, or dynamic tracking certification."
+  },
+  "geometry_margin_mm": {
+    "left": 5.0,
+    "right": 5.0
+  },
+  "execution_chain": "ExperimentRunner / RobotAPI / XArmBackend"
+}

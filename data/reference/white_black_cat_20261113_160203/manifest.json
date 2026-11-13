@@ -1,0 +1,7 @@
+{
+  "source": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/reference_capture_20261113_new/160203/goal.png",
+  "sha256": "650ec04ae973c46bfbb3f261df9e0e4386ea02361998a2b7d83ce375fdc397d7",
+  "garment": "white T-shirt with black cat print",
+  "topdown_config": "config/topdown.dual_wrist_rgb_stitched.json",
+  "motion_commands": 0
+}

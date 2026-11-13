@@ -236,6 +236,10 @@ class RobotConfig:
     speed_mm_s: float = 15.0
     acceleration_mm_s2: float = 30.0
     home_speed_deg_s: float = 5.0
+    joint_queue_prefill_s: float = 0.0
+    continuous_joint_stream: bool = False
+    stream_tcp_speed_limit_mm_s: float | None = None
+    stream_tcp_acceleration_limit_mm_s2: float | None = None
     home_acceleration_deg_s2: float = 10.0
     gripper_speed: float = 500.0
     gripper_open: float = 850.0
@@ -490,6 +494,8 @@ class RobotConfig:
         )
 
     def validate_for_real(self) -> None:
+        if not math.isfinite(self.joint_queue_prefill_s) or not 0 <= self.joint_queue_prefill_s <= .5:
+            raise ConfigError('joint queue prefill must be finite and in [0, 0.5] seconds')
         if not self.boundaries.complete:
             raise ConfigError("real execution requires x_min, y_min, y_max, z_min or lateral points with z_min")
         self.boundaries.validate_order()
@@ -506,15 +512,15 @@ class RobotConfig:
             raise ConfigError(
                 f"real motion acceleration must be in (0, {self.MAX_SAFE_ACCELERATION_MM_S2:g}] mm/s^2"
             )
-        if not 0 < self.home_speed_deg_s <= self.MAX_SAFE_HOME_SPEED_DEG_S:
-            raise ConfigError(
-                f"home speed must be in (0, {self.MAX_SAFE_HOME_SPEED_DEG_S:g}] deg/s"
-            )
-        if not 0 < self.home_acceleration_deg_s2 <= self.MAX_SAFE_HOME_ACCELERATION_DEG_S2:
-            raise ConfigError(
-                "home acceleration must be in "
-                f"(0, {self.MAX_SAFE_HOME_ACCELERATION_DEG_S2:g}] deg/s^2"
-            )
+        # Checked dual-arm joint queues use the existing DualConfig envelope.
+        # Legacy Cartesian/Home execution retains its original lower caps.
+        joint_queue = self.collision_scene_path is not None and self.collision_active_arm in {'left', 'right'}
+        home_speed_limit = 20.0 if joint_queue else self.MAX_SAFE_HOME_SPEED_DEG_S
+        home_accel_limit = 60.0 if joint_queue else self.MAX_SAFE_HOME_ACCELERATION_DEG_S2
+        if not 0 < self.home_speed_deg_s <= home_speed_limit:
+            raise ConfigError(f"home speed must be in (0, {home_speed_limit:g}] deg/s")
+        if not 0 < self.home_acceleration_deg_s2 <= home_accel_limit:
+            raise ConfigError(f"home acceleration must be in (0, {home_accel_limit:g}] deg/s^2")
         if self.gripper_speed <= 0:
             raise ConfigError("real gripper speed must be positive")
         if not math.isfinite(self.gripper_open_tolerance_pulse) or not 0 <= self.gripper_open_tolerance_pulse <= 25:

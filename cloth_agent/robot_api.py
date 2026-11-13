@@ -19,6 +19,32 @@ class RobotExecutionError(RuntimeError):
     """Raised when the xArm SDK reports a command failure."""
 
 
+def _connect_xarm(factory, ip, *, before_connect=None):
+    """Retry only initial transport setup, before any enable or motion command."""
+    import logging
+    for attempt in range(1, 4):
+        arm = factory(ip, do_not_open=True)
+        try:
+            if before_connect is not None:
+                before_connect(arm)
+            arm.connect()
+            if not arm.connected:
+                raise ConnectionError('connect socket failed')
+            return arm
+        except Exception as exc:
+            try:
+                arm.disconnect()
+            except Exception as cleanup_error:
+                raise RobotExecutionError(
+                    f'xArm {ip}: connection failed; cleanup failed: {cleanup_error}') from exc
+            transient = isinstance(exc, (ConnectionError, TimeoutError)) or str(exc) == 'connect socket failed'
+            if not transient or attempt == 3:
+                raise RobotExecutionError(
+                    f'xArm {ip}: connection failed after {attempt} attempt(s): {exc}') from exc
+            logging.warning('机械臂 %s 连接失败，等待后重试（%s/3）；尚未下发动作', ip, attempt + 1)
+            time.sleep(0.5 * attempt)
+
+
 @dataclass(frozen=True)
 class ControllerTrajectoryValidation:
     """Read-only controller IK result used for validation and URDF animation."""
@@ -532,6 +558,7 @@ class SimulatedBackend:
 
 
 class XArmBackend:
+    continuous_move_groups = True
     """Thin adapter around the project's actual xArm SDK interface.
 
     The SDK is imported lazily so validation and dry-run operation work on a
@@ -547,13 +574,16 @@ class XArmBackend:
         self._guard_thread = None
         self._guard_error = None
         self._motion_enabled = False
+        import threading
+        self._mode_stop_lock = threading.Lock()
+        self._stop_requested = threading.Event()
         try:
             from xarm.wrapper import XArmAPI
         except ImportError as exc:  # pragma: no cover - depends on robot host
             raise RobotExecutionError(
                 "xarm package is not installed; install the vendor SDK on the robot host"
             ) from exc
-        self.arm = XArmAPI(config.robot_ip)
+        self.arm = _connect_xarm(XArmAPI, config.robot_ip)
         try:
             if not getattr(self.arm, "connected", True):
                 raise RobotExecutionError(f"unable to connect to xArm at {config.robot_ip}")
@@ -569,7 +599,7 @@ class XArmBackend:
                 if config.robot_ip != scene.config.arms[scene.active_arm].ip or config.collision_active_arm != scene.active_arm:
                     raise RobotExecutionError('RobotAPI arm differs from collision scene')
                 self._inactive = 'right' if scene.active_arm == 'left' else 'left'
-                self._other_arm = XArmAPI(scene.config.arms[self._inactive].ip)
+                self._other_arm = _connect_xarm(XArmAPI, scene.config.arms[self._inactive].ip)
                 _validated_live_tcp_offset(self._other_arm, replace(config,
                     expected_tcp_offset_mm_deg=tuple(scene.config.arms[self._inactive].tcp_offset)))
                 self._controllers = {scene.active_arm: self.arm, self._inactive: self._other_arm}
@@ -620,8 +650,9 @@ class XArmBackend:
                 raise RobotExecutionError(f'{key}: controller disconnected')
             fault = value(controller.get_err_warn_code(), 'controller fault')
             state = value(controller.get_state(), 'controller state')
-            if fault[0] != 0 or state in (3, 4, 5) or controller.mode != 0:
-                raise RobotExecutionError(f'{key}: controller not ready: state={state}, faults={fault}')
+            expected_mode = getattr(self, '_stream_expected_mode', 0) if key == self.collision.active_arm else 0
+            if fault[0] != 0 or state in (3, 4, 5) or controller.mode != expected_mode:
+                raise RobotExecutionError(f'{key}: controller not ready: state={state}, mode={controller.mode}, expected_mode={expected_mode}, faults={fault}')
             if (require_idle or key == self._inactive) and state != 2:
                 raise RobotExecutionError(f'{key}: must be stationary')
             if identities:
@@ -650,15 +681,23 @@ class XArmBackend:
             # Use the union of checked boxes, never their larger bounding box.
             if not any(all(np.all(q >= low[key]) and np.all(q <= high[key])
                            for key, q in live.items()) for low, high in ranges):
-                raise RobotExecutionError('joints left the checked range / stationary obstacle moved')
+                raise RobotExecutionError(
+                    'joints left the checked range / stationary obstacle moved; '
+                    f'joints_deg={ {k:q.tolist() for k,q in live.items()} }; '
+                    f'checked_boxes={len(ranges)}, tolerance_deg={self._guard_tolerance}')
         return live
 
     def _watch_joints(self):
         while not self._guard_done.wait(.02):
             try:
+                deadline = getattr(self, '_stream_deadline', None)
+                if deadline is not None and time.monotonic() > deadline:
+                    raise RobotExecutionError(f'continuous stream dispatch timeout: overdue={time.monotonic()-deadline:.6f}s')
                 self._guard_check()
             except BaseException as exc:
                 self._guard_error = f'joint monitor: {type(exc).__name__}: {exc}'
+                import logging
+                logging.error('%s', self._guard_error)
                 try:
                     self.stop()
                 except BaseException as stop_error:
@@ -667,36 +706,79 @@ class XArmBackend:
 
     def _joint_action(self, config, name, args):
         import numpy as np
+        return self.joint_sequence(config, [{'name':name,'args':args}])
+
+    def joint_sequence(self, config, actions):
+        import numpy as np
+        sequence_started = time.monotonic()
         live = self._guard_check()
-        plan = self.collision.plan_action(config, name, args, initial=live)
+        paths=[];current=live
+        for action in actions:
+            if action['name'] not in ('move','home','perception_position'):
+                raise RobotExecutionError('continuous queue only accepts move/home/perception_position')
+            part=self.collision.plan_action(config,action['name'],action.get('args',{}),initial=current)
+            paths.append(part)
+            current=part['path'][-1]
+        if not paths:raise RobotExecutionError('empty motion sequence')
+        plan=dict(paths[-1])
+        plan['path']=paths[0]['path'][:]
+        for part in paths[1:]:plan['path'].extend(part['path'][1:])
+        plan['source_actions']=actions
+        plan['planned_before_dispatch']=True
+        # Verify the original start is still valid after all IK/check work.
+        actual_start=self._guard_check()
+        if any(np.max(np.abs(actual_start[k]-live[k]))>self._guard_tolerance for k in live):
+            raise RobotExecutionError('robot moved during sequence planning')
         key = self.collision.active_arm
+        if config.continuous_joint_stream:
+            if any(np.max(np.abs(np.asarray(p[key])-plan['path'][0][key])) > 1e-9
+                   for p in plan['path'][1:]):
+                return self._stream_joint_plan(config, plan, sequence_started)
+            # Already at the target: do not switch mode or compile a zero path.
+            plan['path'] = plan['path'][:1]
         # Match the original Arm7 joint-position executor: these fields map
         # to the scene's joint_speed_deg_s / joint_accel_deg_s2. Cartesian
         # limits belong to set_position, not these explicit joint commands.
         speed, accel = config.home_speed_deg_s, config.home_acceleration_deg_s2
         segments = list(zip(plan['path'], plan['path'][1:]))
+        planning_finished = time.monotonic()
+        queue_elapsed = 0.
+        dispatch_timing = []
         if segments:
+            if len(segments) > 1:
+                version = tuple(self.arm.version_number)
+                if version < (1, 5, 20):
+                    raise RobotExecutionError('continuous joint queue requires firmware >= 1.5.20')
             ranges = [({k: np.minimum(start[k], target[k]) - self._guard_tolerance for k in start},
                        {k: np.maximum(start[k], target[k]) + self._guard_tolerance for k in start})
                       for start, target in segments]
-            # Same exact, non-blended queue semantics as XArmConnection's
-            # move_joint_queue: buffer all legs and wait only at the final one.
-            # The background watcher continues checking both arms throughout.
+            # UFACTORY Motion Characteristics section 9.1.1: radius=0
+            # preserves the sharp joint path without an arc, but avoids the
+            # forced zero-speed waypoint of radius<0. Positive-radius arcs
+            # would need different swept-volume validation and are not used.
+            # Stop exactly at the action endpoint; monitor both arms throughout.
             timeout = sum(max(30., 3 * (float(np.max(np.abs(np.array(target[key]) - start[key])))
                                        / speed + speed / accel)) for start, target in segments)
             with self._guard_lock:
                 self._guard_ranges = ranges
             began = time.monotonic()
+            if config.joint_queue_prefill_s:
+                self._check('set_pause_time(queue prefill)',
+                            self.arm.set_pause_time(config.joint_queue_prefill_s, wait=False))
             for index, (_, target) in enumerate(segments):
                 if self._guard_error is not None:
                     raise RobotExecutionError(self._guard_error)
                 remaining = timeout - (time.monotonic() - began)
                 if remaining <= 0:
                     raise RobotExecutionError('checked joint queue timeout')
+                sent_at = time.monotonic()
                 self._check('set_servo_angle(checked joint queue)', self.arm.set_servo_angle(
-                    angle=target[key], speed=speed, mvacc=accel, radius=-1,
+                    angle=target[key], speed=speed, mvacc=accel,
+                    radius=-1 if index == len(segments)-1 else 0,
                     relative=False, is_radian=False, wait=index == len(segments)-1,
                     timeout=remaining))
+                dispatch_timing.append(dict(index=index, sent_s=sent_at-began,
+                    call_duration_s=time.monotonic()-sent_at, wait=index==len(segments)-1))
             actual = self._guard_check()
             completed_state = self.arm.get_state()
             if (np.max(np.abs(actual[key] - target[key])) > self._guard_tolerance
@@ -706,11 +788,134 @@ class XArmBackend:
                 self._guard_ranges = None
                 self._guard_lower = {k: np.array(q) - self._guard_tolerance for k, q in target.items()}
                 self._guard_upper = {k: np.array(q) + self._guard_tolerance for k, q in target.items()}
+            queue_elapsed = time.monotonic() - began
         pose, state = self._state()
         state['checked_joint_path'] = plan
+        state['joint_queue_mode'] = 'continuous_zero_radius_with_exact_final_stop'
         state['joint_speed_deg_s'] = speed
         state['joint_acceleration_deg_s2'] = accel
+        state['joint_queue_prefill_s'] = config.joint_queue_prefill_s
+        state['joint_dispatch_timing'] = dispatch_timing
+        state['motion_timing_s'] = dict(
+            planning_and_start_check=planning_finished-sequence_started,
+            queue_and_completion=queue_elapsed,
+            total=time.monotonic()-sequence_started)
         return pose, state
+
+    def _stream_joint_plan(self, config, plan, sequence_started):
+        import numpy as np
+        from .checked_joint_trajectory import compile_trajectory
+        key=self.collision.active_arm
+        tcp_timing={}
+        if config.stream_tcp_speed_limit_mm_s is not None:
+            tcp_timing=dict(tcp_reaches=self.collision.models[key].tcp_reaches,
+                            tcp_speed=config.stream_tcp_speed_limit_mm_s,
+                            tcp_acceleration=config.stream_tcp_acceleration_limit_mm_s2)
+        curve=compile_trajectory([p[key] for p in plan['path']],
+                                 config.home_speed_deg_s,config.home_acceleration_deg_s2,**tcp_timing)
+        ranges=[({k:np.minimum(a[k],b[k])-self._guard_tolerance for k in a},
+                 {k:np.maximum(a[k],b[k])+self._guard_tolerance for k in a})
+                for a,b in zip(plan['path'],plan['path'][1:])]
+        # Each polynomial stays in the already checked endpoint joint box.
+        # The inactive arm remains under the same live watchdog throughout.
+        began=time.monotonic();max_late=0.;sent=0
+        try:
+            with self._guard_lock:
+                self._guard_ranges=ranges
+                self._change_stream_mode(1)
+            began=time.monotonic()
+            previous_time=0.;previous_sent=began
+            for target_time,q in zip(curve['times_s'],curve['positions_deg']):
+                # Never catch up by bursting overdue targets: stretch the clock.
+                due=previous_sent+(target_time-previous_time)
+                delay=due-time.monotonic()
+                if delay>0:time.sleep(delay)
+                dispatched=time.monotonic()
+                late=dispatched-due;max_late=max(max_late,late)
+                if late>.03:raise RobotExecutionError('continuous stream missed dispatch deadline')
+                if self._guard_error:raise RobotExecutionError(self._guard_error)
+                if self._stop_requested.is_set():raise RobotExecutionError('continuous stream stopped')
+                self._stream_deadline=dispatched+.1
+                self._check('set_servo_angle_j',self.arm.set_servo_angle_j(q,is_radian=False))
+                previous_sent=dispatched;previous_time=target_time
+                sent+=1
+            goal=np.asarray(plan['path'][-1][key]);settled=0
+            # Hold the terminal zero-velocity point until measured convergence.
+            for _ in range(100):
+                if self._guard_error:raise RobotExecutionError(self._guard_error)
+                if self._stop_requested.is_set():raise RobotExecutionError('continuous stream stopped')
+                self._stream_deadline=time.monotonic()+.1
+                self._check('set_servo_angle_j(hold)',self.arm.set_servo_angle_j(goal.tolist(),is_radian=False))
+                actual=self._guard_check()
+                settled=settled+1 if np.max(np.abs(actual[key]-goal))<=self._guard_tolerance else 0
+                if settled>=3:break
+                time.sleep(.01)
+            else:raise RobotExecutionError('continuous stream endpoint not reached')
+            with self._guard_lock:
+                self._stream_deadline=None
+                self._change_stream_mode(0)
+                self._guard_ranges=None
+                self._guard_lower={k:np.array(q)-self._guard_tolerance for k,q in plan['path'][-1].items()}
+                self._guard_upper={k:np.array(q)+self._guard_tolerance for k,q in plan['path'][-1].items()}
+            self._guard_check()
+        except BaseException as exc:
+            import logging
+            logging.error(
+                "continuous stream failure: arm=%s, sent=%s/%s, elapsed=%.3fs, monitor=%s, error=%s",
+                key, sent, len(curve['times_s']), time.monotonic()-began, self._guard_error, exc)
+            self._stream_deadline=None
+            self.stop()
+            raise
+        pose,state=self._state()
+        state.update(checked_joint_path=plan,joint_queue_mode='time_parameterized_servoj',
+                     continuous_trajectory=curve,stream_commands=sent,max_dispatch_lateness_s=max_late,
+                     motion_timing_s=dict(planning_and_start_check=began-sequence_started,
+                                          queue_and_completion=time.monotonic()-began,total=time.monotonic()-sequence_started))
+        return pose,state
+
+    def _change_stream_mode(self, mode):
+        from .site_robot_check import value
+
+        def transition_feedback():
+            if self._stop_requested.is_set() or self._guard_error:
+                raise RobotExecutionError('mode transition cancelled by stop/monitor')
+            for key, controller in self._controllers.items():
+                if not controller.connected:
+                    raise RobotExecutionError(f'{key}: disconnected during mode transition')
+                faults = value(controller.get_err_warn_code(), 'mode transition fault')
+                state = value(controller.get_state(), 'mode transition state')
+                allowed = (0, 1, 2, 5) if controller is self.arm else (2,)
+                if faults[0] or state not in allowed:
+                    raise RobotExecutionError(
+                        f'{key}: mode transition blocked: state={state}, faults={faults}')
+            return value(self.arm.get_state(), 'mode transition state')
+
+        # Serialize readiness activation with stop. A pending stop is latched
+        # before it waits for this lock, so it can never be undone afterwards.
+        with self._mode_stop_lock:
+            if self._stop_requested.is_set() or self._guard_error:
+                raise RobotExecutionError('mode transition cancelled by stop/monitor')
+            self._joint_feedback()  # Reject pre-existing state 5, pauses or faults.
+            self._check('set_mode(continuous)', self.arm.set_mode(mode))
+            deadline = time.monotonic() + .3
+            while self.arm.mode != mode:
+                transition_feedback()
+                if time.monotonic() > deadline:
+                    raise RobotExecutionError('controller mode transition not confirmed')
+                time.sleep(.005)
+            # Firmware enters MODE_CHANGED (5) after our own set_mode call.
+            # Complete the documented mode switch; never clear faults or retry.
+            state = transition_feedback()
+            if state not in (0, 1, 2, 5) or self._stop_requested.is_set():
+                raise RobotExecutionError('controller stopped during mode transition')
+            self._check('set_state(mode ready)', self.arm.set_state(0))
+            deadline = time.monotonic() + .3
+            while transition_feedback() not in (1, 2):
+                if time.monotonic() > deadline:
+                    raise RobotExecutionError('controller readiness not confirmed after mode change')
+                time.sleep(.005)
+            self._stream_expected_mode = mode
+            self._joint_feedback()
 
     @staticmethod
     def _code(value: Any) -> int:
@@ -987,14 +1192,16 @@ class XArmBackend:
         return actual
 
     def stop(self) -> None:
-        """Stop outstanding motion on failure; do not clear faults or move Home."""
+        """Latch cancellation before stopping; never re-enable this backend."""
+        self._stop_requested.set()
         errors = []
-        for controller in (self.arm, self._other_arm):
-            if controller is not None:
-                try:
-                    self._check('set_state(stop)', controller.set_state(4))
-                except BaseException as exc:
-                    errors.append(str(exc))
+        with self._mode_stop_lock:
+            for controller in (self.arm, self._other_arm):
+                if controller is not None:
+                    try:
+                        self._check('set_state(stop)', controller.set_state(4))
+                    except BaseException as exc:
+                        errors.append(str(exc))
         if errors:
             raise RobotExecutionError('; '.join(errors))
 
@@ -1102,6 +1309,21 @@ class RobotAPI:
         stop = getattr(self.backend, 'stop', None)
         if stop is not None:
             stop()
+
+    def motion_sequence(self, actions):
+        """Host-only grouping; generated scripts still expose only original APIs."""
+        record=self._begin('motion_sequence',{'actions':actions})
+        try:
+            for action in actions:
+                if action['name']=='move':
+                    a=action['args']
+                    self.config.validate_workspace_pose(a['x'],a['y'],a['z'],relative_yaw_deg=a['yaw'])
+                elif action['name']!='home':
+                    raise RobotExecutionError('invalid motion sequence action')
+            self._finish(record,actual=self.backend.joint_sequence(self.config,actions))
+        except BaseException as exc:
+            self._fail(record,exc)
+            raise
 
     @timed_stage('robot_api.RobotAPI.move')
     def move(self, x: float, y: float, z: float, yaw: float) -> None:

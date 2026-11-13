@@ -83,6 +83,26 @@ class Observation:
             raise DualArmError("grasp depth patch crosses a discontinuity")
         return np.median(valid, axis=0)
 
+    def sample_nearby_measured(self, pixel, region_center, region_radius, audit):
+        """Reset-only nearest actual point, within five pixels and the cloth region."""
+        x,y=map(int,finite(pixel,(2,),'pixel'));h,w=self.xyz.shape[:2]
+        if not (0<=x<w and 0<=y<h):
+            raise DepthUnavailableError('reset pixel outside image')
+        x0,x1=max(0,x-5),min(w,x+6);y0,y1=max(0,y-5),min(h,y+6)
+        yy,xx=np.mgrid[y0:y1,x0:x1]
+        distance=(xx-x)**2+(yy-y)**2
+        inside=(xx-region_center[0])**2+(yy-region_center[1])**2<=region_radius**2
+        valid=np.isfinite(self.xyz[y0:y1,x0:x1]).all(axis=2)&inside&(distance<=25)
+        if not valid.any():
+            raise DepthUnavailableError('reset has no measured point within 5 pixels')
+        index=np.argmin(np.where(valid,distance,np.inf))
+        ry,rx=np.unravel_index(index,valid.shape);resolved=[int(xx[ry,rx]),int(yy[ry,rx])]
+        point=self.xyz[resolved[1],resolved[0]].copy()
+        audit.append(dict(requested_pixel_xy=[x,y],pixel_xy=resolved,
+            method='RESET_NEAREST_MEASURED_POINT',shift_px=float(np.sqrt(distance[ry,rx])),
+            world_xyz_mm=point.tolist(),raw_cloud_modified=False))
+        return point,resolved
+
 
 def save_observation(
     directory, rgb, xyz, config, joints, *, synthetic=False, extra=None

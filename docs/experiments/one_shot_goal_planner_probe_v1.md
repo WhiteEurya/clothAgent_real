@@ -17,7 +17,7 @@
 ## 调用边界
 
 - Host 提前准备 current RGB、goal RGB、简化 prompt、strict schema 和完整 HTTP body。
-- 直接使用现有 Codex 账号的 Responses HTTPS 传输；没有 CLI/Agent 循环。
+- 直接使用 `rbs` profile 配置的 Responses HTTPS 传输；没有 CLI/Agent 循环。
 - `gpt-6-astra`，`reasoning.effort=high`，`tools=[]`，`tool_choice=none`。
 - 每 query 最多一次 HTTP 请求；持久化 `attempt.json` 防止重复。
 - `max_retries=0`，不跟随 redirect，不 repair，不接续模型调用。

@@ -38,11 +38,16 @@ def test_rotation_equivariance_of_normal():
     assert abs(np.dot(b,(np.array([200,200])-point)/np.linalg.norm(np.array([200,200])-point)))>.99
 
 
-def test_concave_multiple_crossings_abstain():
+@pytest.mark.parametrize('chord', [None, [[40,60],[40,140]]])
+def test_concave_multiple_crossings_choose_farthest(chord):
     mask=np.zeros((220,300),np.uint8)
     mask[30:190,40:80]=1;mask[30:190,180:220]=1;mask[170:190,40:220]=1
-    with pytest.raises(NormalGraspError,match='intersections'):
-        geometry(mask,[40,100],pull_px=50)
+    g=geometry(mask,[40,100],pull_px=50,chord_endpoints=chord)
+    assert g['intersection_rule']=='farthest_forward'
+    assert len(g['forward_intersections_px'])==3
+    assert g['intersection_px']==[219.,100.]
+    assert g['grasp_px']==[211,100]
+    assert g['target_px']==[261,100]
 
 
 def test_hole_at_grasp_is_not_filled_to_invent_material():
@@ -123,3 +128,26 @@ def test_returned_execution_failure_stops_without_return_move(tmp_path,monkeypat
     result=execute_once(runtime,before,proposal,tmp_path/'execute')
     assert result['status']=='EXECUTION_FAILED'
     runtime.stop.assert_called_once();runtime.move_to_perception.assert_not_called()
+
+
+def test_normal_grasp_allows_noncloth_neighbors_but_not_noncloth_center():
+    mask=rectangle()
+    # An internal missing segmentation pixel near, but not at, the grasp.
+    mask[111,211]=0
+    g=geometry(mask,[60,110],pull_px=35)
+    assert g['grasp_px']==[211,110]
+    mask[110,211]=0
+    with pytest.raises(NormalGraspError,match='grasp center'):
+        geometry(mask,[60,110],pull_px=35)
+
+
+def test_short_span_and_short_chord_endpoints_are_not_rejection_gates():
+    mask=np.zeros((160,200),np.uint8);mask[20:140,60:80]=1
+    g=geometry(mask,[60,80],pull_px=25,chord_endpoints=[[60,77],[60,83]])
+    assert g['chord_px']==19
+    assert g['grasp_px']==[71,80]
+
+
+def test_target_just_outside_cloth_does_not_require_five_pixel_clearance():
+    g=geometry(rectangle(),[60,110],pull_px=9)
+    assert g['target_px']==[220,110]

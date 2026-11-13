@@ -1,0 +1,128 @@
+{
+  "camera_serial": "11483267",
+  "image_size_wh": [
+    1280,
+    720
+  ],
+  "table_polygon_px": [
+    [
+      181,
+      235
+    ],
+    [
+      1034,
+      230
+    ],
+    [
+      1190,
+      500
+    ],
+    [
+      1080,
+      525
+    ],
+    [
+      1050,
+      719
+    ],
+    [
+      0,
+      719
+    ],
+    [
+      0,
+      530
+    ]
+  ],
+  "note": "Single-camera mode uses the ZED polygon. Dual-camera mode crops each measured cloud in its own camera using table_rois_by_serial, then fuses the union in world XY. Regions reviewed on camera_restart_check_20261109_202911 RGB. Recheck if either camera moves. Source depth is not filled; execution checks unchanged.",
+  "display_min_world_z_mm": -20,
+  "appearance_render": "surface_rgb",
+  "appearance_seam": "local_gain",
+  "segmentation_profile": "grounded_sam2",
+  "appearance_garment_profile": "auto",
+  "table_rois_by_serial": {
+    "11483267": {
+      "frame": "native",
+      "image_size_wh": [
+        1280,
+        720
+      ],
+      "polygon_px": [
+        [
+          181,
+          235
+        ],
+        [
+          1034,
+          230
+        ],
+        [
+          1190,
+          500
+        ],
+        [
+          1080,
+          525
+        ],
+        [
+          1050,
+          719
+        ],
+        [
+          0,
+          719
+        ],
+        [
+          0,
+          530
+        ]
+      ]
+    },
+    "254522070945": {
+      "frame": "realsense_color",
+      "image_size_wh": [
+        1280,
+        720
+      ],
+      "polygon_px": [
+        [
+          190,
+          105
+        ],
+        [
+          1020,
+          60
+        ],
+        [
+          1020,
+          240
+        ],
+        [
+          1190,
+          250
+        ],
+        [
+          1270,
+          550
+        ],
+        [
+          1270,
+          719
+        ],
+        [
+          0,
+          719
+        ],
+        [
+          0,
+          335
+        ],
+        [
+          170,
+          320
+        ]
+      ]
+    }
+  },
+  "dual_roi_source": "reports/camera_restart_check_20261109_202911: camera-native tabletop polygons; retain either camera independently; no depth fill"
+}

@@ -20,7 +20,7 @@ class NormalGraspError(ValueError):
 
 
 def save(path, value):
-    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
+    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 
 
 def digest(path):
@@ -51,7 +51,7 @@ def ray_intersections(contour, origin, direction):
 
 
 def geometry(mask, region_point, *, tangent_window_px=25., inset_px=8.,
-             pull_px=80., max_snap_px=80.):
+             pull_px=80., max_snap_px=80., chord_endpoints=None, unknown_mask=None):
     """Normal points from the selected side into cloth, then OUT past the far edge."""
     mask = np.asarray(mask)
     point = np.asarray(region_point, float)
@@ -61,6 +61,8 @@ def geometry(mask, region_point, *, tangent_window_px=25., inset_px=8.,
     if not np.isfinite(values).all() or min(values) <= 0 or inset_px < 3:
         raise NormalGraspError('positive finite geometry parameters and inset >=3 px required')
     mask = (mask > 0).astype(np.uint8)
+    unknown = np.zeros_like(mask,dtype=bool) if unknown_mask is None else np.asarray(unknown_mask,dtype=bool)
+    if unknown.shape != mask.shape:raise NormalGraspError('unknown mask size mismatch')
     h, w = mask.shape
     if not (0 <= point[0] < w and 0 <= point[1] < h):
         raise NormalGraspError('region point outside image')
@@ -75,25 +77,53 @@ def geometry(mask, region_point, *, tangent_window_px=25., inset_px=8.,
     origin = contour[idx]
     if np.linalg.norm(origin - point) > max_snap_px:
         raise NormalGraspError('selected region is too far from a visible contour')
-    # Arc-local PCA suppresses pixel staircases without bridging remote folds.
-    local = [origin]
-    for sign in (-1, 1):
-        traveled = 0.
-        previous = origin
-        for offset in range(1, len(contour)//2):
-            q = contour[(idx + sign * offset) % len(contour)]
-            traveled += np.linalg.norm(q - previous)
-            if traveled > tangent_window_px:
-                break
-            local.append(q)
-            previous = q
-    if len(local) < 7:
-        raise NormalGraspError('insufficient local contour support')
-    eigenvalues, vectors = np.linalg.eigh(np.cov(np.asarray(local).T))
-    ratio = float(eigenvalues[0] / max(eigenvalues[1], 1e-9))
-    if ratio > .2:
-        raise NormalGraspError('corner/curvature makes the local normal ambiguous')
-    tangent = vectors[:, -1]
+    chord_metadata = {}
+    if chord_endpoints is not None:
+        ends = np.asarray(chord_endpoints, float)
+        if ends.shape != (2, 2) or not np.isfinite(ends).all():
+            raise NormalGraspError('invalid chord endpoints')
+        indices = [int(np.argmin(np.linalg.norm(contour-p, axis=1))) for p in ends]
+        if any(np.linalg.norm(contour[i]-p)>max_snap_px for i,p in zip(indices,ends)):
+            raise NormalGraspError('chord endpoint too far from visible contour')
+        ia, ib = indices
+        if ia == ib or idx in indices:
+            raise NormalGraspError('distinct endpoints and interior arc witness required')
+        forward = np.arange((ib-ia) % len(contour)+1)
+        backward = -np.arange((ia-ib) % len(contour)+1)
+        arcs = [((ia+offsets) % len(contour)) for offsets in (forward,backward)]
+        arc = next(v for v in arcs if idx in v)
+        points = contour[arc]
+        lengths = np.r_[0.,np.cumsum(np.linalg.norm(np.diff(points,axis=0),axis=1))]
+        midpoint = int(np.argmin(abs(lengths-lengths[-1]/2)))
+        origin = points[midpoint]
+        tangent = contour[ib]-contour[ia]
+        length = np.linalg.norm(tangent)
+        if length <= 1e-9:
+            raise NormalGraspError('chord endpoints coincide; no direction can be computed')
+        tangent /= length
+        ratio = None
+        chord_metadata = dict(chord_endpoints_px=contour[indices].tolist(),
+                              selected_arc_px=points.tolist(),arc_length_px=float(lengths[-1]))
+    else:
+        # Arc-local PCA suppresses pixel staircases without bridging remote folds.
+        local = [origin]
+        for sign in (-1, 1):
+            traveled = 0.
+            previous = origin
+            for offset in range(1, len(contour)//2):
+                q = contour[(idx + sign * offset) % len(contour)]
+                traveled += np.linalg.norm(q - previous)
+                if traveled > tangent_window_px:
+                    break
+                local.append(q)
+                previous = q
+        if len(local) < 7:
+            raise NormalGraspError('insufficient local contour support')
+        eigenvalues, vectors = np.linalg.eigh(np.cov(np.asarray(local).T))
+        ratio = float(eigenvalues[0] / max(eigenvalues[1], 1e-9))
+        if ratio > .2:
+            raise NormalGraspError('corner/curvature makes the local normal ambiguous')
+        tangent = vectors[:, -1]
     normal = np.array([-tangent[1], tangent[0]])
     polygon = contour.astype(np.float32).reshape(-1, 1, 2)
     inside = lambda p: cv2.pointPolygonTest(polygon, tuple(map(float, p)), False) > 0
@@ -106,33 +136,34 @@ def geometry(mask, region_point, *, tangent_window_px=25., inset_px=8.,
     else:
         raise NormalGraspError('cannot distinguish inward and outward normal')
     hits = ray_intersections(contour, origin, normal)
-    if len(hits) != 1:
-        raise NormalGraspError(f'ambiguous silhouette crossing: {len(hits)} forward intersections')
-    chord = hits[0]
-    if chord <= 2*inset_px + 6:
-        raise NormalGraspError('opposite-edge chord too short for an interior grasp')
+    if not hits:
+        raise NormalGraspError('no forward silhouette intersection')
+    # Concavities may exit and re-enter the silhouette: use the farthest edge.
+    chord = hits[-1]
     intersection = origin + chord*normal
     grasp = np.rint(intersection - inset_px*normal).astype(int)
     target = np.rint(grasp + pull_px*normal).astype(int)
     for p in (grasp, target):
         if not (3 <= p[0] < w-3 and 3 <= p[1] < h-3):
             raise NormalGraspError('grasp/target outside supported image interior')
-    # Test actual material membership, not a hole-filled silhouette.
+    # The far-edge intersection determines the grasp; do not require the
+    # surrounding segmentation patch to be entirely cloth. Keep center support.
     x, y = grasp
-    if not mask[y-2:y+3, x-2:x+3].all():
-        raise NormalGraspError('grasp patch is not fully on visible segmented material')
+    if not mask[y,x] or unknown[y,x]:
+        raise NormalGraspError('grasp center is not on visible segmented material')
+    # This image ray selects an edge; it is not the robot motion path.
+    # Intermediate gaps are allowed; actual grasp support is checked above.
     if inside(target) or mask[target[1], target[0]]:
         raise NormalGraspError('pull distance does not place target beyond the opposite edge')
-    bg = cv2.distanceTransform(1-mask, cv2.DIST_L2, 5)
-    if bg[target[1], target[0]] < 5:
-        raise NormalGraspError('target lacks clearance from garment')
     return dict(region_point_px=point.tolist(), origin_px=origin.tolist(),
                 tangent_unit_xy=tangent.tolist(), normal_unit_xy=normal.tolist(),
                 intersection_px=intersection.tolist(), grasp_px=grasp.tolist(),
+                intersection_rule='farthest_forward',
+                forward_intersections_px=[(origin+t*normal).tolist() for t in hits],
                 target_px=target.tolist(), chord_px=chord, inset_px=inset_px,
                 requested_pull_px=pull_px, tangent_variance_ratio=ratio,
                 contour_px=contour.astype(int).tolist(),
-                direction='selected side -> opposite edge -> outward')
+                direction='selected side -> opposite edge -> outward', **chord_metadata)
 
 
 def build(image_path, region_point, region_name, evidence, folder, *, mask_path=None, **options):
@@ -167,13 +198,20 @@ def build(image_path, region_point, region_name, evidence, folder, *, mask_path=
                     source_image=str(image_path.resolve()), region_name=region_name,
                     visibility='USER_OR_AGENT_HYPOTHESIS', evidence=evidence,
                     geometry=g, plan=plan, host_validated=False, executed=False,
-                    options=options, mask_sha256=digest(folder/'mask.png'))
+                    options={k:v for k,v in options.items() if k!='unknown_mask'},
+                    unknown_depth_policy='unknown cells are not physical holes; actual grasp/target need source depth' if 'unknown_mask' in options else None,
+                    mask_sha256=digest(folder/'mask.png'))
     save(folder/'proposal.json', proposal)
     save(folder/'plan.json', plan)
     overlay = Image.fromarray(rgb)
     draw = ImageDraw.Draw(overlay)
     contour = [tuple(p) for p in g['contour_px']]
     draw.line(contour+[contour[0]], fill='#73f5c0', width=2)
+    if 'chord_endpoints_px' in g:
+        endpoints=[tuple(p) for p in g['chord_endpoints_px']]
+        draw.line(endpoints,fill='#b68aff',width=3)
+        for label,p in zip(('A','B'),endpoints):
+            draw.text(p,label,fill='#b68aff',stroke_width=1,stroke_fill='black')
     q, hit, pa, pb = [tuple(g[k]) for k in ('origin_px','intersection_px','grasp_px','target_px')]
     draw.line([q, hit], fill='#f6cf65', width=3)
     draw.line([pa, pb], fill='#ff586d', width=4)
@@ -254,7 +292,7 @@ def main():
     parser.add_argument('--region-name', required=True)
     parser.add_argument('--evidence', required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--pull-px', type=float, default=80., help='preview distance; Host later enforces 10–150 mm')
+    parser.add_argument('--pull-px', type=float, default=80., help='preview distance; Host checks measured workspace and complete motion path')
     parser.add_argument('--inset-px', type=float, default=8.)
     parser.add_argument('--tangent-window-px', type=float, default=25.)
     parser.add_argument('--max-snap-px', type=float, default=80.)

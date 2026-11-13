@@ -1,7 +1,8 @@
 """Read-only controller diagnostics for the calibrated ZED / dual-xArm7 site.
 
 CLI/default reads use getters only. Replay may explicitly opt into fault-free
-STOP recovery; this never changes mode, clears faults or sends motion commands.
+STOP recovery; it restores position mode after Servo, without clearing faults
+or sending motion commands.
 This is a commissioning report, not execution authorization or collision proof.
 """
 from __future__ import annotations
@@ -10,7 +11,6 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import socket
 import threading
 import time
 
@@ -26,19 +26,33 @@ def value(response, name):
 
 
 def recover_stopped_controller(robot, cancel):
-    """Original position-mode STOP recovery; never clear faults or send motion."""
-    if (cancel.is_set() or robot.mode != 0
+    """Explicit startup recovery from stopped position/Servo mode only."""
+    if (cancel.is_set() or robot.mode not in (0, 1)
             or value(robot.get_state(), 'state before recovery') != 4
             or list(value(robot.get_err_warn_code(), 'recovery faults')) != [0, 0]
             or robot.get_is_moving()
             or value(robot.get_cmdnum(), 'command queue') != 0):
-        raise RuntimeError('STOP recovery requires fault-free stationary position mode and an empty queue')
+        raise RuntimeError('STOP recovery requires fault-free stationary position/Servo mode and an empty queue')
+    commands = 2
+    if robot.mode == 1:
+        code = robot.set_mode(0)
+        if code != 0:
+            raise RuntimeError(f'restore position mode failed: {code}')
+        deadline = time.monotonic() + 1.
+        while robot.mode != 0:
+            if cancel.wait(.01) or time.monotonic() >= deadline:
+                raise RuntimeError('position mode restoration not confirmed')
+        commands += 1
     for name, command in (
         ('motion_enable', lambda: robot.motion_enable(enable=True)),
         ('set_state(normal)', lambda: robot.set_state(0)),
     ):
-        if cancel.is_set():
-            raise RuntimeError('STOP recovery cancelled')
+        if (cancel.is_set() or robot.mode != 0
+                or value(robot.get_state(), 'recovery state') not in (4, 5)
+                or list(value(robot.get_err_warn_code(), 'recovery faults')) != [0, 0]
+                or robot.get_is_moving()
+                or value(robot.get_cmdnum(), 'recovery queue') != 0):
+            raise RuntimeError('STOP recovery cancelled or controller changed')
         code = command()
         if code != 0:
             raise RuntimeError(f'{name} failed: {code}')
@@ -46,17 +60,15 @@ def recover_stopped_controller(robot, cancel):
     while value(robot.get_state(), 'recovered state') not in (0, 2):
         if cancel.wait(.02) or time.monotonic() >= deadline:
             raise RuntimeError('controller did not leave STOP')
+    return commands
 
 
 def read_arm(profile, arm, *, factory=None, recover_stopped=False):
     config = profile['arms'][arm]
     if factory is None:
-        # Bound the unreachable-IP case before constructing the SDK connection.
-        with socket.create_connection((config['robot_ip'], 502), timeout=3):
-            pass
         from xarm.wrapper import XArmAPI
         factory = XArmAPI
-    robot = factory(config['robot_ip'], is_radian=False, do_not_open=True)
+    robot = None
     report = dict(arm=arm, ip=config['robot_ip'], started_at=datetime.now(timezone.utc).isoformat(),
         motion_commands_sent=0, configuration_commands_sent=0, execution_allowed=False)
     ready = threading.Event()
@@ -67,8 +79,12 @@ def read_arm(profile, arm, *, factory=None, recover_stopped=False):
             if count[0] >= 2:
                 ready.set()
     try:
-        robot.register_report_callback(received)
-        robot.connect()
+        from .robot_api import _connect_xarm
+        def setup(connection):
+            count[0] = 0
+            ready.clear()
+            connection.register_report_callback(received)
+        robot = _connect_xarm(factory, config['robot_ip'], before_connect=setup)
         if not ready.wait(3):
             raise RuntimeError('Initial coherent controller reports unavailable')
         value(robot.get_robot_sn(), 'robot identity')
@@ -118,15 +134,17 @@ def read_arm(profile, arm, *, factory=None, recover_stopped=False):
                     or report['control_box_sn'] != identity['control_box_sn']
                     or report['robot_sn'] != identity['robot_sn']):
                 raise RuntimeError('STOP recovery requires valid identity, offsets, stationary feedback and no faults')
-            recover_stopped_controller(robot, threading.Event())
+            report['configuration_commands_sent'] = recover_stopped_controller(robot, threading.Event())
             report['stop_recovered'] = True
     except Exception as exc:
         report.update(status='READ_FAILED', error=f'{type(exc).__name__}: {exc}')
     finally:
-        robot.disconnect()
+        if robot is not None:
+            robot.disconnect()
     if report.get('stop_recovered'):
         fresh = read_arm(profile, arm, factory=factory)
-        fresh.update(stop_recovered=True, configuration_commands_sent=2,
+        fresh.update(stop_recovered=True, configuration_commands_sent=report['configuration_commands_sent'],
+                     mode_before_recovery=report['mode'],
                      state_before_recovery=4)
         return fresh
     return report

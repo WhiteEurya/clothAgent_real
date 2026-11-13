@@ -75,6 +75,25 @@ def test_transport_no_retry_persistent_attempt(tmp_path, monkeypatch):
     assert m.read(tmp_path/'model_metrics.json')['status'] == 'FAILED'
 
 
+def test_rbs_protocol_accepts_unreported_effort_without_claiming_confirmation():
+    report = m.validate_response_protocol(
+        {'model': 'gpt-6-astra', 'reasoning': None},
+        {'model': 'gpt-6-astra', 'reasoning': {'effort': 'high'}},
+    )
+    assert report['requested_effort'] == 'high'
+    assert report['returned_reasoning'] is None
+    assert report['reasoning_effort_confirmation'] == 'NOT_REPORTED_BY_RBS'
+
+
+def test_rbs_protocol_rejects_explicit_model_or_effort_mismatch():
+    body = {'model': 'gpt-6-astra', 'reasoning': {'effort': 'high'}}
+    with pytest.raises(ValueError, match='model differs'):
+        m.validate_response_protocol({'model': 'other', 'reasoning': None}, body)
+    with pytest.raises(ValueError, match='effort differs'):
+        m.validate_response_protocol(
+            {'model': 'gpt-6-astra', 'reasoning': {'effort': 'low'}}, body)
+
+
 def test_multiview_prompt_and_three_rgb_no_history(tmp_path, monkeypatch):
     (tmp_path/'goal').mkdir(); (tmp_path/'before').mkdir(); (tmp_path/'right_view').mkdir()
     for path, size, color in (('goal/target.png', (100, 80), 'red'),

@@ -1,0 +1,14 @@
+{
+  "center_world_xy_mm": [
+    550.0688497907469,
+    -266.12348923414356
+  ],
+  "span_mm": 1360.3987897707811,
+  "mm_per_pixel": 2.6161515187899638,
+  "image_size_wh": [
+    640,
+    640
+  ],
+  "source": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/target_capture_20261109_new_reference/report.json",
+  "projection": "same world XY raster as capture appearance; plot_size=520, origin_pixel=[320,320]"
+}

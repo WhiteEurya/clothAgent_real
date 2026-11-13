@@ -1,0 +1,7 @@
+{
+  "garment": "pink Kirby T-shirt",
+  "source": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/target_capture_20261109_new_reference/target.png",
+  "goal_sha256": "38e9ca53870fe767cfda2fa2f5a85a19d3d22ddab56ccae0ac640dd707dd6f4e",
+  "calibration_source": "config/calibration/zed_realsense_20261109_joint4/extrinsics.json",
+  "role": "active unfold reference; user selected"
+}

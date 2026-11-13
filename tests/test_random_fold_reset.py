@@ -144,3 +144,38 @@ def test_zero_and_tiny_radius_use_only_validated_center(tmp_path,radius):
     def invalid(*args):raise DualArmError('no depth')
     obs.sample=invalid
     with pytest.raises(DualArmError):reset.sample_grasp(obs,region,8,radius,1)
+
+
+def test_reset_nearest_point_keeps_raw_cloud_and_pixel_consistent(tmp_path):
+    from cloth_agent.dual_arm.observation import Observation,DepthUnavailableError
+    y,x=np.indices((30,30))
+    xyz=np.stack([x*1.,y*1.,np.full((30,30),500.)],axis=-1)
+    obs=Observation(tmp_path,{},xyz)
+    Image.new('RGB',(30,30)).save(tmp_path/'rgb.png')
+    region=dict(center_px=[15,15],radius_px=5,confidence=.99)
+    xyz[13:18,13:18]=np.nan
+    xyz[15,15]=[15,15,500]
+    with pytest.raises(DepthUnavailableError):obs.sample([15,15],None)
+    audit=[]
+    result=reset.sample_grasp(obs,region,None,0,123,depth_repairs=audit)
+    assert result['pixel_xy']==[15,15]
+    assert result['world_xyz_mm']==[15,15,500]
+    xyz[15,15]=np.nan
+    result=reset.sample_grasp(obs,region,None,0,123,depth_repairs=[])
+    rx,ry=result['pixel_xy']
+    np.testing.assert_allclose(result['world_xyz_mm'],xyz[ry,rx])
+    assert np.isnan(xyz[15,15]).all()
+    xyz[:]=np.nan
+    with pytest.raises(DepthUnavailableError):reset.sample_grasp(obs,region,None,0,123,depth_repairs=[])
+
+
+def test_annulus_sampling_measured_distance_and_no_center_fallback(tmp_path):
+    obs=observation(tmp_path)
+    region=dict(center_px=[150,150],radius_px=70,confidence=.95)
+    points=[reset.sample_grasp(obs,region,None,60,i,minimum_radius_mm=40) for i in range(30)]
+    assert all(40<=p['actual_radius_mm']<=60 for p in points)
+    assert points[0]==reset.sample_grasp(obs,region,None,60,0,minimum_radius_mm=40)
+    assert len({tuple(p['pixel_xy']) for p in points})>20
+    region['radius_px']=20
+    with pytest.raises(DualArmError,match='annulus'):
+        reset.sample_grasp(obs,region,None,60,0,minimum_radius_mm=40)

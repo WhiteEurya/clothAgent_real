@@ -1,0 +1,25 @@
+{
+  "appearance_render": "rgb_mosaic",
+  "segmentation_profile": "grounded_sam2",
+  "rgb_mosaic": {
+    "bounds_xy_mm": [
+      [
+        -30,
+        -660
+      ],
+      [
+        1070,
+        240
+      ]
+    ],
+    "plane_z_mm": 45,
+    "size": 820,
+    "primary": 1,
+    "color_reference": 1,
+    "seam_mode": "feature_graphcut"
+  },
+  "note": "RGB-first three-camera feature alignment and graph-cut seams; source RGB UV retained; executable XYZ stays original measured depth. Offline comparison 20261113 selected by user.",
+  "zed_supplement": {
+    "enabled": true
+  }
+}

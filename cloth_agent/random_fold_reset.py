@@ -50,14 +50,20 @@ def validate_region(region, size):
         raise DualArmError('中心采样区域超出照片边界')
 
 
-def sample_grasp(observation, region, max_spread, radius_mm, seed):
+def sample_grasp(observation, region, max_spread, radius_mm, seed, *, depth_repairs=None, minimum_radius_mm=0.):
     with Image.open(observation.image) as im: validate_region(region,im.size)
     if not np.isfinite(radius_mm) or not 0 <= radius_mm <= 80:
         raise ValueError('random center radius must be in [0,80] mm')
+    if not np.isfinite(minimum_radius_mm) or not 0 <= minimum_radius_mm <= radius_mm:
+        raise ValueError('invalid minimum reset radius')
     center=np.asarray(region['center_px'],dtype=float)
-    origin=observation.sample(center.astype(int).tolist(),max_spread)
+    def sample(pixel):
+        if depth_repairs is not None and hasattr(observation,'sample_nearby_measured'):
+            return observation.sample_nearby_measured(pixel,center,region['radius_px'],depth_repairs)
+        return observation.sample(pixel,max_spread),pixel
+    origin,center_pixel=sample(center.astype(int).tolist())
     if radius_mm==0:
-        return dict(pixel_xy=center.astype(int).tolist(),world_xyz_mm=np.asarray(origin).tolist(),
+        return dict(pixel_xy=center_pixel,world_xyz_mm=np.asarray(origin).tolist(),
                     center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm,sampling='CENTER_ZERO_RADIUS')
     rng=np.random.default_rng(seed)
     # Uniform disk sampling in image coordinates, bounded again in measured world XY.
@@ -65,13 +71,17 @@ def sample_grasp(observation, region, max_spread, radius_mm, seed):
         radius=region['radius_px']*np.sqrt(rng.random());angle=rng.uniform(0,2*np.pi)
         pixel=np.rint(center+radius*np.array([np.cos(angle),np.sin(angle)])).astype(int)
         if np.linalg.norm(pixel-center)>region['radius_px']:continue
-        try: xyz=observation.sample(pixel.tolist(),max_spread)
+        try: xyz,resolved_pixel=sample(pixel.tolist())
         except DualArmError:continue
-        if np.linalg.norm(np.asarray(xyz)[:2]-np.asarray(origin)[:2])<=radius_mm:
-            return dict(pixel_xy=pixel.tolist(),world_xyz_mm=np.asarray(xyz).tolist(),
-                        center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm)
+        distance=float(np.linalg.norm(np.asarray(xyz)[:2]-np.asarray(origin)[:2]))
+        if minimum_radius_mm <= distance <= radius_mm:
+            return dict(pixel_xy=resolved_pixel,world_xyz_mm=np.asarray(xyz).tolist(),
+                        center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm,
+                        minimum_radius_mm=minimum_radius_mm,actual_radius_mm=distance)
+    if minimum_radius_mm > 0:
+        raise DualArmError(f'No measured grasp in center annulus {minimum_radius_mm:g}–{radius_mm:g} mm within visible fabric region')
     # The measured center was already validated; near-zero bounds may have no other pixel.
-    return dict(pixel_xy=center.astype(int).tolist(),world_xyz_mm=np.asarray(origin).tolist(),
+    return dict(pixel_xy=center_pixel,world_xyz_mm=np.asarray(origin).tolist(),
                 center_world_xyz_mm=np.asarray(origin).tolist(),seed=int(seed),radius_mm=radius_mm,
                 sampling='VALIDATED_CENTER_AFTER_200_REJECTIONS')
 

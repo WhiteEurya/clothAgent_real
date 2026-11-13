@@ -1,0 +1,196 @@
+{
+  "board": {
+    "squares": [
+      7,
+      5
+    ],
+    "square_mm": 40,
+    "marker_mm": 30,
+    "ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ]
+  },
+  "translation_units": "mm",
+  "zed_serial": "11483267",
+  "realsense_serial": "254522070945",
+  "zed_frame": "rectified left optical IMAGE",
+  "realsense_frame": "color optical; NOT depth optical",
+  "zed_K": [
+    [
+      1503.5438232421875,
+      0.0,
+      969.6259765625
+    ],
+    [
+      0.0,
+      1503.5438232421875,
+      533.2017822265625
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_K": [
+    [
+      910.187255859375,
+      0.0,
+      650.1410522460938
+    ],
+    [
+      0.0,
+      910.0311279296875,
+      368.0643005371094
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_original_distortion": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "zed_from_realsense_color_mm": [
+    [
+      -0.9937165057126489,
+      0.09920439655520519,
+      -0.05182657598529797,
+      -18.534717828716662
+    ],
+    [
+      -0.09331156065523541,
+      -0.47857551931073433,
+      0.873074123407941,
+      -707.2309345602788
+    ],
+    [
+      0.06180986104438835,
+      0.8724241858296787,
+      0.4848253098355065,
+      331.6319954961838
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_realsense_color_mm": [
+    [
+      0.9924840417657695,
+      -0.09968700773316766,
+      0.07097835817690461,
+      481.27601587783886
+    ],
+    [
+      -0.11189812507887764,
+      -0.974078144628149,
+      0.1965975019210943,
+      -396.1708866577565
+    ],
+    [
+      0.049540250747382164,
+      -0.20306222850887393,
+      -0.977911803236312,
+      909.1832164477723
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_zed_mm": [
+    [
+      -0.9998157286789779,
+      0.017066894478089966,
+      0.008788048645642787,
+      471.9005510889704
+    ],
+    [
+      0.004373203941896446,
+      0.6482555342541086,
+      -0.7614102950421695,
+      314.8845523038928
+    ],
+    [
+      -0.01869181032984861,
+      -0.7612315570322831,
+      -0.648210716360659,
+      585.437676889579
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "fit_repeatability": {
+    "status": "MEASURED_RESIDUALS_NOT_ACCURACY_CERTIFICATION",
+    "count": 30,
+    "mean_delta_B_minus_A_mm": [
+      -4.562000608056375e-05,
+      0.0004485760434623861,
+      0.00024948812486703297
+    ],
+    "position_rmse_mm": 0.13989348488846323,
+    "position_mean_mm": 0.12577649311230313,
+    "position_p95_mm": 0.23922289633301602,
+    "position_max_mm": 0.2865344398574122,
+    "orientation_mean_deg": 0.05786462023240192,
+    "orientation_max_deg": 0.10864419885711829
+  },
+  "status": "FITTED_WITH_SEPARATE_PLACEMENT_VALIDATION",
+  "fit_source": "reports/realsense_recalibration_20261108/placement_01/calibration.json",
+  "validation_source": "reports/realsense_recalibration_20261108/placement_02/calibration.json",
+  "validation": {
+    "status": "MEASURED_RESIDUALS_NOT_ACCURACY_CERTIFICATION",
+    "count": 30,
+    "mean_delta_B_minus_A_mm": [
+      0.21001079885121926,
+      -1.096811486744378,
+      -1.60217633870526
+    ],
+    "position_rmse_mm": 1.9583546495206836,
+    "position_mean_mm": 1.9536113680743692,
+    "position_p95_mm": 2.17364734061768,
+    "position_max_mm": 2.3201603266179736,
+    "orientation_mean_deg": 0.812415772692545,
+    "orientation_max_deg": 0.8513866638553391
+  },
+  "validation_board_displacement_mm": 248.14793477807987,
+  "validation_board_rotation_deg": 61.98850923748628,
+  "previous_calibration": "reports/realsense_recalibration_20261108/extrinsics_before.json",
+  "depth_validation_source": "reports/realsense_recalibration_20261108/scaled_depth_check/report.json",
+  "limitations": [
+    "Inherits existing fixed ZED-to-dual-arm-world calibration; robot base calibration was not re-estimated.",
+    "Two board placements; not whole-workspace absolute accuracy.",
+    "RealSense COLOR optical extrinsic; native depth must retain SDK depth-to-color transform.",
+    "Depth scales unchanged; residual surface-dependent depth disagreement remains."
+  ]
+}

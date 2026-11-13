@@ -16,6 +16,7 @@ dependencies = [
   "PyYAML>=6",
   "scipy>=1.10",
   "yourdfpy>=0.0.56",
+  "python-fcl==0.7.0.11",
 ]
 
 [project.optional-dependencies]

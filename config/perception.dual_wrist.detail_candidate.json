@@ -1,0 +1,55 @@
+{
+  "name": "dual_wrist_primary_supplement_candidate",
+  "status": "OFFLINE_NOT_ACTIVE",
+  "primary_arm": "left",
+  "secondary_arm": "right",
+  "sequence": [
+    "left",
+    "right"
+  ],
+  "joints_deg": {
+    "left": [
+      43.644229540214255,
+      -20.22128141697909,
+      6.226588228232641,
+      101.5539433531637,
+      -16.87898670289731,
+      110.79287121235745,
+      -38.47813010815765
+    ],
+    "right": [
+      -11.81216433172651,
+      -61.35257918279817,
+      -33.93155253016635,
+      95.08056546276448,
+      -6.137843535385018,
+      127.82513426823004,
+      5.10274304110492
+    ]
+  },
+  "metrics": {
+    "left": {
+      "garment_coverage": 0.9857752489331437,
+      "garment_px_per_mm_p10": 0.9492535127891903,
+      "garment_px_per_mm_median": 1.1567302346535584,
+      "tilt_from_vertical_deg": 19.360329159952393,
+      "height_above_plane_mm": 684.0199400202403
+    },
+    "right": {
+      "garment_coverage": 0.9559032716927454,
+      "garment_px_per_mm_p10": 0.5709898020763526,
+      "garment_px_per_mm_median": 0.7711242182023699,
+      "tilt_from_vertical_deg": 34.8139038836839,
+      "height_above_plane_mm": 662.741806158816
+    }
+  },
+  "calibration": "config/calibration/dual_wrist_20261110/frames.json",
+  "source": "reports/dual_wrist_perception_detail_20261110/candidates.json",
+  "scene": "reports/dual_wrist_home_20261110/motion_config.json",
+  "not_yet_checked": [
+    "live RGB-D coverage",
+    "actual cloth self-occlusion",
+    "depth holes"
+  ],
+  "default_runtime_changed": false
+}

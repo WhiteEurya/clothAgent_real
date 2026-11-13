@@ -1,0 +1,7 @@
+# Install torch/torchvision for the host CUDA driver separately; versions are
+# recorded in environment.json. This process is isolated from the motion env.
+transformers==4.57.6
+huggingface-hub==0.36.2
+numpy==2.4.4
+Pillow==11.3.0
+safetensors==0.8.0

@@ -1,0 +1,179 @@
+{
+  "board": {
+    "squares": [
+      7,
+      5
+    ],
+    "square_mm": 40,
+    "marker_mm": 30,
+    "ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ]
+  },
+  "translation_units": "mm",
+  "zed_serial": "11483267",
+  "realsense_serial": "254522070945",
+  "zed_frame": "rectified left optical IMAGE",
+  "realsense_frame": "color optical; NOT depth optical",
+  "zed_K": [
+    [
+      1503.5301513671875,
+      0.0,
+      969.6259155273438
+    ],
+    [
+      0.0,
+      1503.5301513671875,
+      533.2013549804688
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_K": [
+    [
+      910.187255859375,
+      0.0,
+      650.1410522460938
+    ],
+    [
+      0.0,
+      910.0311279296875,
+      368.0643005371094
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_original_distortion": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "zed_from_realsense_color_mm": [
+    [
+      -0.564697676251165,
+      0.7070348511329977,
+      -0.4256973734002528,
+      261.87188817099775
+    ],
+    [
+      -0.5512602993947867,
+      0.06072692047649017,
+      0.8321203779746127,
+      -791.9423816201828
+    ],
+    [
+      0.614189398107542,
+      0.7045665053157024,
+      0.35546789283916147,
+      388.3538742914196
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_realsense_color_mm": [
+    [
+      0.56058284361286,
+      -0.6996763802204142,
+      0.4429445094010965,
+      199.9737940759024
+    ],
+    [
+      -0.8274772088258447,
+      -0.49400562081413235,
+      0.2669080655915702,
+      -493.04789822314814
+    ],
+    [
+      0.032067808168157276,
+      -0.5161505686964825,
+      -0.8558973338628809,
+      931.6592064098754
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_zed_mm": [
+    [
+      -0.9998157286789779,
+      0.017066894478089966,
+      0.008788048645642787,
+      471.9005510889704
+    ],
+    [
+      0.004373203941896446,
+      0.6482555342541086,
+      -0.7614102950421695,
+      314.8845523038928
+    ],
+    [
+      -0.01869181032984861,
+      -0.7612315570322831,
+      -0.648210716360659,
+      585.437676889579
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "status": "FITTED_WITH_SEPARATE_PLACEMENT_VALIDATION",
+  "fit_source": "reports/dual_camera_charuco_20261105/placement_01/calibration.json",
+  "validation_source": "reports/dual_camera_charuco_20261105/placement_02/calibration.json",
+  "validation": {
+    "status": "MEASURED_RESIDUALS_NOT_ACCURACY_CERTIFICATION",
+    "count": 30,
+    "mean_delta_B_minus_A_mm": [
+      -0.40772461990233305,
+      0.3963841515040983,
+      0.4923868594363588
+    ],
+    "position_rmse_mm": 0.75716335447507,
+    "position_mean_mm": 0.7539141122935352,
+    "position_p95_mm": 0.8856109370790101,
+    "position_max_mm": 0.9225420158167374,
+    "orientation_mean_deg": 0.17810915119655757,
+    "orientation_max_deg": 0.21682797360280567
+  },
+  "validation_board_displacement_mm": 144.10968318454394,
+  "validation_board_rotation_deg": 47.27801552461278,
+  "limitations": [
+    "Validation covers these two board placements, not the entire workspace.",
+    "World transform inherits existing ZED-to-world calibration error.",
+    "Transform is for RealSense COLOR optical frame; native depth points require depth-to-color SDK extrinsics.",
+    "No changes to robot execution or active camera configuration."
+  ]
+}

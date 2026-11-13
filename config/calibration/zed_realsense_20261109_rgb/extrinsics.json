@@ -1,0 +1,195 @@
+{
+  "status": "RGB_STEREO_CALIBRATION_MEASURED_NOT_ACTIVATED",
+  "board": {
+    "squares": [
+      7,
+      5
+    ],
+    "square_mm": 40,
+    "marker_mm": 30,
+    "ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ]
+  },
+  "translation_units": "mm",
+  "zed_serial": "11483267",
+  "realsense_serial": "254522070945",
+  "zed_frame": "rectified left optical IMAGE",
+  "realsense_frame": "color optical; NOT depth optical",
+  "zed_K": [
+    [
+      1503.5765380859375,
+      0.0,
+      969.6260375976562
+    ],
+    [
+      0.0,
+      1503.5765380859375,
+      533.2042846679688
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_K": [
+    [
+      910.187255859375,
+      0.0,
+      650.1410522460938
+    ],
+    [
+      0.0,
+      910.0311279296875,
+      368.0643005371094
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_original_distortion": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "zed_from_realsense_color_mm": [
+    [
+      -0.9935448825662495,
+      0.09411263983241407,
+      -0.06333543518593396,
+      -7.849717190901756
+    ],
+    [
+      -0.09979960911756534,
+      -0.45972502280615124,
+      0.8824358001723781,
+      -714.4877983219399
+    ],
+    [
+      0.05393147825156009,
+      0.8830604251293669,
+      0.46614984846500196,
+      347.53760408764623
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_realsense_color_mm": [
+    [
+      0.9921324837948864,
+      -0.09418099805203849,
+      0.08248075051132506,
+      470.60891131318476
+    ],
+    [
+      -0.11010460609132902,
+      -0.9699790153395013,
+      0.2168356186572802,
+      -412.9391551961235
+    ],
+    [
+      0.059582802187064486,
+      -0.22421117145881544,
+      -0.9727174514095056,
+      904.1974622037122
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_zed_mm": [
+    [
+      -0.9998157286789779,
+      0.017066894478089966,
+      0.008788048645642787,
+      471.9005510889704
+    ],
+    [
+      0.004373203941896446,
+      0.6482555342541086,
+      -0.7614102950421695,
+      314.8845523038928
+    ],
+    [
+      -0.01869181032984861,
+      -0.7612315570322831,
+      -0.648210716360659,
+      585.437676889579
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "fit_sources": [
+    "reports/realsense_recalibration_20261109_new/placement_01/calibration.json",
+    "reports/realsense_recalibration_20261109_new/placement_02/calibration.json"
+  ],
+  "diagnostic_source": "reports/realsense_recalibration_20261109_new/joint_fit_diagnostic.json",
+  "method": "Joint least-squares reprojection with fixed SDK intrinsics, shared RealSense-color-to-ZED-left transform, separate board pose per placement",
+  "rgb_validation": {
+    "source": "reports/realsense_recalibration_20261109_new/placement_03/calibration.json",
+    "used_for_fit": false,
+    "joint_reprojection_rmse_px": 1.177989249644779,
+    "symmetric_point_to_epipolar_line_rmse_px": 1.0961675612758062,
+    "epipolar_distance_max_px": 2.8242251752281273,
+    "corner_count": 24,
+    "independent_pnp_disagreement": {
+      "status": "MEASURED_RESIDUALS_NOT_ACCURACY_CERTIFICATION",
+      "count": 30,
+      "mean_delta_B_minus_A_mm": [
+        -1.339145598372187,
+        -8.131800109638155,
+        -4.3883047957681125
+      ],
+      "position_rmse_mm": 9.337212000279157,
+      "position_mean_mm": 9.336966604303008,
+      "position_p95_mm": 9.439227991275859,
+      "position_max_mm": 9.476219575649246,
+      "orientation_mean_deg": 1.627307924559236,
+      "orientation_max_deg": 1.6691579953136926
+    },
+    "interpretation": "RGB residual measurements only; independent PnP estimates remain inconsistent. No metric accuracy or depth alignment claim."
+  },
+  "source_sha256": {
+    "reports/realsense_recalibration_20261109_new/placement_01/calibration.json": "01d7c2f816c6c18d34e37d88b2fd61afe387c7e8e5254d527d7c5f741d8a6927",
+    "reports/realsense_recalibration_20261109_new/placement_02/calibration.json": "1d4bbdfebd35f3734f232fae3e55d54918a7be30b5d8577d59d79dacb73a7893",
+    "reports/realsense_recalibration_20261109_new/placement_03/calibration.json": "eed2d7ff9e7397190e60c9e782f5d28ea62b5946de6e515ea58f9b6e3fad2973"
+  },
+  "limitations": [
+    "Independent PnP board poses disagree by 9.34 mm / 1.63 deg on held-out placement.",
+    "World transform inherits existing ZED-to-robot-world calibration.",
+    "RGB fitting does not use or adjust existing depth scale corrections.",
+    "Not activated in robot observation configuration; actual cloud residuals unresolved."
+  ]
+}

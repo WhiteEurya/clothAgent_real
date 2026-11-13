@@ -1,0 +1,148 @@
+{
+  "success": true,
+  "eef_from_camera_mm": [
+    [
+      -0.029038905488602385,
+      -0.9976496579492187,
+      0.06206369278274641,
+      85.06114401029652
+    ],
+    [
+      0.9992014028126814,
+      -0.03067680453525451,
+      -0.02560254441799753,
+      -29.777449419733568
+    ],
+    [
+      0.027446285453477312,
+      0.06127065902463352,
+      0.9977437585660425,
+      20.470564362407853
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "board_poses": {
+    "all": [
+      [
+        -0.9981019997637428,
+        0.061059350384425275,
+        0.008009606622636858,
+        619.5615056258115
+      ],
+      [
+        0.06097485270517227,
+        0.9980851121586687,
+        -0.010400780009220133,
+        -310.02128106580074
+      ],
+      [
+        -0.00862933399515562,
+        -0.00989265474226372,
+        -0.9999138312759508,
+        64.33812842126022
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "fit_pixel_rmse": 0.8011385278571002,
+  "per_pose": [
+    {
+      "id": 1,
+      "split": "fit",
+      "pixel_rmse": 0.7426516536417712,
+      "board_position_residual_mm": 3.9388569151126855,
+      "board_orientation_residual_deg": 0.7043518934910985
+    },
+    {
+      "id": 2,
+      "split": "fit",
+      "pixel_rmse": 0.8794243775693559,
+      "board_position_residual_mm": 1.982258288873048,
+      "board_orientation_residual_deg": 0.21302715730152175
+    },
+    {
+      "id": 3,
+      "split": "fit",
+      "pixel_rmse": 0.5989455885443387,
+      "board_position_residual_mm": 0.4593040349769019,
+      "board_orientation_residual_deg": 0.4433763934489487
+    },
+    {
+      "id": 4,
+      "split": "fit",
+      "pixel_rmse": 0.5196925982594578,
+      "board_position_residual_mm": 2.874407588953516,
+      "board_orientation_residual_deg": 0.38506372159642943
+    },
+    {
+      "id": 5,
+      "split": "fit",
+      "pixel_rmse": 0.5700760434011711,
+      "board_position_residual_mm": 1.0459955129248117,
+      "board_orientation_residual_deg": 2.5453210219450524
+    },
+    {
+      "id": 6,
+      "split": "fit",
+      "pixel_rmse": 1.2468088753492381,
+      "board_position_residual_mm": 2.2044982660762185,
+      "board_orientation_residual_deg": 3.103463908228477
+    },
+    {
+      "id": 7,
+      "split": "fit",
+      "pixel_rmse": 0.8121001105573307,
+      "board_position_residual_mm": 1.060723334559094,
+      "board_orientation_residual_deg": 0.26470902949017555
+    }
+  ],
+  "status": "ACTIVE_RIGHT_WRIST_RGB_HAND_EYE",
+  "units": "mm",
+  "camera_serial": "254522070945",
+  "mount": "right/link_eef",
+  "source_count": 7,
+  "frame_count": 56,
+  "sources": [
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004208_595917/observation.json",
+      "sha256": "85c092daebcd58044fcab882396d69bfca07ff877b651f9c6f849c5df4975780"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004221_611082/observation.json",
+      "sha256": "90eda1294f17c790cdcce099ef5c13052e7fcee7127193df8db294645ea7790c"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004237_696794/observation.json",
+      "sha256": "e410a21232563ab5f3b007d8f886eae2857debf8fe68d430e4241156215c14ec"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004251_558080/observation.json",
+      "sha256": "523f1acd13b5f9b5078314b431b8ca90718a2af6595a86bb9e9ea7889d0bb0aa"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004305_942116/observation.json",
+      "sha256": "46e98aca2343854a5e38df216b28b05781362f6b5e3314b7302ce2489b9f7dc4"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004600_706132/observation.json",
+      "sha256": "3cc56c5e961997181338c31fac899a403e2df8c41ce4b64820489805c8a1fad6"
+    },
+    {
+      "path": "reports/wrist_handeye_20261110/manual_02/point_004615_921566/observation.json",
+      "sha256": "e1468b4bb652211667e7f8fc6840f065bce1cd35640e1c0910fef513bf081f77"
+    }
+  ],
+  "limitation": "All seven poses participate in fitting; these residuals are not independent validation or absolute depth accuracy.",
+  "deployed": true,
+  "activation_scope": "Right wrist RGB hand-eye; world transform resolved at capture time. No new depth validation or motion authorization."
+}

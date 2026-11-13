@@ -41,3 +41,5 @@ logs/
 /data/garments/
 /deployment-artifacts/
 experiments/*/validation/
+
+/videos/

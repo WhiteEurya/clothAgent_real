@@ -122,10 +122,10 @@ def run_cli(args, parser):
     if (args.online_growth or args.growth_state or args.collect_only or args.recover_no_progress
             or args.episodes != 1 or args.max_fallbacks or args.repair_self_loop
             or args.retry_missed_grasp or args.debug_grasp_retry or args.max_recovery_attempts
-            or args.grounding_mode != 'full' or args.matcher != 'current'
+            or args.grounding_mode not in ('full', 'two_point') or args.matcher != 'current'
             or args.initial_node or args.grounding_templates or args.arm6_expanded_graph
             or args.arm6_route or args.arm6_review or args.arm6_live_start):
-        parser.error('independent snapshot replay requires full grounding, no growth/recovery, and --max-recovery-attempts 0')
+        parser.error('independent snapshot replay requires full/two_point grounding, no growth/recovery, and --max-recovery-attempts 0')
     if args.max_steps < 1 or args.max_calls < 1 or args.timeout_s <= 0 or not 0 < args.match_threshold <= 1:
         parser.error('invalid step/call/time/confidence limit')
     from datetime import datetime, timezone
@@ -151,7 +151,8 @@ def run_cli(args, parser):
         signal.signal(signal.SIGTERM, terminate)
         try:
             requests = policy_requests(output / 'model', CodexMultimodal(args.model, args.timeout_s),
-                                       max_calls=args.max_calls, no_cache=args.no_cache, garment_transfer=True)
+                                       max_calls=args.max_calls, no_cache=args.no_cache, garment_transfer=True,
+                                       grounding_mode=args.grounding_mode)
             runtime = make_runtime(args.config, args.viser_port)
             result = replay_snapshot(args.graph, output, runtime, requests, max_steps=args.max_steps,
                                      threshold=args.match_threshold,

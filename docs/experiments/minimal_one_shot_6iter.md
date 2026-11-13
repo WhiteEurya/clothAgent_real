@@ -20,7 +20,7 @@ bash scripts/run_minimal_one_shot_6iter.sh --execute --no-reset
 bash scripts/run_minimal_one_shot_6iter.sh --dry-run
 ```
 
-每场是一个独立新目录 `reports/minimal_one_shot_6iter_<时间>/`。使用 `gpt-6-astra/high` 和现有 ChatGPT 账户的直接 Responses 调用，不启动 Agent CLI，不注入 Skill。Prompt 原文在 `--dry-run` 和每场 `prompt.txt` 中，只有展开目标、动作接口、坐标系和 ACTION/DONE/ABSTAIN 格式；没有部位策略或历史经验；重试时附带上一轮被拒绝的 plan 和拒绝原因。
+每场是一个独立新目录 `reports/minimal_one_shot_6iter_<时间>/`。使用 `gpt-6-astra/high` 和当前 `rbs` profile 的直接 Responses 调用，不启动 Agent CLI，不注入 Skill。Prompt 原文在 `--dry-run` 和每场 `prompt.txt` 中，只有展开目标、动作接口、坐标系和 ACTION/DONE/ABSTAIN 格式；没有部位策略或历史经验；重试时附带上一轮被拒绝的 plan 和拒绝原因。
 
 每轮只输入主视角 perception 当前 RGB 和静态 goal 参考图（共两张图片，只有一个实时拍摄视角）；不读取侧视位姿、不做侧视移动、不拍侧视图，输出一次 Pa/Pb，夹爪沿用 Home 方向。每轮最多一次规划请求，不调用额外模型评审、结构识别、候选排序或 Codex 恢复。reset 保持现有 `initialize()`，其定位调用和物理动作单独计数，不占十二次规划迭代。默认沿用现有初始化半径 80 mm；可显式使用 `--initialize-center-radius-mm 20`。既有可选 reset 按压通过 `--press-after-drop` 启用，默认不启用。
 

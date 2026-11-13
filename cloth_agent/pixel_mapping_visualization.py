@@ -8,7 +8,8 @@ from PIL import Image, ImageDraw
 class PixelMappingView:
     """Render an RGB coordinate grid and an equal-scale, colored XY projection."""
 
-    def __init__(self, rgb, xyz, valid, grid_mm=50.0):
+    def __init__(self, rgb, xyz, valid, grid_mm=50.0, *, frame_label="ROBOT BASE XY",
+                 show_xy_grid=True, max_points=150000):
         if not np.isfinite(grid_mm) or grid_mm <= 0:
             raise ValueError('Grid spacing must be finite and positive')
         self.rgb = Image.fromarray(np.asarray(rgb, dtype=np.uint8))
@@ -18,6 +19,9 @@ class PixelMappingView:
         self.valid = np.asarray(valid, dtype=bool) & np.isfinite(self.xyz).all(axis=2)
         if not self.valid.any():
             raise ValueError('No finite points to visualize')
+        self.frame_label = frame_label
+        self.show_xy_grid = show_xy_grid
+        self.max_points = max_points
         self.grid_mm = grid_mm
         xy = self.xyz[self.valid, :2]
         low, high = xy.min(axis=0), xy.max(axis=0)
@@ -68,7 +72,7 @@ class PixelMappingView:
         rows, cols = np.nonzero(self.valid)
         # Keep bounded rendering cost for megapixel frames. Sort by Z so the
         # top surface wins where several sampled pixels share a projected cell.
-        stride = max(1, (len(rows)+149999)//150000)
+        stride = 1 if self.max_points is None else max(1, (len(rows)+self.max_points-1)//self.max_points)
         rows, cols = rows[::stride], cols[::stride]
         order = np.argsort(self.xyz[rows, cols, 2])
         rows, cols = rows[order], cols[order]
@@ -78,11 +82,16 @@ class PixelMappingView:
         indexes = len(flat)-1-reverse_indexes
         points = points[indexes]
         array[points[:, 1], points[:, 0]] = np.asarray(self.rgb)[rows[indexes], cols[indexes]]
+        self.source_xy = np.full((640, 640, 2), -1, dtype=np.int32)
+        self.projected_xyz = np.full((640, 640, 3), np.nan, dtype=np.float32)
+        self.source_xy[points[:,1], points[:,0]] = np.column_stack((cols[indexes], rows[indexes]))
+        self.projected_xyz[points[:,1], points[:,0]] = self.xyz[rows[indexes],cols[indexes]]
+        self.measured_image = Image.fromarray(array.copy())
         result = Image.fromarray(array)
         draw = ImageDraw.Draw(result)
         # Use a coarser labeled grid if the full scene spans many metres.
         step = self.grid_mm * max(1, int(np.ceil(self.span/self.grid_mm/12)))
-        for axis in (0, 1):
+        for axis in ((0, 1) if self.show_xy_grid else ()):
             lo, hi = self.center[axis]-self.span/2, self.center[axis]+self.span/2
             levels = np.arange(np.ceil(lo/step), np.floor(hi/step)+1) * step
             for value in levels:
@@ -95,8 +104,8 @@ class PixelMappingView:
                 else:
                     draw.line((60, py, 580, py), fill='#46505a')
                     draw.text((4, py-5), f'{value:g}', fill='#ffc800')
-        draw.text((60, 10), 'ROBOT BASE XY - computed from RGB-D', fill='white')
-        draw.text((60, 28), 'Prediction only; not independent physical measurement', fill='#ffc800')
+        draw.text((60, 10), self.frame_label + ' - computed from RGB-D', fill='white')
+        draw.text((60, 28), 'Measured visible samples only; dark gaps are unknown' if self.frame_label == 'WORLD XY TOP-DOWN' else 'Prediction only; not independent physical measurement', fill='#ffc800')
         draw.text((60, 610), '+X right, +Y up | mm | equal scale on both axes', fill='white')
         return result
 

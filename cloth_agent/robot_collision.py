@@ -13,6 +13,10 @@ class RobotCollision:
     def __init__(self, config_path, initial, active_arm, *, root):
         self.config = DualConfig.load_geometry(config_path, root=root)
         self.models = {k: ArmModel(a) for k, a in self.config.arms.items()}
+        # IK must reserve the same tracking envelope checked on every segment.
+        # Keep physical FK/collision limits unchanged; tighten only IK search.
+        for model in self.models.values():
+            model.ik_joint_margin_deg = float(self.config.limits['stationary_tolerance_deg']) + 1e-4
         if active_arm not in self.models:
             raise SafetyError('unknown active arm')
         self.active_arm = active_arm
@@ -21,6 +25,12 @@ class RobotCollision:
         self.margins = {k: float(margins[k]) for k in self.models}
         if any(not np.isfinite(v) or v < 0 for v in self.margins.values()):
             raise SafetyError('invalid geometry margin')
+        from .dual_arm.self_collision import SelfCollisionChecker
+        self.self_collision = {k: SelfCollisionChecker(m, self.margins[k], self.config.limits['clearance_mm'])
+                               for k, m in self.models.items()}
+        for k, model in self.models.items():
+            model.ik_collision_check = lambda q, key=k: self.self_collision[key].check_box(
+                q, np.full_like(q, self.config.limits['stationary_tolerance_deg']))
 
     def joints(self, values):
         if set(values) != set(self.models):
@@ -34,6 +44,8 @@ class RobotCollision:
         return result
 
     def _box(self, lower, upper, robot_config=None):
+        for key, checker in getattr(self, 'self_collision', {}).items():
+            checker.check_box((lower[key]+upper[key])/2, (upper[key]-lower[key])/2)
         capsules = {}
         nominal = {}
         for key, model in self.models.items():
@@ -131,11 +143,78 @@ class RobotCollision:
                     controller_interpolation_covered=False, execution_allowed=False,
                     reason='Static inspection only; plan_action must solve and check complete joint ranges before dispatch')
 
+    def refine_commanded_path(self, states, config, tolerance, *, max_depth=12):
+        """Certify small commanded segments, not a Cartesian product of a whole leg.
+
+        Every subdivision is retained as an actual controller waypoint. Each
+        segment still covers independent joint timing plus tracking tolerance.
+        This is not permission to execute the original unsplit command.
+        """
+        states = [self.joints(row) for row in states]
+        if not states:
+            raise SafetyError('empty commanded path')
+        other = 'right' if self.active_arm == 'left' else 'left'
+        if any(not np.allclose(row[other], states[0][other], atol=1e-9, rtol=0) for row in states):
+            raise SafetyError('the other arm must remain stationary')
+        def check(a, b):
+            low = {k: np.minimum(a[k], b[k]) - tolerance for k in a}
+            high = {k: np.maximum(a[k], b[k]) + tolerance for k in a}
+            self.joints(low); self.joints(high)
+            self._box(low, high, config)
+        check(states[0], states[0])
+        result = [states[0]]
+        def append(a, b, depth):
+            try:
+                check(a, b)
+            except (DualArmError, SafetyError) as exc:
+                check(b, b)
+                middle = {k: (a[k] + b[k]) / 2 for k in a}
+                check(middle, middle)
+                if depth >= max_depth or np.max(np.abs(b[self.active_arm]-a[self.active_arm])) < 1e-3:
+                    raise SafetyError('commanded segment cannot be cleared within path refinement limit') from exc
+                append(a, middle, depth+1)
+                append(middle, b, depth+1)
+            else:
+                result.append(b)
+        for a, b in zip(states, states[1:]):
+            append(a, b, 0)
+        return result
+
+    def compact_joint_path(self, states, config, tolerance):
+        """Remove intermediate stops only after checking the larger swept joint box.
+
+        Failed shortcuts keep the original route. No blending or unchecked
+        controller Cartesian interpolation is introduced.
+        """
+        from copy import copy
+        attempts = 0
+        def span(first, last):
+            nonlocal attempts
+            if last <= first + 1:
+                return [states[first], states[last]]
+            if attempts < 64:
+                attempts += 1
+                checker = copy(self)
+                checker.initial = states[first]
+                try:
+                    low = {k: np.minimum(states[first][k], states[last][k])-tolerance for k in states[first]}
+                    high = {k: np.maximum(states[first][k], states[last][k])+tolerance for k in states[first]}
+                    checker.joints(low); checker.joints(high)
+                    checker._box(low, high, config)
+                    return [states[first], states[last]]
+                except (DualArmError, SafetyError):
+                    pass
+            middle = (first + last) // 2
+            return span(first, middle)[:-1] + span(middle, last)
+        if len(states) < 3:
+            return states
+        return span(0, len(states)-1)
+
     def plan_action(self, config, name, args, *, initial=None):
         """PyRoki-seeded Cartesian samples, dispatched later as joint targets.
 
-        Each joint segment is checked as a complete independent-joint box.
-        This covers different joint timing, not just the line between samples.
+        Refined segments become controller waypoints; each small swept box
+        covers independent joint timing and the existing tracking tolerance.
         """
         from copy import copy
         if (config.robot_ip != self.config.arms[self.active_arm].ip
@@ -147,6 +226,8 @@ class RobotCollision:
         model = self.models[key]
         tolerance = self.config.limits['stationary_tolerance_deg']
         states = [{k: v.copy() for k, v in checker.initial.items()}]
+        route = 'pyroki_cartesian_waypoints' if name == 'move' else 'stationary'
+        route_failures = []
         if name == 'move':
             target = np.array([args['x'], args['y'], args['z'], config.orientation_roll_deg,
                                config.orientation_pitch_deg, config.command_yaw_deg(args['yaw'])])
@@ -164,7 +245,7 @@ class RobotCollision:
                 row = checker.joints(row)
                 segment = copy(checker); segment.initial = states[-1]
                 try:
-                    segment.validate_joint_path([states[-1], row], robot_config=config, tolerance_deg=tolerance)
+                    refined = segment.refine_commanded_path([states[-1], row], config, tolerance)
                 except (DualArmError, SafetyError):
                     # A joint chord can dip below a straight Cartesian path.
                     # Re-solve actual Cartesian midpoints, not just interpolate
@@ -181,29 +262,64 @@ class RobotCollision:
                     append_pose(previous + change / 2, depth + 1)
                     append_pose(pose, depth + 1)
                     return
-                states.append(row)
+                states.extend(refined[1:])
             for i in range(1, count + 1):
                 append_pose(start + delta * i / count)
         elif name in {'home', 'perception_position'}:
             target = config.init_joints_deg if name == 'home' else config.perception_joints_deg
-            row = {k: v.copy() for k, v in states[-1].items()}
-            row[key] = target
-            goal = checker.joints(row)
-            start = states[0][key]
-            delta = goal[key] - start
-            count = max(1, int(np.ceil(np.max(np.abs(delta)) / 5.)))
-            # These are actual stop-at-waypoint commands, not just samples
-            # used to approve one large controller move. The existing backend
-            # dispatches every segment with radius=-1, wait=True and checks
-            # arrival. Validate the full joint box of each segment below.
-            for i in range(1, count + 1):
-                row = {k: v.copy() for k, v in goal.items()}
-                row[key] = goal[key].copy() if i == count else start + delta * i / count
-                states.append(row)
+            goal = {k: v.copy() for k, v in states[0].items()}
+            goal[key] = np.asarray(target, dtype=float)
+            goal = checker.joints(goal)
+            start_pose = model.forward(states[0][key])
+            goal_pose = model.forward(goal[key])
+            failures = []
+            # Use the same PyRoki Cartesian path solver as ordinary moves.
+            # Lifted alternatives are only for return motion, never a grasp leg.
+            for lift in (0., 25., 50.):
+                candidate = [states[0]]
+                poses = [goal_pose]
+                if lift:
+                    a, b = start_pose.copy(), goal_pose.copy()
+                    a[2] = b[2] = max(a[2], b[2]) + lift
+                    poses = [a, b, goal_pose]
+                try:
+                    for pose in poses:
+                        part = copy(checker)
+                        part.initial = candidate[-1]
+                        moved = part.plan_action(config, 'move', dict(
+                            x=pose[0], y=pose[1], z=pose[2],
+                            yaw=config.relative_yaw_from_absolute_deg(pose[5])), initial=candidate[-1])
+                        candidate.extend(part.joints(row) for row in moved['path'][1:])
+                    # IK may find another redundancy branch. Reach the exact
+                    # configured Home joints only with a separately checked leg.
+                    final = checker.refine_commanded_path([candidate[-1], goal], config, tolerance)
+                    candidate.extend(final[1:])
+                    states = candidate
+                    route = 'pyroki_cartesian_return' if not lift else f'pyroki_lifted_return_{lift:g}mm'
+                    break
+                except (DualArmError, SafetyError) as exc:
+                    failures.append(str(exc))
+            else:
+                # A joint-space return can be feasible when Cartesian IK is not.
+                # Its subdivisions are real queue targets, fully checked as well.
+                try:
+                    states = checker.refine_commanded_path([states[0], goal], config, tolerance)
+                    route = 'checked_joint_return'
+                except (DualArmError, SafetyError) as exc:
+                    raise SafetyError('no checked return path: '+str(exc)+'; Cartesian attempts: '+repr(failures)) from exc
+            route_failures = failures
         elif name not in {'open_gripper', 'close_gripper'}:
             raise SafetyError(f'{name}: no checked joint path implementation')
-        report = checker.validate_joint_path(states, robot_config=config, tolerance_deg=tolerance)
-        report.update(command='set_servo_angle', radius=-1, path=[{k: q.tolist() for k, q in s.items()} for s in states],
+        original_waypoints = len(states)
+        states = checker.compact_joint_path(states, config, tolerance)
+        states = checker.refine_commanded_path(states, config, tolerance)
+        report = dict(status='JOINT_RANGES_CLEAR', checked_segments=max(0, len(states)-1),
+                      controller_interpolation_covered=False, execution_allowed=False,
+                      validation='per_command_swept_joint_bounds', actual_subdivision_waypoints=True)
+        report.update(original_waypoints=original_waypoints, removed_stops=max(0, original_waypoints-len(states)),
+                      route=route, rejected_return_routes=route_failures)
+        report.update(command='set_servo_angle', intermediate_radius=0, final_radius=-1,
+                      queue_mode='continuous_zero_radius_with_exact_final_stop', path=[{k: q.tolist() for k, q in s.items()} for s in states],
                       joint_tolerance_deg=tolerance)
         # These are offline plans. Live identity/state and command monitoring
         # still belong to XArmBackend; this report is not execution permission.
@@ -216,7 +332,12 @@ class RobotCollision:
             try:
                 plan = self.plan_action(config, row['name'], row.get('args', {}), initial=current)
             except (ValueError, RuntimeError) as exc:
-                raise SafetyError(f'action {index + 1} ({row["name"]}): {exc}') from exc
+                error = SafetyError(f'action {index + 1} ({row["name"]}): {exc}')
+                if hasattr(exc, 'ik_diagnostics'):
+                    error.planning_failure = dict(kind='IK_REJECTED', action_index=index+1,
+                        action=row, active_arm=self.active_arm, diagnostics=exc.ik_diagnostics,
+                        physical_execution=False, stage='complete_pre_execution_path_planning')
+                raise error from exc
             current = plan['path'][-1]
             plans.append(plan)
         return plans

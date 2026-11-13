@@ -122,3 +122,12 @@ def test_rgb_only_keeps_context_and_rule_without_geometry(tmp_path,monkeypatch):
     assert r.io.read(folder/'decision_evidence.json')['decision']=='ACTION'
     assert not (folder/'structure_grounding').exists()
     assert r.io.read(folder/'request_manifest.json')['rgb_only'] is True
+
+
+def test_multisentence_reason_is_preserved_without_rejecting_action():
+    plan=output()
+    plan['short_reason']='抓取可见衣袖。向外拉开覆盖区域。'
+    assert r.validate(plan,(100,100),False)==plan
+    plan['target_px']=[100,30]
+    with pytest.raises(ValueError,match='coordinate invalid'):
+        r.validate(plan,(100,100),False)

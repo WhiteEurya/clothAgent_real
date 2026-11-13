@@ -22,6 +22,7 @@ class ReadOnlyRobot:
         self.closed = False
     def register_report_callback(self, cb): self.callback = cb
     def connect(self):
+        self.connected = True
         for _ in range(2): self.callback(dict(joints=self.q, cartesian=self.pose))
     def disconnect(self): self.closed = True
     def get_robot_sn(self): return 0, self.sn
@@ -77,7 +78,7 @@ def test_explicit_startup_stop_recovery(blocked):
         return 0
     robot.set_state = normal
     if blocked == 'identity': robot.sn = 'wrong-device'
-    if blocked == 'mode': robot.mode = 1
+    if blocked == 'mode': robot.mode = 2
     if blocked == 'disabled': robot.motor_enable_states[0] = 0
     factory = lambda *a, **kw: robot
     # Ordinary diagnostics must remain read-only, even in STOP.
@@ -94,3 +95,32 @@ def test_explicit_startup_stop_recovery(blocked):
         assert result['motion_commands_sent'] == 0
         assert writes == [('enable', True), ('state', 0)]
     assert robot.closed
+
+
+@pytest.mark.parametrize('failure', [None,'mode','fault_after_mode','queue_after_mode','cancel'])
+def test_stopped_servo_restores_position_without_motion(failure):
+    import threading
+    from cloth_agent.site_robot_check import recover_stopped_controller
+    robot=ReadOnlyRobot(load_site()['arms']['right']);robot.mode=1
+    state=[4];writes=[];fault=[0];queue=[0];cancel=threading.Event()
+    robot.get_state=lambda:(0,state[0])
+    robot.get_err_warn_code=lambda:(0,[fault[0],0])
+    robot.get_cmdnum=lambda:(0,queue[0])
+    robot.get_is_moving=lambda:False
+    def mode(n):
+        writes.append(('mode',n));robot.mode=n;state[0]=5
+        if failure=='fault_after_mode':fault[0]=1
+        if failure=='queue_after_mode':queue[0]=1
+        if failure=='cancel':cancel.set()
+        return 1 if failure=='mode' else 0
+    robot.set_mode=mode
+    robot.motion_enable=lambda **k:writes.append(('enable',True)) or 0
+    def ready(n):writes.append(('state',n));state[0]=2;return 0
+    robot.set_state=ready
+    if failure:
+        with pytest.raises(RuntimeError):recover_stopped_controller(robot,cancel)
+        assert writes==[('mode',0)]
+    else:
+        assert recover_stopped_controller(robot,cancel)==3
+        assert writes==[('mode',0),('enable',True),('state',0)]
+        assert robot.mode==0 and state[0]==2

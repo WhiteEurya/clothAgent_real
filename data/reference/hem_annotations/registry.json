@@ -1,0 +1,28 @@
+{
+  "650ec04ae973c46bfbb3f261df9e0e4386ea02361998a2b7d83ce375fdc397d7": {
+    "image": "white_black_cat_20261113_160203.png",
+    "landmarks": [
+      [
+        280,
+        607
+      ],
+      [
+        365,
+        610
+      ],
+      [
+        450,
+        613
+      ],
+      [
+        535,
+        616
+      ],
+      [
+        618,
+        616
+      ]
+    ],
+    "source": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/formal_experiments/arm7_unfold_20261113_175621_976130512/arm7_unfold_20261113_175621_976130512_run_01/round_001/skill_selection/image_2.png"
+  }
+}

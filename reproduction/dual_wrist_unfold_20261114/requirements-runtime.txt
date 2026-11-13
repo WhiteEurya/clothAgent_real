@@ -1,0 +1,10 @@
+-r ../../requirements-experiments.txt
+-r ../../requirements-motion.txt
+numpy==2.2.6
+scipy==1.15.3
+opencv-python==5.0.0.93
+pyrealsense2==2.59.1.11053
+xarm-python-sdk==1.18.4
+yourdfpy==0.0.60
+trimesh==4.12.2
+jaxls @ git+https://github.com/brentyi/jaxls.git@50a58be88c5ef74532f09e3f55268b4f02c490e3

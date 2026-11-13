@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "calibration": {
+    "zed_serial": "11483267",
+    "zed_frame": "rectified left optical IMAGE",
+    "world_from_zed_mm": [
+      [
+        -0.9998157286789779,
+        0.017066894478089966,
+        0.008788048645642787,
+        471.9005510889704
+      ],
+      [
+        0.004373203941896446,
+        0.6482555342541086,
+        -0.7614102950421695,
+        314.8845523038928
+      ],
+      [
+        -0.01869181032984861,
+        -0.7612315570322831,
+        -0.648210716360659,
+        585.437676889579
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "zed_K": [
+      [
+        1503.5765380859375,
+        0.0,
+        969.6260375976562
+      ],
+      [
+        0.0,
+        1503.5765380859375,
+        533.2042846679688
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "realsense_serial": "254522070945",
+    "realsense_frame": "color optical; NOT depth optical",
+    "board": {
+      "squares": [
+        7,
+        5
+      ],
+      "square_mm": 40,
+      "marker_mm": 30,
+      "ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    "translation_units": "mm",
+    "status": "RIGHT_WRIST_SEVEN_MANUAL_RGB_FIT",
+    "realsense_K": [
+      [
+        910.187255859375,
+        0.0,
+        650.1410522460938
+      ],
+      [
+        0.0,
+        910.0311279296875,
+        368.0643005371094
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "realsense_original_distortion": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "depth_scale": {
+    "zed": 1.0166213981439833,
+    "realsense": 0.9955606313942365
+  },
+  "depth_scale_source": "reports/dual_cloud_depth_scale_20261105/report.json",
+  "validation_source": "reports/dual_cloud_depth_scale_validation03/report.json",
+  "color_fallback": {
+    "gain_rgb": [
+      0.6433741857029415,
+      0.9484052479493648,
+      1.4498149484963954
+    ],
+    "offset_rgb": [
+      79.99999999999999,
+      36.75077185419176,
+      -33.40616137091763
+    ]
+  },
+  "zed_mode": "ULTRA",
+  "zed_size_wh": [
+    1280,
+    720
+  ],
+  "realsense_depth_size_wh": [
+    1280,
+    720
+  ],
+  "realsense_color_size_wh": [
+    1280,
+    720
+  ],
+  "realsense_warmup_frames": 60,
+  "note": "Fixed ZED + right-wrist RealSense. Resolve world extrinsic per stationary capture. Existing depth scale retained, not revalidated by RGB hand-eye fit.",
+  "extrinsics_source": "config/calibration/realsense_right_wrist_20261110/extrinsics.json",
+  "latest_depth_validation_source": "reports/realsense_recalibration_20261108/scaled_depth_check/report.json",
+  "rgb_calibration_validation_source": "reports/wrist_handeye_20261110/manual_seven/candidate.json",
+  "previous_extrinsics_source": "config/calibration/zed_realsense_20261109_joint4/extrinsics.json",
+  "realsense_mount": {
+    "arm": "right",
+    "link": "link_eef",
+    "robot_config": "config/dual_arm.zed_dual_xarm7_20261103.json",
+    "eef_from_color_mm": [
+      [
+        -0.029038905488602385,
+        -0.9976496579492187,
+        0.06206369278274641,
+        85.06114401029652
+      ],
+      [
+        0.9992014028126814,
+        -0.03067680453525451,
+        -0.02560254441799753,
+        -29.777449419733568
+      ],
+      [
+        0.027446285453477312,
+        0.06127065902463352,
+        0.9977437585660425,
+        20.470564362407853
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "source": "config/calibration/realsense_right_wrist_20261110/extrinsics.json",
+    "source_sha256": "75bec99a3b2ede49776d166e41471fe16f92ad735684fcecb0658da9c6841343"
+  }
+}

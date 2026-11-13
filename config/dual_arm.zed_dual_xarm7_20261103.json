@@ -237,7 +237,7 @@
       "gripper": {
         "open": 850,
         "close": 5,
-        "speed": 500,
+        "speed": 2000,
         "open_tolerance": 15,
         "timeout_s": 20
       },
@@ -272,6 +272,39 @@
         ],
         "motion_commands_sent": 0,
         "configuration_commands_sent": 0
+      },
+      "perception_position": {
+        "name": "perception",
+        "joints_deg": [
+          32.162814,
+          -35.644277,
+          -1.229797,
+          86.443861,
+          -2.692615,
+          109.821399,
+          -9.153058
+        ],
+        "pose_base_mm_deg": [
+          224.15625,
+          116.971611,
+          536.149292,
+          176.37801,
+          -11.756693,
+          39.427231
+        ],
+        "pose_common_mm_deg": [
+          828.6022875335623,
+          -127.96574559675535,
+          541.0222876230532,
+          176.79976102497437,
+          -11.257251115409398,
+          -140.54134499304894
+        ],
+        "control_box_sn": "AC130409A6006A",
+        "robot_sn": "XS130509P67A14",
+        "recorded_at": "2026-11-09T14:06:43.188121+00:00",
+        "source_record": "reports/perception_position_20261109/left_220643.json",
+        "note": "User-recorded left-arm observation position; return before every runtime RGB-D observation, using existing checked joint motion."
       }
     },
     "right": {
@@ -501,7 +534,7 @@
       "gripper": {
         "open": 850,
         "close": 5,
-        "speed": 500,
+        "speed": 2000,
         "open_tolerance": 15,
         "timeout_s": 60
       },
@@ -540,10 +573,10 @@
     }
   },
   "limits": {
-    "cartesian_speed_mm_s": 15,
-    "cartesian_accel_mm_s2": 30,
-    "joint_speed_deg_s": 5,
-    "joint_accel_deg_s2": 10,
+    "cartesian_speed_mm_s": 30,
+    "cartesian_accel_mm_s2": 60,
+    "joint_speed_deg_s": 10,
+    "joint_accel_deg_s2": 20,
     "clearance_mm": 0.0,
     "max_grasp_age_s": 180,
     "stationary_tolerance_deg": 0.2,

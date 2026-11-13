@@ -1,5 +1,8 @@
 # ClothAgent
 
+**2026-11-14 双腕相机 Unfold 复现入口：** [安装、配置、启动与续跑](reproduction/dual_wrist_unfold_20261114/README.md)。
+使用 `bash scripts/run_reproduced_unfold.sh --dry-run` 离线检查；正式运行与旧 Graph 入口区分见说明。
+
 [俯视图主流程与原图对照](docs/topdown_folding.md)：同帧独立识别 Graph、定位抓放点并比较动作提案；
 当前 ZED / 双臂自动提案入口：`bash scripts/run_topdown_folding.sh --help`。
 

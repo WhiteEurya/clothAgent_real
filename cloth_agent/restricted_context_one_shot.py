@@ -39,7 +39,9 @@ REPORTS_PREVIOUS_EFFECT = False
 
 def validate(output, size, contextual):
     io.jsonschema.validate(output, SCHEMA)
-    io.validate_plan({k:output[k] for k in io.ROTATION_SCHEMA["properties"]},size,require_grasp_rotation=True)
+    # Rationale length is a prompt preference, not an action rejection condition.
+    io.validate_plan({k:output[k] for k in io.ROTATION_SCHEMA["properties"]},size,
+                     require_grasp_rotation=True,require_single_sentence=False)
     if output["decision"]!="ACTION" and output["is_smoothing"]:
         raise ValueError("non-ACTION is_smoothing must be false")
     for field in ('action_purpose','expected_stop_state'):

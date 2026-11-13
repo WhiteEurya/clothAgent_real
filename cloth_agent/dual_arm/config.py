@@ -137,7 +137,8 @@ class DualConfig:
             gripper = SimpleNamespace(
                 gripper_open=number(g["open"], "gripper open", 0, 850),
                 gripper_close=number(g["close"], "gripper close", 0, 850),
-                gripper_speed=number(g["speed"], "gripper speed", 1, 500),
+                # Include the 2000 setting already used by CollectionRuntime.
+                gripper_speed=number(g["speed"], "gripper speed", 1, 2000),
                 gripper_open_tolerance_pulse=number(
                     g["open_tolerance"], "open tolerance", 1, 30
                 ),

@@ -1,0 +1,8 @@
+{
+  "camera_serial": "11483267",
+  "captured_at": "2026-11-10T22:36:15.039690",
+  "image": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/data/reference/reset_garment_20261110_223611/rgb.png",
+  "purpose": "new garment reference for next reset experiment",
+  "robot_calls": 0,
+  "depth_captured": false
+}

@@ -1,0 +1,10 @@
+{
+  "python": "/home/CNS2026330003/miniconda3/envs/molmo/bin/python",
+  "detector": "model_assets/grounded_sam2/dino",
+  "segmenter": "model_assets/grounded_sam2/sam2",
+  "prompt": "clothing.",
+  "box_threshold": 0.25,
+  "text_threshold": 0.25,
+  "timeout_seconds": 120,
+  "device": "cuda"
+}

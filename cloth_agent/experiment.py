@@ -184,8 +184,38 @@ def _execute(
     action_callback: Callable[[int, Mapping[str, Any]], None] | None = None,
 ) -> tuple[str, str | None]:
     tree = validate_experiment_source(source, source_path)
+    continuous = getattr(robot.backend,'continuous_move_groups',False) and getattr(robot.backend,'collision',None) is not None and action_callback is None
+    pending = []
+    def flush():
+        if pending:
+            batch=pending[:];pending.clear()
+            if len(batch)>1:robot.motion_sequence(batch)
+            else:
+                action=batch[0]
+                if action['name']=='move':robot.move(**action['args'])
+                else:robot.home()
+
+    def queue_move(x,y,z,yaw):
+        if not continuous:return invoke('move',robot.move,x,y,z,yaw)
+        args=dict(x=float(x),y=float(y),z=float(z),yaw=float(yaw))
+        # Identical consecutive poses add no path, but can add controller dwell.
+        # Never deduplicate across a gripper event (which flushes this queue).
+        if pending and pending[-1]['name']=='move' and pending[-1]['args']==args:
+            return
+        # Preserve a bottom/contact stop. An upper turning point is not contact
+        # and remains in the same checked continuous queue.
+        if len(pending)>=2 and all(a['name']=='move' for a in pending[-2:]):
+            a,b=[entry['args'] for entry in pending[-2:]]
+            if b['z'] < a['z'] and args['z'] > b['z']:flush()
+        pending.append(dict(name='move',args=args))
+
+    def queue_home():
+        if not continuous:return invoke('home',robot.home)
+        pending.append(dict(name='home',args={}))
+        flush()
 
     def invoke(name: str, method: Callable[..., Any], *args: Any) -> Any:
+        flush()
         result = method(*args)
         if action_callback is not None:
             actions = robot.action_dicts()
@@ -195,12 +225,12 @@ def _execute(
 
     namespace: dict[str, Any] = {
         "__builtins__": {},
-        "move": lambda x, y, z, yaw: invoke("move", robot.move, x, y, z, yaw),
+        "move": queue_move,
         "open_gripper": lambda: invoke("open_gripper", robot.open_gripper),
         "close_gripper": lambda: invoke("close_gripper", robot.close_gripper),
         "shake": lambda: invoke("shake", robot.shake),
         "shake_open": lambda: invoke("shake_open", robot.shake_open),
-        "home": lambda: invoke("home", robot.home),
+        "home": queue_home,
     }
     stdout, stderr = io.StringIO(), io.StringIO()
     error: str | None = None
@@ -208,6 +238,7 @@ def _execute(
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compile(tree, str(source_path), "exec"), namespace, namespace)
             namespace["run"]()
+            flush()
     except KeyboardInterrupt:
         # The caller records the partial trace, stops and closes the backend.
         raise
@@ -301,10 +332,10 @@ def format_action_sequence(actions: list[dict[str, Any]]) -> str:
 
 def format_speed_profile(config: RobotConfig) -> str:
     return (
-        "Low-speed execution profile:\n"
+        "Execution speed profile:\n"
         f"  Cartesian: speed={config.speed_mm_s:.1f} mm/s, "
         f"acceleration={config.acceleration_mm_s2:.1f} mm/s^2\n"
-        f"  Home joints: speed={config.home_speed_deg_s:.1f} deg/s, "
+        f"  Joint commands (including Home): speed={config.home_speed_deg_s:.1f} deg/s, "
         f"acceleration={config.home_acceleration_deg_s2:.1f} deg/s^2\n"
         f"  Gripper speed: {config.gripper_speed:.1f}"
     )

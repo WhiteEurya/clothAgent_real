@@ -321,6 +321,23 @@ class ArmModel:
             raise DualArmError(f"model has no flange link {self.flange}")
         self.lower = np.array([self.urdf.joint_map[n].limit.lower for n in self.names])
         self.upper = np.array([self.urdf.joint_map[n].limit.upper for n in self.names])
+        # Match the installed xArm SDK's serial-based 1305 model selection.
+        # Read constants only: no SDK connection or robot state change.
+        serial = str(config.raw.get('robot_sn', ''))
+        self.joint_limit_source = 'URDF'
+        if config.axis == 7 and serial[2:6].isdigit() and 1305 <= int(serial[2:6]) < 8500:
+            from xarm.core.config.x_config import XCONF
+            sdk_limits = np.asarray(XCONF.Robot.JOINT_LIMITS[7][71305], dtype=float)
+            self.lower = np.maximum(self.lower, sdk_limits[:, 0])
+            self.upper = np.minimum(self.upper, sdk_limits[:, 1])
+            if np.any(self.lower >= self.upper):
+                raise DualArmError(f'{config.arm_id}: URDF/SDK joint ranges do not overlap')
+            self.joint_limit_source = 'URDF intersect installed xArm SDK XARM7_X4_1305'
+            # PyRoki copies this in-memory URDF, so solver and FK/path validation
+            # use exactly the same limits. Calibration files remain untouched.
+            for i, name in enumerate(self.names):
+                self.urdf.joint_map[name].limit.lower = float(self.lower[i])
+                self.urdf.joint_map[name].limit.upper = float(self.upper[i])
         for capsule in config.capsules:
             if capsule["frame"] not in self.urdf.link_map:
                 raise DualArmError(f"unknown capsule frame: {capsule['frame']}")
@@ -525,8 +542,14 @@ class ArmModel:
 
         target=finite(pose_mm_deg,(6,),'IK target')
         seed=finite(seed_deg,(self.config.axis,),'IK seed')
-        lower,upper=np.degrees(self.lower),np.degrees(self.upper)
+        margin=float(getattr(self,'ik_joint_margin_deg',0.))
+        lower,upper=np.degrees(self.lower)+margin,np.degrees(self.upper)-margin
+        if not np.isfinite(margin) or margin < 0 or np.any(lower >= upper):
+            raise DualArmError('invalid IK joint tracking margin')
         seed=np.clip(seed,lower,upper)
+        if (hasattr(self,'_pyroki_ik') and
+                getattr(self._pyroki_ik,'joint_margin_deg',0.) != margin):
+            del self._pyroki_ik
         if not hasattr(self,'_pyroki_ik'):
             print(f'{self.config.arm_id}: 初始化 PyRoki IK（首次调用需要 JIT 编译）',flush=True)
             self._pyroki_ik=PyrokiIK(self)
@@ -548,14 +571,22 @@ class ArmModel:
                 attempts.append(dict(reason='JOINT_LIMIT_VIOLATION'));continue
             q=np.clip(q,lower,upper)
             distance,angle=pose_error(self.forward(q),target)
-            if distance<=.5 and angle<=.2:return q
+            if distance<=.5 and angle<=.2:
+                check = getattr(self, 'ik_collision_check', None)
+                if check is not None:
+                    try:check(q)
+                    except DualArmError as exc:
+                        attempts.append(dict(reason='SELF_COLLISION',error=str(exc)));continue
+                return q
             attempts.append(dict(reason='POSE_TOLERANCE_NOT_MET',distance_mm=float(distance),angle_deg=float(angle)))
             score=max(distance/.5,angle/.2)
             if best is None or score<best[0]:best=(score,distance,angle,q.copy())
         detail=(f'{best[1]:.3f} mm, {best[2]:.3f} deg' if best is not None
                 else 'no finite joint-limit-compliant solution')
+        collision_failures=[a['error'] for a in attempts if a['reason']=='SELF_COLLISION']
+        if collision_failures:detail='self-collision: '+collision_failures[-1]
         error=DualArmError(f'{self.config.arm_id}: PyRoki IK rejected target ({detail})')
-        error.ik_diagnostics=dict(attempts=attempts,seed_count=len(seeds),
+        error.ik_diagnostics=dict(target_base_mm_deg=target.tolist(),attempts=attempts,seed_count=len(seeds),
             max_iterations_per_seed=getattr(self._pyroki_ik,'max_iterations',100),
             solve_elapsed_s=time.perf_counter()-started,
             explanation='No accepted solution within the numerical search budget; this does not prove geometric unreachability.')

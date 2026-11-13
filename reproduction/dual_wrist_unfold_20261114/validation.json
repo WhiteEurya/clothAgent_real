@@ -1,0 +1,22 @@
+{
+  "date": "2026-11-14T06:28:34.767229+08:00",
+  "hardware_calls": 0,
+  "model_requests": 0,
+  "workspace_tests": {
+    "passed": 194,
+    "failed": 0
+  },
+  "clean_index_export_tests": {
+    "passed": 168,
+    "failed": 0
+  },
+  "clean_startup": "DRY_RUN_OK",
+  "saved_pixel_geometry": "PASS: [548,287] -> [585,180]",
+  "local_model_sha256": "13/13 passed",
+  "remote_pinned_model_assets": "11 small files SHA256 match; 2 weight LFS SHA256 match",
+  "limitations": [
+    "Tests use the existing Python environment; dependencies were not reinstalled into a fresh environment.",
+    "No live camera, robot motion or online planner smoke test was performed for publication.",
+    "Site-specific calibration is included; must be replaced for a different physical setup."
+  ]
+}

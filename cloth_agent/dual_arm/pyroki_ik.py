@@ -50,6 +50,15 @@ class PyrokiIK:
         links.append(deepcopy(model.urdf.link_map['link_base']))
         joints.reverse()
         links.reverse()
+        self.joint_margin_deg = float(getattr(model, 'ik_joint_margin_deg', 0.))
+        margin = np.radians(self.joint_margin_deg)
+        if not np.isfinite(margin) or margin < 0 or np.any(model.lower + margin >= model.upper - margin):
+            raise DualArmError('invalid IK joint tracking margin')
+        for joint in joints:
+            if joint.name in model.names:
+                index = model.names.index(joint.name)
+                joint.limit.lower = float(model.lower[index] + margin)
+                joint.limit.upper = float(model.upper[index] - margin)
         tcp_name='clothagent_ik_tcp'
         links.append(yourdfpy.Link(name=tcp_name))
         offset=pose_matrix(model.config.tcp_offset);offset[:3,3]/=1000.

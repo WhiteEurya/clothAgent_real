@@ -1,0 +1,20 @@
+{
+  "mode": "PRE_PLANNING_RANDOMIZATION",
+  "run_count": 6,
+  "seed": 2026110601,
+  "probabilities": {
+    "SIMPLE": 0.7,
+    "TANGENT": 0.3
+  },
+  "max_actions": 12,
+  "max_planning_requests_per_iteration": 1,
+  "automatic_initialization": true,
+  "fallback_to_other_skill": false,
+  "garment_id": "black_mario",
+  "goal_image": "data/reference/black_mario_goal_20261106_153449_487709/goal.png",
+  "goal_sha256": "5034e5046f5de60cb99bb5b68ff96bf262988b3a8ea82690e4d9adfae7d57d11",
+  "readiness": "READY",
+  "visual_baseline": "docs/vision_baseline_20261106.md",
+  "execute": false,
+  "gate_training": false
+}

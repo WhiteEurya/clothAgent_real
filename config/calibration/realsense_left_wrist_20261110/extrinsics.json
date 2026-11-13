@@ -1,0 +1,147 @@
+{
+  "success": true,
+  "eef_from_camera_mm": [
+    [
+      0.01671586691123661,
+      0.9993622681496342,
+      0.03155371281203584,
+      75.13580461463455
+    ],
+    [
+      -0.9998255363690257,
+      0.01697004250330647,
+      -0.0078047730156711285,
+      35.51888223101258
+    ],
+    [
+      -0.00833526351089153,
+      -0.03141774428972556,
+      0.9994715847516373,
+      22.583739438561373
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "board_poses": {
+    "all": [
+      [
+        0.9979517943820955,
+        -0.0639466468157928,
+        0.0017442621856368005,
+        434.43253548695037
+      ],
+      [
+        -0.06396302669836128,
+        -0.9978801358078497,
+        0.011998573902433545,
+        295.8857920108733
+      ],
+      [
+        0.0009732960190556407,
+        -0.012085566644708565,
+        -0.9999264931852421,
+        66.0869809836078
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "fit_pixel_rmse": 0.5173943396880263,
+  "per_pose": [
+    {
+      "id": 1,
+      "split": "fit",
+      "pixel_rmse": 0.38044293632773946,
+      "board_position_residual_mm": 5.53640086680707,
+      "board_orientation_residual_deg": 0.6313741887932178
+    },
+    {
+      "id": 2,
+      "split": "fit",
+      "pixel_rmse": 0.5432188793547252,
+      "board_position_residual_mm": 0.779789124973715,
+      "board_orientation_residual_deg": 1.4903368329139424
+    },
+    {
+      "id": 3,
+      "split": "fit",
+      "pixel_rmse": 0.42499565399498607,
+      "board_position_residual_mm": 0.40085965395050877,
+      "board_orientation_residual_deg": 0.3044848235966311
+    },
+    {
+      "id": 4,
+      "split": "fit",
+      "pixel_rmse": 0.6288845777211891,
+      "board_position_residual_mm": 0.9788497682888189,
+      "board_orientation_residual_deg": 0.7251095953133976
+    },
+    {
+      "id": 5,
+      "split": "fit",
+      "pixel_rmse": 0.4702332522544149,
+      "board_position_residual_mm": 0.6581855733658494,
+      "board_orientation_residual_deg": 0.3186320648653964
+    },
+    {
+      "id": 6,
+      "split": "fit",
+      "pixel_rmse": 0.4915154802073181,
+      "board_position_residual_mm": 3.3101314213080713,
+      "board_orientation_residual_deg": 0.5450947035013234
+    },
+    {
+      "id": 7,
+      "split": "fit",
+      "pixel_rmse": 0.6378282200646236,
+      "board_position_residual_mm": 3.0022619162828645,
+      "board_orientation_residual_deg": 3.169213537437904
+    }
+  ],
+  "status": "SEVEN_MANUAL_POSE_FIT_NOT_DEPLOYED",
+  "units": "mm",
+  "camera_serial": "263622075308",
+  "mount": "left/link_eef",
+  "source_count": 7,
+  "frame_count": 56,
+  "sources": [
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011022_973644/observation.json",
+      "sha256": "2aeb595711e56adf4d55294c5c7809370b31a38ae6c4d8ce87409f7336143df5"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011041_552661/observation.json",
+      "sha256": "376e1d3446b719d1785ee21cee1276da53b641950bfdfb956eab31c0854fd80c"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011103_667846/observation.json",
+      "sha256": "e1a8d19051093ed2b2de6f62bdd2ede130fbccf2a8face5f0dbe7ebb934327a3"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011128_489349/observation.json",
+      "sha256": "67633002db59404420ad2e094ef742b258beefacb41cf19c56f3fee73fbb6415"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011145_867415/observation.json",
+      "sha256": "9edc786675a540a083b931b5cc0aa868174d40b420a551c8cf62ea99177ae544"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011157_002496/observation.json",
+      "sha256": "59e7d02ed1483127013bb493274c0ee3ec5fbab0c9be3d4ad892cb2dd15f091b"
+    },
+    {
+      "path": "reports/realsense_263622075308_calibration_20261110/manual_01/point_011217_457479/observation.json",
+      "sha256": "08ccf32bcfd7faa55901ff826369a107cf5e8b33db83471ff6abcd5d2a0c0df4"
+    }
+  ],
+  "limitation": "All seven poses participate in fitting; these residuals are not independent validation or absolute depth accuracy.",
+  "deployed": false
+}

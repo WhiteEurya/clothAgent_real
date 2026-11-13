@@ -20,7 +20,8 @@ def load_zed_sdk():
 
 
 class ZEDRGBD:
-    def __init__(self, spec, width, height, fps):
+    def __init__(self, spec, width, height, fps, *, rgb_only=False):
+        self.rgb_only = rgb_only
         self.spec, self.width, self.height, self.fps = spec, width, height, fps
         self.started = False
         self.intrinsics = None
@@ -51,7 +52,7 @@ class ZEDRGBD:
         params.camera_fps = self.fps
         params.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE
         params.coordinate_units = sl.UNIT.METER
-        params.depth_mode = getattr(sl.DEPTH_MODE, self.spec.depth_mode)
+        params.depth_mode = sl.DEPTH_MODE.NONE if self.rgb_only else getattr(sl.DEPTH_MODE, self.spec.depth_mode)
         params.depth_minimum_distance, params.depth_maximum_distance = .15, 2.
         self.camera = sl.Camera()
         try:
@@ -84,6 +85,12 @@ class ZEDRGBD:
         sl = self.sl
         self._check(self.camera.grab(self.runtime), 'grab')
         self._check(self.camera.retrieve_image(self.image, sl.VIEW.LEFT), 'left image')
+        if self.rgb_only:
+            rgb = self.image.get_data()[..., :3][..., ::-1].copy()
+            if rgb.shape != (self.height, self.width, 3):
+                raise PerceptionError('ZED RGB dimensions differ')
+            self.timestamp_ns = int(self.camera.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds())
+            return rgb, np.full((self.height, self.width), np.nan, dtype=np.float32)
         self._check(self.camera.retrieve_measure(self.depth, sl.MEASURE.DEPTH), 'depth')
         self._check(self.camera.retrieve_measure(self.quality, sl.MEASURE.CONFIDENCE), 'confidence')
         # ZED SDK image memory is BGRA. The perception API uses RGB.

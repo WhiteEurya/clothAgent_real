@@ -88,8 +88,8 @@ def test_native_gates_are_not_promoted_or_required(inputs):
     assert 'safety' not in execution
     assert 'collision_geometry_verified' not in execution
     assert execution['geometry_provenance']['collision_geometry_verified'] is False
-    assert config.speed_mm_s == 15
-    assert config.acceleration_mm_s2 == 30
+    assert config.speed_mm_s == execution['limits']['cartesian_speed_mm_s']
+    assert config.acceleration_mm_s2 == execution['limits']['cartesian_accel_mm_s2']
     assert config.gripper_close == 5
     assert len(mapping) == 9
 
@@ -97,3 +97,21 @@ def test_native_gates_are_not_promoted_or_required(inputs):
 def test_no_real_execution_option():
     with pytest.raises(SystemExit):
         main(['--real'])
+
+
+@pytest.mark.parametrize('arm',['left','right'])
+def test_formal_dual_wrist_config_enables_tested_continuous_stream(arm):
+    from cloth_agent.experiments.full_grasp_adapter import build_robot_config
+    path=Path('config/dual_arm.dual_wrist_xarm7_20261110.json')
+    raw=json.loads(path.read_text())
+    config=build_robot_config(raw,{},arm,180,0,config_path=path)
+    assert config.continuous_joint_stream is True
+    assert config.home_speed_deg_s==20
+    assert config.home_acceleration_deg_s2==40
+    assert config.joint_queue_prefill_s==0
+    config.validate_for_real()
+    raw['limits']['continuous_joint_stream']=False
+    assert not build_robot_config(raw,{},arm,180,0,config_path=path).continuous_joint_stream
+    raw['limits']['continuous_joint_stream']='false'
+    with pytest.raises(ValueError,match='boolean'):
+        build_robot_config(raw,{},arm,180,0,config_path=path)

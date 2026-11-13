@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "mode": "DUAL_REALSENSE_FIXED_PERCEPTION",
+  "status": "OPERATIONAL_CALIBRATION_CHAIN_PROPAGATED_AND_CROSS_CHECKED",
+  "pose_name": "dual_topdown_wide_overlap",
+  "default_runtime_changed": true,
+  "common_frame": "right_arm_base",
+  "units": "mm",
+  "capture_joints_deg": {
+    "left": [3.605222, 19.997488, 117.442311, 158.930757, -59.374871, 158.882514, 63.880955],
+    "right": [-6.12681, 12.212252, -57.710372, 157.70331, 20.393802, 147.79687, -47.629007]
+  },
+  "sequence": ["right", "left"],
+  "scene": "config/dual_arm.dual_wrist_xarm7_20261110.json",
+  "camera_serials": {
+    "left": "263622075308",
+    "right": "254522070945"
+  },
+  "color_intrinsics": {
+    "left": [[912.0582275390625, 0.0, 653.3204345703125], [0.0, 910.5154418945312, 377.76385498046875], [0.0, 0.0, 1.0]],
+    "right": [[910.187255859375, 0.0, 650.1410522460938], [0.0, 910.0311279296875, 368.0643005371094], [0.0, 0.0, 1.0]]
+  },
+  "world_from_left_color_mm": [
+    [0.004048512721604104, -0.9995536701010681, -0.029598481924360157, 776.6191342281791],
+    [-0.9999522822879413, -0.003783426525782384, -0.009006599295110594, -146.39934021073645],
+    [0.008890595698922093, 0.029633532884347377, -0.9995212909372712, 772.3378112380935],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "world_from_right_color_mm": [
+    [-0.0009359414862790832, -0.9969705015731651, 0.07777495102206441, 318.38769844299355],
+    [-0.9999914691928181, 0.0006202000895561634, -0.004083735231057058, -131.60772500786533],
+    [0.00402312753001009, -0.07777810967617507, -0.9969625770810437, 763.5858208297099],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "left_color_from_right_color_mm": [
+    [0.9999757307171293, -0.005347911981067159, -0.004465177956592763, -16.72387558633301],
+    [0.004838137479668768, 0.9942183371777199, -0.1072683105362324, 457.7115980098767],
+    [0.005013023286311682, 0.10724410406643595, 0.994220082145054, 22.177533469460172],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "world_anchor": "Existing dual-arm base transform and seven-pose hand-eye calibrations, resolved at the recorded capture joints.",
+  "hand_eye_sources": {
+    "left": "config/calibration/realsense_left_wrist_20261110/extrinsics.json",
+    "right": "config/calibration/realsense_right_wrist_20261110/extrinsics.json",
+    "frame_chain": "config/calibration/dual_wrist_20261110/frames.json"
+  },
+  "scope": "Fixed wide-overlap dual-wrist capture pose used by the normal unfold observation path.",
+  "validation": {
+    "path_checked_motion": "reports/diagnostics/20261112_two_topdown_overlap/motion.json",
+    "full_capture_only_flow": "reports/diagnostics/20261112_pipeline_capture_02/episode_summary.json",
+    "rgb_capture": "reports/diagnostics/20261112_two_topdown_overlap/capture.json",
+    "rgb_feature_alignment": {
+      "matches": 235,
+      "inliers": 163,
+      "median_residual_px": 0.6716157793998718,
+      "p95_residual_px": 1.9713265895843506
+    },
+    "predicted_table_coverage": 0.8573935936814392,
+    "predicted_overlap": 0.12724879333040806,
+    "current_pose_depth_cross_check": {
+      "status": "PASSED_ROBUST_OVERLAP_CHECK",
+      "table_overlap_abs_z_difference_mm_p50_p90_p95": [2.720906637517942, 13.665717174898393, 16.530276283204948],
+      "signed_z_difference_median_mm": 2.3769593668075686,
+      "right_base_correction_source": "config/calibration/dual_wrist_relaxed_20261110/extrinsics.json independent third-board validation"
+    }
+  },
+  "rollback_config": "config/calibration/dual_wrist_relaxed_20261110/extrinsics.json",
+  "mapping_policy": "RGB appearance may be feature-aligned. Executable XYZ remains tied to one original measured source pixel."
+}

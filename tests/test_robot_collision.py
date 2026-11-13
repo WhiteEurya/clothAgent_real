@@ -111,4 +111,59 @@ def test_cartesian_refinement_avoids_joint_chord_dipping_into_table():
     assert plan['status'] == 'JOINT_RANGES_CLEAR'
     np.testing.assert_allclose(plan['path'][-1]['left'], end['left'])
     for row in plan['path']:
-        assert c.models['left'].forward(row['left'])[2] == pytest.approx(.6)
+        assert c.models['left'].forward(row['left'])[2] > 0.05
+    assert c.models['left'].forward(plan['path'][-1]['left'])[2] == pytest.approx(.6)
+
+
+def test_compact_clear_path_to_one_motion():
+    c=scene()
+    states=[{'left':np.array([x]),'right':np.array([0.])} for x in [-2.,-1.8,-1.5,-1.]]
+    compact=c.compact_joint_path(states,None,0.)
+    assert len(compact)==2
+    c.validate_joint_path(compact)
+    np.testing.assert_array_equal(compact[-1]['left'],states[-1]['left'])
+
+
+def test_compaction_never_uses_rejected_shortcut(monkeypatch):
+    c=scene()
+    states=[{'left':np.array([x]),'right':np.array([0.])} for x in [-2.,-1.8,-1.5,-1.]]
+    def validate(self,low,high,config=None):
+        if abs(high['left'][0]-low['left'][0])>.51:
+            raise SafetyError('shortcut crosses forbidden joint box')
+    monkeypatch.setattr(RobotCollision,'_box',validate)
+    compact=c.compact_joint_path(states,None,0.)
+    assert len(compact)>2
+    for a,b in zip(compact,compact[1:]):assert abs(b['left'][0]-a['left'][0])<=.51
+
+
+def test_refinement_emits_real_waypoints_instead_of_joint_product():
+    c = scene()
+    for m in c.models.values():
+        m.config.axis = 2
+        m.lower, m.upper = np.radians([-10., -10.]), np.radians([10., 10.])
+    start = {'left': np.array([-2., -2.]), 'right': np.zeros(2)}
+    end = {'left': np.array([2., 2.]), 'right': np.zeros(2)}
+    c.initial = start
+    checked = []
+    def box(low, high, config=None):
+        # The synchronous diagonal is clear; off-diagonal joint combinations
+        # can collide. Small command envelopes must be certified individually.
+        if max(high['left'][0]-low['left'][1], high['left'][1]-low['left'][0]) > .6:
+            raise SafetyError('off-diagonal collision')
+        checked.append((low, high))
+    c._box = box
+    with pytest.raises(SafetyError):
+        c.validate_joint_path([start, end], max_cells=64)
+    path = c.refine_commanded_path([start, end], None, .01)
+    assert len(path) > 2
+    np.testing.assert_allclose(path[-1]['left'], end['left'])
+    for a, b in zip(path, path[1:]):
+        box({k: np.minimum(a[k],b[k])-.01 for k in a},
+            {k: np.maximum(a[k],b[k])+.01 for k in a})
+        np.testing.assert_array_equal(b['right'], start['right'])
+
+
+def test_refinement_cannot_hide_a_real_midpath_collision():
+    c = scene()
+    with pytest.raises(DualArmError, match='inter-arm collision'):
+        c.refine_commanded_path([c.initial, {'left': np.array([2.]), 'right': np.array([0.])}], None, 0.)

@@ -7,7 +7,7 @@
   "minimum_anchor_confidence": 0.8,
   "approach_clearance_mm": 100.0,
   "lift_clearance_mm": 80.0,
-  "grasp_surface_offset_mm": 0.0,
+  "grasp_surface_offset_mm": -15.0,
   "place_surface_offset_mm": 5.0,
   "retreat_clearance_mm": 80.0,
   "note": "Preview parameters only; current-site physical grasp, reachability and paths are not commissioned. Height offsets follow the recorded table normal. Release uses open, not the old Arm6 partial-release pulse."

@@ -20,11 +20,12 @@ from PIL import Image, ImageDraw, ImageFont
 import jsonschema
 import requests
 
+from ..codex_profile import profile_settings
+
 ROOT = Path("reports/one_shot_goal_planner_probe_v1")
 SOURCES = (Path("reports/goal_only_full_episode_v1_restart02"),
            Path("reports/goal_only_full_episode_v1_continue01"))
 MODEL, EFFORT = "gpt-6-astra", "high"
-ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 CHOICES = ("ONE_SHOT_BETTER", "ORIGINAL_BETTER", "EQUIVALENT", "BOTH_BAD")
 # User-provided TCP boundary: data/robot/xarm_boundaries_new.json;
 # shared base-frame Y/Z, X unrestricted per config/dual_arm.local.json.
@@ -94,6 +95,33 @@ def utc():
     return datetime.now(timezone.utc).isoformat()
 
 
+def transport_config():
+    """Resolve the configured RBS Responses transport without exposing credentials."""
+    settings = profile_settings()
+    provider = settings.get("model_provider")
+    providers = settings.get("model_providers", {})
+    definition = providers.get(provider, {})
+    if provider == "openai" or not provider or not definition:
+        raise RuntimeError("RBS model profile is required for direct model inference")
+    base_url = definition.get("base_url", "").rstrip("/")
+    if not base_url.startswith("https://"):
+        raise RuntimeError("RBS profile requires an HTTPS base URL")
+    env_key = definition.get("env_key")
+    if not env_key:
+        raise RuntimeError("RBS profile does not define an environment credential")
+    return dict(provider=provider, endpoint=base_url + "/responses", env_key=env_key,
+                service_tier=settings.get("service_tier"))
+
+
+def endpoint():
+    return transport_config()["endpoint"]
+
+
+def service_tier():
+    """Return the optional tier from the selected RBS profile."""
+    return transport_config().get("service_tier")
+
+
 def image_data(path):
     return "data:image/png;base64,"+base64.b64encode(Path(path).read_bytes()).decode()
 
@@ -104,7 +132,7 @@ def payload(current, target, size, *, right_view=None, allow_grasp_rotation=Fals
     images = [current, target] if right_view is None else [current, right_view, target]
     labels = "第一张 current，第二张 goal。" if right_view is None else (
         "第一张 perception current（唯一 Pa/Pb 坐标基准），第二张 right view current，第三张 goal。")
-    return dict(model=MODEL, instructions=(ROTATING_MULTIVIEW_PROMPT if allow_grasp_rotation
+    body = dict(model=MODEL, instructions=(ROTATING_MULTIVIEW_PROMPT if allow_grasp_rotation
                 else PROMPT if right_view is None else MULTIVIEW_PROMPT),
         input=[dict(role="user", content=[
             dict(type="input_text", text=f"当前 perception 图尺寸 {size[0]}×{size[1]} 像素。{labels}"),
@@ -114,6 +142,15 @@ def payload(current, target, size, *, right_view=None, allow_grasp_rotation=Fals
         text=dict(format=dict(type="json_schema", name="unfold_single_step", strict=True,
                              schema=ROTATION_SCHEMA if allow_grasp_rotation else SCHEMA)),
         store=False, stream=True)
+    try:
+        tier = service_tier()
+    except RuntimeError:
+        # Pure payload/schema tests may run without operator credentials; the
+        # live transport still fails closed in auth_headers().
+        tier = None
+    if tier:
+        body["service_tier"] = tier
+    return body
 
 
 def validate_plan(plan, size, *, require_grasp_rotation=False, require_single_sentence=True):
@@ -230,7 +267,7 @@ def prepare(out):
     save(out/"query_manifest.json", queries)
     save(out/"source_hashes.json", hashes)
     save(out/"protocol.json", dict(experiment="one_shot_goal_planner_probe_v1", model=MODEL, effort=EFFORT,
-        created_at=utc(), endpoint=ENDPOINT, transport="direct HTTPS Responses using existing Codex ChatGPT account auth",
+        created_at=utc(), endpoint=endpoint(), transport="direct HTTPS Responses through the configured RBS profile",
         model_calls_per_query=1, http_attempts_per_query=1, retries=0, tools=[], tool_choice="none",
         original_agent_rerun=False, robot=False, graph=False, trajectory_memory=False,
         query_count=10, schema=SCHEMA, prompt=PROMPT,
@@ -250,17 +287,13 @@ def prepare(out):
 
 
 def auth_headers():
-    # Use the already authorized account; never serialize/log any auth value.
-    auth = read(Path.home()/".codex/auth.json")
-    tokens = auth.get("tokens", {})
-    if auth.get("auth_mode") != "chatgpt" or not tokens.get("access_token"):
-        raise RuntimeError("existing ChatGPT account auth unavailable; no credential fallback")
-    headers = {"Authorization": "Bearer "+tokens["access_token"], "Content-Type": "application/json",
-               "Accept": "text/event-stream", "originator": "codex_cli_rs",
-               "User-Agent": "one_shot_goal_planner_probe_v1"}
-    if tokens.get("account_id"):
-        headers["ChatGPT-Account-ID"] = tokens["account_id"]
-    return headers
+    # Read only the named RBS credential from the environment; never serialize/log it.
+    config = transport_config()
+    token = os.environ.get(config["env_key"], "").strip()
+    if not token or "\n" in token or "\r" in token:
+        raise RuntimeError(f"RBS credential unavailable in {config['env_key']}")
+    return {"Authorization": "Bearer "+token, "Content-Type": "application/json",
+            "Accept": "text/event-stream", "User-Agent": "cloth_agent_rbs_responses"}
 
 
 def parse_events(events):
@@ -296,7 +329,7 @@ def call_once(folder, meta, headers):
         with requests.Session() as session:
             session.trust_env = False
             session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
-            with session.post(ENDPOINT, headers=headers, data=body, stream=True,
+            with session.post(endpoint(), headers=headers, data=body, stream=True,
                               timeout=(30, 600), allow_redirects=False) as response:
                 result["http_status"] = response.status_code
                 result["request_id"] = response.headers.get("x-request-id")

@@ -1,0 +1,289 @@
+{
+  "status": "FOUR_POSITION_RGB_JOINT_FIT",
+  "board": {
+    "squares": [
+      7,
+      5
+    ],
+    "square_mm": 40,
+    "marker_mm": 30,
+    "ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ]
+  },
+  "translation_units": "mm",
+  "zed_serial": "11483267",
+  "realsense_serial": "254522070945",
+  "zed_frame": "rectified left optical IMAGE",
+  "realsense_frame": "color optical; NOT depth optical",
+  "zed_K": [
+    [
+      1503.5765380859375,
+      0.0,
+      969.6260375976562
+    ],
+    [
+      0.0,
+      1503.5765380859375,
+      533.2042846679688
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_K": [
+    [
+      910.187255859375,
+      0.0,
+      650.1410522460938
+    ],
+    [
+      0.0,
+      910.0311279296875,
+      368.0643005371094
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "realsense_original_distortion": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "zed_from_realsense_color_mm": [
+    [
+      -0.9925648939814096,
+      0.09224343435356404,
+      -0.07941083083769428,
+      5.911157464725639
+    ],
+    [
+      -0.11290405784951506,
+      -0.45402438776487,
+      0.8838068392108359,
+      -715.7375624779485
+    ],
+    [
+      0.045470924300991866,
+      0.8862014467001252,
+      0.46106332635530545,
+      351.44510566415823
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_realsense_color_mm": [
+    [
+      0.9908546717904492,
+      -0.09218724142708282,
+      0.0985318827035502,
+      456.86358211307277
+    ],
+    [
+      -0.11215339893550007,
+      -0.9686833277029211,
+      0.22152703161828965,
+      -416.6643545437303
+    ],
+    [
+      0.07502422607568887,
+      -0.23055177975557012,
+      -0.9701635132044922,
+      902.3587220629867
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_zed_mm": [
+    [
+      -0.9998157286789779,
+      0.017066894478089966,
+      0.008788048645642787,
+      471.9005510889704
+    ],
+    [
+      0.004373203941896446,
+      0.6482555342541086,
+      -0.7614102950421695,
+      314.8845523038928
+    ],
+    [
+      -0.01869181032984861,
+      -0.7612315570322831,
+      -0.648210716360659,
+      585.437676889579
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "method": "Joint RGB reprojection least squares; fixed per-capture SDK intrinsics; shared camera extrinsic and one board pose per placement. Stationary-frame corner means; no depth input.",
+  "fit_sources": [
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_01/calibration.json",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_02/calibration.json",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_03/calibration.json",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_04/calibration.json"
+  ],
+  "source_sha256": {
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_01/calibration.json": "01d7c2f816c6c18d34e37d88b2fd61afe387c7e8e5254d527d7c5f741d8a6927",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_02/calibration.json": "1d4bbdfebd35f3734f232fae3e55d54918a7be30b5d8577d59d79dacb73a7893",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_03/calibration.json": "eed2d7ff9e7397190e60c9e782f5d28ea62b5946de6e515ea58f9b6e3fad2973",
+    "/home/CNS2026330003/agentAuto/exp/clothAgent_real/reports/realsense_recalibration_20261109_new/placement_04/calibration.json": "943f8e06118e4cf7df1fbd1cbd17bc9b6eb4181966171447b5a88e8f76eb96c7"
+  },
+  "validation": {
+    "method": "Joint RGB reprojection least squares; fixed per-capture SDK intrinsics; shared camera extrinsic and one board pose per placement. Stationary-frame corner means; no depth input.",
+    "image_pairs": 120,
+    "fit_success": true,
+    "fit": [
+      {
+        "placement": 1,
+        "zed_rmse_px": 1.0932442725348073,
+        "realsense_rmse_px": 0.5730391177833253,
+        "combined_rmse_px": 0.8891974332325573
+      },
+      {
+        "placement": 2,
+        "zed_rmse_px": 1.1531962295412943,
+        "realsense_rmse_px": 0.3003394219552921,
+        "combined_rmse_px": 0.8426343549276567
+      },
+      {
+        "placement": 3,
+        "zed_rmse_px": 1.2088411986625147,
+        "realsense_rmse_px": 0.5409798847006393,
+        "combined_rmse_px": 0.9364711098679293
+      },
+      {
+        "placement": 4,
+        "zed_rmse_px": 1.2745612232861734,
+        "realsense_rmse_px": 0.3784785748403873,
+        "combined_rmse_px": 0.9401468883950946
+      }
+    ],
+    "leave_one_placement_out": [
+      {
+        "held_out": 1,
+        "training_placements": [
+          2,
+          3,
+          4
+        ],
+        "fit_success": true,
+        "zed_rmse_px": 1.1083853737782448,
+        "realsense_rmse_px": 0.8283099754944039,
+        "combined_rmse_px": 0.9876175711603183,
+        "previous_two_position_fit": {
+          "zed_rmse_px": 1.0863982474281693,
+          "realsense_rmse_px": 0.4971189068006749,
+          "combined_rmse_px": 0.8630171751327188
+        },
+        "extrinsic_change_vs_full": {
+          "rotation_deg": 0.42832407850519805,
+          "camera_origin_mm": 6.3210244750975715
+        }
+      },
+      {
+        "held_out": 2,
+        "training_placements": [
+          1,
+          3,
+          4
+        ],
+        "fit_success": true,
+        "zed_rmse_px": 1.1544233368435337,
+        "realsense_rmse_px": 0.3220385866260122,
+        "combined_rmse_px": 0.8474674306205043,
+        "previous_two_position_fit": {
+          "zed_rmse_px": 1.15374771678318,
+          "realsense_rmse_px": 0.22209601103833018,
+          "combined_rmse_px": 0.8308009485134027
+        },
+        "extrinsic_change_vs_full": {
+          "rotation_deg": 0.05201200426459215,
+          "camera_origin_mm": 0.9361618094955513
+        }
+      },
+      {
+        "held_out": 3,
+        "training_placements": [
+          1,
+          2,
+          4
+        ],
+        "fit_success": true,
+        "zed_rmse_px": 1.307368479426544,
+        "realsense_rmse_px": 1.440651799091669,
+        "combined_rmse_px": 1.3756253027667338,
+        "previous_two_position_fit": {
+          "zed_rmse_px": 1.2436037844270458,
+          "realsense_rmse_px": 1.1084976192649532,
+          "combined_rmse_px": 1.177989249644779
+        },
+        "extrinsic_change_vs_full": {
+          "rotation_deg": 1.2950051919302712,
+          "camera_origin_mm": 19.056869481788787
+        }
+      },
+      {
+        "held_out": 4,
+        "training_placements": [
+          1,
+          2,
+          3
+        ],
+        "fit_success": true,
+        "zed_rmse_px": 1.2837180564224013,
+        "realsense_rmse_px": 0.40362997697787073,
+        "combined_rmse_px": 0.9515380199182962,
+        "previous_two_position_fit": {
+          "zed_rmse_px": 1.2718340669619022,
+          "realsense_rmse_px": 0.3261622487050256,
+          "combined_rmse_px": 0.9284243928196768
+        },
+        "extrinsic_change_vs_full": {
+          "rotation_deg": 0.11226633638312225,
+          "camera_origin_mm": 1.2531751387757903
+        }
+      }
+    ]
+  },
+  "limitations": [
+    "Four positions all used in final fit; leave-one-position-out evaluations each fit only the other three. No fully untouched final test set remains.",
+    "Fixed SDK intrinsics and nominal planar 40 mm / 30 mm ChArUco geometry; absolute metric accuracy not independently established.",
+    "Existing ZED world anchor inherited. Depth corrections untouched. Activated by user request; depth alignment remains unresolved."
+  ]
+}

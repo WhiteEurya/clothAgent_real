@@ -93,7 +93,7 @@ def minimal_runner():
                              same_prompt_retry=True, retry_consumes_iteration=True,
                              retry_plan_feedback=True,
                              reset_policy='Existing initialize() unchanged; --no-reset for manual state',
-                             transport='Existing direct ChatGPT account Responses; no Agent CLI',
+                             transport='Configured RBS Responses API; no Agent CLI',
                              entrypoint_sha256=wire.sha(Path(__file__))))
             shutil.copyfile(__file__, path.parent/'minimal_entrypoint.py')
         original_save(path, value)

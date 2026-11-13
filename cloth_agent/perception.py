@@ -638,11 +638,12 @@ def create_rgbd_camera(spec: CameraSpec, width: int, height: int, fps: int):
 
 
 @timed_stage('perception.capture_two_view_rgbd')
-def capture_two_view_rgbd(config: PerceptionConfig) -> list[RGBDFrame]:
+def capture_two_view_rgbd(config: PerceptionConfig, *, camera_factory=None) -> list[RGBDFrame]:
     numpy = _require_numpy()
     active_labels = set(config.active_camera_labels)
     active_specs = [spec for spec in config.cameras if spec.label in active_labels]
-    cameras = [create_rgbd_camera(spec, config.width, config.height, config.fps) for spec in active_specs]
+    factory = camera_factory or create_rgbd_camera
+    cameras = [factory(spec, config.width, config.height, config.fps) for spec in active_specs]
     try:
         for camera in cameras:
             camera.start()

@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "mode": "DUAL_REALSENSE_FIXED_PERCEPTION",
+  "status": "RELATIVE_ALIGNMENT_CHECKED_WORLD_ALIGNMENT_PENDING",
+  "pose_name": "left_topdown_right_relaxed_supplement",
+  "default_runtime_changed": true,
+  "common_frame": "right_arm_base",
+  "units": "mm",
+  "capture_joints_deg": {
+    "left": [
+      69.574895,
+      8.633844,
+      -25.129413,
+      156.957319,
+      4.332077,
+      148.905543,
+      -22.447971
+    ],
+    "right": [
+      -11.812155,
+      -61.35255,
+      -33.931535,
+      95.08057,
+      -6.137868,
+      127.825108,
+      5.102762
+    ]
+  },
+  "sequence": [
+    "left",
+    "right"
+  ],
+  "scene": "config/dual_arm.dual_wrist_xarm7_20261110.json",
+  "camera_serials": {
+    "left": "263622075308",
+    "right": "254522070945"
+  },
+  "color_intrinsics": {
+    "left": [
+      [
+        912.0582275390625,
+        0,
+        653.3204345703125
+      ],
+      [
+        0,
+        910.5154418945312,
+        377.76385498046875
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "right": [
+      [
+        910.187255859375,
+        0,
+        650.1410522460938
+      ],
+      [
+        0,
+        910.0311279296875,
+        368.0643005371094
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  "left_color_from_right_color_mm": [
+    [
+      -0.32558986993450584,
+      -0.7835333485521756,
+      0.5292133107761423,
+      -851.6553953902858
+    ],
+    [
+      0.8083787103588614,
+      -0.520994477976061,
+      -0.27402301829772513,
+      240.39915859968346
+    ],
+    [
+      0.4904233856929899,
+      0.3385856547833443,
+      0.8030222021465893,
+      74.27917945567958
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_from_left_color_mm": [
+    [
+      0.9398311236707948,
+      -0.34147861835495097,
+      -0.01047913097940148,
+      823.2883062379568
+    ],
+    [
+      -0.3415892796589832,
+      -0.9397764037925448,
+      -0.011707898906677679,
+      -298.22193274291755
+    ],
+    [
+      -0.005850042884201425,
+      0.014583006587993158,
+      -0.9998765488384584,
+      766.5326417777031
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "candidate_world_from_right_color_mm": [
+    [
+      -0.587182749331314,
+      -0.5620286363177285,
+      0.5825291673783825,
+      -59.993494774861574
+    ],
+    [
+      -0.6542190556094802,
+      0.7533007824113908,
+      0.06734507031569678,
+      -234.09668958136547
+    ],
+    [
+      -0.4766695355958438,
+      -0.3415578182053808,
+      -0.8100150681670187,
+      700.7505952722076
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "world_anchor": "Existing left hand-eye and dual-arm base transform. Relative board alignment is not independent robot landing accuracy.",
+  "scope": "Only the recorded stationary perception poses. This is not a replacement hand-eye calibration.",
+  "source_board_record": "reports/dual_wrist_relaxed_right_20261110/inspection.json",
+  "source_sha256": "94c3914d9ca12f687007fd594a05d07743fd7d05b68c889c3d2b88c99745cf52",
+  "validation": {
+    "original_chain_board_origin_disagreement_mm": 17.916435998838917,
+    "same_board_new_frames_after_return_reprojection_rmse_px": 0.4048615141881372,
+    "independent_board_placement": false,
+    "repeatability_record": "reports/dual_wrist_relaxed_right_20261110/repeatability/summary.json",
+    "absolute_robot_alignment": "PENDING"
+  },
+  "rollback_config": "config/calibration/dual_wrist_fixed_20261110/candidate.json"
+}

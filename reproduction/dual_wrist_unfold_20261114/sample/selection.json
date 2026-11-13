@@ -1,0 +1,15 @@
+{
+  "decision": "ACTION",
+  "skill": "garment-tangent-grasp",
+  "region_name": "下摆覆盖区域附近的下侧外轮廓",
+  "evidence": "相比上一轮，下侧轮廓下移、衣身覆盖区域增宽，但大印花仍不可见，下摆开口及两角无法可靠辨认，疑似仍被覆盖。选择附近较平滑的下侧真实外轮廓，由宿主沿内法线计算对侧抓点，向右上方揭开覆盖层。",
+  "grasp_angle_deg": null,
+  "grasp_px": null,
+  "target_px": null,
+  "boundary_point_px": [
+    467,
+    518
+  ],
+  "chord_endpoints_px": [],
+  "pull_distance_mm": 140
+}

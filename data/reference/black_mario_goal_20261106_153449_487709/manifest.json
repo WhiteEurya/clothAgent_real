@@ -1,0 +1,52 @@
+{
+  "garment_id": "black_mario",
+  "source": "data/reference/black_mario_goal_20261106_153449_487709/goal.png",
+  "sha256": "5034e5046f5de60cb99bb5b68ff96bf262988b3a8ea82690e4d9adfae7d57d11",
+  "observation": "data/reference/black_mario_goal_20261106_153449_487709/observation",
+  "role": "unfold_goal",
+  "review": "Current Mario black shirt, front up, body/sleeves/hem visible; user arranged desired unfolded state.",
+  "robot_calls": 0,
+  "capture_policy": "camera-only sequential capture using existing calibrated pipeline",
+  "topdown_config": {
+    "camera_serial": "11483267",
+    "image_size_wh": [
+      1280,
+      720
+    ],
+    "table_polygon_px": [
+      [
+        181,
+        235
+      ],
+      [
+        1034,
+        230
+      ],
+      [
+        1190,
+        500
+      ],
+      [
+        1080,
+        525
+      ],
+      [
+        1050,
+        719
+      ],
+      [
+        0,
+        719
+      ],
+      [
+        0,
+        530
+      ]
+    ],
+    "note": "Visible tabletop ROI reviewed on arm7_unfold_20261105_145442_142518/initial_observation/rgb.png. Auxiliary measured world-XY projection only; no red/purple garment assumption or table-plane warp. Recheck ROI if camera moves. Display excludes stereo samples more than 20 mm below nominal hard tabletop world Z=0; this does not alter source depth or execution checks.",
+    "display_min_world_z_mm": -20,
+    "appearance_render": "surface_rgb",
+    "appearance_seam": "local_gain",
+    "segmentation_profile": "black"
+  }
+}

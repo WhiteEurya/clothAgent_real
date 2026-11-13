@@ -1,0 +1,7 @@
+{
+  "goal": "/home/CNS2026330003/agentAuto/exp/clothAgent_real/data/reference/black_mario_goal_20261107_202533_696465/goal.png",
+  "robot_calls": 0,
+  "source": "fresh dual-camera topdown",
+  "garment_id": "black_mario",
+  "review_status": "PENDING_VISUAL_REVIEW"
+}
